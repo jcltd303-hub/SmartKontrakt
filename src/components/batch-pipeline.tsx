@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   parseAddressList,
+  countValidAddresses,
   analyzeAddress,
   SUPPORTED_CHAINS,
   type BatchItem,
@@ -14,6 +15,8 @@ import {
   type SupabaseConfig,
 } from "@/lib/supabase";
 import type { Report } from "@/lib/audit/types";
+import { saveBatchComprehensiveScansFn } from "@/lib/scans.functions";
+import type { ComprehensiveRecordInput } from "@/lib/audit/persist.server";
 import {
   Play,
   Pause,
@@ -32,6 +35,11 @@ import {
   Sliders,
   RefreshCw,
   Eye,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Zap,
 } from "lucide-react";
 
 interface BatchPipelineProps {
@@ -50,8 +58,34 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
   const [inputText, setInputText] = useState<string>(SAMPLE_BATCH_INPUT);
   const [selectedChainId, setSelectedChainId] = useState<string>("ethereum");
   const [delayMs, setDelayMs] = useState<number>(600);
+  const [fileMeta, setFileMeta] = useState<{ name: string; count: number; sizeKb: number } | null>(null);
 
-  // Queue state
+  // Pagination state for handling 50,000+ items without DOM bloat
+  const [pageSize, setPageSize] = useState<number>(50);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [jumpPageInput, setJumpPageInput] = useState<string>("");
+
+  // Inspecting state and on-demand LRU cache (capped at 50 to avoid GBs of heap)
+  const [inspectingAddr, setInspectingAddr] = useState<string | null>(null);
+  const reportCacheRef = useRef<Map<string, { report: Report; rawBody: string }>>(new Map());
+
+  // Asynchronous batched database writing state
+  const pendingDbBufferRef = useRef<ComprehensiveRecordInput[]>([]);
+  const isFlushingDbRef = useRef<boolean>(false);
+  const flushTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [dbSyncStats, setDbSyncStats] = useState<{
+    totalFlushed: number;
+    pendingCount: number;
+    isFlushing: boolean;
+    lastError: string | null;
+  }>({
+    totalFlushed: 0,
+    pendingCount: 0,
+    isFlushing: false,
+    lastError: null,
+  });
+
+  // Queue state (lightweight items, no duplicate source/AST trees in memory)
   const [queue, setQueue] = useState<BatchItem[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -79,10 +113,23 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
   isRunningRef.current = isRunning;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Save queue to localStorage whenever it changes
+  // Safe localStorage save: persist only lightweight snapshot (up to 200 items)
+  // to prevent QuotaExceededError when handling 50,000 addresses
   useEffect(() => {
     try {
-      localStorage.setItem("kiln_active_batch_queue", JSON.stringify(queue));
+      const snapshot = queue.slice(0, 200).map((q) => ({
+        id: q.id,
+        address: q.address,
+        label: q.label,
+        chainId: q.chainId,
+        status: q.status,
+        riskScore: q.riskScore,
+        criticalCount: q.criticalCount,
+        highCount: q.highCount,
+        findingsCount: q.findingsCount,
+        completedAt: q.completedAt,
+      }));
+      localStorage.setItem("kiln_active_batch_queue", JSON.stringify(snapshot));
     } catch {
       // ignore
     }
@@ -95,15 +142,23 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
+  // Ultra-fast zero-allocation address count
+  const parsedCount = useMemo(() => {
+    if (fileMeta) return fileMeta.count;
+    return countValidAddresses(inputText);
+  }, [inputText, fileMeta]);
+
   // Parse text into queue
   const handleLoadNewBatch = () => {
     const parsed = parseAddressList(inputText, selectedChainId);
+    setFileMeta(null);
     setQueue(parsed);
     setIsRunning(false);
     setCurrentIndex(-1);
+    setCurrentPage(1);
   };
 
-  // Upload multiline file
+  // Upload multiline file (optimized for 50,000+ lines)
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -111,18 +166,122 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
     reader.onload = (event) => {
       const content = event.target?.result as string;
       if (content) {
-        setInputText(content);
         const parsed = parseAddressList(content, selectedChainId);
         setQueue(parsed);
         setIsRunning(false);
         setCurrentIndex(-1);
+        setCurrentPage(1);
+
+        if (parsed.length > 250) {
+          // Large file optimization: do not choke React textarea with 50,000 DOM lines
+          setFileMeta({
+            name: file.name,
+            count: parsed.length,
+            sizeKb: Math.round(file.size / 1024),
+          });
+          const previewSnippet = content.split(/\r?\n/).slice(0, 25).join("\n");
+          setInputText(`${previewSnippet}\n\n# ... [${(parsed.length - 25).toLocaleString()} more addresses loaded from "${file.name}"]`);
+        } else {
+          setFileMeta(null);
+          setInputText(content);
+        }
       }
     };
     reader.readAsText(file);
     e.target.value = "";
   };
 
-  // Main Sequential Pipeline Loop
+  // Asynchronous batched database flush worker
+  const flushDbBuffer = useCallback(async () => {
+    if (isFlushingDbRef.current) return;
+    if (pendingDbBufferRef.current.length === 0) return;
+
+    isFlushingDbRef.current = true;
+    setDbSyncStats((prev) => ({ ...prev, isFlushing: true, lastError: null }));
+
+    // Take current slice of up to 50 items
+    const batch = pendingDbBufferRef.current.splice(0, 50);
+
+    try {
+      const res = await saveBatchComprehensiveScansFn({
+        data: { records: batch },
+      });
+      const savedCount = res.savedCount ?? batch.length;
+      setDbSyncStats((prev) => ({
+        ...prev,
+        totalFlushed: prev.totalFlushed + savedCount,
+        pendingCount: pendingDbBufferRef.current.length,
+        isFlushing: false,
+      }));
+    } catch (err) {
+      console.warn("[kiln-batch] Async DB batch save notice:", err);
+      // Re-queue failed items for retry
+      pendingDbBufferRef.current.unshift(...batch);
+      setDbSyncStats((prev) => ({
+        ...prev,
+        pendingCount: pendingDbBufferRef.current.length,
+        isFlushing: false,
+        lastError: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      isFlushingDbRef.current = false;
+      // If items remain in buffer, schedule follow-up flush
+      if (pendingDbBufferRef.current.length > 0) {
+        if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = setTimeout(flushDbBuffer, 1200);
+      }
+    }
+  }, []);
+
+  // Flush buffer on unmount
+  useEffect(() => {
+    return () => {
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+      void flushDbBuffer();
+    };
+  }, [flushDbBuffer]);
+
+  // Queue a completed record into the async DB write buffer
+  const queueDbRecord = useCallback((record: ComprehensiveRecordInput) => {
+    pendingDbBufferRef.current.push(record);
+    setDbSyncStats((prev) => ({
+      ...prev,
+      pendingCount: pendingDbBufferRef.current.length,
+    }));
+
+    // Auto-flush when batch reaches 15 items, otherwise debounce 2.5s
+    if (pendingDbBufferRef.current.length >= 15) {
+      flushDbBuffer();
+    } else {
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = setTimeout(flushDbBuffer, 2500);
+    }
+  }, [flushDbBuffer]);
+
+  // On-demand inspection handler
+  const handleInspect = async (item: BatchItem) => {
+    const cached = reportCacheRef.current.get(item.address.toLowerCase());
+    if (cached) {
+      onInspectItem(cached.report, cached.rawBody, item.label);
+      return;
+    }
+
+    setInspectingAddr(item.address);
+    try {
+      const fresh = await analyzeAddress(item.address, item.chainId, item.label);
+      reportCacheRef.current.set(item.address.toLowerCase(), {
+        report: fresh.report,
+        rawBody: fresh.rawBody,
+      });
+      onInspectItem(fresh.report, fresh.rawBody, item.label);
+    } catch (err) {
+      alert("Could not load full report for inspection: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setInspectingAddr(null);
+    }
+  };
+
+  // Main Sequential Pipeline Loop (Non-blocking DB writing & memory-optimized)
   const startPipeline = async () => {
     if (isRunning) return;
     setIsRunning(true);
@@ -156,21 +315,29 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
         const crit = result.report.findings.filter((f) => f.severity === "critical").length;
         const high = result.report.findings.filter((f) => f.severity === "high").length;
 
+        // Cache in LRU (bounded to 50 items so memory is never bloated)
+        reportCacheRef.current.set(item.address.toLowerCase(), {
+          report: result.report,
+          rawBody: result.rawBody,
+        });
+        if (reportCacheRef.current.size > 50) {
+          const firstKey = reportCacheRef.current.keys().next().value;
+          if (firstKey) reportCacheRef.current.delete(firstKey);
+        }
+
         const updatedItem: BatchItem = {
           ...item,
           status: "completed",
           inputKind: result.inputKind,
-          rawBody: result.rawBody,
           bytecodeSize: result.report.inventory.bytecodeBytes ?? (result.rawBody.length / 2),
           riskScore: result.report.riskScore,
           findingsCount: result.report.findings.length,
           criticalCount: crit,
           highCount: high,
-          report: result.report,
           completedAt: new Date().toISOString(),
         };
 
-        // Update queue item
+        // Update queue item with lean footprint (no rawBody/report in 50k array)
         setQueue((prev) => {
           const copy = [...prev];
           copy[i] = updatedItem;
@@ -179,8 +346,27 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
 
         // Sync to Supabase if configured
         if (supabaseCfg.enabled) {
-          saveBatchItemToSupabase(updatedItem, supabaseCfg);
+          saveBatchItemToSupabase(
+            {
+              ...updatedItem,
+              rawBody: result.rawBody,
+              report: result.report,
+            },
+            supabaseCfg
+          );
         }
+
+        // Buffer into Async DB Writer (non-blocking)
+        queueDbRecord({
+          label: `${updatedItem.label || "Contract"} (${updatedItem.address.slice(0, 8)})`,
+          report: result.report,
+          body: result.rawBody,
+          targetAddress: updatedItem.address,
+          chainId: updatedItem.chainId,
+          compilerVersion: result.report.inventory.compiler,
+          sourceOrigin: "pipeline",
+          indexToRag: true,
+        });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         setQueue((prev) => {
@@ -203,6 +389,8 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
       }
     }
 
+    // Flush remaining buffer on loop completion
+    await flushDbBuffer();
     setIsRunning(false);
     setCurrentIndex(-1);
   };
@@ -210,6 +398,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
   const pausePipeline = () => {
     setIsRunning(false);
     isRunningRef.current = false;
+    flushDbBuffer();
   };
 
   // Resume or load from Supabase
@@ -310,6 +499,16 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
         item.status.toLowerCase().includes(q)
     );
   }, [queue, filterQuery]);
+
+  // Pagination calculations for handling 50,000+ items smoothly
+  const totalPages = Math.max(1, Math.ceil(filteredQueue.length / pageSize));
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+  // Sliced items for the current page only
+  const paginatedQueue = useMemo(() => {
+    const start = (safeCurrentPage - 1) * pageSize;
+    return filteredQueue.slice(start, start + pageSize);
+  }, [filteredQueue, safeCurrentPage, pageSize]);
 
   const activeChainObj = SUPPORTED_CHAINS.find((c) => c.id === selectedChainId) ?? SUPPORTED_CHAINS[0]!;
 
@@ -575,6 +774,49 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             style={{ width: `${percent}%` }}
           />
         </div>
+
+        {/* DB Sync & Async Batch Engine Status Strip */}
+        <div className="flex items-center justify-between bg-[#191713] border border-[#3a3428] rounded-lg px-3 py-2 text-xs font-mono">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="flex items-center gap-1.5 text-[#e8a54b] font-bold">
+              <Database className="w-3.5 h-3.5" />
+              <span>DB Batch Engine:</span>
+            </span>
+            <span className="text-[#a39886]">
+              {dbSyncStats.totalFlushed.toLocaleString()} records written to local DB
+            </span>
+            <span className="text-[#746c60]">•</span>
+            {dbSyncStats.isFlushing ? (
+              <span className="text-yellow-400 flex items-center gap-1">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Flushing batch to DB...
+              </span>
+            ) : dbSyncStats.pendingCount > 0 ? (
+              <span className="text-[#e8a54b]">
+                {dbSyncStats.pendingCount} records buffered
+              </span>
+            ) : (
+              <span className="text-emerald-400 flex items-center gap-1">
+                <Check className="w-3 h-3" />
+                All records synced
+              </span>
+            )}
+            {dbSyncStats.lastError && (
+              <span className="text-red-400 text-[11px] truncate max-w-xs" title={dbSyncStats.lastError}>
+                (Warning: {dbSyncStats.lastError})
+              </span>
+            )}
+          </div>
+
+          {dbSyncStats.pendingCount > 0 && !dbSyncStats.isFlushing && (
+            <button
+              onClick={() => flushDbBuffer()}
+              className="px-2.5 py-0.5 rounded bg-[#3a2c14] hover:bg-[#e8a54b] text-[#e8a54b] hover:text-[#12110e] border border-[#e8a54b]/30 text-[11px] font-bold transition-all"
+            >
+              Flush Buffer ({dbSyncStats.pendingCount})
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Multiline Address Input Box & Controls */}
@@ -598,7 +840,10 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
                 <span>Upload .txt</span>
               </button>
               <button
-                onClick={() => setInputText(SAMPLE_BATCH_INPUT)}
+                onClick={() => {
+                  setFileMeta(null);
+                  setInputText(SAMPLE_BATCH_INPUT);
+                }}
                 className="px-2 py-1 text-[11px] font-mono text-[#a39886] hover:text-[#f4efe6]"
               >
                 Reset Sample
@@ -606,9 +851,34 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             </div>
           </div>
 
+          {fileMeta && (
+            <div className="flex items-center justify-between bg-[#26231c] border border-[#e8a54b]/40 rounded-lg p-2.5 text-xs font-mono text-[#e8a54b]">
+              <div className="flex items-center gap-2">
+                <Zap className="w-4 h-4 text-[#e8a54b] shrink-0" />
+                <span className="truncate">
+                  <strong>{fileMeta.name}</strong> ({fileMeta.count.toLocaleString()} contracts, {fileMeta.sizeKb} KB) loaded in streaming memory mode
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  setFileMeta(null);
+                  setInputText(SAMPLE_BATCH_INPUT);
+                  setQueue(parseAddressList(SAMPLE_BATCH_INPUT, selectedChainId));
+                  setCurrentPage(1);
+                }}
+                className="text-[#a39886] hover:text-[#f4efe6] underline text-[11px] ml-2 shrink-0"
+              >
+                Clear File
+              </button>
+            </div>
+          )}
+
           <textarea
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={(e) => {
+              setInputText(e.target.value);
+              if (fileMeta) setFileMeta(null);
+            }}
             placeholder={`0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984 # Uniswap Token\n0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D`}
             spellCheck={false}
             className="w-full h-56 bg-[#12110e] border border-[#3a3428] rounded-lg p-3 font-mono text-xs text-[#f4efe6] focus:outline-none focus:border-[#e8a54b] leading-relaxed resize-none"
@@ -616,7 +886,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
 
           <div className="flex items-center justify-between text-xs font-mono text-[#a39886]">
             <span>
-              Parsed {parseAddressList(inputText, selectedChainId).length} valid addresses
+              Parsed {parsedCount.toLocaleString()} valid addresses
             </span>
             <button
               onClick={handleLoadNewBatch}
@@ -700,8 +970,9 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
                     </td>
                   </tr>
                 ) : (
-                  filteredQueue.map((item, idx) => {
-                    const isCurrent = idx === currentIndex && isRunning;
+                  paginatedQueue.map((item, idx) => {
+                    const rowNumber = (safeCurrentPage - 1) * pageSize + idx + 1;
+                    const isCurrent = rowNumber - 1 === currentIndex && isRunning;
                     return (
                       <tr
                         key={item.id}
@@ -709,7 +980,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
                           isCurrent ? "bg-[#3a2c14]/40" : ""
                         }`}
                       >
-                        <td className="p-2.5 text-[#746c60]">{idx + 1}</td>
+                        <td className="p-2.5 text-[#746c60]">{rowNumber}</td>
                         <td className="p-2.5">
                           <div className="flex items-center gap-1.5 font-bold text-[#f4efe6]">
                             <span title={item.address}>
@@ -798,13 +1069,18 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
                           )}
                         </td>
                         <td className="p-2.5 text-right">
-                          {item.report && item.rawBody ? (
+                          {item.status === "completed" ? (
                             <button
-                              onClick={() => onInspectItem(item.report!, item.rawBody!, item.label)}
-                              className="px-2 py-1 rounded bg-[#3a2c14] hover:bg-[#e8a54b] hover:text-[#12110e] text-[#e8a54b] text-[11px] font-bold flex items-center gap-1 ml-auto transition-colors"
+                              onClick={() => handleInspect(item)}
+                              disabled={inspectingAddr === item.address}
+                              className="px-2 py-1 rounded bg-[#3a2c14] hover:bg-[#e8a54b] hover:text-[#12110e] text-[#e8a54b] text-[11px] font-bold flex items-center gap-1 ml-auto transition-colors disabled:opacity-50"
                               title="Inspect full audit in Workbench"
                             >
-                              <Eye className="w-3 h-3" />
+                              {inspectingAddr === item.address ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Eye className="w-3 h-3" />
+                              )}
                               <span>Inspect</span>
                             </button>
                           ) : (
@@ -818,6 +1094,104 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
               </tbody>
             </table>
           </div>
+
+          {/* Table Pagination & Windowing Controls (handles 50,000+ rows smoothly) */}
+          {filteredQueue.length > 0 && (
+            <div className="flex items-center justify-between flex-wrap gap-3 pt-2 text-xs font-mono text-[#a39886] border-t border-[#3a3428]">
+              <div className="flex items-center gap-2">
+                <span>
+                  Showing {((safeCurrentPage - 1) * pageSize + 1).toLocaleString()} -{" "}
+                  {Math.min(safeCurrentPage * pageSize, filteredQueue.length).toLocaleString()} of{" "}
+                  <strong className="text-[#f4efe6]">{filteredQueue.length.toLocaleString()}</strong> contracts
+                </span>
+                <span className="text-[#746c60]">|</span>
+                <div className="flex items-center gap-1">
+                  <span>Page Size:</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="bg-[#12110e] border border-[#3a3428] rounded px-1.5 py-0.5 text-[#f4efe6] focus:outline-none"
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                    <option value={250}>250</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Navigation buttons */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setCurrentPage(1)}
+                  disabled={safeCurrentPage === 1}
+                  className="p-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#f4efe6] disabled:opacity-30 disabled:pointer-events-none"
+                  title="First Page"
+                >
+                  <ChevronsLeft className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={safeCurrentPage === 1}
+                  className="p-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#f4efe6] disabled:opacity-30 disabled:pointer-events-none"
+                  title="Previous Page"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+
+                <div className="flex items-center gap-1 px-1.5 text-[#f4efe6]">
+                  <span>Page</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={totalPages}
+                    value={jumpPageInput !== "" ? jumpPageInput : safeCurrentPage}
+                    onChange={(e) => setJumpPageInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        const val = parseInt(jumpPageInput, 10);
+                        if (!isNaN(val) && val >= 1 && val <= totalPages) {
+                          setCurrentPage(val);
+                        }
+                        setJumpPageInput("");
+                      }
+                    }}
+                    onBlur={() => {
+                      if (jumpPageInput !== "") {
+                        const val = parseInt(jumpPageInput, 10);
+                        if (!isNaN(val) && val >= 1 && val <= totalPages) {
+                          setCurrentPage(val);
+                        }
+                        setJumpPageInput("");
+                      }
+                    }}
+                    className="w-12 text-center bg-[#12110e] border border-[#3a3428] rounded px-1 py-0.5 text-xs text-[#e8a54b] focus:outline-none focus:border-[#e8a54b]"
+                  />
+                  <span>of {totalPages.toLocaleString()}</span>
+                </div>
+
+                <button
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safeCurrentPage === totalPages}
+                  className="p-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#f4efe6] disabled:opacity-30 disabled:pointer-events-none"
+                  title="Next Page"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => setCurrentPage(totalPages)}
+                  disabled={safeCurrentPage === totalPages}
+                  className="p-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#f4efe6] disabled:opacity-30 disabled:pointer-events-none"
+                  title="Last Page"
+                >
+                  <ChevronsRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

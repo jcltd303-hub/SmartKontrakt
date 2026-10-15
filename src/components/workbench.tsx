@@ -5,7 +5,18 @@ import { looksLikeBytecode } from "@/lib/audit/bytecode";
 import type { Report, Severity } from "@/lib/audit/types";
 import type { ScanSummary } from "@/lib/audit/persist.server";
 import { BatchPipeline } from "./batch-pipeline";
+import { CfgViewer } from "./cfg-viewer";
+import { AuditCertificate } from "./audit-certificate";
+import { LocalDbRecords } from "./local-db-records";
+import { RagKnowledgebase } from "./rag-knowledgebase";
 import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit/address-fetcher";
+import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
+import { probeContractInterfaces, type CallProbeResult } from "@/lib/audit/simulator";
+import { requestAiReview } from "@/lib/audit/ai.functions";
+import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
+import { saveComprehensiveScanFn, queryRagKnowledgebaseFn } from "@/lib/scans.functions";
+import type { StoredScan } from "@/lib/audit/persist.server";
+import type { RagChunk } from "@/lib/audit/rag.server";
 import {
   ShieldAlert,
   ShieldCheck,
@@ -32,6 +43,16 @@ import {
   Globe,
   ListOrdered,
   Loader2,
+  Award,
+  Sparkles,
+  GitBranch,
+  Activity,
+  ArrowRight,
+  Shield,
+  RefreshCw,
+  Database,
+  BookOpen,
+  X,
 } from "lucide-react";
 
 interface WorkbenchProps {
@@ -92,8 +113,8 @@ function formatDate(iso: string): string {
 }
 
 export function Workbench({ initialScans = [] }: WorkbenchProps) {
-  // Mode state: Single audit vs Batch address pipeline
-  const [workbenchMode, setWorkbenchMode] = useState<"audit" | "pipeline">("audit");
+  // Mode state: Single audit vs Batch address pipeline vs Local DB Records vs RAG Knowledgebase
+  const [workbenchMode, setWorkbenchMode] = useState<"audit" | "pipeline" | "records" | "rag">("audit");
 
   // Single address input state
   const [singleAddress, setSingleAddress] = useState<string>("");
@@ -110,7 +131,25 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
   const [report, setReport] = useState<Report>(() =>
     analyzeInput(defaultSample.body, defaultSample.label)
   );
-  const [activeTab, setActiveTab] = useState<"findings" | "surface" | "bytecode" | "report" | "history">("findings");
+  const [activeTab, setActiveTab] = useState<"findings" | "surface" | "bytecode" | "ai" | "probe" | "report" | "history">("findings");
+  const [bytecodeSubView, setBytecodeSubView] = useState<"stream" | "cfg">("stream");
+
+  // Advanced analysis state
+  const [proxyInfo, setProxyInfo] = useState<ProxyAnalysis | null>(null);
+  const [probes, setProbes] = useState<CallProbeResult[]>([]);
+  const [isProbing, setIsProbing] = useState<boolean>(false);
+  const [aiReview, setAiReview] = useState<AiSecurityReview | null>(null);
+  const [isLoadingAi, setIsLoadingAi] = useState<boolean>(false);
+  const [showCertificate, setShowCertificate] = useState<boolean>(false);
+  const [findingTriage, setFindingTriage] = useState<Record<string, { status: "active" | "acknowledged" | "false_positive" | "remediated"; note?: string }>>({});
+
+  // Local DB & RAG state
+  const [isSavingDb, setIsSavingDb] = useState<boolean>(false);
+  const [dbSavedNotice, setDbSavedNotice] = useState<string | null>(null);
+  const [ragModalFinding, setRagModalFinding] = useState<Finding | null>(null);
+  const [ragModalResults, setRagModalResults] = useState<RagChunk[]>([]);
+  const [isLoadingRagModal, setIsLoadingRagModal] = useState<boolean>(false);
+
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [findingSearch, setFindingSearch] = useState<string>("");
   const [expandedFindings, setExpandedFindings] = useState<Record<string, boolean>>(() => {
@@ -199,8 +238,101 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         }
         return updated;
       });
+
+      // Auto-persist comprehensive record to local DB and RAG knowledgebase
+      saveComprehensiveScanFn({
+        data: {
+          label: labelToAnalyze,
+          report: generated,
+          body: bodyToAnalyze,
+          targetAddress: singleAddress.trim() || null,
+          chainId: singleAddressChain,
+          compilerVersion: generated.inventory.compiler,
+          proxyInfo: proxyInfo ?? null,
+          probes: probes ?? [],
+          aiReview: aiReview ?? null,
+          triageStates: Object.fromEntries(Object.entries(findingTriage).map(([k, v]) => [k, v.status])),
+          sourceOrigin: "workbench",
+          indexToRag: true,
+        },
+      }).catch((err) => {
+        console.warn("[kiln] Auto-persist to DB & RAG notice:", err);
+      });
     } catch (err) {
       console.error("[Kiln] Analysis failed:", err);
+    }
+  };
+
+  // Manual save to Local DB and RAG Knowledgebase
+  const handleSaveToLocalDb = async (andIndexRag = true) => {
+    if (!report) return;
+    setIsSavingDb(true);
+    try {
+      const certHash = "0x" + Array.from({ length: 32 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0")).join("");
+      await saveComprehensiveScanFn({
+        data: {
+          label: contractLabel,
+          report,
+          body: contractBody,
+          targetAddress: singleAddress.trim() || null,
+          chainId: singleAddressChain,
+          compilerVersion: report.inventory.compiler,
+          proxyInfo,
+          probes,
+          aiReview,
+          triageStates: Object.fromEntries(Object.entries(findingTriage).map(([k, v]) => [k, v.status])),
+          certHash,
+          sourceOrigin: "workbench",
+          indexToRag: andIndexRag,
+        },
+      });
+      setDbSavedNotice(andIndexRag ? "Saved to Local DB & Ingested to RAG KB!" : "Saved to Local DB!");
+      setTimeout(() => setDbSavedNotice(null), 3000);
+    } catch (err) {
+      console.warn("DB save failed:", err);
+      setDbSavedNotice("Local DB save failed: " + String(err));
+      setTimeout(() => setDbSavedNotice(null), 3500);
+    } finally {
+      setIsSavingDb(false);
+    }
+  };
+
+  // Load a stored scan from Local DB Records
+  const handleLoadStoredScan = (scan: StoredScan) => {
+    setSelectedSampleId("custom");
+    setContractBody(scan.body);
+    setContractLabel(scan.label);
+    setReport(scan.report);
+    if (scan.targetAddress) setSingleAddress(scan.targetAddress);
+    if (scan.chainId) setSingleAddressChain(scan.chainId);
+    if (scan.proxyInfo) setProxyInfo(scan.proxyInfo);
+    if (scan.probes) setProbes(scan.probes);
+    if (scan.aiReview) setAiReview(scan.aiReview);
+    if (scan.triageStates) {
+      const formatted: Record<string, { status: "active" | "acknowledged" | "false_positive" | "remediated" }> = {};
+      for (const [k, v] of Object.entries(scan.triageStates)) {
+        formatted[k] = { status: v as "active" | "acknowledged" | "false_positive" | "remediated" };
+      }
+      setFindingTriage(formatted);
+    }
+    setWorkbenchMode("audit");
+    setActiveTab("findings");
+  };
+
+  // Open RAG knowledgebase modal for a specific finding
+  const handleOpenRagForFinding = async (finding: Finding) => {
+    setRagModalFinding(finding);
+    setIsLoadingRagModal(true);
+    const q = `${finding.title} ${finding.detector} ${finding.swc ?? ""}`.trim();
+    try {
+      const res = await queryRagKnowledgebaseFn({
+        data: { query: q, limit: 8 },
+      });
+      setRagModalResults(res);
+    } catch {
+      setRagModalResults([]);
+    } finally {
+      setIsLoadingRagModal(false);
     }
   };
 
@@ -228,6 +360,16 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       setContractLabel(res.report.label);
       setReport(res.report);
       setActiveTab("findings");
+
+      // Auto-inspect for proxy architecture
+      detectProxyArchitecture(clean, singleAddressChain)
+        .then((proxy) => setProxyInfo(proxy))
+        .catch(() => setProxyInfo(null));
+
+      // Auto-run view probes
+      probeContractInterfaces(clean, singleAddressChain)
+        .then((pr) => setProbes(pr))
+        .catch(() => setProbes([]));
     } catch (err) {
       setAddressFetchError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -243,6 +385,56 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     setReport(pipelineReport);
     setWorkbenchMode("audit");
     setActiveTab("findings");
+
+    // If label or id looks like an address, try proxy detection
+    const match = label.match(/0x[0-9a-fA-F]{40}/);
+    if (match && match[0]) {
+      setSingleAddress(match[0]);
+      detectProxyArchitecture(match[0], singleAddressChain)
+        .then((proxy) => setProxyInfo(proxy))
+        .catch(() => setProxyInfo(null));
+      probeContractInterfaces(match[0], singleAddressChain)
+        .then((pr) => setProbes(pr))
+        .catch(() => setProbes([]));
+    }
+  };
+
+  // Request AI Threat Modeling & Foundry Test Suite (Gemini API)
+  const handleTriggerAiReview = async () => {
+    if (!report) return;
+    setIsLoadingAi(true);
+    try {
+      const res = await requestAiReview({
+        contractName: report.label,
+        body: contractBody,
+        findings: report.findings,
+      });
+      setAiReview(res);
+      setActiveTab("ai");
+    } catch (err) {
+      console.warn("[Kiln] AI review failed:", err);
+    } finally {
+      setIsLoadingAi(false);
+    }
+  };
+
+  // Run on-chain read & interface probes
+  const handleRunManualProbe = async () => {
+    const targetAddr = singleAddress.trim();
+    if (!targetAddr || !isValidEvmAddress(targetAddr)) {
+      setAddressFetchError("Please enter a valid EVM address in the fetch bar first.");
+      return;
+    }
+    setIsProbing(true);
+    try {
+      const pr = await probeContractInterfaces(targetAddr, singleAddressChain);
+      setProbes(pr);
+      setActiveTab("probe");
+    } catch (err) {
+      console.warn("[Kiln] State probe failed:", err);
+    } finally {
+      setIsProbing(false);
+    }
   };
 
   // Detect input type
@@ -439,10 +631,46 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 <ListOrdered className="w-3.5 h-3.5" />
                 <span>Address Pipeline</span>
               </button>
+              <button
+                onClick={() => setWorkbenchMode("records")}
+                className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
+                  workbenchMode === "records"
+                    ? "bg-[#e8a54b] text-[#12110e] font-bold shadow"
+                    : "text-[#a39886] hover:text-[#f4efe6]"
+                }`}
+              >
+                <Database className="w-3.5 h-3.5" />
+                <span>Local DB Records</span>
+              </button>
+              <button
+                onClick={() => setWorkbenchMode("rag")}
+                className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
+                  workbenchMode === "rag"
+                    ? "bg-[#e8a54b] text-[#12110e] font-bold shadow"
+                    : "text-[#a39886] hover:text-[#f4efe6]"
+                }`}
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                <span>RAG Knowledgebase</span>
+              </button>
             </div>
 
             {workbenchMode === "audit" && (
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleSaveToLocalDb(true)}
+                  disabled={isSavingDb}
+                  className="px-3 py-1.5 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-xs font-medium text-[#f4efe6] flex items-center gap-1.5 transition-colors"
+                  title="Save comprehensive audit dossier to local DB and auto-index to RAG knowledgebase"
+                >
+                  {isSavingDb ? (
+                    <Loader2 className="w-3.5 h-3.5 text-[#e8a54b] animate-spin" />
+                  ) : (
+                    <Database className="w-3.5 h-3.5 text-[#e8a54b]" />
+                  )}
+                  <span>Save to Local DB</span>
+                </button>
+
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="px-3 py-1.5 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-xs font-medium text-[#f4efe6] flex items-center gap-1.5 transition-colors"
@@ -450,6 +678,15 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 >
                   <Upload className="w-3.5 h-3.5 text-[#e8a54b]" />
                   <span>Upload</span>
+                </button>
+
+                <button
+                  onClick={() => setShowCertificate(true)}
+                  className="px-3 py-1.5 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-xs font-medium text-[#f4efe6] flex items-center gap-1.5 transition-colors"
+                  title="Open Official Audit Certificate & PDF"
+                >
+                  <Award className="w-3.5 h-3.5 text-[#e8a54b]" />
+                  <span>Certificate</span>
                 </button>
 
                 <button
@@ -463,12 +700,41 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
             )}
           </div>
         </div>
+
+        {dbSavedNotice && (
+          <div className="max-w-7xl mx-auto mt-2 px-3 py-1.5 bg-emerald-950/80 border border-emerald-800 text-emerald-300 text-xs font-mono rounded-lg flex items-center justify-between animate-fadeIn">
+            <span className="flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              {dbSavedNotice}
+            </span>
+            <button
+              onClick={() => setDbSavedNotice(null)}
+              className="text-[#746c60] hover:text-[#f4efe6]"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
       </header>
 
       {/* Main Layout Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6">
         {workbenchMode === "pipeline" ? (
           <BatchPipeline onInspectItem={handleInspectPipelineItem} />
+        ) : workbenchMode === "records" ? (
+          <LocalDbRecords
+            onLoadInWorkbench={handleLoadStoredScan}
+            onNavigateToRag={() => setWorkbenchMode("rag")}
+          />
+        ) : workbenchMode === "rag" ? (
+          <RagKnowledgebase
+            onLoadContractInWorkbench={(body, label) => {
+              setContractBody(body);
+              setContractLabel(label);
+              setWorkbenchMode("audit");
+              handleRunAnalysis(body, label);
+            }}
+          />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* ================= Left Column: Contract Editor & Input ================= */}
@@ -519,6 +785,37 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                   </div>
                 )}
               </div>
+
+              {/* Upgradeable Proxy Banner if detected */}
+              {proxyInfo?.isProxy && proxyInfo.implementationAddress && (
+                <div className="p-3.5 bg-purple-950/30 border border-purple-800/60 rounded-xl flex flex-col gap-2 font-mono text-xs shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-purple-300 font-bold flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5 text-purple-400" />
+                      {proxyInfo.proxyType} Upgradeable Proxy Detected
+                    </span>
+                    <span className="text-[10px] text-purple-400/80">EIP-1967 Storage Slot</span>
+                  </div>
+                  <div className="text-[11px] text-[#f4efe6] break-all">
+                    Implementation: <span className="text-purple-200 font-bold">{proxyInfo.implementationAddress}</span>
+                  </div>
+                  {proxyInfo.adminAddress && (
+                    <div className="text-[10px] text-[#a39886] truncate">
+                      Proxy Admin Controller: {proxyInfo.adminAddress}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => {
+                      setSingleAddress(proxyInfo.implementationAddress!);
+                      handleFetchSingleAddress();
+                    }}
+                    className="mt-1 px-3 py-1.5 rounded bg-purple-900/70 hover:bg-purple-800 text-purple-200 text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow"
+                  >
+                    <ArrowRight className="w-3.5 h-3.5" />
+                    <span>Audit Implementation Target Contract</span>
+                  </button>
+                </div>
+              )}
           {/* Sample Selectors Ribbon */}
           <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl p-3.5 shadow-sm">
             <div className="flex items-center justify-between mb-2.5">
@@ -742,8 +1039,38 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                     : "text-[#a39886] hover:text-[#f4efe6]"
                 }`}
               >
-                <Binary className="w-3.5 h-3.5" />
-                <span>Bytecode & Opcodes</span>
+                <GitBranch className="w-3.5 h-3.5" />
+                <span>Bytecode & CFG</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("ai");
+                  if (!aiReview) handleTriggerAiReview();
+                }}
+                className={`px-3 py-2 text-xs font-mono font-medium rounded-t-lg transition-colors flex items-center gap-1.5 ${
+                  activeTab === "ai"
+                    ? "bg-[#1c1a16] text-[#e8a54b] border-t-2 border-[#e8a54b] font-semibold"
+                    : "text-[#a39886] hover:text-[#f4efe6]"
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5 text-[#e8a54b]" />
+                <span>AI Threat & Foundry</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("probe");
+                  if (probes.length === 0 && singleAddress) handleRunManualProbe();
+                }}
+                className={`px-3 py-2 text-xs font-mono font-medium rounded-t-lg transition-colors flex items-center gap-1.5 ${
+                  activeTab === "probe"
+                    ? "bg-[#1c1a16] text-[#e8a54b] border-t-2 border-[#e8a54b] font-semibold"
+                    : "text-[#a39886] hover:text-[#f4efe6]"
+                }`}
+              >
+                <Activity className="w-3.5 h-3.5" />
+                <span>State Probe ({probes.filter((p) => p.success).length})</span>
               </button>
 
               <button
@@ -980,6 +1307,56 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                               </div>
                             </div>
                           )}
+
+                          {/* Auditor Triage Selector */}
+                          <div className="pt-2 border-t border-[#3a3428] flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px] font-mono">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[#a39886] text-[10px] uppercase font-bold">Auditor Triage:</span>
+                              {(["active", "acknowledged", "false_positive", "remediated"] as const).map((st) => {
+                                const current = findingTriage[finding.id]?.status ?? "active";
+                                const isCur = current === st;
+                                return (
+                                  <button
+                                    key={st}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setFindingTriage((prev) => ({
+                                        ...prev,
+                                        [finding.id]: { ...prev[finding.id], status: st },
+                                      }));
+                                    }}
+                                    className={`px-2 py-0.5 rounded text-[10px] capitalize transition-colors ${
+                                      isCur
+                                        ? st === "remediated"
+                                          ? "bg-emerald-950 text-emerald-300 border border-emerald-800 font-bold"
+                                          : st === "false_positive"
+                                          ? "bg-purple-950 text-purple-300 border border-purple-800 font-bold"
+                                          : st === "acknowledged"
+                                          ? "bg-amber-950 text-amber-300 border border-amber-800 font-bold"
+                                          : "bg-red-950 text-red-300 border border-red-800 font-bold"
+                                        : "bg-[#26231c] text-[#746c60] hover:text-[#f4efe6] border border-[#3a3428]"
+                                    }`}
+                                  >
+                                    {st.replace("_", " ")}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenRagForFinding(finding);
+                                }}
+                                className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#26231c] hover:bg-[#3a3428] text-[#e8a54b] hover:text-[#f4efe6] border border-[#3a3428] transition-colors text-[10px] font-mono shrink-0 shadow-sm"
+                                title="Query local RAG knowledgebase for historical occurrences, exploit vectors, and fixes"
+                              >
+                                <BookOpen className="w-3 h-3 text-[#e8a54b]" />
+                                <span>Ask RAG About Vuln</span>
+                              </button>
+                              <span className="text-[10px] text-[#746c60] hidden sm:inline">Status saved</span>
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -1183,49 +1560,250 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 </div>
               </div>
 
-              {/* Disassembly Stream View */}
+              {/* Disassembly Stream vs CFG View Toggle */}
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-mono font-bold text-[#a39886] uppercase tracking-wider">
-                    Instruction Disassembly Stream
-                  </h4>
-                  <input
-                    type="text"
-                    placeholder="Search opcode (e.g. JUMP, CALL)..."
-                    value={disasmFilter}
-                    onChange={(e) => setDisasmFilter(e.target.value)}
-                    className="bg-[#12110e] border border-[#3a3428] rounded px-2 py-0.5 text-xs text-[#f4efe6] font-mono focus:outline-none focus:border-[#e8a54b]"
-                  />
-                </div>
+                  <div className="flex items-center gap-1 bg-[#26231c] p-1 rounded-lg border border-[#3a3428]">
+                    <button
+                      onClick={() => setBytecodeSubView("stream")}
+                      className={`px-2.5 py-1 rounded text-[11px] font-mono transition-colors ${
+                        bytecodeSubView === "stream" ? "bg-[#e8a54b] text-[#12110e] font-bold" : "text-[#a39886] hover:text-[#f4efe6]"
+                      }`}
+                    >
+                      Linear Disassembly
+                    </button>
+                    <button
+                      onClick={() => setBytecodeSubView("cfg")}
+                      className={`px-2.5 py-1 rounded text-[11px] font-mono transition-colors flex items-center gap-1 ${
+                        bytecodeSubView === "cfg" ? "bg-[#e8a54b] text-[#12110e] font-bold" : "text-[#a39886] hover:text-[#f4efe6]"
+                      }`}
+                    >
+                      <GitBranch className="w-3 h-3" />
+                      <span>Interactive CFG Graph</span>
+                    </button>
+                  </div>
 
-                <div className="max-h-96 overflow-y-auto bg-[#12110e] border border-[#3a3428] rounded-lg p-3 font-mono text-xs text-[#a39886] leading-relaxed">
-                  {disasmLines.length === 0 ? (
-                    <p className="text-center py-6 text-[#746c60]">
-                      No raw bytecode disassembly generated. Paste runtime hex (0x...) to view full opcode streams.
-                    </p>
-                  ) : (
-                    disasmLines.map((line, idx) => {
-                      const isDanger =
-                        line.includes("DELEGATECALL") || line.includes("SELFDESTRUCT") || line.includes("ORIGIN");
-                      const isCall = line.includes("CALL") || line.includes("STATICCALL");
-                      return (
-                        <div
-                          key={idx}
-                          className={`hover:bg-[#26231c] px-1 py-0.5 rounded ${
-                            isDanger
-                              ? "text-red-400 font-bold bg-red-950/20"
-                              : isCall
-                              ? "text-amber-300"
-                              : "text-[#f4efe6]"
-                          }`}
-                        >
-                          {line}
-                        </div>
-                      );
-                    })
+                  {bytecodeSubView === "stream" && (
+                    <input
+                      type="text"
+                      placeholder="Search opcode (e.g. JUMP, CALL)..."
+                      value={disasmFilter}
+                      onChange={(e) => setDisasmFilter(e.target.value)}
+                      className="bg-[#12110e] border border-[#3a3428] rounded px-2 py-0.5 text-xs text-[#f4efe6] font-mono focus:outline-none focus:border-[#e8a54b]"
+                    />
                   )}
                 </div>
+
+                {bytecodeSubView === "cfg" ? (
+                  <CfgViewer disassembly={report?.inventory.disassembly ?? ""} />
+                ) : (
+                  <div className="max-h-96 overflow-y-auto bg-[#12110e] border border-[#3a3428] rounded-lg p-3 font-mono text-xs text-[#a39886] leading-relaxed">
+                    {disasmLines.length === 0 ? (
+                      <p className="text-center py-6 text-[#746c60]">
+                        No raw bytecode disassembly generated. Paste runtime hex (0x...) to view full opcode streams.
+                      </p>
+                    ) : (
+                      disasmLines.map((line, idx) => {
+                        const isDanger =
+                          line.includes("DELEGATECALL") || line.includes("SELFDESTRUCT") || line.includes("ORIGIN");
+                        const isCall = line.includes("CALL") || line.includes("STATICCALL");
+                        return (
+                          <div
+                            key={idx}
+                            className={`hover:bg-[#26231c] px-1 py-0.5 rounded ${
+                              isDanger
+                                ? "text-red-400 font-bold bg-red-950/20"
+                                : isCall
+                                ? "text-amber-300"
+                                : "text-[#f4efe6]"
+                            }`}
+                          >
+                            {line}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
               </div>
+            </div>
+          )}
+
+          {/* ================= Tab: AI Threat Modeling & Foundry Exploit ================= */}
+          {activeTab === "ai" && (
+            <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl p-5 flex flex-col gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#3a3428]">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-[#e8a54b]" />
+                    <h3 className="text-sm font-bold font-mono text-[#f4efe6]">
+                      Gemini AI Threat Modeling & Foundry Exploit Suite
+                    </h3>
+                  </div>
+                  <p className="text-xs text-[#a39886] mt-0.5">
+                    Analyzes economic game-theory, flash loan risks, and generates a runnable Foundry test suite
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleTriggerAiReview}
+                    disabled={isLoadingAi}
+                    className="px-3.5 py-1.5 rounded bg-[#e8a54b] hover:brightness-110 text-[#12110e] font-bold font-mono text-xs flex items-center gap-1.5 shadow transition-all disabled:opacity-50"
+                  >
+                    {isLoadingAi ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                    <span>{isLoadingAi ? "Analyzing..." : "Re-Analyze with Gemini"}</span>
+                  </button>
+                </div>
+              </div>
+
+              {isLoadingAi ? (
+                <div className="p-12 text-center flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="w-8 h-8 text-[#e8a54b] animate-spin" />
+                  <p className="text-xs font-mono text-[#a39886]">
+                    Synthesizing economic threat model and Foundry test suite...
+                  </p>
+                </div>
+              ) : aiReview ? (
+                <div className="flex flex-col gap-4">
+                  {/* Economic risk banner */}
+                  <div className="p-3 bg-amber-950/20 border border-amber-900/60 rounded-lg flex items-start gap-2.5 font-mono text-xs">
+                    <Shield className="w-4 h-4 text-[#e8a54b] shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-[#e8a54b]">Economic Risk Profile: </span>
+                      <span className="text-[#f4efe6]">{aiReview.economicRiskSummary}</span>
+                      <span className="text-[10px] text-[#746c60] ml-2">({aiReview.source === "gemini" ? "Gemini-3.8-Flash Live Engine" : "Structured Baseline Template"})</span>
+                    </div>
+                  </div>
+
+                  {/* Foundry Test Suite */}
+                  <div>
+                    <div className="flex items-center justify-between pb-1.5">
+                      <span className="text-xs font-mono font-bold text-[#e8a54b] uppercase flex items-center gap-1.5">
+                        <Terminal className="w-3.5 h-3.5" />
+                        Foundry Exploit Verification Test (test/Exploit.t.sol)
+                      </span>
+                      <button
+                        onClick={() => copyToClipboard(aiReview.foundryTestCode, "foundry-poc")}
+                        className="text-xs font-mono text-[#e8a54b] hover:underline flex items-center gap-1"
+                      >
+                        {copiedKey === "foundry-poc" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>Copy test/Exploit.t.sol</span>
+                      </button>
+                    </div>
+                    <div className="p-3.5 bg-[#12110e] rounded-lg border border-[#3a3428] font-mono text-xs text-amber-200 overflow-x-auto max-h-72">
+                      <pre>{aiReview.foundryTestCode}</pre>
+                    </div>
+                  </div>
+
+                  {/* Threat Model Narrative */}
+                  <div>
+                    <div className="flex items-center justify-between pb-1.5">
+                      <span className="text-xs font-mono font-bold text-[#a39886] uppercase">
+                        Executive Threat Model Narrative
+                      </span>
+                      <button
+                        onClick={() => copyToClipboard(aiReview.threatModelReport, "threat-md")}
+                        className="text-xs font-mono text-[#a39886] hover:text-[#f4efe6] flex items-center gap-1"
+                      >
+                        {copiedKey === "threat-md" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>Copy Narrative</span>
+                      </button>
+                    </div>
+                    <div className="p-4 bg-[#26231c]/60 rounded-lg border border-[#3a3428] text-xs font-mono leading-relaxed text-[#f4efe6] whitespace-pre-wrap max-h-80 overflow-y-auto">
+                      {aiReview.threatModelReport}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-10 flex flex-col items-center gap-3">
+                  <Sparkles className="w-8 h-8 text-[#e8a54b]" />
+                  <p className="text-xs font-mono text-[#a39886] max-w-md">
+                    Click below to generate a deep AI Threat Model and an executable Foundry test suite (`test/Exploit.t.sol`).
+                  </p>
+                  <button
+                    onClick={handleTriggerAiReview}
+                    className="px-4 py-2 rounded bg-[#e8a54b] text-[#12110e] font-bold font-mono text-xs shadow hover:brightness-110"
+                  >
+                    Generate AI Threat Model
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ================= Tab: On-Chain State Probes ================= */}
+          {activeTab === "probe" && (
+            <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl p-5 flex flex-col gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#3a3428]">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-[#e8a54b]" />
+                    <h3 className="text-sm font-bold font-mono text-[#f4efe6]">
+                      On-Chain Interface & State Simulator
+                    </h3>
+                  </div>
+                  <p className="text-xs text-[#a39886] mt-0.5">
+                    Live eth_call query probes against standard ERC-20, Vault, and Admin view selectors
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleRunManualProbe}
+                  disabled={isProbing}
+                  className="px-3.5 py-1.5 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#f4efe6] font-mono text-xs flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                >
+                  {isProbing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 text-[#e8a54b]" />}
+                  <span>Re-Probe RPC</span>
+                </button>
+              </div>
+
+              {probes.length === 0 ? (
+                <div className="text-center py-8 text-xs font-mono text-[#746c60] flex flex-col items-center gap-2">
+                  <Activity className="w-6 h-6 text-[#746c60]" />
+                  <p>No active probe results. Enter an EVM contract address in the top toolbar to query live on-chain state.</p>
+                </div>
+              ) : (
+                <div className="border border-[#3a3428] rounded-lg overflow-x-auto">
+                  <table className="w-full text-left font-mono text-xs">
+                    <thead className="bg-[#26231c] border-b border-[#3a3428] text-[#a39886]">
+                      <tr>
+                        <th className="p-2.5">Interface Selector</th>
+                        <th className="p-2.5">Method Signature</th>
+                        <th className="p-2.5">Status</th>
+                        <th className="p-2.5">Decoded Value</th>
+                        <th className="p-2.5">Raw Hex</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#3a3428] text-[#f4efe6]">
+                      {probes.map((probe, idx) => (
+                        <tr key={idx} className="hover:bg-[#26231c]/40">
+                          <td className="p-2.5 font-bold text-[#e8a54b]">{probe.selector}</td>
+                          <td className="p-2.5 font-bold">{probe.name}</td>
+                          <td className="p-2.5">
+                            {probe.success ? (
+                              <span className="text-emerald-400 flex items-center gap-1 text-[11px]">
+                                <CheckCircle2 className="w-3 h-3" />
+                                Returned
+                              </span>
+                            ) : (
+                              <span className="text-[#746c60] text-[11px] truncate max-w-[120px]" title={probe.error}>
+                                Reverted
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-2.5 font-bold text-blue-300 max-w-[200px] truncate">
+                            {probe.decodedString || probe.decodedNumber || probe.decodedAddress || (probe.success ? "0x" : "—")}
+                          </td>
+                          <td className="p-2.5 text-[#746c60] text-[10px] max-w-[180px] truncate" title={probe.rawResult}>
+                            {probe.rawResult || "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
@@ -1331,6 +1909,97 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       </div>
     )}
   </main>
+
+  {/* Official Audit Certificate Printable Modal */}
+  {showCertificate && (
+    <AuditCertificate
+      report={report}
+      contractBody={contractBody}
+      onClose={() => setShowCertificate(false)}
+    />
+  )}
+
+  {/* Quick RAG Finding Intelligence Modal */}
+  {ragModalFinding && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn font-mono text-xs">
+      <div className="bg-[#1c1a16] border border-[#3a3428] rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+        <div className="p-4 border-b border-[#3a3428] flex items-center justify-between bg-[#26231c]/60">
+          <div className="flex items-center gap-2">
+            <BookOpen className="w-4 h-4 text-[#e8a54b]" />
+            <div>
+              <h3 className="font-bold text-sm text-[#f4efe6]">
+                RAG Knowledgebase Intelligence
+              </h3>
+              <p className="text-[11px] text-[#a39886] truncate max-w-md">
+                Historical patterns & fixes for: {ragModalFinding.title}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setRagModalFinding(null)}
+            className="p-1 rounded text-[#a39886] hover:text-[#f4efe6]"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-4 overflow-y-auto flex flex-col gap-3 flex-1">
+          {isLoadingRagModal ? (
+            <div className="py-12 text-center text-[#a39886] flex flex-col items-center gap-2">
+              <Loader2 className="w-6 h-6 animate-spin text-[#e8a54b]" />
+              <span>Querying local RAG knowledge vectors...</span>
+            </div>
+          ) : ragModalResults.length === 0 ? (
+            <div className="py-8 text-center text-[#746c60] flex flex-col items-center gap-2">
+              <BookOpen className="w-8 h-8 text-[#746c60]" />
+              <span>No direct knowledgebase matches found for this detector yet.</span>
+            </div>
+          ) : (
+            ragModalResults.map((chunk) => (
+              <div key={chunk.id} className="p-3 bg-[#12110e] rounded-xl border border-[#3a3428] flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#e8a54b]/20 text-[#e8a54b] border border-[#e8a54b]/40">
+                      {chunk.relevanceScore}% MATCH
+                    </span>
+                    <span className="font-bold text-[#f4efe6] text-xs">{chunk.title}</span>
+                  </div>
+                  <span className="text-[10px] text-[#746c60]">{chunk.category}</span>
+                </div>
+                <p className="text-[#a39886] text-[11px] leading-relaxed line-clamp-3">
+                  {chunk.content}
+                </p>
+                {chunk.metadata?.remediationSolidity && (
+                  <div className="mt-1 p-2.5 bg-[#1c1a16] rounded border border-emerald-950 text-emerald-300 text-[11px] overflow-x-auto">
+                    <pre>{chunk.metadata.remediationSolidity}</pre>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="p-3 border-t border-[#3a3428] flex items-center justify-between bg-[#26231c]/40">
+          <button
+            onClick={() => {
+              setRagModalFinding(null);
+              setWorkbenchMode("rag");
+            }}
+            className="text-xs text-[#e8a54b] hover:underline flex items-center gap-1"
+          >
+            <span>Open in Full RAG Knowledgebase</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => setRagModalFinding(null)}
+            className="px-3 py-1.5 rounded bg-[#26231c] text-[#f4efe6] text-xs hover:bg-[#3a3428]"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )}
 </div>
   );
 }

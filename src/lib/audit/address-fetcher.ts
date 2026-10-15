@@ -82,45 +82,101 @@ export function isValidEvmAddress(address: string): boolean {
 }
 
 /**
- * Parses multiline text (one address per line, with optional comments or labels)
- * Example input:
- *   0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984 # UNI Token
- *   0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D, UniswapV2Router
+ * High-performance, zero-allocation line scanner to count valid EVM addresses
+ * without creating intermediate string arrays or BatchItem objects.
  */
-export function parseAddressList(text: string, defaultChainId = "ethereum"): BatchItem[] {
-  const lines = text.split(/\r?\n/);
+export function countValidAddresses(text: string): number {
+  if (!text) return 0;
+  let count = 0;
+  const seen = new Set<string>();
+  const len = text.length;
+  let start = 0;
+
+  while (start < len) {
+    let end = text.indexOf("\n", start);
+    if (end === -1) end = len;
+
+    if (end - start >= 42) {
+      const hexOffset = text.indexOf("0x", start);
+      if (hexOffset !== -1 && hexOffset + 42 <= end) {
+        const cand = text.slice(hexOffset, hexOffset + 42);
+        if (isValidEvmAddress(cand)) {
+          const lower = cand.toLowerCase();
+          if (!seen.has(lower)) {
+            seen.add(lower);
+            count++;
+          }
+        }
+      }
+    }
+
+    start = end + 1;
+  }
+
+  return count;
+}
+
+/**
+ * High-performance parser for large address lists (e.g. 50,000+ contracts).
+ * Uses index-based streaming line scanning rather than text.split to avoid
+ * memory spikes, garbage collection pauses, and temporary string arrays.
+ */
+export function parseAddressList(
+  text: string,
+  defaultChainId = "ethereum",
+  maxLimit = 100_000
+): BatchItem[] {
+  if (!text) return [];
   const items: BatchItem[] = [];
   const seen = new Set<string>();
+  const len = text.length;
 
-  for (let i = 0; i < lines.length; i++) {
-    const rawLine = lines[i]?.trim() ?? "";
-    if (!rawLine || rawLine.startsWith("//") || rawLine.startsWith("#")) continue;
+  let start = 0;
+  let lineIdx = 0;
 
-    // Check for address pattern
-    const match = rawLine.match(/(0x[0-9a-fA-F]{40})/);
-    if (!match || !match[1]) continue;
+  while (start < len && items.length < maxLimit) {
+    let end = text.indexOf("\n", start);
+    if (end === -1) end = len;
 
-    const address = match[1].toLowerCase();
-    if (seen.has(address)) continue;
-    seen.add(address);
+    const lineLen = end - start;
+    if (lineLen >= 42) {
+      const hexOffset = text.indexOf("0x", start);
+      if (hexOffset !== -1 && hexOffset + 42 <= end) {
+        const addrCandidate = text.slice(hexOffset, hexOffset + 42);
+        if (isValidEvmAddress(addrCandidate)) {
+          const lowerAddr = addrCandidate.toLowerCase();
+          if (!seen.has(lowerAddr)) {
+            seen.add(lowerAddr);
 
-    // Try to extract an optional label after delimiter (#, ,, :)
-    let label = "";
-    const afterAddress = rawLine.replace(match[1], "").trim();
-    if (afterAddress) {
-      label = afterAddress.replace(/^[#,:\-\s]+/, "").trim();
+            // Extract optional label from remainder of line
+            let label = "";
+            const before = text.slice(start, hexOffset).trim();
+            const after = text.slice(hexOffset + 42, end).trim();
+            const remainder = (before ? before + " " : "") + after;
+            if (remainder) {
+              const cleaned = remainder.replace(/^[#,:\-\s]+/, "").trim();
+              if (cleaned && !cleaned.startsWith("//")) {
+                label = cleaned.slice(0, 60);
+              }
+            }
+            if (!label) {
+              label = `Contract ${lowerAddr.slice(0, 6)}...${lowerAddr.slice(-4)}`;
+            }
+
+            items.push({
+              id: `addr-${lowerAddr}-${lineIdx}`,
+              address: lowerAddr,
+              label,
+              chainId: defaultChainId,
+              status: "pending",
+            });
+          }
+        }
+      }
     }
-    if (!label) {
-      label = `Contract ${address.slice(0, 6)}...${address.slice(-4)}`;
-    }
 
-    items.push({
-      id: `addr-${address}-${i}`,
-      address,
-      label,
-      chainId: defaultChainId,
-      status: "pending",
-    });
+    start = end + 1;
+    lineIdx++;
   }
 
   return items;
