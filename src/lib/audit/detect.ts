@@ -294,7 +294,7 @@ function scanContract(
     if (fn.mutability === "payable" || fn.isReceive) anyPayable = true;
     if (!fn.body) continue;
     const authed = isAuthed(fn) || fn.isConstructor;
-    const flow = walkFn(fn, contract, stateNames, byName, direct, parsed, delta, push, authed);
+    const flow = walkFn(fn, contract, model, stateNames, byName, direct, parsed, delta, push, authed);
     if (flow.sawCall && flowSends(flow)) anyValueSend = true;
     if (/(\.call\s*\{[^}]*value|\.transfer\s*\(|\.send\s*\()/.test(fn.source)) anyValueSend = true;
 
@@ -492,6 +492,7 @@ function profile(fn: FnModel, stateNames: Set<string>, byName: Map<string, FnMod
 function walkFn(
   fn: FnModel,
   contract: ContractModel,
+  model: SourceModel,
   stateNames: Set<string>,
   byName: Map<string, FnModel>,
   direct: Map<string, { writes: Set<string>; external: boolean; callees: Set<string> }>,

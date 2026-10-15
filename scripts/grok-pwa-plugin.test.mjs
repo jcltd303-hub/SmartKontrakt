@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   appNameFromHost,
-  createHeadInjector,
+  createHeadInjector as realCreateHeadInjector,
   grokXCreatorHeadTags,
-  injectGrokPwaHead,
+  injectGrokPwaHead as realInjectGrokPwaHead,
   isDocumentPath,
   isInstallQuery,
   publicAppHost,
@@ -20,6 +20,11 @@ import {
 import { renderInstallPage } from "./grok-pwa-plugin.mjs";
 
 const TEMPLATE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// These exercise template fallbacks; isolate them from this app's Kiln identity and card.
+const EMPTY_ROOT = mkdtempSync(join(tmpdir(), "grok-pwa-tests-"));
+const injectGrokPwaHead = (html, ctx = {}) => realInjectGrokPwaHead(html, { site: {}, cwd: EMPTY_ROOT, ...ctx });
+const createHeadInjector = (ctx = {}) => realCreateHeadInjector({ site: {}, cwd: EMPTY_ROOT, ...ctx });
 
 test("injects before </head>", () => {
   const out = injectGrokPwaHead("<html><head><title>x</title></head><body></body></html>");

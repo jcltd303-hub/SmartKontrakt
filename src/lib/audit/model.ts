@@ -206,7 +206,7 @@ function build(ast: AstNode, original: string, delta: number): SourceModel {
 }
 
 function tryParse(code: string): AstNode {
-  return parser.parse(code, { tolerant: true, loc: true, range: true }) as AstNode;
+  return parser.parse(code, { tolerant: true, loc: true, range: true }) as unknown as AstNode;
 }
 
 function emptyModel(message: string): SourceModel {

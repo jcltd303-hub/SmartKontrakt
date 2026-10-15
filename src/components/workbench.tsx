@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { SAMPLES, type Sample } from "@/lib/audit/samples";
 import { analyzeInput } from "@/lib/audit/engine";
 import { looksLikeBytecode } from "@/lib/audit/bytecode";
-import type { Report, Severity } from "@/lib/audit/types";
+import type { Finding, Report, Severity } from "@/lib/audit/types";
 import type { ScanSummary } from "@/lib/audit/persist.server";
 import { BatchPipeline } from "./batch-pipeline";
 import { CfgViewer } from "./cfg-viewer";
@@ -404,11 +404,11 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     if (!report) return;
     setIsLoadingAi(true);
     try {
-      const res = await requestAiReview({
+      const res = await requestAiReview({ data: {
         contractName: report.label,
         body: contractBody,
         findings: report.findings,
-      });
+      } });
       setAiReview(res);
       setActiveTab("ai");
     } catch (err) {
@@ -608,7 +608,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           {/* Mode Switcher & Controls */}
           <div className="flex flex-wrap items-center gap-2">
             {/* Primary Mode Switcher */}
-            <div className="flex items-center bg-[#26231c] p-1 rounded-lg border border-[#3a3428] text-xs font-mono">
+            <div className="flex w-full flex-wrap items-center bg-[#26231c] p-1 rounded-lg border border-[#3a3428] text-xs font-mono md:w-auto">
               <button
                 onClick={() => setWorkbenchMode("audit")}
                 className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
@@ -656,7 +656,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
             </div>
 
             {workbenchMode === "audit" && (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => handleSaveToLocalDb(true)}
                   disabled={isSavingDb}
@@ -719,9 +719,10 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
 
       {/* Main Layout Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6">
-        {workbenchMode === "pipeline" ? (
+        <div hidden={workbenchMode !== "pipeline"}>
           <BatchPipeline onInspectItem={handleInspectPipelineItem} />
-        ) : workbenchMode === "records" ? (
+        </div>
+        {workbenchMode === "pipeline" ? null : workbenchMode === "records" ? (
           <LocalDbRecords
             onLoadInWorkbench={handleLoadStoredScan}
             onNavigateToRag={() => setWorkbenchMode("rag")}
@@ -738,7 +739,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* ================= Left Column: Contract Editor & Input ================= */}
-            <section className="lg:col-span-5 flex flex-col gap-4">
+            <section className="lg:col-span-5 flex min-w-0 flex-col gap-4">
               {/* Single Address Fetcher Card */}
               <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl p-3.5 shadow-sm flex flex-col gap-2.5">
                 <div className="flex items-center justify-between">
@@ -860,8 +861,8 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           {/* Editor Container */}
           <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl flex flex-col flex-1 shadow-sm overflow-hidden min-h-[500px]">
             {/* Editor Meta Bar */}
-            <div className="px-4 py-2.5 bg-[#26231c] border-b border-[#3a3428] flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 flex-1 min-w-0">
+            <div className="px-4 py-2.5 bg-[#26231c] border-b border-[#3a3428] flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
                 <input
                   type="text"
                   value={contractLabel}
@@ -870,7 +871,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                   placeholder="Contract name..."
                 />
                 <span
-                  className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                  className={`shrink-0 whitespace-nowrap text-[10px] font-mono px-2 py-0.5 rounded border ${
                     isBytecode
                       ? "bg-purple-950/40 text-purple-300 border-purple-800/60"
                       : "bg-emerald-950/40 text-emerald-300 border-emerald-800/60"
@@ -911,7 +912,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                   <button
                     onClick={() => {
                       setContractBody("");
-                      setReport(null);
+                      setReport(analyzeInput("", "Untitled contract"));
                     }}
                     className="p-1.5 text-[#746c60] hover:text-[#e25b45] transition-colors"
                     title="Clear editor"
@@ -932,7 +933,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         </section>
 
         {/* ================= Right Column: Security Analysis & Findings ================= */}
-        <section className="lg:col-span-7 flex flex-col gap-4">
+        <section className="lg:col-span-7 flex min-w-0 flex-col gap-4">
           {/* Executive Header / Scorecard */}
           {report && (
             <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl p-4 sm:p-5 shadow-sm">

@@ -1,10 +1,11 @@
+import { writeAuditBatch } from "./bulk-persist.server";
 import { getSql } from "@/lib/db";
 import { analyzeInput } from "./engine";
 import type { Finding, Inventory, Report, Severity } from "./types";
 import type { ProxyAnalysis } from "./proxy-resolver";
 import type { CallProbeResult } from "./simulator";
 import type { AiSecurityReview } from "./ai-review.server";
-import { indexReportToRag, indexBatchReportsToRag } from "./rag.server";
+import { indexReportToRag } from "./rag.server";
 
 export type ScanSummary = {
   id: string;
@@ -131,7 +132,6 @@ export async function listScanSummaries(): Promise<ScanSummary[]> {
       select id, label, input_kind, contract_name, target_address, chain_id,
              proxy_info_json, probes_json, cert_hash, source_origin, is_rag_indexed,
              risk_score, critical_count, high_count, medium_count, low_count, info_count,
-             summary, inventory_json, ai_narrative, ai_status,
              created_at::text as created_at
       from contract_scans
       order by created_at desc
@@ -425,139 +425,8 @@ export type ComprehensiveRecordInput = {
 export async function saveBatchComprehensiveRecords(
   records: ComprehensiveRecordInput[]
 ): Promise<{ savedCount: number; ids: string[] }> {
-  if (!records.length) return { savedCount: 0, ids: [] };
   const sql = await getSql();
-  const savedIds: string[] = [];
-
-  for (const item of records) {
-    const id = item.id && item.id.trim() ? item.id : crypto.randomUUID();
-    savedIds.push(id);
-    const report = item.report;
-    const counts = tally(report.findings);
-    const contractName = report.inventory.contractNames[0] ?? null;
-
-    const proxyJson = item.proxyInfo ? JSON.stringify(item.proxyInfo) : null;
-    const probesJson = item.probes ? JSON.stringify(item.probes) : null;
-    const aiReviewJson = item.aiReview ? JSON.stringify(item.aiReview) : null;
-    const triageJson = item.triageStates ? JSON.stringify(item.triageStates) : null;
-    const sourceOrigin = item.sourceOrigin ?? "pipeline";
-
-    await sql`
-      insert into contract_scans (
-        id, label, input_kind, contract_name, target_address, chain_id,
-        compiler_version, proxy_info_json, probes_json, ai_review_json,
-        triage_states_json, cert_hash, source_origin, is_rag_indexed,
-        risk_score, critical_count, high_count, medium_count, low_count, info_count,
-        summary, inventory_json, ai_narrative, ai_status
-      ) values (
-        ${id},
-        ${item.label},
-        ${report.inputKind},
-        ${contractName},
-        ${item.targetAddress ?? null},
-        ${item.chainId ?? "ethereum"},
-        ${item.compilerVersion ?? report.inventory.compiler ?? null},
-        ${proxyJson},
-        ${probesJson},
-        ${aiReviewJson},
-        ${triageJson},
-        ${item.certHash ?? null},
-        ${sourceOrigin},
-        ${Boolean(item.indexToRag !== false)},
-        ${report.riskScore},
-        ${counts.critical},
-        ${counts.high},
-        ${counts.medium},
-        ${counts.low},
-        ${counts.info},
-        ${report.summary},
-        ${JSON.stringify(report.inventory)},
-        ${report.aiNarrative ?? item.aiReview?.threatModelReport ?? null},
-        ${report.aiStatus}
-      )
-      on conflict (id) do update set
-        label = excluded.label,
-        contract_name = excluded.contract_name,
-        target_address = excluded.target_address,
-        chain_id = excluded.chain_id,
-        compiler_version = excluded.compiler_version,
-        proxy_info_json = excluded.proxy_info_json,
-        probes_json = excluded.probes_json,
-        ai_review_json = excluded.ai_review_json,
-        triage_states_json = excluded.triage_states_json,
-        cert_hash = excluded.cert_hash,
-        source_origin = excluded.source_origin,
-        is_rag_indexed = excluded.is_rag_indexed,
-        risk_score = excluded.risk_score,
-        critical_count = excluded.critical_count,
-        high_count = excluded.high_count,
-        medium_count = excluded.medium_count,
-        low_count = excluded.low_count,
-        info_count = excluded.info_count,
-        summary = excluded.summary,
-        inventory_json = excluded.inventory_json,
-        ai_narrative = excluded.ai_narrative,
-        ai_status = excluded.ai_status
-    `;
-
-    await sql`
-      insert into scan_payloads (scan_id, body) values (${id}, ${item.body})
-      on conflict (scan_id) do update set body = excluded.body
-    `;
-
-    await sql`delete from findings where scan_id = ${id}`;
-    for (let i = 0; i < report.findings.length; i += 1) {
-      const f = report.findings[i];
-      if (!f) continue;
-      await sql`
-        insert into findings (
-          id, scan_id, ord, severity, swc, title, confidence, detector, summary,
-          walkthrough, exploit_solidity, remediation_solidity, location_fn, location_line, snippet
-        ) values (
-          ${`${id}:${i}`},
-          ${id},
-          ${i},
-          ${f.severity},
-          ${f.swc},
-          ${f.title},
-          ${f.confidence},
-          ${f.detector},
-          ${f.summary},
-          ${f.walkthrough},
-          ${f.exploitSolidity},
-          ${f.remediationSolidity},
-          ${f.locationFn},
-          ${f.locationLine},
-          ${f.snippet}
-        )
-      `;
-    }
-  }
-
-  // Batch index to RAG
-  const ragItems = records
-    .map((rec, idx) => ({ rec, id: savedIds[idx]! }))
-    .filter(({ rec }) => rec.indexToRag !== false)
-    .map(({ rec, id }) => ({
-      scanId: id,
-      report: rec.report,
-      rawBody: rec.body,
-      targetAddress: rec.targetAddress,
-      chainId: rec.chainId,
-      proxyInfo: rec.proxyInfo,
-      probes: rec.probes,
-      aiReview: rec.aiReview,
-    }));
-
-  if (ragItems.length > 0) {
-    try {
-      await indexBatchReportsToRag(ragItems);
-    } catch (ragErr) {
-      console.warn("[kiln] RAG batch auto-index warning:", ragErr);
-    }
-  }
-
-  return { savedCount: savedIds.length, ids: savedIds };
+  return writeAuditBatch(sql, records);
 }
 
 async function secondPass(report: Report, body: string): Promise<{ text: string | null; status: Report["aiStatus"] }> {

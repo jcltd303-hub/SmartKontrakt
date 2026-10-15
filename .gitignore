@@ -2,6 +2,10 @@ node_modules/
 build/
 dist/
 coverage/
+.vercel/
+.tanstack/
+.output/
+.grok/*.pid
 .DS_Store
 *.log
 .env*

@@ -1,4 +1,6 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
+import { createSqlClient, type Sql } from "./sql-client";
+export type { Sql } from "./sql-client";
 
 /** Which database backend is active. */
 export type DbSource = "neon" | "pglite";
@@ -26,16 +28,6 @@ export const dbSource: DbSource = databaseUrl ? "neon" : "pglite";
  *   const rows = await sql`select * from todos where id = ${id}`; // parameterized
  *   const rows2 = await sql.query("select * from todos where id = $1", [id]);
  */
-export interface Sql {
-  <T = Record<string, unknown>>(
-    strings: TemplateStringsArray,
-    ...values: unknown[]
-  ): Promise<T[]>;
-  query<T = Record<string, unknown>>(
-    text: string,
-    params?: unknown[],
-  ): Promise<T[]>;
-}
 
 /**
  * Init state lives on globalThis as promises: dev HMR creates new instances of
@@ -67,24 +59,6 @@ const OID_DATE = 1082;
 const OID_INTERVAL = 1186;
 const identity = (v: string) => v;
 
-type Run = <T>(text: string, params: unknown[]) => Promise<T[]>;
-
-/** Wrap a query runner in the tagged-template + `.query()` `Sql` surface. */
-function toSql(run: Run): Sql {
-  const sql = (async <T = Record<string, unknown>>(
-    strings: TemplateStringsArray,
-    ...values: unknown[]
-  ): Promise<T[]> => {
-    // Rebuild with $1, $2, … placeholders so values stay parameterized.
-    let text = strings[0];
-    for (let i = 0; i < values.length; i += 1) text += `$${i + 1}${strings[i + 1]}`;
-    return run<T>(text, values);
-  }) as unknown as Sql;
-  sql.query = <T = Record<string, unknown>>(text: string, params: unknown[] = []) =>
-    run<T>(text, params);
-  return sql;
-}
-
 function createNeonSql(): Promise<Sql> {
   globalRef.__pgSqlPromise__ ??= (async () => {
     // Regular Postgres driver: node-postgres (`pg`) — works directly with Neon's
@@ -93,10 +67,30 @@ function createNeonSql(): Promise<Sql> {
     types.setTypeParser(OID_INT8, Number);
     types.setTypeParser(OID_DATE, identity);
     types.setTypeParser(OID_INTERVAL, identity);
-    const pool = new Pool({ connectionString: databaseUrl });
-    return toSql(async <T>(text: string, params: unknown[]) => {
+    const pool = new Pool({
+      connectionString: databaseUrl,
+      max: 2,
+      idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 10_000,
+      query_timeout: 60_000,
+      allowExitOnIdle: true,
+    });
+    pool.on("error", (err) => console.error("[db] Idle connection error:", err.message));
+    return createSqlClient(async <T>(text: string, params: unknown[]) => {
       const res = await pool.query(text, params);
       return res.rows as T[];
+    }, async (work) => {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const result = await work(async <T>(text: string, params: unknown[]) =>
+          (await client.query(text, params)).rows as T[]);
+        await client.query("COMMIT");
+        return result;
+      } catch (err) {
+        try { await client.query("ROLLBACK"); } catch { /* Preserve the original failure. */ }
+        throw err;
+      } finally { client.release(); }
     });
   })().catch((err) => {
     globalRef.__pgSqlPromise__ = undefined;
@@ -161,15 +155,19 @@ async function createPgliteSql(): Promise<Sql> {
   globalRef.__pgliteMigrateChain__ = pass;
   await pass;
 
-  return toSql(async <T>(text: string, params: unknown[]) => {
+  return createSqlClient(async <T>(text: string, params: unknown[]) => {
     const result = await pg.query<T>(text, params);
     return result.rows;
-  });
+  }, (work) => pg.transaction((tx) => work(async <T>(text: string, params: unknown[]) =>
+    (await tx.query<T>(text, params)).rows)));
 }
 
 let sqlPromise: Promise<Sql> | null = null;
 
 async function createSql(): Promise<Sql> {
+  if (typeof process !== "undefined" && process.env.VERCEL && !databaseUrl) {
+    throw new Error("Configure DATABASE_URL for a durable Postgres database before saving audits on Vercel.");
+  }
   if (typeof window !== "undefined") {
     throw new Error(
       "@/lib/db is server-only — call getSql() from a createServerFn handler " +
@@ -229,7 +227,7 @@ export function ensureDbReady(): Promise<void> {
 const globalBoot = globalThis as typeof globalThis & {
   __pgBootstrapPromise__?: Promise<void>;
 };
-if (typeof window === "undefined" && dbSource === "pglite") {
+if (typeof window === "undefined" && dbSource === "pglite" && !process.env.VERCEL) {
   globalBoot.__pgBootstrapPromise__ ??= ensureDbReady().catch((err) => {
     globalBoot.__pgBootstrapPromise__ = undefined;
     console.error("[db] PGLite bootstrap failed:", err);

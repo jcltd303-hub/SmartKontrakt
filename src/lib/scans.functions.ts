@@ -77,6 +77,8 @@ export const saveBatchComprehensiveScansFn = createServerFn({ method: "POST" })
     return input as { records: import("./audit/persist.server").ComprehensiveRecordInput[] };
   })
   .handler(async ({ data }) => {
+    const { validateAuditBatch } = await import("./audit/bulk-persist.server");
+    validateAuditBatch(data.records);
     const { saveBatchComprehensiveRecords } = await import("./audit/persist.server");
     return saveBatchComprehensiveRecords(data.records);
   });

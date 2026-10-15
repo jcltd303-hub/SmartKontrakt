@@ -1,4 +1,5 @@
 import type { BatchItem } from "./audit/address-fetcher";
+import { AsyncBatchWriter, type WriterStats } from "./audit/batch-writer.ts";
 
 export type SupabaseConfig = {
   url: string;
@@ -23,6 +24,7 @@ export function getStoredSupabaseConfig(): SupabaseConfig {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<SupabaseConfig>;
+      if (parsed.anonKey) assertBrowserKey(parsed.anonKey);
       return {
         url: parsed.url || "",
         anonKey: parsed.anonKey || "",
@@ -44,6 +46,8 @@ export function getStoredSupabaseConfig(): SupabaseConfig {
 
 export function saveStoredSupabaseConfig(cfg: SupabaseConfig): void {
   if (typeof window === "undefined") return;
+  if (cfg.anonKey) assertBrowserKey(cfg.anonKey);
+  if (cfg.enabled) supabaseEndpoint(cfg);
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
   } catch {
@@ -55,86 +59,94 @@ export function saveStoredSupabaseConfig(cfg: SupabaseConfig): void {
  * Validates Supabase REST endpoint connectivity
  */
 export async function testSupabaseConnection(url: string, key: string, table = "kiln_batch_audits"): Promise<{ ok: boolean; message: string }> {
-  const cleanUrl = url.replace(/\/+$/, "");
-  if (!cleanUrl.startsWith("http")) {
-    return { ok: false, message: "URL must start with https://" };
-  }
-  if (!key) {
-    return { ok: false, message: "Missing Supabase Anon / Service Key" };
-  }
-
   try {
-    const res = await fetch(`${cleanUrl}/rest/v1/${table}?limit=1`, {
-      method: "GET",
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`,
-      },
+    const cfg = { url, anonKey: key, tableName: table, enabled: true };
+    const endpoint = supabaseEndpoint(cfg);
+    const res = await fetch(`${endpoint}?select=id&limit=1`, {
+      headers: supabaseHeaders(cfg), signal: AbortSignal.timeout(15_000),
     });
-
-    if (res.ok) {
-      return { ok: true, message: `Connected to Supabase table '${table}'. Ready to sync.` };
-    }
-
-    if (res.status === 404 || res.status === 400) {
-      // Table might not exist yet, check base API
-      const rootRes = await fetch(`${cleanUrl}/rest/v1/`, {
-        headers: { apikey: key, Authorization: `Bearer ${key}` },
-      });
-      if (rootRes.ok) {
-        return {
-          ok: true,
-          message: `Connected to Supabase API. (Note: table '${table}' will be queried/created on save).`,
-        };
-      }
-    }
-
-    return { ok: false, message: `Supabase returned HTTP ${res.status}: ${res.statusText}` };
+    return res.ok
+      ? { ok: true, message: `Connected to Supabase table '${table}'.` }
+      : { ok: false, message: `Supabase returned HTTP ${res.status}. Create the table and configure its RLS policies before syncing.` };
   } catch (err) {
-    return { ok: false, message: `Connection failed: ${err instanceof Error ? err.message : String(err)}` };
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
 }
 
 /**
  * Upserts a batch item into Supabase via REST PostgREST API
  */
-export async function saveBatchItemToSupabase(item: BatchItem, cfg: SupabaseConfig): Promise<boolean> {
-  if (!cfg.enabled || !cfg.url || !cfg.anonKey) return false;
+export type SupabaseBatchRow = {
+  id: string; address: string; label: string; chain_id: string; status: string;
+  risk_score: number | null; findings_count: number; critical_count: number;
+  high_count: number; error: string | null; bytecode_size: number | null;
+  summary: string | null; completed_at: string;
+};
 
-  const cleanUrl = cfg.url.replace(/\/+$/, "");
-  const payload = {
-    id: item.id,
-    address: item.address,
-    label: item.label,
-    chain_id: item.chainId,
-    status: item.status,
-    risk_score: item.riskScore ?? null,
-    findings_count: item.findingsCount ?? 0,
-    critical_count: item.criticalCount ?? 0,
-    high_count: item.highCount ?? 0,
-    error: item.error ?? null,
-    bytecode_size: item.bytecodeSize ?? null,
-    summary: item.report?.summary ?? null,
+export function toSupabaseBatchRow(item: BatchItem): SupabaseBatchRow {
+  return {
+    id: item.scanId ?? item.id, address: item.address, label: item.label, chain_id: item.chainId,
+    status: item.status, risk_score: item.riskScore ?? null,
+    findings_count: item.findingsCount ?? 0, critical_count: item.criticalCount ?? 0,
+    high_count: item.highCount ?? 0, error: item.error ?? null,
+    bytecode_size: item.bytecodeSize ?? null, summary: item.summary ?? item.report?.summary ?? null,
     completed_at: item.completedAt || new Date().toISOString(),
   };
+}
 
-  try {
-    const res = await fetch(`${cleanUrl}/rest/v1/${cfg.tableName}`, {
-      method: "POST",
-      headers: {
-        apikey: cfg.anonKey,
-        Authorization: `Bearer ${cfg.anonKey}`,
-        "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates",
-      },
-      body: JSON.stringify(payload),
-    });
+function assertBrowserKey(key: string): void {
+  let serviceRole = key.startsWith("sb_secret_");
+  try { serviceRole ||= JSON.parse(atob(key.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).role === "service_role"; } catch { /* Publishable keys are not JWTs. */ }
+  if (!key || serviceRole) throw new Error("Browser sync requires a publishable or anon key; keep secret keys on the server.");
+}
 
-    return res.ok;
-  } catch (err) {
-    console.warn("[Kiln] Supabase upsert error:", err);
-    return false;
-  }
+function supabaseEndpoint(cfg: SupabaseConfig): string {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(cfg.tableName)) throw new Error("Invalid Supabase table name");
+  const url = new URL(cfg.url);
+  if (url.protocol !== "https:") throw new Error("Supabase URL must use https://");
+  assertBrowserKey(cfg.anonKey);
+  return `${url.origin}/rest/v1/${cfg.tableName}`;
+}
+
+function supabaseHeaders(cfg: SupabaseConfig): Record<string, string> {
+  return {
+    apikey: cfg.anonKey,
+    ...(!cfg.anonKey.startsWith("sb_publishable_") ? { Authorization: `Bearer ${cfg.anonKey}` } : {}),
+  };
+}
+
+/** One PostgREST request per bounded batch. Errors propagate to the retrying writer. */
+export async function saveBatchRowsToSupabase(rows: SupabaseBatchRow[], cfg: SupabaseConfig): Promise<void> {
+  if (!rows.length || !cfg.enabled) return;
+  if (rows.length > 50) throw new Error("Supabase batch limit is 50 rows");
+  const endpoint = supabaseEndpoint(cfg);
+  const res = await fetch(`${endpoint}?on_conflict=id`, {
+    method: "POST", signal: AbortSignal.timeout(30_000),
+    headers: { ...supabaseHeaders(cfg), "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify(rows),
+  });
+  if (!res.ok) throw new Error(`Supabase batch write failed (HTTP ${res.status}). Check the table and RLS policies.`);
+}
+
+export async function saveBatchItemsToSupabase(items: BatchItem[], cfg: SupabaseConfig): Promise<void> {
+  return saveBatchRowsToSupabase(items.map(toSupabaseBatchRow), cfg);
+}
+
+export function createSupabaseBatchWriter(getConfig: () => SupabaseConfig, onChange?: (stats: WriterStats) => void, onAcknowledged?: (rows: SupabaseBatchRow[]) => void): AsyncBatchWriter<SupabaseBatchRow> {
+  return new AsyncBatchWriter<SupabaseBatchRow>({
+    write: async (rows) => {
+      const cfg = getConfig();
+      if (!cfg.enabled) throw new Error("Re-enable Supabase sync to write its pending rows.");
+      await saveBatchRowsToSupabase(rows, cfg);
+      onAcknowledged?.(rows);
+    },
+    onChange,
+  });
+}
+
+export async function saveBatchItemToSupabase(item: BatchItem, cfg: SupabaseConfig): Promise<boolean> {
+  try { await saveBatchItemsToSupabase([item], cfg); return cfg.enabled; }
+  catch { return false; }
 }
 
 /**
@@ -145,12 +157,10 @@ export async function loadBatchFromSupabase(cfg: SupabaseConfig): Promise<BatchI
 
   const cleanUrl = cfg.url.replace(/\/+$/, "");
   try {
-    const res = await fetch(`${cleanUrl}/rest/v1/${cfg.tableName}?select=*&order=completed_at.desc&limit=50`, {
+    const res = await fetch(`${supabaseEndpoint(cfg)}?select=id,address,label,chain_id,status,risk_score,findings_count,critical_count,high_count,error,bytecode_size,completed_at&order=completed_at.desc&limit=50`, {
       method: "GET",
-      headers: {
-        apikey: cfg.anonKey,
-        Authorization: `Bearer ${cfg.anonKey}`,
-      },
+      headers: supabaseHeaders(cfg),
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!res.ok) return [];

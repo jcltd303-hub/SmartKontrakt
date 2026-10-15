@@ -72,6 +72,10 @@ export type BatchItem = {
   highCount?: number;
   report?: Report;
   completedAt?: string;
+  scanId?: string;
+  persisted?: boolean;
+  supabaseSynced?: boolean;
+  summary?: string;
 };
 
 /**

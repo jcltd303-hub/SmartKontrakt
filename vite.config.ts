@@ -171,6 +171,11 @@ export default defineConfig(({ command, isPreview }) => ({
       ? [
           nitro({
             preset: "vercel",
+            // The legacy SPA index.html points to unbuilt /src/main.tsx.
+            // Let Nitro register TanStack's SSR service as the renderer.
+            renderer: false,
+            // Preserve CommonJS loading and the local DB's WASM/data assets.
+            traceDeps: ["@solidity-parser/parser", "@electric-sql/pglite*"],
             // Auto-registers server/middleware/* (the PWA install page +
             // manifest + head-tag middleware). Nitro v3 defaults serverDir to
             // false, so removing this silently unwires /?install=1 on deploys.

@@ -1,8 +1,7 @@
+import { buildReportRagChunks, type RagIndexInput, type RagDbRow } from "./rag-chunks";
+import { replaceRagChunks } from "./bulk-persist.server";
 import { getSql } from "@/lib/db";
-import type { Finding, Report, Severity } from "./types";
-import type { ProxyAnalysis } from "./proxy-resolver";
-import type { CallProbeResult } from "./simulator";
-import type { AiSecurityReview } from "./ai-review.server";
+import type { Severity } from "./types";
 
 export interface RagChunk {
   id: string;
@@ -37,23 +36,6 @@ export interface RagChunk {
   highlightSnippet?: string;
 }
 
-interface RagDbRow {
-  id: string;
-  scan_id: string | null;
-  category: string;
-  title: string;
-  content: string;
-  severity: string | null;
-  swc: string | null;
-  detector: string | null;
-  contract_name: string | null;
-  target_address: string | null;
-  chain_id: string | null;
-  keywords: string;
-  vector_data: string | null;
-  metadata_json: string;
-  created_at: string;
-}
 
 function rowToChunk(row: RagDbRow): RagChunk {
   let parsedMeta = {};
@@ -306,221 +288,20 @@ function scoreChunk(query: string, chunk: RagChunk): { score: number; highlight:
 /**
  * Ingest an audit report and its comprehensive metadata into RAG knowledgebase chunks
  */
-export async function indexReportToRag(params: {
-  scanId: string;
-  report: Report;
-  rawBody?: string;
-  targetAddress?: string | null;
-  chainId?: string | null;
-  proxyInfo?: ProxyAnalysis | null;
-  probes?: CallProbeResult[] | null;
-  aiReview?: AiSecurityReview | null;
-}): Promise<{ chunksCreated: number }> {
-  const { scanId, report, targetAddress, chainId, proxyInfo, probes, aiReview } = params;
-  const sql = await getSql();
-  const contractName = report.inventory.contractNames[0] ?? report.label;
-  const chunksToInsert: Omit<RagDbRow, "created_at">[] = [];
-
-  // 1. Chunks for each finding
-  for (let idx = 0; idx < report.findings.length; idx++) {
-    const f: Finding = report.findings[idx];
-    const chunkId = `rag-${scanId}-finding-${idx}-${Math.random().toString(36).slice(2, 6)}`;
-    const title = `[${f.severity.toUpperCase()}] ${f.title} (${f.detector})`;
-    const content = `${f.title}\nSeverity: ${f.severity.toUpperCase()} | SWC: ${f.swc ?? "N/A"} | Detector: ${f.detector}\n\nSummary:\n${f.summary}\n\nWalkthrough & Root Cause:\n${f.walkthrough}\n${f.snippet ? `\nCode Snippet:\n${f.snippet}` : ""}`;
-    const keywords = [
-      f.detector,
-      f.swc ?? "",
-      f.severity,
-      contractName,
-      ...tokenize(f.title),
-      ...tokenize(f.summary).slice(0, 5),
-    ].filter(Boolean).join(", ");
-
-    chunksToInsert.push({
-      id: chunkId,
-      scan_id: scanId,
-      category: "vulnerability",
-      title,
-      content,
-      severity: f.severity,
-      swc: f.swc ?? null,
-      detector: f.detector,
-      contract_name: contractName,
-      target_address: targetAddress ?? null,
-      chain_id: chainId ?? "ethereum",
-      keywords,
-      vector_data: null,
-      metadata_json: JSON.stringify({
-        locationFn: f.locationFn,
-        locationLine: f.locationLine,
-        snippet: f.snippet,
-        exploitSolidity: f.exploitSolidity,
-        remediationSolidity: f.remediationSolidity,
-      }),
-    });
-
-    // If finding has specific remediation code, create a dedicated remediation chunk
-    if (f.remediationSolidity && f.remediationSolidity.trim().length > 10) {
-      const remId = `rag-${scanId}-rem-${idx}-${Math.random().toString(36).slice(2, 6)}`;
-      chunksToInsert.push({
-        id: remId,
-        scan_id: scanId,
-        category: "remediation",
-        title: `Remediation Pattern: Fix for ${f.title}`,
-        content: `Remediation strategy for ${f.title} (${f.detector} / ${f.swc ?? "SWC"}):\n\nSolidity Fix Pattern:\n${f.remediationSolidity}\n\nContext:\n${f.walkthrough}`,
-        severity: f.severity,
-        swc: f.swc ?? null,
-        detector: f.detector,
-        contract_name: contractName,
-        target_address: targetAddress ?? null,
-        chain_id: chainId ?? "ethereum",
-        keywords: ["remediation", "patch", "fix", f.detector, f.swc ?? "", contractName].filter(Boolean).join(", "),
-        vector_data: null,
-        metadata_json: JSON.stringify({
-          remediationSolidity: f.remediationSolidity,
-          locationFn: f.locationFn,
-        }),
-      });
-    }
-  }
-
-  // 2. Threat Model & AI Narrative Chunk
-  if (aiReview?.threatModelReport || report.aiNarrative) {
-    const narrativeText = aiReview?.threatModelReport || report.aiNarrative || "";
-    const tmId = `rag-${scanId}-threatmodel`;
-    chunksToInsert.push({
-      id: tmId,
-      scan_id: scanId,
-      category: "threat_model",
-      title: `Executive Threat Model: ${contractName}`,
-      content: `Threat Model Analysis for ${contractName}:\n\n${narrativeText}`,
-      severity: report.riskScore > 60 ? "critical" : report.riskScore > 30 ? "high" : "medium",
-      swc: null,
-      detector: "ai-threat-model",
-      contract_name: contractName,
-      target_address: targetAddress ?? null,
-      chain_id: chainId ?? "ethereum",
-      keywords: ["threat model", "attack surface", "risk narrative", contractName].join(", "),
-      vector_data: null,
-      metadata_json: JSON.stringify({
-        riskScore: report.riskScore,
-        aiAttackVectors: aiReview?.attackVectors ?? [],
-      }),
-    });
-  }
-
-  // 3. Executable Foundry Test PoC Chunk
-  if (aiReview?.foundryTestCode && aiReview.foundryTestCode.trim().length > 20) {
-    const pocId = `rag-${scanId}-foundry-poc`;
-    chunksToInsert.push({
-      id: pocId,
-      scan_id: scanId,
-      category: "foundry_poc",
-      title: `Foundry Exploit PoC Suite: ${contractName}`,
-      content: `Executable Foundry test suite (Exploit.t.sol) demonstrating vulnerability exploitation on ${contractName}:\n\n${aiReview.foundryTestCode}`,
-      severity: "high",
-      swc: null,
-      detector: "foundry-poc",
-      contract_name: contractName,
-      target_address: targetAddress ?? null,
-      chain_id: chainId ?? "ethereum",
-      keywords: ["foundry", "exploit.t.sol", "poc", "test", contractName].join(", "),
-      vector_data: null,
-      metadata_json: JSON.stringify({
-        foundryTestCode: aiReview.foundryTestCode,
-      }),
-    });
-  }
-
-  // 4. Contract Architecture & Interface Profile Chunk
-  const profileId = `rag-${scanId}-profile`;
-  const probeSummary = probes && probes.length > 0
-    ? probes.map((p) => `${p.name} (${p.selector}): ${p.success ? (p.decodedString || p.decodedNumber || p.decodedAddress || "Returned") : "Reverted"}`).join("; ")
-    : "No RPC probes recorded";
-  const proxyNote = proxyInfo?.isProxy
-    ? `Upgrade Pattern: ${proxyInfo.proxyType} Proxy (Impl: ${proxyInfo.implementationAddress}, Admin: ${proxyInfo.adminAddress ?? "None"})`
-    : "Non-proxy direct implementation";
-
-  chunksToInsert.push({
-    id: profileId,
-    scan_id: scanId,
-    category: "contract_profile",
-    title: `Contract Architecture & On-Chain Profile: ${contractName}`,
-    content: `Architecture Dossier for ${contractName} (${targetAddress ?? "Unspecified Address"} on ${chainId ?? "ethereum"}):\n\n${proxyNote}\n\nCompiler / Pragma: ${report.inventory.compiler ?? report.inventory.pragma ?? "Unknown"}\nFunctions: ${report.inventory.functions.length} detected\nState Variables: ${report.inventory.stateVars.length} detected\nOn-Chain Probes:\n${probeSummary}\n\nInventory Notes:\n${report.inventory.notes.join("\n")}`,
-    severity: "architecture",
-    swc: null,
-    detector: "architecture-profile",
-    contract_name: contractName,
-    target_address: targetAddress ?? null,
-    chain_id: chainId ?? "ethereum",
-    keywords: ["architecture", "profile", "probes", proxyInfo?.proxyType ?? "", contractName].filter(Boolean).join(", "),
-    vector_data: null,
-    metadata_json: JSON.stringify({
-      proxyInfo: proxyInfo ?? null,
-      probesCount: probes?.length ?? 0,
-      functionsCount: report.inventory.functions.length,
-    }),
-  });
-
-  // Batch insert into database
-  for (const c of chunksToInsert) {
-    try {
-      await sql`
-        insert into rag_knowledge_chunks (
-          id, scan_id, category, title, content, severity, swc, detector,
-          contract_name, target_address, chain_id, keywords, vector_data, metadata_json
-        ) values (
-          ${c.id}, ${c.scan_id}, ${c.category}, ${c.title}, ${c.content}, ${c.severity},
-          ${c.swc}, ${c.detector}, ${c.contract_name}, ${c.target_address}, ${c.chain_id},
-          ${c.keywords}, ${c.vector_data}, ${c.metadata_json}
-        )
-        on conflict (id) do update set
-          title = excluded.title,
-          content = excluded.content,
-          keywords = excluded.keywords,
-          metadata_json = excluded.metadata_json
-      `;
-    } catch (err) {
-      console.warn("[kiln-rag] Chunk insert warning for id:", c.id, err);
-    }
-  }
-
-  // Mark scan as indexed in contract_scans
-  try {
-    await sql`update contract_scans set is_rag_indexed = true where id = ${scanId}`;
-  } catch {
-    // ignore
-  }
-
-  return { chunksCreated: chunksToInsert.length };
+export async function indexReportToRag(params: RagIndexInput): Promise<{ chunksCreated: number }> {
+  const result = await indexBatchReportsToRag([params]);
+  return { chunksCreated: result.totalChunksCreated };
 }
 
-/**
- * Optimized bulk ingestion of multiple audit reports into RAG knowledgebase chunks
- */
-export async function indexBatchReportsToRag(items: {
-  scanId: string;
-  report: Report;
-  rawBody?: string;
-  targetAddress?: string | null;
-  chainId?: string | null;
-  proxyInfo?: ProxyAnalysis | null;
-  probes?: CallProbeResult[] | null;
-  aiReview?: AiSecurityReview | null;
-}[]): Promise<{ totalChunksCreated: number }> {
+export async function indexBatchReportsToRag(items: RagIndexInput[]): Promise<{ totalChunksCreated: number }> {
   if (!items.length) return { totalChunksCreated: 0 };
-  let totalChunks = 0;
-
-  for (const item of items) {
-    try {
-      const res = await indexReportToRag(item);
-      totalChunks += res.chunksCreated;
-    } catch (err) {
-      console.warn("[kiln-rag] Batch chunk index item error:", item.scanId, err);
-    }
-  }
-
-  return { totalChunksCreated: totalChunks };
+  const sql = await getSql();
+  const chunks = items.flatMap(buildReportRagChunks);
+  await sql.transaction(async (tx) => {
+    await replaceRagChunks(tx, items.map((i) => i.scanId), chunks);
+    await tx.query("update contract_scans set is_rag_indexed = true where id = any($1::text[])", [items.map((i) => i.scanId)]);
+  });
+  return { totalChunksCreated: chunks.length };
 }
 
 /**

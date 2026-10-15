@@ -10,10 +10,15 @@ import {
   getStoredSupabaseConfig,
   saveStoredSupabaseConfig,
   testSupabaseConnection,
-  saveBatchItemToSupabase,
+  createSupabaseBatchWriter,
+  toSupabaseBatchRow,
+  type SupabaseBatchRow,
   loadBatchFromSupabase,
   type SupabaseConfig,
 } from "@/lib/supabase";
+import { AsyncBatchWriter, ByteLruCache } from "@/lib/audit/batch-writer";
+import { BatchQueue, retargetBatchQueue } from "@/lib/audit/batch-queue";
+import { initializeBatchQueue, saveBatchCheckpoint } from "@/lib/audit/batch-checkpoint";
 import type { Report } from "@/lib/audit/types";
 import { saveBatchComprehensiveScansFn } from "@/lib/scans.functions";
 import type { ComprehensiveRecordInput } from "@/lib/audit/persist.server";
@@ -67,12 +72,21 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
 
   // Inspecting state and on-demand LRU cache (capped at 50 to avoid GBs of heap)
   const [inspectingAddr, setInspectingAddr] = useState<string | null>(null);
-  const reportCacheRef = useRef<Map<string, { report: Report; rawBody: string }>>(new Map());
-
-  // Asynchronous batched database writing state
-  const pendingDbBufferRef = useRef<ComprehensiveRecordInput[]>([]);
-  const isFlushingDbRef = useRef<boolean>(false);
-  const flushTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const reportCacheRef = useRef(new ByteLruCache<{ report: Report; rawBody: string }>(50, 16_000_000));
+  const localWriterRef = useRef<AsyncBatchWriter<ComprehensiveRecordInput> | null>(null);
+  const remoteWriterRef = useRef<AsyncBatchWriter<SupabaseBatchRow> | null>(null);
+  const pendingIndexesRef = useRef(new Map<string, number>());
+  const pendingRemoteIndexesRef = useRef(new Map<string, number>());
+  const remoteReplayRef = useRef<Promise<void> | null>(null);
+  const mountedRef = useRef(true);
+  const runnerActiveRef = useRef(false);
+  const repaintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dirtyCheckpointRef = useRef(new Map<number, BatchItem>());
+  const checkpointChainRef = useRef<Promise<void>>(Promise.resolve());
+  const checkpointPendingRef = useRef(0);
+  const checkpointReadyRef = useRef<Promise<void>>(Promise.resolve());
+  const [queueRevision, setQueueRevision] = useState(0);
+  const [checkpointError, setCheckpointError] = useState<string | null>(null);
   const [dbSyncStats, setDbSyncStats] = useState<{
     totalFlushed: number;
     pendingCount: number;
@@ -86,16 +100,9 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
   });
 
   // Queue state (lightweight items, no duplicate source/AST trees in memory)
-  const [queue, setQueue] = useState<BatchItem[]>(() => {
-    if (typeof window === "undefined") return [];
-    try {
-      const saved = localStorage.getItem("kiln_active_batch_queue");
-      if (saved) return JSON.parse(saved) as BatchItem[];
-    } catch {
-      // fallback
-    }
-    return parseAddressList(SAMPLE_BATCH_INPUT, "ethereum");
-  });
+  const [queueStore] = useState(() => new BatchQueue(parseAddressList(SAMPLE_BATCH_INPUT, "ethereum")));
+  const queue = queueStore.items;
+
 
   // Runner state
   const [isRunning, setIsRunning] = useState<boolean>(false);
@@ -105,35 +112,86 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
 
   // Supabase state
   const [supabaseCfg, setSupabaseCfg] = useState<SupabaseConfig>(getStoredSupabaseConfig());
+  const savedSupabaseCfgRef = useRef(supabaseCfg);
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState<boolean>(false);
   const [supabaseStatusMsg, setSupabaseStatusMsg] = useState<{ ok: boolean; msg: string } | null>(null);
   const [isTestingSupabase, setIsTestingSupabase] = useState<boolean>(false);
 
   const isRunningRef = useRef<boolean>(false);
-  isRunningRef.current = isRunning;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Safe localStorage save: persist only lightweight snapshot (up to 200 items)
-  // to prevent QuotaExceededError when handling 50,000 addresses
-  useEffect(() => {
-    try {
-      const snapshot = queue.slice(0, 200).map((q) => ({
-        id: q.id,
-        address: q.address,
-        label: q.label,
-        chainId: q.chainId,
-        status: q.status,
-        riskScore: q.riskScore,
-        criticalCount: q.criticalCount,
-        highCount: q.highCount,
-        findingsCount: q.findingsCount,
-        completedAt: q.completedAt,
-      }));
-      localStorage.setItem("kiln_active_batch_queue", JSON.stringify(snapshot));
-    } catch {
-      // ignore
+  const checkpoint = useCallback((updates: [number, BatchItem][], replace = false) => {
+    checkpointPendingRef.current++;
+    checkpointChainRef.current = checkpointChainRef.current.catch(() => undefined)
+      .then(async () => {
+        await saveBatchCheckpoint(updates, replace);
+        if (replace) { try { localStorage.removeItem("kiln_active_batch_queue"); } catch { /* IndexedDB is authoritative. */ } }
+      }).catch((err: unknown) => {
+        if (mountedRef.current) setCheckpointError(err instanceof Error ? err.message : String(err));
+      }).finally(() => { checkpointPendingRef.current--; });
+  }, []);
+
+  const repaintQueue = useCallback(() => {
+    if (repaintTimerRef.current) clearTimeout(repaintTimerRef.current);
+    repaintTimerRef.current = null;
+    const updates = Array.from(dirtyCheckpointRef.current.entries());
+    dirtyCheckpointRef.current.clear();
+    if (updates.length) checkpoint(updates);
+    if (mountedRef.current) setQueueRevision((v) => v + 1);
+  }, [checkpoint]);
+
+  const updateQueueItem = useCallback((index: number, patch: Partial<BatchItem>) => {
+    queueStore.update(index, patch);
+    const item = queueStore.items[index];
+    if (item) dirtyCheckpointRef.current.set(index, item);
+    if (!repaintTimerRef.current) repaintTimerRef.current = setTimeout(repaintQueue, 200);
+  }, [queueStore, repaintQueue]);
+
+  const setQueue = useCallback((next: BatchItem[] | ((previous: BatchItem[]) => BatchItem[])) => {
+    if (runnerActiveRef.current) return false;
+    if ((localWriterRef.current?.stats.pendingCount ?? 0) || (remoteWriterRef.current?.stats.pendingCount ?? 0) || queueStore.summary.unsynced) {
+      setDbSyncStats((previous) => ({ ...previous, lastError: "Flush pending writes before replacing this queue." }));
+      return false;
     }
-  }, [queue]);
+    dirtyCheckpointRef.current.clear();
+    queueStore.replace(typeof next === "function" ? next(queueStore.items) : next);
+    const firstChain = queueStore.items[0]?.chainId;
+    if (firstChain && queueStore.items.every((item) => item.chainId === firstChain)) setSelectedChainId(firstChain);
+    reportCacheRef.current.clear();
+    checkpoint(queueStore.items.map((item, index) => [index, item]), true);
+    setQueueRevision((v) => v + 1);
+    return true;
+  }, [queueStore, checkpoint]);
+
+  useEffect(() => {
+    let canceled = false;
+    checkpointReadyRef.current = initializeBatchQueue(queueStore, {
+      isCurrent: () => !canceled,
+      loadLegacy: () => {
+        try {
+          const raw = localStorage.getItem("kiln_active_batch_queue");
+          return raw ? JSON.parse(raw) as BatchItem[] : null;
+        } catch { return null; }
+      },
+    }).then((changed) => {
+      if (changed && !canceled) {
+        const firstChain = queueStore.items[0]?.chainId;
+        if (firstChain && queueStore.items.every((item) => item.chainId === firstChain)) setSelectedChainId(firstChain);
+        setQueueRevision((v) => v + 1);
+      }
+    }).catch((err: unknown) => {
+      if (!canceled) setCheckpointError(err instanceof Error ? err.message : String(err));
+    });
+    return () => { canceled = true; };
+  }, [queueStore]);
+
+  const handleNetworkChange = (chainId: string) => {
+    if (runnerActiveRef.current) return;
+    if (!setQueue(retargetBatchQueue(queueStore.items, chainId))) return;
+    setSelectedChainId(chainId);
+    setCurrentIndex(-1);
+    setCurrentPage(1);
+  };
 
   // Copy helper
   const copyText = (text: string, key: string) => {
@@ -150,9 +208,10 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
 
   // Parse text into queue
   const handleLoadNewBatch = () => {
+    if (runnerActiveRef.current) return;
     const parsed = parseAddressList(inputText, selectedChainId);
+    if (!setQueue(parsed)) return;
     setFileMeta(null);
-    setQueue(parsed);
     setIsRunning(false);
     setCurrentIndex(-1);
     setCurrentPage(1);
@@ -160,14 +219,15 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
 
   // Upload multiline file (optimized for 50,000+ lines)
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (runnerActiveRef.current) return;
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (event) => {
       const content = event.target?.result as string;
-      if (content) {
+      if (content && !runnerActiveRef.current) {
         const parsed = parseAddressList(content, selectedChainId);
-        setQueue(parsed);
+        if (!setQueue(parsed)) return;
         setIsRunning(false);
         setCurrentIndex(-1);
         setCurrentPage(1);
@@ -179,7 +239,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             count: parsed.length,
             sizeKb: Math.round(file.size / 1024),
           });
-          const previewSnippet = content.split(/\r?\n/).slice(0, 25).join("\n");
+          const previewSnippet = content.slice(0, 8000).split(/\r?\n/).slice(0, 25).join("\n");
           setInputText(`${previewSnippet}\n\n# ... [${(parsed.length - 25).toLocaleString()} more addresses loaded from "${file.name}"]`);
         } else {
           setFileMeta(null);
@@ -191,76 +251,104 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
     e.target.value = "";
   };
 
-  // Asynchronous batched database flush worker
-  const flushDbBuffer = useCallback(async () => {
-    if (isFlushingDbRef.current) return;
-    if (pendingDbBufferRef.current.length === 0) return;
-
-    isFlushingDbRef.current = true;
-    setDbSyncStats((prev) => ({ ...prev, isFlushing: true, lastError: null }));
-
-    // Take current slice of up to 50 items
-    const batch = pendingDbBufferRef.current.splice(0, 50);
-
-    try {
-      const res = await saveBatchComprehensiveScansFn({
-        data: { records: batch },
-      });
-      const savedCount = res.savedCount ?? batch.length;
-      setDbSyncStats((prev) => ({
-        ...prev,
-        totalFlushed: prev.totalFlushed + savedCount,
-        pendingCount: pendingDbBufferRef.current.length,
-        isFlushing: false,
-      }));
-    } catch (err) {
-      console.warn("[kiln-batch] Async DB batch save notice:", err);
-      // Re-queue failed items for retry
-      pendingDbBufferRef.current.unshift(...batch);
-      setDbSyncStats((prev) => ({
-        ...prev,
-        pendingCount: pendingDbBufferRef.current.length,
-        isFlushing: false,
-        lastError: err instanceof Error ? err.message : String(err),
-      }));
-    } finally {
-      isFlushingDbRef.current = false;
-      // If items remain in buffer, schedule follow-up flush
-      if (pendingDbBufferRef.current.length > 0) {
-        if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
-        flushTimerRef.current = setTimeout(flushDbBuffer, 1200);
-      }
-    }
+  const publishWriterStats = useCallback(() => {
+    if (!mountedRef.current) return;
+    const local = localWriterRef.current?.stats;
+    const remote = remoteWriterRef.current?.stats;
+    setDbSyncStats({
+      totalFlushed: local?.totalFlushed ?? 0,
+      pendingCount: (local?.pendingCount ?? 0) + (remote?.pendingCount ?? 0),
+      isFlushing: Boolean(local?.isFlushing || remote?.isFlushing),
+      lastError: local?.lastError ?? remote?.lastError ?? null,
+    });
   }, []);
 
-  // Flush buffer on unmount
+  const ensureLocalWriter = useCallback(() => {
+    localWriterRef.current ??= new AsyncBatchWriter<ComprehensiveRecordInput>({
+      maxBatchBytes: 1_400_000,
+      write: async (records) => {
+        const result = await saveBatchComprehensiveScansFn({ data: { records } });
+        if (result.savedCount !== records.length) throw new Error("Database did not acknowledge the complete batch");
+        for (const record of records) {
+          const index = pendingIndexesRef.current.get(record.id!);
+          if (index !== undefined && queueStore.items[index]?.scanId === record.id) {
+            updateQueueItem(index, { persisted: true });
+          }
+          pendingIndexesRef.current.delete(record.id!);
+        }
+      },
+      onChange: publishWriterStats,
+    });
+    return localWriterRef.current;
+  }, [queueStore, updateQueueItem, publishWriterStats]);
+
+  const ensureRemoteWriter = useCallback(() => {
+    if (!savedSupabaseCfgRef.current.enabled) return null;
+    remoteWriterRef.current ??= createSupabaseBatchWriter(
+      () => savedSupabaseCfgRef.current, publishWriterStats,
+      (rows) => {
+        for (const row of rows) {
+          const index = pendingRemoteIndexesRef.current.get(row.id);
+          if (index !== undefined && queueStore.items[index]?.scanId === row.id) updateQueueItem(index, { supabaseSynced: true });
+          pendingRemoteIndexesRef.current.delete(row.id);
+        }
+      },
+    );
+    return remoteWriterRef.current;
+  }, [publishWriterStats, queueStore, updateQueueItem]);
+
+  const replayRemoteOutbox = useCallback((): Promise<void> => {
+    if (remoteReplayRef.current) return remoteReplayRef.current;
+    const writer = ensureRemoteWriter();
+    if (!writer) return Promise.resolve();
+    remoteReplayRef.current = (async () => {
+      await writer.flush();
+      for (let index = 0; index < queueStore.items.length; index++) {
+        const item = queueStore.items[index];
+        if (item.status !== "completed" || item.supabaseSynced !== false) continue;
+        const row = toSupabaseBatchRow(item);
+        if (pendingRemoteIndexesRef.current.has(row.id)) continue;
+        pendingRemoteIndexesRef.current.set(row.id, index);
+        try { await writer.enqueue(row); }
+        catch (err) { pendingRemoteIndexesRef.current.delete(row.id); throw err; }
+      }
+      await writer.flush();
+    })().finally(() => { remoteReplayRef.current = null; });
+    return remoteReplayRef.current;
+  }, [ensureRemoteWriter, queueStore]);
+
+  const flushDbBuffer = useCallback(async () => {
+    const results = await Promise.allSettled([
+      localWriterRef.current?.flush(), replayRemoteOutbox(),
+    ]);
+    repaintQueue();
+    const failure = results.find((r) => r.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+  }, [repaintQueue, replayRemoteOutbox]);
+
   useEffect(() => {
-    return () => {
-      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
-      void flushDbBuffer();
+    mountedRef.current = true;
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (checkpointPendingRef.current > 0 || dirtyCheckpointRef.current.size > 0 ||
+        (localWriterRef.current?.stats.pendingCount ?? 0) + (remoteWriterRef.current?.stats.pendingCount ?? 0) > 0) {
+        event.preventDefault(); event.returnValue = "";
+      }
     };
-  }, [flushDbBuffer]);
-
-  // Queue a completed record into the async DB write buffer
-  const queueDbRecord = useCallback((record: ComprehensiveRecordInput) => {
-    pendingDbBufferRef.current.push(record);
-    setDbSyncStats((prev) => ({
-      ...prev,
-      pendingCount: pendingDbBufferRef.current.length,
-    }));
-
-    // Auto-flush when batch reaches 15 items, otherwise debounce 2.5s
-    if (pendingDbBufferRef.current.length >= 15) {
-      flushDbBuffer();
-    } else {
-      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
-      flushTimerRef.current = setTimeout(flushDbBuffer, 2500);
-    }
-  }, [flushDbBuffer]);
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => {
+      isRunningRef.current = false;
+      mountedRef.current = false;
+      if (repaintTimerRef.current) clearTimeout(repaintTimerRef.current);
+      repaintQueue();
+      localWriterRef.current?.dispose(); remoteWriterRef.current?.dispose();
+      void flushDbBuffer().catch(() => undefined);
+      window.removeEventListener("beforeunload", beforeUnload);
+    };
+  }, [flushDbBuffer, repaintQueue]);
 
   // On-demand inspection handler
   const handleInspect = async (item: BatchItem) => {
-    const cached = reportCacheRef.current.get(item.address.toLowerCase());
+    const cached = reportCacheRef.current.get(`${item.chainId}:${item.address.toLowerCase()}`);
     if (cached) {
       onInspectItem(cached.report, cached.rawBody, item.label);
       return;
@@ -269,7 +357,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
     setInspectingAddr(item.address);
     try {
       const fresh = await analyzeAddress(item.address, item.chainId, item.label);
-      reportCacheRef.current.set(item.address.toLowerCase(), {
+      reportCacheRef.current.set(`${item.chainId}:${item.address.toLowerCase()}`, {
         report: fresh.report,
         rawBody: fresh.rawBody,
       });
@@ -281,124 +369,89 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
     }
   };
 
-  // Main Sequential Pipeline Loop (Non-blocking DB writing & memory-optimized)
+  // Address fetches stay rate-limited; persistence overlaps through bounded writers.
   const startPipeline = async () => {
-    if (isRunning) return;
+    if (runnerActiveRef.current) return;
+    runnerActiveRef.current = true;
+    isRunningRef.current = true;
     setIsRunning(true);
-
-    const activeChain = selectedChainId;
-
-    for (let i = 0; i < queue.length; i++) {
-      if (!isRunningRef.current) break;
-
-      const item = queue[i];
-      if (!item) continue;
-
-      // Skip already completed unless user requested retry
-      if (item.status === "completed") continue;
-
-      setCurrentIndex(i);
-
-      // 1. Mark as fetching/analyzing
-      setQueue((prev) => {
-        const copy = [...prev];
-        const target = copy[i];
-        if (target) {
-          copy[i] = { ...target, status: "analyzing", error: undefined };
+    const localWriter = ensureLocalWriter();
+    try {
+      await checkpointReadyRef.current;
+      await checkpointChainRef.current;
+      // Finish a paused run's pending writes before attempting completed addresses again.
+      await flushDbBuffer();
+      const remoteWriter = ensureRemoteWriter();
+      const items = queueStore.items;
+      for (let i = 0; i < items.length && isRunningRef.current; i++) {
+        const item = items[i];
+        if (!item || item.status === "completed") continue;
+        setCurrentIndex(i);
+        const scanId = item.scanId ?? crypto.randomUUID();
+        updateQueueItem(i, { status: "analyzing", error: undefined, scanId, persisted: false });
+        let result: Awaited<ReturnType<typeof analyzeAddress>>;
+        try {
+          result = await analyzeAddress(item.address, item.chainId, item.label);
+        } catch (err) {
+          updateQueueItem(i, { status: "failed", error: err instanceof Error ? err.message : String(err) });
+          if (delayMs > 0 && isRunningRef.current) await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
         }
-        return copy;
-      });
-
-      try {
-        // Fetch and analyze
-        const result = await analyzeAddress(item.address, activeChain, item.label);
-        const crit = result.report.findings.filter((f) => f.severity === "critical").length;
-        const high = result.report.findings.filter((f) => f.severity === "high").length;
-
-        // Cache in LRU (bounded to 50 items so memory is never bloated)
-        reportCacheRef.current.set(item.address.toLowerCase(), {
-          report: result.report,
-          rawBody: result.rawBody,
-        });
-        if (reportCacheRef.current.size > 50) {
-          const firstKey = reportCacheRef.current.keys().next().value;
-          if (firstKey) reportCacheRef.current.delete(firstKey);
+        if (!mountedRef.current) break;
+        const counts = { critical: 0, high: 0 };
+        for (const finding of result.report.findings) {
+          if (finding.severity === "critical" || finding.severity === "high") counts[finding.severity]++;
         }
-
         const updatedItem: BatchItem = {
-          ...item,
-          status: "completed",
-          inputKind: result.inputKind,
-          bytecodeSize: result.report.inventory.bytecodeBytes ?? (result.rawBody.length / 2),
-          riskScore: result.report.riskScore,
-          findingsCount: result.report.findings.length,
-          criticalCount: crit,
-          highCount: high,
-          completedAt: new Date().toISOString(),
+          ...items[i], status: "completed", inputKind: result.inputKind,
+          supabaseSynced: !remoteWriter, summary: result.report.summary,
+          bytecodeSize: result.report.inventory.bytecodeBytes ?? result.rawBody.length / 2,
+          riskScore: result.report.riskScore, findingsCount: result.report.findings.length,
+          criticalCount: counts.critical, highCount: counts.high, completedAt: new Date().toISOString(),
         };
-
-        // Update queue item with lean footprint (no rawBody/report in 50k array)
-        setQueue((prev) => {
-          const copy = [...prev];
-          copy[i] = updatedItem;
-          return copy;
+        reportCacheRef.current.set(`${item.chainId}:${item.address.toLowerCase()}`, {
+          report: result.report, rawBody: result.rawBody,
         });
-
-        // Sync to Supabase if configured
-        if (supabaseCfg.enabled) {
-          saveBatchItemToSupabase(
-            {
-              ...updatedItem,
-              rawBody: result.rawBody,
-              report: result.report,
-            },
-            supabaseCfg
-          );
-        }
-
-        // Buffer into Async DB Writer (non-blocking)
-        queueDbRecord({
-          label: `${updatedItem.label || "Contract"} (${updatedItem.address.slice(0, 8)})`,
-          report: result.report,
-          body: result.rawBody,
-          targetAddress: updatedItem.address,
-          chainId: updatedItem.chainId,
-          compilerVersion: result.report.inventory.compiler,
-          sourceOrigin: "pipeline",
-          indexToRag: true,
-        });
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        setQueue((prev) => {
-          const copy = [...prev];
-          const target = copy[i];
-          if (target) {
-            copy[i] = {
-              ...target,
-              status: "failed",
-              error: errMsg,
-            };
+        pendingIndexesRef.current.set(scanId, i);
+        let localEnqueued = false;
+        try {
+          await localWriter.enqueue({
+            id: scanId, label: updatedItem.label, report: result.report, body: result.rawBody,
+            targetAddress: item.address, chainId: item.chainId,
+            compilerVersion: result.report.inventory.compiler, sourceOrigin: "pipeline", indexToRag: true,
+          });
+          localEnqueued = true;
+          updateQueueItem(i, { ...updatedItem, persisted: items[i].persisted });
+          if (remoteWriter) {
+            pendingRemoteIndexesRef.current.set(scanId, i);
+            try { await remoteWriter.enqueue(toSupabaseBatchRow(updatedItem)); }
+            catch (err) { pendingRemoteIndexesRef.current.delete(scanId); throw err; }
           }
-          return copy;
-        });
+        } catch (err) {
+          // Stop at capacity or persistent DB errors. Retained records remain available to Flush Buffer.
+          if (!localEnqueued) pendingIndexesRef.current.delete(scanId);
+          updateQueueItem(i, { status: localEnqueued ? "completed" : "pending", error: err instanceof Error ? err.message : String(err) });
+          throw err;
+        }
+        if (delayMs > 0 && i < items.length - 1 && isRunningRef.current) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
       }
-
-      // Respect rate-limiting delay between addresses
-      if (delayMs > 0 && i < queue.length - 1 && isRunningRef.current) {
-        await new Promise((r) => setTimeout(r, delayMs));
-      }
+      await flushDbBuffer();
+    } catch (err) {
+      if (mountedRef.current) setDbSyncStats((previous) => ({ ...previous,
+        lastError: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      isRunningRef.current = false; runnerActiveRef.current = false;
+      repaintQueue();
+      if (mountedRef.current) { setIsRunning(false); setCurrentIndex(-1); }
     }
-
-    // Flush remaining buffer on loop completion
-    await flushDbBuffer();
-    setIsRunning(false);
-    setCurrentIndex(-1);
   };
 
   const pausePipeline = () => {
-    setIsRunning(false);
     isRunningRef.current = false;
-    flushDbBuffer();
+    void flushDbBuffer().catch(() => undefined);
   };
 
   // Resume or load from Supabase
@@ -413,8 +466,8 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
       // Merge remote into queue
       setQueue((prev) => {
         const map = new Map<string, BatchItem>();
-        prev.forEach((p) => map.set(p.address.toLowerCase(), p));
-        remoteItems.forEach((r) => map.set(r.address.toLowerCase(), r));
+        prev.forEach((p) => map.set(`${p.chainId}:${p.address.toLowerCase()}`, p));
+        remoteItems.forEach((r) => map.set(`${r.chainId}:${r.address.toLowerCase()}`, { ...r, persisted: true, supabaseSynced: true }));
         return Array.from(map.values());
       });
       alert(`Loaded ${remoteItems.length} audited contracts from Supabase.`);
@@ -434,8 +487,17 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
 
   // Save Supabase settings
   const handleSaveSupabaseConfig = () => {
-    saveStoredSupabaseConfig(supabaseCfg);
-    setIsSupabaseModalOpen(false);
+    if (runnerActiveRef.current || remoteWriterRef.current?.stats.isFlushing) {
+      setSupabaseStatusMsg({ ok: false, msg: "Pause the pipeline and wait for the active write before changing its connection." });
+      return;
+    }
+    try {
+      saveStoredSupabaseConfig(supabaseCfg);
+      savedSupabaseCfgRef.current = { ...supabaseCfg };
+      setIsSupabaseModalOpen(false);
+    } catch (err) {
+      setSupabaseStatusMsg({ ok: false, msg: err instanceof Error ? err.message : String(err) });
+    }
   };
 
   // Export batch summary to CSV
@@ -480,13 +542,9 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
 
   // Progress calculations
   const total = queue.length;
-  const completed = queue.filter((q) => q.status === "completed").length;
-  const failed = queue.filter((q) => q.status === "failed").length;
-  const pending = queue.filter((q) => q.status === "pending" || q.status === "analyzing").length;
+  const { completed, failed, pending, totalCrit, totalHigh } = queueStore.summary;
+  const pendingWriteCount = Math.max(dbSyncStats.pendingCount, queueStore.summary.unsynced);
   const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
-
-  const totalCrit = queue.reduce((acc, q) => acc + (q.criticalCount ?? 0), 0);
-  const totalHigh = queue.reduce((acc, q) => acc + (q.highCount ?? 0), 0);
 
   // Filtered queue items
   const filteredQueue = useMemo(() => {
@@ -498,7 +556,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
         item.label.toLowerCase().includes(q) ||
         item.status.toLowerCase().includes(q)
     );
-  }, [queue, filterQuery]);
+  }, [queue, queueRevision, filterQuery]);
 
   // Pagination calculations for handling 50,000+ items smoothly
   const totalPages = Math.max(1, Math.ceil(filteredQueue.length / pageSize));
@@ -508,7 +566,12 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
   const paginatedQueue = useMemo(() => {
     const start = (safeCurrentPage - 1) * pageSize;
     return filteredQueue.slice(start, start + pageSize);
-  }, [filteredQueue, safeCurrentPage, pageSize]);
+  }, [filteredQueue, queueRevision, safeCurrentPage, pageSize]);
+
+  const displayChainId = useMemo(() => {
+    const firstChain = queue[0]?.chainId;
+    return firstChain && queue.some((item) => item.chainId !== firstChain) ? "mixed" : firstChain ?? selectedChainId;
+  }, [queue, selectedChainId]);
 
   const activeChainObj = SUPPORTED_CHAINS.find((c) => c.id === selectedChainId) ?? SUPPORTED_CHAINS[0]!;
 
@@ -556,7 +619,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
               </div>
 
               <div>
-                <label className="text-[#a39886] text-[10px] uppercase block mb-1">Supabase Anon / Service Key</label>
+                <label className="text-[#a39886] text-[10px] uppercase block mb-1">Supabase Publishable / Anon Key</label>
                 <input
                   type="password"
                   placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
@@ -656,10 +719,12 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             <div className="flex items-center gap-1.5 bg-[#26231c] px-3 py-1.5 rounded-lg border border-[#3a3428]">
               <span className="text-[#a39886] text-[11px]">Network:</span>
               <select
-                value={selectedChainId}
-                onChange={(e) => setSelectedChainId(e.target.value)}
+                value={displayChainId}
+                onChange={(e) => handleNetworkChange(e.target.value)}
+                disabled={isRunning}
                 className="bg-transparent border-none text-[#e8a54b] font-bold focus:outline-none cursor-pointer"
               >
+                {displayChainId === "mixed" && <option value="mixed" disabled>Mixed network queue</option>}
                 {SUPPORTED_CHAINS.map((c) => (
                   <option key={c.id} value={c.id} className="bg-[#1c1a16] text-[#f4efe6]">
                     {c.name} (Chain {c.chainId})
@@ -690,7 +755,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             {!isRunning ? (
               <button
                 onClick={startPipeline}
-                disabled={queue.length === 0 || completed === total}
+                disabled={queue.length === 0 || (completed === total && queueStore.summary.unsynced === 0)}
                 className="px-4 py-2 rounded-lg bg-gradient-to-r from-[#e8a54b] to-[#d97706] text-[#12110e] text-xs font-bold font-mono tracking-wide flex items-center gap-1.5 shadow-md shadow-[#e8a54b]/20 transition-all active:scale-95 disabled:opacity-50"
               >
                 <Play className="w-4 h-4 fill-current" />
@@ -791,9 +856,9 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
                 <Loader2 className="w-3 h-3 animate-spin" />
                 Flushing batch to DB...
               </span>
-            ) : dbSyncStats.pendingCount > 0 ? (
+            ) : pendingWriteCount > 0 ? (
               <span className="text-[#e8a54b]">
-                {dbSyncStats.pendingCount} records buffered
+                {pendingWriteCount} records buffered
               </span>
             ) : (
               <span className="text-emerald-400 flex items-center gap-1">
@@ -801,19 +866,19 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
                 All records synced
               </span>
             )}
-            {dbSyncStats.lastError && (
-              <span className="text-red-400 text-[11px] truncate max-w-xs" title={dbSyncStats.lastError}>
-                (Warning: {dbSyncStats.lastError})
+            {(dbSyncStats.lastError || checkpointError) && (
+              <span className="text-red-400 text-[11px] truncate max-w-xs" title={dbSyncStats.lastError || checkpointError || undefined}>
+                (Warning: {dbSyncStats.lastError || checkpointError})
               </span>
             )}
           </div>
 
-          {dbSyncStats.pendingCount > 0 && !dbSyncStats.isFlushing && (
+          {pendingWriteCount > 0 && !dbSyncStats.isFlushing && (
             <button
               onClick={() => flushDbBuffer()}
               className="px-2.5 py-0.5 rounded bg-[#3a2c14] hover:bg-[#e8a54b] text-[#e8a54b] hover:text-[#12110e] border border-[#e8a54b]/30 text-[11px] font-bold transition-all"
             >
-              Flush Buffer ({dbSyncStats.pendingCount})
+              Flush Buffer ({pendingWriteCount})
             </button>
           )}
         </div>
@@ -998,7 +1063,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
                               )}
                             </button>
                             <a
-                              href={`${activeChainObj.blockExplorer}/address/${item.address}`}
+                              href={`${(SUPPORTED_CHAINS.find((chain) => chain.id === item.chainId) ?? activeChainObj).blockExplorer}/address/${item.address}`}
                               target="_blank"
                               rel="noreferrer"
                               className="text-[#746c60] hover:text-[#e8a54b]"
