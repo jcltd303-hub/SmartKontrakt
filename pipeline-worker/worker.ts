@@ -44,13 +44,17 @@ const WORKER_DIR = path.dirname(fileURLToPath(import.meta.url));
 function loadEnvFile(): void {
   const envPath = path.join(WORKER_DIR, ".env");
   if (!fs.existsSync(envPath)) return;
+  // Last occurrence in the file wins (standard dotenv behavior), so an
+  // appended real value beats the example line at the top. Existing
+  // process.env still wins over the file.
+  const fileVars = new Map<string, string>();
   for (const raw of fs.readFileSync(envPath, "utf8").split("\n")) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
     const eq = line.indexOf("=");
     if (eq === -1) continue;
     const key = line.slice(0, eq).trim();
-    if (!key || process.env[key] !== undefined) continue;
+    if (!key) continue;
     let value = line.slice(eq + 1).trim();
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
@@ -58,11 +62,34 @@ function loadEnvFile(): void {
     ) {
       value = value.slice(1, -1);
     }
-    process.env[key] = value;
+    fileVars.set(key, value);
+  }
+  for (const [key, value] of fileVars) {
+    if (process.env[key] === undefined) process.env[key] = value;
   }
 }
 
 loadEnvFile();
+
+// Human-readable diagnosis for a bad DATABASE_URL. A raw "Invalid URL"
+// from the driver tells the user nothing; this names the actual fix.
+function databaseUrlProblem(value: string | undefined): string | null {
+  if (!value?.trim()) return "DATABASE_URL is not set";
+  if (value.includes("[") || value.includes("]")) {
+    return "it contains [ or ] — the [YOUR-PASSWORD] placeholder was not replaced with the real DB password";
+  }
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return "it does not parse as a URL";
+  }
+  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
+    return `it uses protocol ${url.protocol} instead of postgres:// — did you paste the https:// project URL instead of the database connection string?`;
+  }
+  if (!url.hostname) return "it has no host";
+  return null;
+}
 
 // ------------------------------------------------- lib imports (dynamic) ----
 const { analyzeAddress, parseAddressList } = await import("../src/lib/audit/address-fetcher.ts");
@@ -355,9 +382,12 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   }
   // Fail fast: the worker must never silently fall back to db.ts's bundled
   // default Supabase config and write a multi-day run to the wrong database.
-  if (!process.env.DATABASE_URL?.trim()) {
+  // Validate the shape first so a bad value fails with a fixable message
+  // instead of the driver's opaque "Invalid URL" from the skip check.
+  const dbProblem = databaseUrlProblem(process.env.DATABASE_URL);
+  if (dbProblem) {
     sendJson(res, 400, {
-      error: "DATABASE_URL is required in pipeline-worker/.env (Supabase pooler URL, port 6543) — see pipeline-worker/README.md",
+      error: `DATABASE_URL in pipeline-worker/.env is not a valid Supabase pooler URL: ${dbProblem}. Fix: use the Connection string → URI (pooler mode, port 6543) from Supabase Settings → Database, keep exactly one DATABASE_URL line, and URL-encode @ # % : / ? if they appear in the DB password.`,
     });
     return;
   }
@@ -543,7 +573,7 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 server.listen(PORT, HOST, () => {
   console.log(`[worker] SmartKontrakt pipeline worker listening on http://${HOST}:${PORT} (loopback only)`);
   console.log(
-    `[worker] DATABASE_URL ${process.env.DATABASE_URL ? "set" : "MISSING — set it in pipeline-worker/.env before starting a run"}`,
+    `[worker] DATABASE_URL ${process.env.DATABASE_URL ? "set" : "MISSING — set it in pipeline-worker/.env before starting a run"}${process.env.DATABASE_URL && databaseUrlProblem(process.env.DATABASE_URL) ? ` — WARNING: ${databaseUrlProblem(process.env.DATABASE_URL)}` : ""}`,
   );
   console.log(
     `[worker] OPENROUTER_API_KEY ${process.env.OPENROUTER_API_KEY ? "set" : "not set (AI second pass stays off unless requested)"}`,
