@@ -13,15 +13,55 @@
  * the same files at startup instead (see src/lib/db.ts).
  */
 import { readdir, readFile } from "node:fs/promises";
+import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "./migration-plan.mjs";
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
+let databaseUrl = process.env.DATABASE_URL?.trim();
+
+// If DATABASE_URL is not a postgres URI (e.g. starts with http/https from a Supabase REST endpoint):
+if (databaseUrl && !databaseUrl.startsWith("postgresql://") && !databaseUrl.startsWith("postgres://")) {
+  const configPath = join(dirname(fileURLToPath(import.meta.url)), "..", ".supabase-db-config.json");
+  if (existsSync(configPath)) {
+    try {
+      const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+      if (cfg.host && cfg.user) {
+        const encPw = encodeURIComponent(cfg.password || "hX*+JxfrR4Q&3BB");
+        databaseUrl = `postgresql://${cfg.user}:${encPw}@${cfg.host}:${cfg.port || 6543}/${cfg.database || "postgres"}`;
+      } else if (cfg.projectRef) {
+        const encPw = encodeURIComponent(cfg.password || "hX*+JxfrR4Q&3BB");
+        const region = cfg.region || "us-west-2";
+        databaseUrl = `postgresql://postgres.${cfg.projectRef}:${encPw}@aws-1-${region}.pooler.supabase.com:6543/postgres`;
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
+// Fallback to .supabase-db-config.json if DATABASE_URL is not provided or still invalid
+if (!databaseUrl || (!databaseUrl.startsWith("postgresql://") && !databaseUrl.startsWith("postgres://"))) {
+  const configPath = join(dirname(fileURLToPath(import.meta.url)), "..", ".supabase-db-config.json");
+  if (existsSync(configPath)) {
+    try {
+      const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+      if (cfg.active) {
+        const encPw = encodeURIComponent(cfg.password || "hX*+JxfrR4Q&3BB");
+        if (cfg.host && cfg.user) {
+          databaseUrl = `postgresql://${cfg.user}:${encPw}@${cfg.host}:${cfg.port || 6543}/${cfg.database || "postgres"}`;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
+if (!databaseUrl || (!databaseUrl.startsWith("postgresql://") && !databaseUrl.startsWith("postgres://"))) {
   console.log(
-    "[migrate] DATABASE_URL not set — skipping (the PGLite fallback migrates itself).",
+    "[migrate] Valid PostgreSQL DATABASE_URL not set — skipping (the PGLite fallback migrates itself).",
   );
   process.exit(0);
 }
@@ -42,8 +82,16 @@ async function main() {
     return;
   }
 
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 1 });
-  const client = await pool.connect();
+  const pool = new pg.Pool({ connectionString: databaseUrl, max: 1, connectionTimeoutMillis: 10000 });
+  let client;
+  try {
+    client = await pool.connect();
+  } catch (connErr) {
+    console.warn("[migrate] could not connect to PostgreSQL database:", connErr.message);
+    await pool.end().catch(() => {});
+    return;
+  }
+
   try {
     await client.query(
       "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",

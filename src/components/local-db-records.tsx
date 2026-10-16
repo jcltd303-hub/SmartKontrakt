@@ -4,9 +4,11 @@ import {
   getScan,
   removeScan,
   saveComprehensiveScanFn,
+  getDatabaseStatusFn,
 } from "@/lib/scans.functions";
 import type { ScanSummary, StoredScan } from "@/lib/audit/persist.server";
 import { SUPPORTED_CHAINS } from "@/lib/audit/address-fetcher";
+import { SupabaseDbModal } from "./supabase-db-modal";
 import {
   Database,
   Search,
@@ -45,12 +47,27 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [indexingId, setIndexingId] = useState<string | null>(null);
+  const [isDbModalOpen, setIsDbModalOpen] = useState<boolean>(false);
+  const [dbStatus, setDbStatus] = useState<{ isSupabase: boolean; label: string }>({
+    isSupabase: false,
+    label: "PGLite / Postgres",
+  });
 
   const fetchRecords = async () => {
     setIsLoading(true);
     try {
       const data = await listScans();
       setRecords(data);
+      try {
+        const status = await getDatabaseStatusFn();
+        if (status?.dbInfo?.source === "supabase") {
+          setDbStatus({ isSupabase: true, label: "Supabase Postgres (Live)" });
+        } else {
+          setDbStatus({ isSupabase: false, label: "Local PGLite (WASM)" });
+        }
+      } catch {
+        // fallback
+      }
     } catch (err) {
       console.warn("[kiln] Failed to fetch local db records:", err);
     } finally {
@@ -177,8 +194,14 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
               <h2 className="text-xl font-bold font-mono tracking-tight text-[#f4efe6]">
                 Local DB Audit Dossiers & Archive
               </h2>
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#e8a54b]/20 text-[#e8a54b] border border-[#e8a54b]/40">
-                PGLite / Postgres Engine
+              <span
+                className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
+                  dbStatus.isSupabase
+                    ? "bg-emerald-950/60 text-emerald-400 border-emerald-700/60"
+                    : "bg-[#e8a54b]/20 text-[#e8a54b] border-[#e8a54b]/40"
+                }`}
+              >
+                {dbStatus.label}
               </span>
             </div>
             <p className="text-xs text-[#a39886] mt-1.5 max-w-2xl leading-relaxed">
@@ -187,7 +210,19 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
             </p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              onClick={() => setIsDbModalOpen(true)}
+              className={`px-3 py-1.5 rounded-lg border text-xs font-mono flex items-center gap-1.5 transition-colors ${
+                dbStatus.isSupabase
+                  ? "bg-emerald-950/60 hover:bg-emerald-900/60 border-emerald-700/60 text-emerald-400"
+                  : "bg-[#26231c] hover:bg-[#3a3428] border-[#3a3428] text-[#e8a54b]"
+              }`}
+              title="Configure Supabase Database Connection & Credentials"
+            >
+              <Database className="w-3.5 h-3.5 text-[#e8a54b]" />
+              <span>{dbStatus.isSupabase ? "Supabase DB: Connected" : "Wire Supabase DB"}</span>
+            </button>
             <button
               onClick={fetchRecords}
               className="px-3 py-1.5 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-xs font-mono text-[#f4efe6] flex items-center gap-1.5 transition-colors"
@@ -636,6 +671,13 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
           </div>
         </div>
       )}
+
+      {/* Supabase Database Connection Modal */}
+      <SupabaseDbModal
+        isOpen={isDbModalOpen}
+        onClose={() => setIsDbModalOpen(false)}
+        onDatabaseChanged={fetchRecords}
+      />
     </div>
   );
 }

@@ -9,6 +9,7 @@ import { CfgViewer } from "./cfg-viewer";
 import { AuditCertificate } from "./audit-certificate";
 import { LocalDbRecords } from "./local-db-records";
 import { RagKnowledgebase } from "./rag-knowledgebase";
+import { SupabaseDbModal } from "./supabase-db-modal";
 import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit/address-fetcher";
 import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
 import { probeContractInterfaces, type CallProbeResult } from "@/lib/audit/simulator";
@@ -145,6 +146,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
 
   // Local DB & RAG state
   const [isSavingDb, setIsSavingDb] = useState<boolean>(false);
+  const [isSupabaseDbModalOpen, setIsSupabaseDbModalOpen] = useState<boolean>(false);
   const [dbSavedNotice, setDbSavedNotice] = useState<string | null>(null);
   const [ragModalFinding, setRagModalFinding] = useState<Finding | null>(null);
   const [ragModalResults, setRagModalResults] = useState<RagChunk[]>([]);
@@ -654,6 +656,15 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 <span>RAG Knowledgebase</span>
               </button>
             </div>
+
+            <button
+              onClick={() => setIsSupabaseDbModalOpen(true)}
+              className="px-2.5 py-1.5 rounded-lg border border-[#3a3428] bg-[#26231c] hover:bg-[#3a3428] text-xs font-mono text-[#e8a54b] flex items-center gap-1.5 transition-colors"
+              title="Configure Supabase Database (SmartKontrakt)"
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span>Wire Supabase DB</span>
+            </button>
 
             {workbenchMode === "audit" && (
               <div className="flex flex-wrap items-center gap-2">
@@ -2001,6 +2012,11 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       </div>
     </div>
   )}
+
+  <SupabaseDbModal
+    isOpen={isSupabaseDbModalOpen}
+    onClose={() => setIsSupabaseDbModalOpen(false)}
+  />
 </div>
   );
 }

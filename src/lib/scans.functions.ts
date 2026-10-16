@@ -134,3 +134,161 @@ export const deleteRagChunkFn = createServerFn({ method: "POST" })
     await deleteRagChunk(data.id);
     return { ok: true as const };
   });
+
+export const getDatabaseStatusFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { loadSupabaseDbConfig, buildSupabasePostgresUrl, maskPostgresUrl } = await import("./supabase-db.server");
+  const { getDatabaseInfo } = await import("./db");
+  const cfg = loadSupabaseDbConfig();
+  const dbInfo = await getDatabaseInfo();
+  const builtUrl = buildSupabasePostgresUrl(cfg);
+
+  return {
+    config: {
+      projectName: cfg.projectName,
+      projectRef: cfg.projectRef,
+      region: cfg.region,
+      host: cfg.host,
+      port: cfg.port,
+      database: cfg.database,
+      user: cfg.user,
+      mode: cfg.mode,
+      customUrl: cfg.customUrl ? maskPostgresUrl(cfg.customUrl) : "",
+      active: cfg.active,
+      // Provide whether password is configured
+      hasPassword: Boolean(cfg.password),
+    },
+    activeUrlMasked: builtUrl ? maskPostgresUrl(builtUrl) : (dbInfo.databaseUrlMasked || ""),
+    dbInfo,
+  };
+});
+
+export const testDatabaseConnectionFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => {
+    const val = (input && typeof input === "object" ? input : {}) as {
+      url?: string;
+      projectRef?: string;
+      password?: string;
+      host?: string;
+      port?: number;
+      database?: string;
+      user?: string;
+      mode?: "pooler" | "direct" | "custom";
+      region?: string;
+    };
+    return val;
+  })
+  .handler(async ({ data }) => {
+    const {
+      loadSupabaseDbConfig,
+      buildSupabasePostgresUrl,
+      testPostgresConnection,
+    } = await import("./supabase-db.server");
+
+    let targetUrl = data.url?.trim() || "";
+    if (!targetUrl && (data.projectRef || data.host)) {
+      const cfg = loadSupabaseDbConfig();
+      targetUrl = buildSupabasePostgresUrl({
+        ...cfg,
+        projectRef: data.projectRef || cfg.projectRef,
+        password: data.password || cfg.password,
+        host: data.host || cfg.host,
+        port: data.port || cfg.port,
+        database: data.database || cfg.database,
+        user: data.user || cfg.user,
+        mode: data.mode || cfg.mode,
+        region: data.region || cfg.region,
+      });
+    }
+
+    if (!targetUrl) {
+      return { ok: false, message: "Please specify a Supabase Project Reference ID or full connection string." };
+    }
+
+    return testPostgresConnection(targetUrl);
+  });
+
+export const saveDatabaseConfigFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => {
+    if (!input || typeof input !== "object") throw new Error("Invalid payload");
+    const val = input as {
+      projectName?: string;
+      projectRef: string;
+      password?: string;
+      host?: string;
+      port?: number;
+      database?: string;
+      user?: string;
+      mode?: "pooler" | "direct" | "custom";
+      region?: string;
+      customUrl?: string;
+      active: boolean;
+    };
+    return val;
+  })
+  .handler(async ({ data }) => {
+    const {
+      saveSupabaseDbConfig,
+      buildSupabasePostgresUrl,
+      testPostgresConnection,
+      applyMigrationsToPostgres,
+    } = await import("./supabase-db.server");
+    const { switchDatabase } = await import("./db");
+
+    const saved = saveSupabaseDbConfig({
+      projectName: data.projectName || "SmartKontrakt",
+      projectRef: data.projectRef,
+      password: data.password,
+      host: data.host,
+      port: data.port,
+      database: data.database,
+      user: data.user,
+      mode: data.mode || "pooler",
+      region: data.region || "us-west-2",
+      customUrl: data.customUrl,
+      active: data.active,
+    });
+
+    const targetUrl = buildSupabasePostgresUrl(saved);
+
+    if (saved.active) {
+      if (!targetUrl) {
+        throw new Error("Cannot activate Supabase database without a Project Reference ID or Connection URL.");
+      }
+
+      // Test connection
+      const testRes = await testPostgresConnection(targetUrl);
+      if (!testRes.ok) {
+        throw new Error(`Database connection test failed: ${testRes.message}`);
+      }
+
+      // Apply migrations
+      const migRes = await applyMigrationsToPostgres(targetUrl);
+      if (!migRes.ok) {
+        throw new Error(`Connected, but migrations failed: ${migRes.message}`);
+      }
+
+      // Activate connection
+      switchDatabase(targetUrl);
+
+      return {
+        ok: true,
+        message: `Connected to Supabase project '${saved.projectName}' (${migRes.message})`,
+        appliedMigrations: migRes.appliedCount,
+      };
+    } else {
+      switchDatabase(null);
+      return {
+        ok: true,
+        message: "Supabase connection saved (in inactive mode). Using embedded PGLite.",
+        appliedMigrations: 0,
+      };
+    }
+  });
+
+export const disconnectDatabaseFn = createServerFn({ method: "POST" }).handler(async () => {
+  const { saveSupabaseDbConfig } = await import("./supabase-db.server");
+  const { switchDatabase } = await import("./db");
+  saveSupabaseDbConfig({ active: false });
+  switchDatabase(null);
+  return { ok: true, message: "Switched back to embedded PGLite database." };
+});

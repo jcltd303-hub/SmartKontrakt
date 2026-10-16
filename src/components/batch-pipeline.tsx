@@ -22,6 +22,7 @@ import { initializeBatchQueue, saveBatchCheckpoint } from "@/lib/audit/batch-che
 import type { Report } from "@/lib/audit/types";
 import { saveBatchComprehensiveScansFn } from "@/lib/scans.functions";
 import type { ComprehensiveRecordInput } from "@/lib/audit/persist.server";
+import { SupabaseDbModal } from "./supabase-db-modal";
 import {
   Play,
   Pause,
@@ -29,6 +30,7 @@ import {
   Upload,
   Download,
   Database,
+  Server,
   Search,
   ExternalLink,
   Copy,
@@ -114,6 +116,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
   const [supabaseCfg, setSupabaseCfg] = useState<SupabaseConfig>(getStoredSupabaseConfig());
   const savedSupabaseCfgRef = useRef(supabaseCfg);
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState<boolean>(false);
+  const [isDbWiringModalOpen, setIsDbWiringModalOpen] = useState<boolean>(false);
   const [supabaseStatusMsg, setSupabaseStatusMsg] = useState<{ ok: boolean; msg: string } | null>(null);
   const [isTestingSupabase, setIsTestingSupabase] = useState<boolean>(false);
 
@@ -664,6 +667,22 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
                   {supabaseStatusMsg.msg}
                 </div>
               )}
+              <div className="p-3 rounded-lg bg-[#12110e] border border-[#3a3428] flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] text-[#e8a54b] font-bold block">Direct PostgreSQL DB Wiring</span>
+                  <span className="text-[10px] text-[#a39886]">Connect direct Supabase Postgres for project SmartKontrakt</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsSupabaseModalOpen(false);
+                    setIsDbWiringModalOpen(true);
+                  }}
+                  className="px-2.5 py-1 rounded bg-[#3a2c14] hover:bg-[#4a391c] border border-[#e8a54b]/40 text-[#e8a54b] text-[10px] font-bold transition-colors"
+                >
+                  Configure DB &rarr;
+                </button>
+              </div>
             </div>
 
             <div className="flex items-center justify-between pt-2 border-t border-[#3a3428]">
@@ -697,6 +716,12 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
           </div>
         </div>
       )}
+
+      {/* Direct PostgreSQL DB Modal */}
+      <SupabaseDbModal
+        isOpen={isDbWiringModalOpen}
+        onClose={() => setIsDbWiringModalOpen(false)}
+      />
 
       {/* Top Batch Header & Pipeline Stats */}
       <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl p-5 shadow-sm flex flex-col gap-4">
@@ -744,6 +769,16 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             >
               <Database className="w-3.5 h-3.5 text-[#e8a54b]" />
               <span>{supabaseCfg.enabled ? "Supabase Sync: ON" : "Supabase: Config"}</span>
+            </button>
+
+            {/* Wire Supabase Postgres DB Button */}
+            <button
+              onClick={() => setIsDbWiringModalOpen(true)}
+              className="px-3 py-1.5 rounded-lg border border-[#3a3428] bg-[#26231c] hover:bg-[#3a3428] text-[#e8a54b] flex items-center gap-1.5 transition-colors"
+              title="Wire direct Supabase PostgreSQL database connection"
+            >
+              <Server className="w-3.5 h-3.5 text-[#e8a54b]" />
+              <span>Wire Supabase DB</span>
             </button>
           </div>
         </div>

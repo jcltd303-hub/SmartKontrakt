@@ -1,5 +1,6 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 import { createSqlClient, type Sql } from "./sql-client";
+import { loadSupabaseDbConfig, buildSupabasePostgresUrl } from "./supabase-db.server";
 export type { Sql } from "./sql-client";
 
 /** Which database backend is active. */
@@ -12,16 +13,63 @@ const rawDatabaseUrl =
 const databaseUrl =
   rawDatabaseUrl && rawDatabaseUrl.trim() ? rawDatabaseUrl : undefined;
 
+export function getActiveDatabaseUrl(): string | undefined {
+  if (typeof window !== "undefined") return undefined;
+  if (globalRef.__activeDatabaseUrl__) return globalRef.__activeDatabaseUrl__;
+
+  // 1. Check Supabase saved config if active
+  try {
+    const cfg = loadSupabaseDbConfig();
+    if (cfg?.active) {
+      const url = buildSupabasePostgresUrl(cfg);
+      if (url && (url.startsWith("postgresql://") || url.startsWith("postgres://"))) {
+        return url;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 2. Check process.env.DATABASE_URL
+  const rawEnv = process.env.DATABASE_URL?.trim();
+  if (rawEnv) {
+    if (rawEnv.startsWith("postgresql://") || rawEnv.startsWith("postgres://")) {
+      return rawEnv;
+    }
+    // If someone passed a Supabase HTTPS URL (e.g. https://<ref>.supabase.co):
+    try {
+      const cfg = loadSupabaseDbConfig();
+      const extractedRef = rawEnv.replace(/^https?:\/\//i, "").replace(/\.supabase\.co.*$/i, "").replace(/\/.*$/, "");
+      if (extractedRef) {
+        const url = buildSupabasePostgresUrl({
+          ...cfg,
+          projectRef: extractedRef,
+          user: cfg.user || `postgres.${extractedRef}`,
+        });
+        if (url && (url.startsWith("postgresql://") || url.startsWith("postgres://"))) {
+          return url;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return undefined;
+}
+
 /**
- * Active backend: real **Neon** when `DATABASE_URL` is set (deployed / configured
- * sandbox), otherwise a local embedded **PGLite** (Postgres compiled to WASM) so
- * the app has a working database even with nothing configured — the live preview
- * included. Swap in Neon later by just setting `DATABASE_URL`; no code changes.
+ * Active backend: real **Neon/Supabase** when active database URL is set,
+ * otherwise a local embedded **PGLite** (Postgres compiled to WASM).
  */
 export const dbSource: DbSource = databaseUrl ? "neon" : "pglite";
 
+export function getActiveDbSource(): DbSource {
+  return getActiveDatabaseUrl() ? "neon" : "pglite";
+}
+
 /**
- * Minimal shared SQL surface, satisfied by both Neon and PGLite. Both the
+ * Minimal shared SQL surface, satisfied by both Neon/Supabase and PGLite. Both the
  * tagged-template and `.query()` forms resolve to an array of row objects:
  *
  *   const sql = await getSql();
@@ -32,50 +80,98 @@ export const dbSource: DbSource = databaseUrl ? "neon" : "pglite";
 /**
  * Init state lives on globalThis as promises: dev HMR creates new instances of
  * this module, and two instances racing module-level state would open a second
- * pool or run two concurrent PGLite migration passes (whose duplicate
- * `_migrations` insert rejects — and would get memoized, poisoning every later
- * `getSql()`). A failed init clears its slot so the next call retries.
+ * pool or run two concurrent PGLite migration passes.
  */
 const globalRef = globalThis as typeof globalThis & {
   __pgSqlPromise__?: Promise<Sql>;
   __pgliteInstance__?: Promise<import("@electric-sql/pglite").PGlite>;
   __pgliteMigrateChain__?: Promise<void>;
+  __activeDatabaseUrl__?: string;
 };
 
 /**
  * Result-type parity: Postgres sends every value as text plus a type OID — the
- * JS value is the DRIVER's parsing choice, and pg and PGLite disagree (pg:
- * int8 -> string, date -> local-midnight Date; PGLite: int8 -> BigInt, which
- * JSON.stringify rejects, date -> UTC Date). Normalize both so preview and
- * production return identical, JSON-safe shapes:
- *   int8/bigint (incl. count(*)) -> number (past 2^53 loses precision — cast
- *                                   `::text` if you ever need huge integers)
- *   date                         -> 'YYYY-MM-DD' string
- *   interval                     -> Postgres interval text
- * numeric already comes back as a string on both (arbitrary precision).
+ * JS value is the DRIVER's parsing choice, and pg and PGLite disagree.
  */
 const OID_INT8 = 20;
 const OID_DATE = 1082;
 const OID_INTERVAL = 1186;
 const identity = (v: string) => v;
 
-function createNeonSql(): Promise<Sql> {
+export function resetDatabasePool(): void {
+  globalRef.__pgSqlPromise__ = undefined;
+  sqlPromise = null;
+}
+
+export function switchDatabase(url: string | null): void {
+  globalRef.__activeDatabaseUrl__ = url || undefined;
+  resetDatabasePool();
+}
+
+function createNeonSql(customUrl?: string): Promise<Sql> {
+  const targetUrl = customUrl || getActiveDatabaseUrl() || databaseUrl;
   globalRef.__pgSqlPromise__ ??= (async () => {
-    // Regular Postgres driver: node-postgres (`pg`) — works directly with Neon's
-    // pooled endpoint. One pool per process; warm serverless instances reuse it.
+    // Regular Postgres driver: node-postgres (`pg`) — works directly with Neon / Supabase.
     const { Pool, types } = await import("pg");
     types.setTypeParser(OID_INT8, Number);
     types.setTypeParser(OID_DATE, identity);
     types.setTypeParser(OID_INTERVAL, identity);
     const pool = new Pool({
-      connectionString: databaseUrl,
+      connectionString: targetUrl,
       max: 2,
       idleTimeoutMillis: 10_000,
-      connectionTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 12_000,
       query_timeout: 60_000,
       allowExitOnIdle: true,
     });
     pool.on("error", (err) => console.error("[db] Idle connection error:", err.message));
+
+    // Ensure migrations are auto-applied on the target PostgreSQL database
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query(
+          "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+        );
+        const doneRows = await client.query<{ name: string }>("SELECT name FROM _migrations");
+        const done = doneRows.rows.map((r) => r.name);
+        let migrations: Record<string, string> = {};
+        if (typeof import.meta.glob === "function") {
+          migrations = import.meta.glob("/migrations/*.sql", {
+            query: "?raw",
+            import: "default",
+            eager: true,
+          }) as Record<string, string>;
+        } else {
+          const fs = await import("node:fs");
+          const path = await import("node:path");
+          const migDir = path.join(process.cwd(), "migrations");
+          if (fs.existsSync(migDir)) {
+            const files = fs.readdirSync(migDir).filter((f) => f.endsWith(".sql"));
+            for (const file of files) {
+              migrations[`/migrations/${file}`] = fs.readFileSync(path.join(migDir, file), "utf-8");
+            }
+          }
+        }
+        const pending = pendingMigrations(Object.keys(migrations), done);
+        for (const { name, path: mPath } of pending) {
+          await client.query("BEGIN");
+          try {
+            await client.query(migrations[mPath]);
+            await client.query("INSERT INTO _migrations (name) VALUES ($1)", [name]);
+            await client.query("COMMIT");
+          } catch (mErr) {
+            await client.query("ROLLBACK");
+            throw mErr;
+          }
+        }
+      } finally {
+        client.release();
+      }
+    } catch (migErr) {
+      console.warn("[db] Postgres auto-migration notice:", migErr instanceof Error ? migErr.message : String(migErr));
+    }
+
     return createSqlClient(async <T>(text: string, params: unknown[]) => {
       const res = await pool.query(text, params);
       return res.rows as T[];
@@ -174,7 +270,30 @@ async function createSql(): Promise<Sql> {
         "or a server route loader, never from client code.",
     );
   }
-  return dbSource === "neon" ? createNeonSql() : createPgliteSql();
+  return getActiveDatabaseUrl() ? createNeonSql() : createPgliteSql();
+}
+
+export async function getDatabaseInfo(): Promise<{
+  source: "supabase" | "postgres" | "pglite";
+  databaseUrlMasked?: string;
+  connected: boolean;
+  message: string;
+}> {
+  const activeUrl = getActiveDatabaseUrl();
+  if (activeUrl) {
+    const isSupabase = activeUrl.includes("supabase.co") || activeUrl.includes("supabase.com");
+    return {
+      source: isSupabase ? "supabase" : "postgres",
+      databaseUrlMasked: activeUrl.replace(/:\/\/([^:]+):([^@]+)@/, "://$1:••••••@"),
+      connected: true,
+      message: isSupabase ? "Connected to Supabase PostgreSQL database." : "Connected to remote PostgreSQL database.",
+    };
+  }
+  return {
+    source: "pglite",
+    connected: true,
+    message: "Using embedded PGLite (in-memory WASM Postgres).",
+  };
 }
 
 /**

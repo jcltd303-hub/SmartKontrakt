@@ -1,0 +1,12 @@
+{
+  "projectName": "SmartKontrakt",
+  "projectRef": "aadhpvhpjzkkeydzxxhk",
+  "password": "hX*+JxfrR4Q&3BB",
+  "region": "us-west-2",
+  "host": "aws-1-us-west-2.pooler.supabase.com",
+  "port": 6543,
+  "database": "postgres",
+  "user": "postgres.aadhpvhpjzkkeydzxxhk",
+  "mode": "pooler",
+  "active": true
+}
