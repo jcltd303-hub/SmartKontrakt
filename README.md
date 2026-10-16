@@ -60,7 +60,7 @@ Local development can use PGLite without a database connection. On Vercel, archi
 AI threat-model reviews run server-side through OpenRouter (`POST https://openrouter.ai/api/v1/chat/completions`, OpenAI-compatible). No vendor SDK is used — just `fetch` with a bearer key.
 
 - Set `OPENROUTER_API_KEY` in the Vercel project's production + preview environments (server-only, never a browser variable).
-- Optional: set `OPENROUTER_MODEL` to pick the model (default `openai/gpt-4o-mini`). Any OpenRouter model id works.
+- Optional: set `OPENROUTER_MODEL` to pick the model (default `nvidia/nemotron-3-super-120b-a12b:free`). Any OpenRouter model id works.
 - Without a key, reviews fall back to the deterministic template review (`source: "template"`) — the audit still completes.
 
 ## Optional Supabase summary sync

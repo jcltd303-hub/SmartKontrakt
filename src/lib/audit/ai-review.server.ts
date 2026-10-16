@@ -11,7 +11,7 @@ export type AiSecurityReview = {
 export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 /** Default model — overridable with OPENROUTER_MODEL without a code change. */
-export const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
+export const DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free";
 
 export type OpenRouterConfig = {
   apiKey: string | undefined;
