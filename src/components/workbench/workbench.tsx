@@ -16,6 +16,8 @@ import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit
 import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
 import { probeContractInterfaces, type CallProbeResult } from "@/lib/audit/simulator";
 import { requestAiReview } from "@/lib/audit/ai.functions";
+import { getBackendUrl, runPocOnBackend } from "@/lib/audit/foundry-backend";
+import type { PocResult } from "@/lib/audit/types";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
 import { saveComprehensiveScanFn, queryRagKnowledgebaseFn } from "@/lib/scans.functions";
 import type { StoredScan } from "@/lib/audit/persist.server";
@@ -142,6 +144,10 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
   const [probes, setProbes] = useState<CallProbeResult[]>([]);
   const [isProbing, setIsProbing] = useState<boolean>(false);
   const [aiReview, setAiReview] = useState<AiSecurityReview | null>(null);
+  const [pocResult, setPocResult] = useState<PocResult | null>(null);
+  const [pocRunning, setPocRunning] = useState(false);
+  const [pocSaved, setPocSaved] = useState(false);
+  const [savedScanId, setSavedScanId] = useState<string | null>(null);
   const [isLoadingAi, setIsLoadingAi] = useState<boolean>(false);
   const [showCertificate, setShowCertificate] = useState<boolean>(false);
   const [findingTriage, setFindingTriage] = useState<Record<string, { status: "active" | "acknowledged" | "false_positive" | "remediated"; note?: string }>>({});
@@ -199,6 +205,11 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
   // Run audit analysis on user demand or sample switch
   const handleRunAnalysis = (bodyToAnalyze = contractBody, labelToAnalyze = contractLabel) => {
     if (!bodyToAnalyze.trim()) return;
+    // Fresh analysis = fresh scan: drop the previous PoC result / saved id.
+    setPocResult(null);
+    setPocRunning(false);
+    setPocSaved(false);
+    setSavedScanId(null);
     try {
       const generated = analyzeInput(bodyToAnalyze, labelToAnalyze);
       setReport(generated);
@@ -259,9 +270,13 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           sourceOrigin: "workbench",
           indexToRag: true,
         },
-      }).catch((err) => {
-        console.warn("[kiln] Auto-persist to DB & RAG notice:", err);
-      });
+      })
+        .then((saved) => {
+          if (saved?.id) setSavedScanId(saved.id);
+        })
+        .catch((err) => {
+          console.warn("[kiln] Auto-persist to DB & RAG notice:", err);
+        });
     } catch (err) {
       console.error("[Kiln] Analysis failed:", err);
     }
@@ -273,8 +288,9 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     setIsSavingDb(true);
     try {
       const certHash = "0x" + Array.from({ length: 32 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0")).join("");
-      await saveComprehensiveScanFn({
+      const saved = await saveComprehensiveScanFn({
         data: {
+          id: savedScanId ?? undefined,
           label: contractLabel,
           report,
           body: contractBody,
@@ -284,12 +300,14 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           proxyInfo,
           probes,
           aiReview,
+          pocResult: pocResult ?? null,
           triageStates: Object.fromEntries(Object.entries(findingTriage).map(([k, v]) => [k, v.status])),
           certHash,
           sourceOrigin: "workbench",
           indexToRag: andIndexRag,
         },
       });
+      if (saved?.id) setSavedScanId(saved.id);
       setDbSavedNotice(andIndexRag ? "Saved to Supabase DB & Ingested to RAG KB!" : "Saved to Supabase DB!");
       setTimeout(() => setDbSavedNotice(null), 3000);
     } catch (err) {
@@ -307,6 +325,10 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     setContractBody(scan.body);
     setContractLabel(scan.label);
     setReport(scan.report);
+    setSavedScanId(scan.id);
+    setPocResult(scan.pocResult ?? null);
+    setPocRunning(false);
+    setPocSaved(Boolean(scan.pocResult));
     if (scan.targetAddress) setSingleAddress(scan.targetAddress);
     if (scan.chainId) setSingleAddressChain(scan.chainId);
     if (scan.proxyInfo) setProxyInfo(scan.proxyInfo);
@@ -415,6 +437,51 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       } });
       setAiReview(res);
       setActiveTab("ai");
+
+      // Auto-run the generated PoC on the local Termux backend (forge fork),
+      // then persist the outcome to Supabase with this scan.
+      const addr = singleAddress.trim();
+      if (!addr || !isValidEvmAddress(addr) || !res.foundryTestCode?.trim()) {
+        setPocResult({
+          status: "skipped",
+          logs: "Auto PoC skipped — fetch an on-chain address first, then re-generate the review.",
+          durationMs: 0,
+          runAt: new Date().toISOString(),
+        });
+        return;
+      }
+      setPocRunning(true);
+      setPocSaved(false);
+      const poc = await runPocOnBackend(getBackendUrl(), { address: addr, testCode: res.foundryTestCode });
+      setPocResult(poc);
+      setPocRunning(false);
+      // Upsert the same scan row (when known) with the AI review + PoC result.
+      // indexToRag: false — the analysis auto-persist already indexed this report.
+      saveComprehensiveScanFn({
+        data: {
+          id: savedScanId ?? undefined,
+          label: report.label,
+          report,
+          body: contractBody,
+          targetAddress: addr,
+          chainId: singleAddressChain,
+          compilerVersion: report.inventory.compiler,
+          proxyInfo: proxyInfo ?? null,
+          probes: probes ?? [],
+          aiReview: res,
+          pocResult: poc,
+          triageStates: Object.fromEntries(Object.entries(findingTriage).map(([k, v]) => [k, v.status])),
+          sourceOrigin: "workbench",
+          indexToRag: false,
+        },
+      })
+        .then((saved) => {
+          if (saved?.id) setSavedScanId(saved.id);
+          setPocSaved(true);
+        })
+        .catch((err) => {
+          console.warn("[kiln] PoC result save notice:", err);
+        });
     } catch (err) {
       console.warn("[Kiln] AI review failed:", err);
     } finally {
@@ -1717,6 +1784,39 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                       testCode={aiReview.foundryTestCode}
                       address={singleAddress}
                     />
+                    {(pocRunning || pocResult) && (
+                      <div className="mt-2 p-3 bg-[#12110e] rounded-lg border border-[#3a3428] flex flex-col gap-2">
+                        <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-[#e8a54b]">
+                          <span>Auto PoC run{ pocRunning ? " — running on local backend…" : pocSaved ? " — saved to Supabase" : ""}</span>
+                        </div>
+                        {pocResult && (
+                          <>
+                            <p
+                              className={`text-xs font-mono font-bold ${
+                                pocResult.status === "passed"
+                                  ? "text-emerald-400"
+                                  : pocResult.status === "failed"
+                                    ? "text-red-400"
+                                    : "text-amber-300"
+                              }`}
+                            >
+                              {pocResult.status === "passed"
+                                ? `PoC PASSED — exploit reproduced on fork (${pocResult.durationMs}ms)`
+                                : pocResult.status === "failed"
+                                  ? `PoC FAILED — exploit did not reproduce on fork (${pocResult.durationMs}ms)`
+                                  : pocResult.status === "skipped"
+                                    ? "Auto PoC skipped"
+                                    : pocResult.status === "backend_unreachable"
+                                      ? "Backend unreachable — start it in Termux, then re-generate the review"
+                                      : `Backend error: ${pocResult.error ?? "forge run failed"}`}
+                            </p>
+                            <pre className="max-h-64 overflow-y-auto bg-[#0a0908] border border-[#3a3428] rounded p-2 text-[11px] font-mono text-[#f4efe6] whitespace-pre-wrap">
+                              {pocResult.logs || "(no output)"}
+                            </pre>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Threat Model Narrative */}
