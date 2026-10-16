@@ -39,8 +39,22 @@ export function resolveOpenRouterConfig(
  * Extract the JSON payload from a model reply. Models sometimes wrap JSON
  * in ```json fences or add prose around it — find the outermost object.
  */
+/**
+ * Reasoning models (Nemotron included) can leak chain-of-thought into the
+ * message content as <think> blocks. Strip them before parsing or storing —
+ * a stray brace inside a think block breaks JSON extraction, and raw
+ * reasoning must never land in a stored narrative. Handles truncated
+ * output (dangling open tag with no closer).
+ */
+export function stripThinkBlocks(content: string): string {
+  return content
+    .replace(/(?:<think>|<thinking>)[\s\S]*?(?:<\/think>|<\/thinking>)/gi, "")
+    .replace(/(?:<think>|<thinking>)[\s\S]*$/i, "")
+    .trim();
+}
+
 export function extractJsonContent(content: string): unknown {
-  const trimmed = content.trim();
+  const trimmed = stripThinkBlocks(content);
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1].trim() : trimmed;
   try {
@@ -189,8 +203,8 @@ Format your response strictly as JSON with this schema:
             { role: "user", content: userPrompt },
           ],
           response_format: { type: "json_object" },
-          temperature: 0.2,
-          max_tokens: 4000,
+          temperature: 0.7,
+          max_tokens: 6000,
         }),
         signal: AbortSignal.timeout(60_000),
       });

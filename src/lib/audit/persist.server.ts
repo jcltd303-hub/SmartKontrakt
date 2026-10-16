@@ -5,7 +5,7 @@ import type { Finding, Inventory, Report, Severity } from "./types";
 import type { ProxyAnalysis } from "./proxy-resolver";
 import type { CallProbeResult } from "./simulator";
 import type { AiSecurityReview } from "./ai-review.server";
-import { OPENROUTER_API_URL, resolveOpenRouterConfig } from "./ai-review.server";
+import { OPENROUTER_API_URL, resolveOpenRouterConfig, stripThinkBlocks } from "./ai-review.server";
 import { indexReportToRag } from "./rag.server";
 import { openRouterLimiter, withRetry } from "./rate-limit";
 
@@ -470,8 +470,8 @@ export async function secondPass(report: Report, body: string): Promise<{ text: 
         },
         body: JSON.stringify({
           model,
-          max_tokens: 700,
-          temperature: 0.2,
+          max_tokens: 2000,
+          temperature: 0.7,
           messages: [
             {
               role: "system",
@@ -492,7 +492,7 @@ export async function secondPass(report: Report, body: string): Promise<{ text: 
     }, { retries: 3, baseDelayMs: 2000 });
     if (!res.ok) return { text: null, status: "error" };
     const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const text = json.choices?.[0]?.message?.content?.trim() ?? "";
+    const text = stripThinkBlocks(json.choices?.[0]?.message?.content ?? "");
     if (!text) return { text: null, status: "error" };
     return { text: text.slice(0, 4000), status: "ok" };
   } catch {
