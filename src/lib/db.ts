@@ -10,22 +10,51 @@ export type { Sql } from "./sql-client";
 /** Dedicated Supabase PostgreSQL for Vercel production deployment. */
 export type DbSource = "supabase";
 
-// An empty/whitespace DATABASE_URL (an easy misconfig in deploy UIs) must mean
+// An empty/whitespace value (an easy misconfig in deploy UIs) must mean
 // "unset" — otherwise production would silently fail.
-const rawDatabaseUrl =
-  typeof process !== "undefined" ? process.env.DATABASE_URL : undefined;
-const databaseUrl =
-  rawDatabaseUrl && rawDatabaseUrl.trim() ? rawDatabaseUrl.trim() : undefined;
+function cleanPostgresUrl(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith("postgresql://") || trimmed.startsWith("postgres://")) {
+    return trimmed;
+  }
+  return undefined;
+}
+
+/**
+ * Resolve the server database URL from the environment.
+ *
+ * Priority:
+ * 1. DATABASE_URL — explicit override.
+ * 2. Vercel Supabase integration vars (in serverless-preferred order):
+ *    POSTGRES_PRISMA_URL (pooler + pgbouncer), POSTGRES_URL (pooler),
+ *    POSTGRES_URL_NON_POOLING (direct).
+ *
+ * The Vercel Supabase integration syncs these vars for preview + production.
+ * Reading them here is what actually wires a Vercel deploy to its
+ * Vercel-enabled Supabase project — without them the app would fall back
+ * to a bundled local config instead of the integration's database.
+ */
+export function resolveDatabaseUrlFromEnv(): string | undefined {
+  if (typeof process === "undefined") return undefined;
+  const env = process.env;
+  return (
+    cleanPostgresUrl(env.DATABASE_URL) ??
+    cleanPostgresUrl(env.POSTGRES_PRISMA_URL) ??
+    cleanPostgresUrl(env.POSTGRES_URL) ??
+    cleanPostgresUrl(env.POSTGRES_URL_NON_POOLING)
+  );
+}
+
+const databaseUrl = resolveDatabaseUrlFromEnv();
 
 export function getActiveDatabaseUrl(): string {
   if (typeof window !== "undefined") return "";
   if (globalRef.__activeDatabaseUrl__) return globalRef.__activeDatabaseUrl__;
 
-  // 1. Check process.env.DATABASE_URL
+  // 1. Environment: DATABASE_URL override, then Vercel Supabase integration.
   if (databaseUrl) {
-    if (databaseUrl.startsWith("postgresql://") || databaseUrl.startsWith("postgres://")) {
-      return databaseUrl;
-    }
+    return databaseUrl;
   }
 
   // 2. Check Supabase saved config

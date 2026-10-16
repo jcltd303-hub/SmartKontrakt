@@ -45,11 +45,15 @@ These are synthetic local results. Real RPC latency, report size, network distan
 
 The Vite/Nitro build emits `.vercel/output` with the Vercel preset. Use the GitHub integration with this repository and `npm run build` as the build command. Keep the existing platform/PWA middleware enabled.
 
-Configure **DATABASE_URL** in the Vercel project's production and preview environments for durable archive storage. The server uses `pg`, with at most two connections per warm instance, short idle expiry, and connection/query timeouts. For Supabase, use its transaction pooler endpoint for serverless runtime traffic. Do not put database credentials in browser variables or commit them.
+**Vercel Supabase wiring (the production path):** connect the Vercel Supabase integration to this project. It syncs `POSTGRES_URL`, `POSTGRES_PRISMA_URL`, `POSTGRES_URL_NON_POOLING`, `SUPABASE_URL`, and the Supabase keys for preview + production. The server reads those vars directly — no manual copy-paste:
 
-The existing SQL migrations run during the build when DATABASE_URL is configured. Use a reviewed migration connection/role for schema changes; restrict access to archive tables if the database's public schema is exposed through a Data API. The application has no account/tenant isolation, so deploy it only with access appropriate to your audit data.
+- Runtime (`src/lib/db.ts`) prefers `DATABASE_URL` if set, then `POSTGRES_PRISMA_URL` → `POSTGRES_URL` → `POSTGRES_URL_NON_POOLING` (the integration's pooler URLs, right for serverless traffic).
+- Build-time migrations (`scripts/migrate-vercel.mjs`, run by `npm run db:migrate`) prefer `DATABASE_URL`, then `POSTGRES_URL_NON_POOLING` (direct, best for DDL), then the pooler URLs. Migrations apply on every deploy and are recorded in `_migrations`, so they run once and are safe to re-run.
+- `DATABASE_URL` remains as an optional explicit override. Do not put database credentials in browser variables or commit them.
 
-Local development can use PGLite without a database connection. On Vercel, archive writes fail clearly when DATABASE_URL is missing rather than acknowledging writes into a temporary in-memory database.
+The application has no account/tenant isolation, so deploy it only with access appropriate to your audit data.
+
+Local development can use PGLite without a database connection. On Vercel, archive writes fail clearly when no Postgres URL is present rather than acknowledging writes into a temporary in-memory database.
 
 ## Optional Supabase summary sync
 
