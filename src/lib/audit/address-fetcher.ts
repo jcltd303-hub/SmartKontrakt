@@ -1,5 +1,6 @@
 import type { Report } from "./types";
 import { analyzeInput } from "./engine";
+import { rpcLimiter, sourcifyLimiter, withRetry } from "./rate-limit";
 
 export type SupportedChain = {
   id: string;
@@ -322,11 +323,17 @@ export function parseAddressList(
  */
 async function fetchSourcifySource(address: string, chainIdNumber: number): Promise<{ source: string; name: string } | null> {
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4000);
     const url = `https://sourcify.dev/server/files/any/${chainIdNumber}/${address}`;
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timer);
+    const res = await withRetry(async () => {
+      await sourcifyLimiter.acquire();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4000);
+      try {
+        return await fetch(url, { signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    }, { retries: 2, baseDelayMs: 1000 });
     if (!res.ok) return null;
 
     const data = (await res.json()) as { files?: { name: string; content: string }[] };
@@ -355,22 +362,26 @@ async function fetchSourcifySource(address: string, chainIdNumber: number): Prom
 async function fetchBytecodeRpc(address: string, rpcUrls: string[]): Promise<string | null> {
   for (const rpcUrl of rpcUrls) {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
-
-      const res = await fetch(rpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "eth_getCode",
-          params: [address, "latest"],
-          id: 1,
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timer);
+      const res = await withRetry(async () => {
+        await rpcLimiter.acquire();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
+        try {
+          return await fetch(rpcUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              method: "eth_getCode",
+              params: [address, "latest"],
+              id: 1,
+            }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+      }, { retries: 1, baseDelayMs: 1500 });
 
       if (!res.ok) continue;
       const json = (await res.json()) as { result?: string; error?: unknown };

@@ -1,4 +1,5 @@
 import type { Finding } from "./types";
+import { openRouterLimiter, withRetry } from "./rate-limit";
 
 export type AiSecurityReview = {
   threatModelReport: string;
@@ -167,30 +168,33 @@ Format your response strictly as JSON with this schema:
       process.env.VERCEL_URL?.trim() ||
       "https://smart-kontrakt.vercel.app";
 
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": referer,
-        "X-Title": "SmartKontrakt / Kiln",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a Principal EVM Security Auditor and White-Hat Exploit Researcher. Analyze the smart contract code / bytecode and detected vulnerabilities. Respond strictly as JSON matching the requested schema.",
-          },
-          { role: "user", content: userPrompt },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.2,
-        max_tokens: 4000,
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
+    const response = await withRetry(async () => {
+      await openRouterLimiter.acquire();
+      return fetch(OPENROUTER_API_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": referer,
+          "X-Title": "SmartKontrakt / Kiln",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a Principal EVM Security Auditor and White-Hat Exploit Researcher. Analyze the smart contract code / bytecode and detected vulnerabilities. Respond strictly as JSON matching the requested schema.",
+            },
+            { role: "user", content: userPrompt },
+          ],
+          response_format: { type: "json_object" },
+          temperature: 0.2,
+          max_tokens: 4000,
+        }),
+        signal: AbortSignal.timeout(60_000),
+      });
+    }, { retries: 3, baseDelayMs: 2000 });
 
     if (!response.ok) {
       const detail = (await response.text().catch(() => "")).slice(0, 500);

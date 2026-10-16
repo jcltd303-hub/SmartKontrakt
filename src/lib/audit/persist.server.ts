@@ -7,6 +7,7 @@ import type { CallProbeResult } from "./simulator";
 import type { AiSecurityReview } from "./ai-review.server";
 import { OPENROUTER_API_URL, resolveOpenRouterConfig } from "./ai-review.server";
 import { indexReportToRag } from "./rag.server";
+import { openRouterLimiter, withRetry } from "./rate-limit";
 
 export type ScanSummary = {
   id: string;
@@ -426,12 +427,6 @@ export type ComprehensiveRecordInput = {
   certHash?: string | null;
   sourceOrigin?: string;
   indexToRag?: boolean;
-  /**
-   * Opt-in OpenRouter second pass for this record (pipeline AI toggle).
-   * Single saves always run the second pass; bulk saves only run it for
-   * flagged records, since it costs one LLM call per address.
-   */
-  runAiSecondPass?: boolean;
 };
 
 /**
@@ -442,25 +437,14 @@ export async function saveBatchComprehensiveRecords(
   records: ComprehensiveRecordInput[]
 ): Promise<{ savedCount: number; ids: string[] }> {
   const sql = await getSql();
-  // Opt-in OpenRouter second pass for pipeline records flagged by the AI toggle.
-  // Bounded to 3 concurrent LLM calls; a failure leaves the static report intact.
-  const flagged = records.filter((r) => r.runAiSecondPass && r.report.aiNarrative == null);
-  for (let i = 0; i < flagged.length; i += 3) {
-    const chunk = flagged.slice(i, i + 3);
-    await Promise.all(chunk.map(async (r) => {
-      try {
-        const pass = await secondPass(r.report, r.body);
-        if (pass.text) r.report.aiNarrative = pass.text;
-        r.report.aiStatus = pass.status;
-      } catch {
-        // Static report still saves.
-      }
-    }));
-  }
+  // Pure SQL bulk write — no LLM calls here. A 50-record batch with per-record
+  // AI would blow past the serverless function timeout and stall the flush at
+  // 0 records. The pipeline runs the AI second pass per item (client-side,
+  // via runSecondPassFn) before enqueue, so the bulk save stays fast.
   return writeAuditBatch(sql, records);
 }
 
-async function secondPass(report: Report, body: string): Promise<{ text: string | null; status: Report["aiStatus"] }> {
+export async function secondPass(report: Report, body: string): Promise<{ text: string | null; status: Report["aiStatus"] }> {
   // Second pass goes through OpenRouter, same as the AI review panel —
   // the old xAI/Grok path (XAI_API_KEY, api.x.ai, grok-4.5) was never
   // migrated and silently returned "unavailable" on every audit.
@@ -473,36 +457,39 @@ async function secondPass(report: Report, body: string): Promise<{ text: string 
   const notes = report.inventory.notes.join("\n");
   const excerpt = body.slice(0, 6000);
   try {
-    const res = await fetch(OPENROUTER_API_URL, {
-      method: "POST",
-      signal: AbortSignal.timeout(28_000),
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": process.env.APP_URL?.trim() || "https://smart-kontrakt.vercel.app",
-        "X-Title": "SmartKontrakt / Kiln",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 700,
-        temperature: 0.2,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are the second pass on a smart-contract audit. The static detectors already ran. " +
-              "Add only issues they missed, or one sharper exploit note if their lead finding is real but shallow. " +
-              "Do not repeat their list. Under 280 words. Plain prose. " +
-              "If you have nothing new, reply exactly: No additional issues beyond the static report. " +
-              "Never invent a mainnet address or a line you were not shown.",
-          },
-          {
-            role: "user",
-            content: `KIND: ${report.inputKind}\nSUMMARY: ${report.summary}\nNOTES:\n${notes}\n\nSTATIC FINDINGS:\n${listed || "(none)"}\n\nINPUT:\n${excerpt}`,
-          },
-        ],
-      }),
-    });
+    const res = await withRetry(async () => {
+      await openRouterLimiter.acquire();
+      return fetch(OPENROUTER_API_URL, {
+        method: "POST",
+        signal: AbortSignal.timeout(28_000),
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "HTTP-Referer": process.env.APP_URL?.trim() || "https://smart-kontrakt.vercel.app",
+          "X-Title": "SmartKontrakt / Kiln",
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 700,
+          temperature: 0.2,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are the second pass on a smart-contract audit. The static detectors already ran. " +
+                "Add only issues they missed, or one sharper exploit note if their lead finding is real but shallow. " +
+                "Do not repeat their list. Under 280 words. Plain prose. " +
+                "If you have nothing new, reply exactly: No additional issues beyond the static report. " +
+                "Never invent a mainnet address or a line you were not shown.",
+            },
+            {
+              role: "user",
+              content: `KIND: ${report.inputKind}\nSUMMARY: ${report.summary}\nNOTES:\n${notes}\n\nSTATIC FINDINGS:\n${listed || "(none)"}\n\nINPUT:\n${excerpt}`,
+            },
+          ],
+        }),
+      });
+    }, { retries: 3, baseDelayMs: 2000 });
     if (!res.ok) return { text: null, status: "error" };
     const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const text = json.choices?.[0]?.message?.content?.trim() ?? "";

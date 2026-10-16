@@ -1,4 +1,5 @@
 import { SUPPORTED_CHAINS } from "./address-fetcher";
+import { rpcLimiter, withRetry } from "./rate-limit";
 
 export type CallProbeResult = {
   selector: string;
@@ -76,22 +77,26 @@ export async function executeEthCall(
 
   for (const rpcUrl of chain.rpcUrls) {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 4000);
-
-      const res = await fetch(rpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "eth_call",
-          params: [{ to: address, data: calldata }, "latest"],
-          id: 1,
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timer);
+      const res = await withRetry(async () => {
+        await rpcLimiter.acquire();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4000);
+        try {
+          return await fetch(rpcUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              method: "eth_call",
+              params: [{ to: address, data: calldata }, "latest"],
+              id: 1,
+            }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+      }, { retries: 1, baseDelayMs: 1500 });
       if (!res.ok) continue;
 
       const data = (await res.json()) as { result?: string; error?: { message?: string } };

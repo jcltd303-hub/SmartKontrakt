@@ -19,6 +19,8 @@ import {
   type SupabaseConfig,
 } from "@/lib/supabase";
 import { AsyncBatchWriter, ByteLruCache } from "@/lib/audit/batch-writer";
+import { withRetry } from "@/lib/audit/rate-limit";
+import { runSecondPassFn } from "@/lib/audit/ai.functions";
 import { BatchQueue, retargetBatchQueue } from "@/lib/audit/batch-queue";
 import { initializeBatchQueue, saveBatchCheckpoint } from "@/lib/audit/batch-checkpoint";
 import type { Report } from "@/lib/audit/types";
@@ -446,22 +448,43 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
         setCurrentIndex(i);
         const scanId = item.scanId ?? crypto.randomUUID();
         updateQueueItem(i, { status: "analyzing", error: undefined, scanId, persisted: false });
-        // Static analysis, proxy detection and view probes run in parallel —
-        // proxy/probes are best-effort and never fail the item.
-        const [analysisOutcome, proxyOutcome, probeOutcome] = await Promise.allSettled([
-          analyzeAddress(item.address, item.chainId, item.label),
-          detectProxyArchitecture(item.address, item.chainId),
-          probeContractInterfaces(item.address, item.chainId),
-        ]);
-        if (analysisOutcome.status === "rejected") {
-          const err = analysisOutcome.reason;
+        // Proxy detection + view probes start now so they run in parallel
+        // with the analysis; both are best-effort and never fail the item.
+        const proxyPromise = detectProxyArchitecture(item.address, item.chainId).then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        );
+        const probePromise = probeContractInterfaces(item.address, item.chainId).then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        );
+        // Analyze with retries: every queued address is a contract, so a
+        // failure here is a transient provider hiccup, not a dead address.
+        let result: Awaited<ReturnType<typeof analyzeAddress>>;
+        try {
+          result = await withRetry(() => analyzeAddress(item.address, item.chainId, item.label), {
+            retries: 2, baseDelayMs: 2000, retryOn: () => true,
+          });
+        } catch (err) {
           updateQueueItem(i, { status: "failed", error: err instanceof Error ? err.message : String(err) });
           if (delayMs > 0 && isRunningRef.current) await new Promise((resolve) => setTimeout(resolve, delayMs));
           continue;
         }
-        const result = analysisOutcome.value;
+        const [proxyOutcome, probeOutcome] = await Promise.all([proxyPromise, probePromise]);
         const proxyInfo = proxyOutcome.status === "fulfilled" ? proxyOutcome.value : null;
         const probes = probeOutcome.status === "fulfilled" ? probeOutcome.value : [];
+        // Opt-in OpenRouter second pass, per item (keeps the bulk save fast —
+        // a bulk save with per-record LLM calls blows the function timeout
+        // and stalls the flush at 0 records). Never fails the item.
+        if (aiSecondPass) {
+          try {
+            const pass = await runSecondPassFn({ data: { report: result.report, body: result.rawBody } });
+            if (pass.text) result.report.aiNarrative = pass.text;
+            result.report.aiStatus = pass.status;
+          } catch (err) {
+            console.warn("[pipeline] AI second pass notice:", err);
+          }
+        }
         if (!mountedRef.current) break;
         const counts = { critical: 0, high: 0 };
         for (const finding of result.report.findings) {
@@ -484,7 +507,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             id: scanId, label: updatedItem.label, report: result.report, body: result.rawBody,
             targetAddress: item.address, chainId: item.chainId,
             compilerVersion: result.report.inventory.compiler, sourceOrigin: "pipeline", indexToRag: true,
-            proxyInfo, probes, runAiSecondPass: aiSecondPass,
+            proxyInfo, probes,
           });
           localEnqueued = true;
           updateQueueItem(i, { ...updatedItem, persisted: items[i].persisted });
