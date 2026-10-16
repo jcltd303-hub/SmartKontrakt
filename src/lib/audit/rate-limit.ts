@@ -29,7 +29,9 @@ export class RateLimiter {
 /** Conservative defaults. The 429 backoff in withRetry is the adaptive mechanism — these just keep us polite. */
 export const rpcLimiter = new RateLimiter(200); // 5 JSON-RPC req/sec
 export const sourcifyLimiter = new RateLimiter(500); // 2 Sourcify req/sec
-export const openRouterLimiter = new RateLimiter(3000); // 20 OpenRouter req/min
+// Paid account ($10 credit) — NOT the free tier, so this is 1/sec, not the
+// free-tier trickle. 429 backoff still adapts if the provider throttles.
+export const openRouterLimiter = new RateLimiter(1000); // 60 OpenRouter req/min
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
