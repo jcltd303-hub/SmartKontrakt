@@ -401,7 +401,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     }
   };
 
-  // Request AI Threat Modeling & Foundry Test Suite (Gemini API)
+  // Request AI Threat Modeling & Foundry Test Suite (OpenRouter API)
   const handleTriggerAiReview = async () => {
     if (!report) return;
     setIsLoadingAi(true);
@@ -1649,7 +1649,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                   <div className="flex items-center gap-2">
                     <Sparkles className="w-4 h-4 text-[#e8a54b]" />
                     <h3 className="text-sm font-bold font-mono text-[#f4efe6]">
-                      Gemini AI Threat Modeling & Foundry Exploit Suite
+                      OpenRouter AI Threat Modeling & Foundry Exploit Suite
                     </h3>
                   </div>
                   <p className="text-xs text-[#a39886] mt-0.5">
@@ -1664,7 +1664,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                     className="px-3.5 py-1.5 rounded bg-[#e8a54b] hover:brightness-110 text-[#12110e] font-bold font-mono text-xs flex items-center gap-1.5 shadow transition-all disabled:opacity-50"
                   >
                     {isLoadingAi ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                    <span>{isLoadingAi ? "Analyzing..." : "Re-Analyze with Gemini"}</span>
+                    <span>{isLoadingAi ? "Analyzing..." : "Re-Analyze with OpenRouter"}</span>
                   </button>
                 </div>
               </div>
@@ -1684,7 +1684,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                     <div>
                       <span className="font-bold text-[#e8a54b]">Economic Risk Profile: </span>
                       <span className="text-[#f4efe6]">{aiReview.economicRiskSummary}</span>
-                      <span className="text-[10px] text-[#746c60] ml-2">({aiReview.source === "gemini" ? "Gemini-3.8-Flash Live Engine" : "Structured Baseline Template"})</span>
+                      <span className="text-[10px] text-[#746c60] ml-2">({aiReview.source === "openrouter" ? "OpenRouter Live Engine" : "Structured Baseline Template"})</span>
                     </div>
                   </div>
 

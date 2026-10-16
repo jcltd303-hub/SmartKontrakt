@@ -5,6 +5,7 @@ import type { Finding, Inventory, Report, Severity } from "./types";
 import type { ProxyAnalysis } from "./proxy-resolver";
 import type { CallProbeResult } from "./simulator";
 import type { AiSecurityReview } from "./ai-review.server";
+import { OPENROUTER_API_URL, resolveOpenRouterConfig } from "./ai-review.server";
 import { indexReportToRag } from "./rag.server";
 
 export type ScanSummary = {
@@ -430,7 +431,10 @@ export async function saveBatchComprehensiveRecords(
 }
 
 async function secondPass(report: Report, body: string): Promise<{ text: string | null; status: Report["aiStatus"] }> {
-  const apiKey = process.env.XAI_API_KEY;
+  // Second pass goes through OpenRouter, same as the AI review panel —
+  // the old xAI/Grok path (XAI_API_KEY, api.x.ai, grok-4.5) was never
+  // migrated and silently returned "unavailable" on every audit.
+  const { apiKey, model } = resolveOpenRouterConfig();
   if (!apiKey) return { text: null, status: "unavailable" };
   const listed = report.findings
     .slice(0, 12)
@@ -439,15 +443,17 @@ async function secondPass(report: Report, body: string): Promise<{ text: string 
   const notes = report.inventory.notes.join("\n");
   const excerpt = body.slice(0, 6000);
   try {
-    const res = await fetch("https://api.x.ai/v1/chat/completions", {
+    const res = await fetch(OPENROUTER_API_URL, {
       method: "POST",
       signal: AbortSignal.timeout(28_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": process.env.APP_URL?.trim() || "https://smart-kontrakt.vercel.app",
+        "X-Title": "SmartKontrakt / Kiln",
       },
       body: JSON.stringify({
-        model: "grok-4.5",
+        model,
         max_tokens: 700,
         temperature: 0.2,
         messages: [
