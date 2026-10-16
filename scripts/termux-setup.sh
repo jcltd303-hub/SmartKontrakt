@@ -16,7 +16,11 @@ export PATH="$HOME/.foundry/bin:$PATH"
 if ! command -v forge >/dev/null 2>&1; then
   echo "Installing Foundry via foundryup..."
   curl -L https://foundry.paradigm.xyz | bash
-  "$HOME/.foundry/bin/foundryup"
+  # foundryup is a glibc binary; on Termux it may fail to exec ("required file
+  # not found" = missing loader, not missing file). Don't let set -e kill the
+  # script here — fall through to the forge check below, which prints the
+  # proot fallback.
+  "$HOME/.foundry/bin/foundryup" || true
 fi
 
 # The prebuilt Foundry binary sometimes refuses to run under Termux
@@ -24,11 +28,11 @@ fi
 if ! forge --version >/dev/null 2>&1; then
   cat <<'EOF'
 forge does not run under Termux on this device. Fallback: proot Ubuntu.
+proot shares the phone's network, so the browser still reaches 127.0.0.1:8787.
   pkg install -y proot-distro
   proot-distro install ubuntu
-  proot-distro login ubuntu
-Inside Ubuntu, re-run this script (curl + foundryup work there), then start
-the server the same way: node termux-backend/server.mjs
+  proot-distro login ubuntu -- bash -c "apt update && apt install -y git nodejs curl && git clone https://github.com/jcltd303-hub/SmartKontrakt.git && cd SmartKontrakt && bash scripts/termux-setup.sh"
+Inside Ubuntu the same script finishes (glibc present) and starts the server.
 EOF
   exit 1
 fi
