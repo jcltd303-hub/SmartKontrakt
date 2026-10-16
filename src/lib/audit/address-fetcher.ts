@@ -82,12 +82,169 @@ export type BatchItem = {
  * Validates if a string matches standard EVM 20-byte hex address
  */
 export function isValidEvmAddress(address: string): boolean {
-  return /^0x[0-9a-fA-F]{40}$/.test(address.trim());
+  if (!address) return false;
+  const clean = address.trim();
+  return /^0x[0-9a-fA-F]{40}$/i.test(clean);
+}
+
+/**
+ * Extracts the EVM contract address from the first column of a CSV or multiline text row.
+ * Handles:
+ * - CSV files with quotes: "0x123...","Contract Name",...
+ * - CSV files without quotes: 0x123...,Contract Name,...
+ * - Semicolon and tab delimited formats
+ * - Excel CSV files with UTF-8 BOM (\uFEFF)
+ * - Single address per line: 0x123...
+ * - Addresses with comments or labels: 0x123... # Uniswap Token
+ * Skips CSV headers, comments, empty lines, and lines where the first column is not an EVM address.
+ */
+export function extractFirstColAddress(line: string): { address: string; label?: string; chainIdHint?: string } | null {
+  let trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//")) return null;
+  if (trimmed.charCodeAt(0) === 0xfeff) trimmed = trimmed.slice(1).trim();
+
+  let col1 = "";
+  let col2 = "";
+  let col3 = "";
+
+  if (trimmed.charCodeAt(0) === 34 || trimmed.charCodeAt(0) === 39) {
+    // Quoted first column: e.g. "0x...", "label"
+    const q = trimmed.charAt(0);
+    let i = 1;
+    while (i < trimmed.length) {
+      if (trimmed.charAt(i) === q) {
+        if (i + 1 < trimmed.length && trimmed.charAt(i + 1) === q) {
+          col1 += q;
+          i += 2;
+          continue;
+        }
+        break;
+      }
+      col1 += trimmed.charAt(i);
+      i++;
+    }
+
+    let remainder = trimmed.slice(i + 1).trim();
+    if (remainder.startsWith(",") || remainder.startsWith(";") || remainder.startsWith("\t")) {
+      remainder = remainder.slice(1).trim();
+    }
+
+    if (remainder) {
+      if (remainder.charCodeAt(0) === 34 || remainder.charCodeAt(0) === 39) {
+        const q2 = remainder.charAt(0);
+        let j = 1;
+        while (j < remainder.length) {
+          if (remainder.charAt(j) === q2) {
+            if (j + 1 < remainder.length && remainder.charAt(j + 1) === q2) {
+              col2 += q2;
+              j += 2;
+              continue;
+            }
+            break;
+          }
+          col2 += remainder.charAt(j);
+          j++;
+        }
+        const rem2 = remainder.slice(j + 1).trim();
+        if (rem2.startsWith(",") || rem2.startsWith(";")) {
+          col3 = rem2.slice(1).trim().replace(/^["']|["']$/g, "");
+        }
+      } else {
+        const delim = remainder.search(/[,;\t]/);
+        if (delim !== -1) {
+          col2 = remainder.slice(0, delim).trim();
+          col3 = remainder.slice(delim + 1).trim().replace(/^["']|["']$/g, "");
+        } else {
+          col2 = remainder;
+        }
+      }
+    }
+  } else {
+    // Unquoted first column: check for delimiter (comma, semicolon, tab)
+    const delimMatch = trimmed.match(/[,;\t]/);
+    if (delimMatch && delimMatch.index !== undefined) {
+      const idx = delimMatch.index;
+      col1 = trimmed.slice(0, idx).trim().replace(/^["']|["']$/g, "");
+      const remainder = trimmed.slice(idx + 1).trim();
+
+      if (remainder) {
+        if (remainder.charCodeAt(0) === 34 || remainder.charCodeAt(0) === 39) {
+          const q2 = remainder.charAt(0);
+          let j = 1;
+          while (j < remainder.length) {
+            if (remainder.charAt(j) === q2) {
+              if (j + 1 < remainder.length && remainder.charAt(j + 1) === q2) {
+                col2 += q2;
+                j += 2;
+                continue;
+              }
+              break;
+            }
+            col2 += remainder.charAt(j);
+            j++;
+          }
+          const rem2 = remainder.slice(j + 1).trim();
+          if (rem2.startsWith(",") || rem2.startsWith(";")) {
+            col3 = rem2.slice(1).trim().replace(/^["']|["']$/g, "");
+          }
+        } else {
+          const delim2 = remainder.search(/[,;\t]/);
+          if (delim2 !== -1) {
+            col2 = remainder.slice(0, delim2).trim();
+            col3 = remainder.slice(delim2 + 1).trim().replace(/^["']|["']$/g, "");
+          } else {
+            col2 = remainder;
+          }
+        }
+      }
+    } else {
+      // Space or hash separation (e.g. "0x123... # Uniswap" or "0x123... Uniswap")
+      const sepMatch = trimmed.match(/[\s#]/);
+      if (sepMatch && sepMatch.index !== undefined) {
+        col1 = trimmed.slice(0, sepMatch.index).trim().replace(/^["']|["']$/g, "");
+        col2 = trimmed.slice(sepMatch.index).trim().replace(/^[#:\-\s]+/, "").trim();
+      } else {
+        col1 = trimmed.replace(/^["']|["']$/g, "");
+      }
+    }
+  }
+
+  // Clean and validate address in first column
+  let cleanAddr = col1.trim();
+  if (cleanAddr.charCodeAt(0) === 0xfeff) cleanAddr = cleanAddr.slice(1).trim();
+  if (cleanAddr.startsWith("ethereum:")) cleanAddr = cleanAddr.slice(9);
+  if (!isValidEvmAddress(cleanAddr)) return null;
+
+  // Clean label from second column
+  let label = col2.trim().replace(/^["']|["']$/g, "").trim();
+  if (label && (label.startsWith("//") || label.startsWith("#"))) {
+    label = label.replace(/^[#/\-\s]+/, "").trim();
+  }
+  // If label is purely numeric (e.g. balance or id like 100000000), omit it so default format is used
+  if (/^\d+(\.\d+)?$/.test(label)) {
+    label = "";
+  }
+
+  // Optional Chain ID hint from column 3
+  let chainIdHint: string | undefined;
+  if (col3) {
+    const c3 = col3.trim().toLowerCase();
+    const match = SUPPORTED_CHAINS.find(
+      (c) => c.id === c3 || c.chainId.toString() === c3 || c.name.toLowerCase().includes(c3)
+    );
+    if (match) chainIdHint = match.id;
+  }
+
+  return {
+    address: cleanAddr.toLowerCase(),
+    label: label ? label.slice(0, 60) : undefined,
+    chainIdHint,
+  };
 }
 
 /**
  * High-performance, zero-allocation line scanner to count valid EVM addresses
- * without creating intermediate string arrays or BatchItem objects.
+ * in the first column of CSV or multiline text.
  */
 export function countValidAddresses(text: string): number {
   if (!text) return 0;
@@ -100,18 +257,11 @@ export function countValidAddresses(text: string): number {
     let end = text.indexOf("\n", start);
     if (end === -1) end = len;
 
-    if (end - start >= 42) {
-      const hexOffset = text.indexOf("0x", start);
-      if (hexOffset !== -1 && hexOffset + 42 <= end) {
-        const cand = text.slice(hexOffset, hexOffset + 42);
-        if (isValidEvmAddress(cand)) {
-          const lower = cand.toLowerCase();
-          if (!seen.has(lower)) {
-            seen.add(lower);
-            count++;
-          }
-        }
-      }
+    const line = text.slice(start, end);
+    const parsed = extractFirstColAddress(line);
+    if (parsed && !seen.has(parsed.address)) {
+      seen.add(parsed.address);
+      count++;
     }
 
     start = end + 1;
@@ -121,9 +271,10 @@ export function countValidAddresses(text: string): number {
 }
 
 /**
- * High-performance parser for large address lists (e.g. 50,000+ contracts).
- * Uses index-based streaming line scanning rather than text.split to avoid
- * memory spikes, garbage collection pauses, and temporary string arrays.
+ * High-performance parser for large address lists and CSV files (e.g. 50,000+ contracts).
+ * Accurately extracts the EVM address from the FIRST column of each CSV row,
+ * optionally pulling the contract label from column 2 and network from column 3.
+ * Skips CSV headers, non-address rows, and duplicates.
  */
 export function parseAddressList(
   text: string,
@@ -142,41 +293,21 @@ export function parseAddressList(
     let end = text.indexOf("\n", start);
     if (end === -1) end = len;
 
-    const lineLen = end - start;
-    if (lineLen >= 42) {
-      const hexOffset = text.indexOf("0x", start);
-      if (hexOffset !== -1 && hexOffset + 42 <= end) {
-        const addrCandidate = text.slice(hexOffset, hexOffset + 42);
-        if (isValidEvmAddress(addrCandidate)) {
-          const lowerAddr = addrCandidate.toLowerCase();
-          if (!seen.has(lowerAddr)) {
-            seen.add(lowerAddr);
+    const line = text.slice(start, end);
+    const parsed = extractFirstColAddress(line);
+    if (parsed && !seen.has(parsed.address)) {
+      seen.add(parsed.address);
+      const lowerAddr = parsed.address;
+      const label = parsed.label || `Contract ${lowerAddr.slice(0, 6)}...${lowerAddr.slice(-4)}`;
+      const chainId = parsed.chainIdHint || defaultChainId;
 
-            // Extract optional label from remainder of line
-            let label = "";
-            const before = text.slice(start, hexOffset).trim();
-            const after = text.slice(hexOffset + 42, end).trim();
-            const remainder = (before ? before + " " : "") + after;
-            if (remainder) {
-              const cleaned = remainder.replace(/^[#,:\-\s]+/, "").trim();
-              if (cleaned && !cleaned.startsWith("//")) {
-                label = cleaned.slice(0, 60);
-              }
-            }
-            if (!label) {
-              label = `Contract ${lowerAddr.slice(0, 6)}...${lowerAddr.slice(-4)}`;
-            }
-
-            items.push({
-              id: `addr-${lowerAddr}-${lineIdx}`,
-              address: lowerAddr,
-              label,
-              chainId: defaultChainId,
-              status: "pending",
-            });
-          }
-        }
-      }
+      items.push({
+        id: `addr-${lowerAddr}-${lineIdx}`,
+        address: lowerAddr,
+        label,
+        chainId,
+        status: "pending",
+      });
     }
 
     start = end + 1;

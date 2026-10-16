@@ -892,17 +892,17 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             <div className="flex items-center gap-2">
               <FileText className="w-4 h-4 text-[#e8a54b]" />
               <h3 className="text-xs font-mono font-bold text-[#f4efe6] uppercase">
-                Input Addresses (1 per line)
+                Input Addresses (CSV or 1 per line)
               </h3>
             </div>
             <div className="flex items-center gap-2 text-xs">
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className="px-2.5 py-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[11px] font-mono text-[#f4efe6] flex items-center gap-1 transition-colors"
-                title="Upload .txt or .csv"
+                title="Upload .csv or .txt (parses 1st column)"
               >
                 <Upload className="w-3 h-3 text-[#e8a54b]" />
-                <span>Upload .txt</span>
+                <span>Upload .csv / .txt</span>
               </button>
               <button
                 onClick={() => {
@@ -944,7 +944,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
               setInputText(e.target.value);
               if (fileMeta) setFileMeta(null);
             }}
-            placeholder={`0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984 # Uniswap Token\n0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D`}
+            placeholder={`ContractAddress,Name,Chain\n0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984,Uniswap Token,ethereum\n0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D,Router02,ethereum`}
             spellCheck={false}
             className="w-full h-56 bg-[#12110e] border border-[#3a3428] rounded-lg p-3 font-mono text-xs text-[#f4efe6] focus:outline-none focus:border-[#e8a54b] leading-relaxed resize-none"
           />
