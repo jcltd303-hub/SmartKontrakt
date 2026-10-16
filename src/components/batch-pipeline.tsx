@@ -6,6 +6,8 @@ import {
   SUPPORTED_CHAINS,
   type BatchItem,
 } from "@/lib/audit/address-fetcher";
+import { detectProxyArchitecture } from "@/lib/audit/proxy-resolver";
+import { probeContractInterfaces } from "@/lib/audit/simulator";
 import {
   getStoredSupabaseConfig,
   saveStoredSupabaseConfig,
@@ -67,6 +69,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
   const [inputText, setInputText] = useState<string>(SAMPLE_BATCH_INPUT);
   const [selectedChainId, setSelectedChainId] = useState<string>("ethereum");
   const [delayMs, setDelayMs] = useState<number>(600);
+  const [aiSecondPass, setAiSecondPass] = useState<boolean>(false);
   const [fileMeta, setFileMeta] = useState<{ name: string; count: number; sizeKb: number } | null>(null);
 
   // Pagination state for handling 50,000+ items without DOM bloat
@@ -110,6 +113,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
 
   // Runner state
   const [isRunning, setIsRunning] = useState<boolean>(false);
+  const [isPausing, setIsPausing] = useState<boolean>(false);
   const [currentIndex, setCurrentIndex] = useState<number>(-1);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [filterQuery, setFilterQuery] = useState<string>("");
@@ -162,11 +166,16 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
   }, [queueStore, repaintQueue]);
 
   const setQueue = useCallback((next: BatchItem[] | ((previous: BatchItem[]) => BatchItem[])) => {
-    if (runnerActiveRef.current) return false;
-    if ((localWriterRef.current?.stats.pendingCount ?? 0) || (remoteWriterRef.current?.stats.pendingCount ?? 0) || queueStore.summary.unsynced) {
-      setDbSyncStats((previous) => ({ ...previous, lastError: "Flush pending writes before replacing this queue." }));
+    if (runnerActiveRef.current) {
+      showNotice("Pipeline is still running — pause it before loading a new batch.", false);
       return false;
     }
+    // No pending-writes block: the AsyncBatchWriter buffer is independent of
+    // the UI queue, so replacing the queue never drops buffered records — the
+    // writer keeps flushing them and the scanId guard in its write callback
+    // skips stale persisted markings. Blocking the load on pending writes
+    // used to lock the user out of loading any new batch whenever a flush
+    // kept failing.
     dirtyCheckpointRef.current.clear();
     queueStore.replace(typeof next === "function" ? next(queueStore.items) : next);
     const firstChain = queueStore.items[0]?.chainId;
@@ -175,7 +184,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
     checkpoint(queueStore.items.map((item, index) => [index, item]), true);
     setQueueRevision((v) => v + 1);
     return true;
-  }, [queueStore, checkpoint]);
+  }, [queueStore, checkpoint, showNotice]);
 
   useEffect(() => {
     let canceled = false;
@@ -358,7 +367,15 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
         event.preventDefault(); event.returnValue = "";
       }
     };
+    // Flush when the browser tab is hidden or the page is being put away —
+    // unmount cleanup alone is fire-and-forget and can be cut off mid-flight.
+    const flushOnHidden = () => {
+      if (document.visibilityState === "hidden") void flushDbBuffer().catch(() => undefined);
+    };
+    const flushOnPageHide = () => { void flushDbBuffer().catch(() => undefined); };
     window.addEventListener("beforeunload", beforeUnload);
+    document.addEventListener("visibilitychange", flushOnHidden);
+    window.addEventListener("pagehide", flushOnPageHide);
     return () => {
       isRunningRef.current = false;
       mountedRef.current = false;
@@ -367,6 +384,8 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
       localWriterRef.current?.dispose(); remoteWriterRef.current?.dispose();
       void flushDbBuffer().catch(() => undefined);
       window.removeEventListener("beforeunload", beforeUnload);
+      document.removeEventListener("visibilitychange", flushOnHidden);
+      window.removeEventListener("pagehide", flushOnPageHide);
     };
   }, [flushDbBuffer, repaintQueue]);
 
@@ -427,14 +446,22 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
         setCurrentIndex(i);
         const scanId = item.scanId ?? crypto.randomUUID();
         updateQueueItem(i, { status: "analyzing", error: undefined, scanId, persisted: false });
-        let result: Awaited<ReturnType<typeof analyzeAddress>>;
-        try {
-          result = await analyzeAddress(item.address, item.chainId, item.label);
-        } catch (err) {
+        // Static analysis, proxy detection and view probes run in parallel —
+        // proxy/probes are best-effort and never fail the item.
+        const [analysisOutcome, proxyOutcome, probeOutcome] = await Promise.allSettled([
+          analyzeAddress(item.address, item.chainId, item.label),
+          detectProxyArchitecture(item.address, item.chainId),
+          probeContractInterfaces(item.address, item.chainId),
+        ]);
+        if (analysisOutcome.status === "rejected") {
+          const err = analysisOutcome.reason;
           updateQueueItem(i, { status: "failed", error: err instanceof Error ? err.message : String(err) });
           if (delayMs > 0 && isRunningRef.current) await new Promise((resolve) => setTimeout(resolve, delayMs));
           continue;
         }
+        const result = analysisOutcome.value;
+        const proxyInfo = proxyOutcome.status === "fulfilled" ? proxyOutcome.value : null;
+        const probes = probeOutcome.status === "fulfilled" ? probeOutcome.value : [];
         if (!mountedRef.current) break;
         const counts = { critical: 0, high: 0 };
         for (const finding of result.report.findings) {
@@ -457,6 +484,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             id: scanId, label: updatedItem.label, report: result.report, body: result.rawBody,
             targetAddress: item.address, chainId: item.chainId,
             compilerVersion: result.report.inventory.compiler, sourceOrigin: "pipeline", indexToRag: true,
+            proxyInfo, probes, runAiSecondPass: aiSecondPass,
           });
           localEnqueued = true;
           updateQueueItem(i, { ...updatedItem, persisted: items[i].persisted });
@@ -490,11 +518,13 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
     } finally {
       isRunningRef.current = false; runnerActiveRef.current = false;
       repaintQueue();
-      if (mountedRef.current) { setIsRunning(false); setCurrentIndex(-1); }
+      if (mountedRef.current) { setIsRunning(false); setIsPausing(false); setCurrentIndex(-1); }
     }
   };
 
   const pausePipeline = () => {
+    if (!isRunningRef.current) return;
+    setIsPausing(true);
     isRunningRef.current = false;
     void flushDbBuffer().catch(() => undefined);
   };
@@ -941,10 +971,11 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             ) : (
               <button
                 onClick={pausePipeline}
-                className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold font-mono tracking-wide flex items-center gap-1.5 shadow transition-all active:scale-95"
+                disabled={isPausing}
+                className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold font-mono tracking-wide flex items-center gap-1.5 shadow transition-all active:scale-95 disabled:opacity-50"
               >
                 <Pause className="w-4 h-4 fill-current" />
-                <span>PAUSE</span>
+                <span>{isPausing ? "PAUSING..." : "PAUSE"}</span>
               </button>
             )}
 
@@ -1000,6 +1031,21 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
                 <option value={2000}>2.0s</option>
               </select>
             </div>
+
+            {/* OpenRouter AI second pass (opt-in, 1 LLM call per address) */}
+            <label
+              className="flex items-center gap-1.5 text-[11px] font-mono text-[#a39886] pl-2 border-l border-[#3a3428] cursor-pointer"
+              title="Run the OpenRouter AI second pass before saving (1 LLM call per address). Slower; off by default."
+            >
+              <input
+                type="checkbox"
+                checked={aiSecondPass}
+                onChange={(e) => setAiSecondPass(e.target.checked)}
+                disabled={isRunning}
+                className="accent-[#e8a54b]"
+              />
+              <span>AI 2nd pass</span>
+            </label>
           </div>
 
           {/* Quick Metrics Bar */}
@@ -1054,6 +1100,10 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             ) : pendingWriteCount > 0 ? (
               <span className="text-[#e8a54b]">
                 {pendingWriteCount} records buffered
+              </span>
+            ) : dbSyncStats.totalFlushed === 0 ? (
+              <span className="text-[#a39886]">
+                No records written yet
               </span>
             ) : (
               <span className="text-emerald-400 flex items-center gap-1">

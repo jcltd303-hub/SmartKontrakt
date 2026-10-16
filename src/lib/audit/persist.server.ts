@@ -279,6 +279,15 @@ export async function saveComprehensiveRecord(input: {
   const counts = tally(report.findings);
   const contractName = report.inventory.contractNames[0] ?? null;
 
+  // Automatic OpenRouter second pass: every saved audit gets an AI narrative
+  // unless the report already carries one (e.g. re-saving a loaded scan).
+  // Best-effort — an LLM failure must never fail the save.
+  if (report.aiNarrative == null) {
+    const pass = await secondPass(report, input.body);
+    if (pass.text) report.aiNarrative = pass.text;
+    report.aiStatus = pass.status;
+  }
+
   const proxyJson = input.proxyInfo ? JSON.stringify(input.proxyInfo) : null;
   const probesJson = input.probes ? JSON.stringify(input.probes) : null;
   const aiReviewJson = input.aiReview ? JSON.stringify(input.aiReview) : null;
@@ -417,6 +426,12 @@ export type ComprehensiveRecordInput = {
   certHash?: string | null;
   sourceOrigin?: string;
   indexToRag?: boolean;
+  /**
+   * Opt-in OpenRouter second pass for this record (pipeline AI toggle).
+   * Single saves always run the second pass; bulk saves only run it for
+   * flagged records, since it costs one LLM call per address.
+   */
+  runAiSecondPass?: boolean;
 };
 
 /**
@@ -427,6 +442,21 @@ export async function saveBatchComprehensiveRecords(
   records: ComprehensiveRecordInput[]
 ): Promise<{ savedCount: number; ids: string[] }> {
   const sql = await getSql();
+  // Opt-in OpenRouter second pass for pipeline records flagged by the AI toggle.
+  // Bounded to 3 concurrent LLM calls; a failure leaves the static report intact.
+  const flagged = records.filter((r) => r.runAiSecondPass && r.report.aiNarrative == null);
+  for (let i = 0; i < flagged.length; i += 3) {
+    const chunk = flagged.slice(i, i + 3);
+    await Promise.all(chunk.map(async (r) => {
+      try {
+        const pass = await secondPass(r.report, r.body);
+        if (pass.text) r.report.aiNarrative = pass.text;
+        r.report.aiStatus = pass.status;
+      } catch {
+        // Static report still saves.
+      }
+    }));
+  }
   return writeAuditBatch(sql, records);
 }
 
@@ -485,9 +515,7 @@ async function secondPass(report: Report, body: string): Promise<{ text: string 
 
 export async function runAndStore(input: { label: string; body: string }): Promise<StoredScan> {
   const report = analyzeInput(input.body, input.label);
-  const pass = await secondPass(report, input.body);
-  report.aiNarrative = pass.text;
-  report.aiStatus = pass.status;
+  // saveComprehensiveRecord runs the OpenRouter second pass.
   return saveComprehensiveRecord({
     label: input.label,
     report,
