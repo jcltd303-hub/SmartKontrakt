@@ -92,7 +92,7 @@ function databaseUrlProblem(value: string | undefined): string | null {
 }
 
 // ------------------------------------------------- lib imports (dynamic) ----
-const { analyzeAddress, parseAddressList } = await import("../src/lib/audit/address-fetcher.ts");
+const { analyzeAddress, parseAddressList, RpcUnavailableError } = await import("../src/lib/audit/address-fetcher.ts");
 const { detectProxyArchitecture } = await import("../src/lib/audit/proxy-resolver.ts");
 const { probeContractInterfaces } = await import("../src/lib/audit/simulator.ts");
 const { withRetry } = await import("../src/lib/audit/rate-limit.ts");
@@ -244,6 +244,18 @@ async function runLoop(): Promise<void> {
           retryOn: () => true,
         });
       } catch (err) {
+        // RPC outage: park the run as paused instead of failing the item.
+        // The item stays at the current index, so resume retries it.
+        // Marking outage items failed would burn the whole queue on a
+        // transient provider failure (exactly what happened 2026-10-16
+        // when both default RPCs were down).
+        if (err instanceof RpcUnavailableError) {
+          status.lastError = `${item.address}: ${err.message} — run parked, resume retries this item`;
+          console.warn("[worker] run parked (RPC outage):", status.lastError);
+          pauseRequested = true;
+          writeStatusFile();
+          break;
+        }
         status.failed++;
         status.lastError = `${item.address}: ${err instanceof Error ? err.message : String(err)}`;
         ctx.index++;

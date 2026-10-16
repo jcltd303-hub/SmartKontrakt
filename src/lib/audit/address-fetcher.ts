@@ -15,7 +15,17 @@ export const SUPPORTED_CHAINS: SupportedChain[] = [
     id: "ethereum",
     name: "Ethereum Mainnet",
     chainId: 1,
-    rpcUrls: ["https://cloudflare-eth.com", "https://eth.llamarpc.com"],
+    rpcUrls: [
+      // Verified 2026-10-16: Cloudflare-eth returns JSON-RPC -32603
+      // "Internal error" for every request and Llama returns HTTP 525,
+      // so the working public endpoints go first. Ankr is excluded:
+      // it now requires an API key.
+      "https://ethereum.publicnode.com",
+      "https://eth.drpc.org",
+      "https://1rpc.io/eth",
+      "https://cloudflare-eth.com",
+      "https://eth.llamarpc.com",
+    ],
     blockExplorer: "https://etherscan.io",
   },
   {
@@ -357,9 +367,27 @@ async function fetchSourcifySource(address: string, chainIdNumber: number): Prom
 }
 
 /**
+ * Thrown when every RPC endpoint failed to answer (timeouts, HTTP errors,
+ * JSON-RPC error payloads) — as opposed to an RPC answering 0x, which means
+ * the address genuinely has no code. Callers must NOT treat this as an EOA:
+ * the item has to be retried later, not marked failed. A multi-day run
+ * that marks RPC-outage items failed would burn the whole queue.
+ */
+export class RpcUnavailableError extends Error {
+  constructor() {
+    super("RPC_UNAVAILABLE: all RPC endpoints failed to answer (provider outage, not an EOA)");
+    this.name = "RpcUnavailableError";
+  }
+}
+
+/**
  * Fetch deployed runtime bytecode via eth_getCode over public EVM JSON-RPC
  */
 async function fetchBytecodeRpc(address: string, rpcUrls: string[]): Promise<string | null> {
+  // sawResult = at least one RPC answered with a usable result (even 0x).
+  // Only then does "no bytecode" mean the address genuinely has no code.
+  // If every RPC errored, the outage must surface as RpcUnavailableError.
+  let sawResult = false;
   for (const rpcUrl of rpcUrls) {
     try {
       const res = await withRetry(async () => {
@@ -387,6 +415,7 @@ async function fetchBytecodeRpc(address: string, rpcUrls: string[]): Promise<str
       const json = (await res.json()) as { result?: string; error?: unknown };
       const code = json.result;
 
+      if (typeof code === "string") sawResult = true;
       if (code && typeof code === "string" && code !== "0x" && code.length > 4) {
         return code;
       }
@@ -395,6 +424,7 @@ async function fetchBytecodeRpc(address: string, rpcUrls: string[]): Promise<str
     }
   }
 
+  if (!sawResult) throw new RpcUnavailableError();
   return null;
 }
 
