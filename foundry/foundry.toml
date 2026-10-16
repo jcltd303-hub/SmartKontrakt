@@ -1,0 +1,17 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.24"
+auto_detect_solc = false
+optimizer = false
+# PoC clarity over gas: unoptimized bytecode is easier to trace in -vvvv output.
+ffi = false
+# No foreign-function calls: the harness must never shell out from a test.
+fs_permissions = [{ access = "read", path = "./" }]
+
+[rpc_endpoints]
+# Resolved from the environment at runtime. Same public mainnet default the
+# app itself uses for bytecode fetches (see src/lib/audit/address-fetcher.ts).
+# Set ETH_RPC_URL to your own node (Alchemy/Infura/local) to avoid public-endpoint rate limits.
+mainnet = "${ETH_RPC_URL}"
