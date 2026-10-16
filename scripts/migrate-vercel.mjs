@@ -87,9 +87,15 @@ async function main() {
   try {
     client = await pool.connect();
   } catch (connErr) {
-    console.warn("[migrate] could not connect to PostgreSQL database:", connErr.message);
+    // A configured URL that cannot connect must FAIL the build. The old
+    // warn-and-return hid exactly this failure: deploys went READY with no
+    // tables, and the first archive request died with
+    // `relation "contract_scans" does not exist`. No URL at all still skips
+    // cleanly (see run() above); a URL that cannot connect is an error.
     await pool.end().catch(() => {});
-    return;
+    throw new Error(
+      `[migrate] could not connect to PostgreSQL database: ${connErr.message}`,
+    );
   }
 
   try {

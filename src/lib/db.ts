@@ -1,5 +1,6 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 import { createSqlClient, type Sql } from "./sql-client";
+import { EMBEDDED_MIGRATIONS } from "./migrations-sql";
 import {
   loadSupabaseDbConfig,
   buildSupabasePostgresUrl,
@@ -148,13 +149,20 @@ function createSupabaseSql(customUrl?: string): Promise<Sql> {
         );
         const doneRows = await client.query<{ name: string }>("SELECT name FROM _migrations");
         const done = doneRows.rows.map((r) => r.name);
-        let migrations: Record<string, string> = {};
+        // Keyed by BASENAME so the same migration from embedded + glob +
+        // filesystem sources collapses to one entry — otherwise the loop
+        // below would apply it twice and the second `_migrations` INSERT
+        // would violate the primary key. Later sources win on disagreement.
+        const migrationsByName: Record<string, string> = { ...EMBEDDED_MIGRATIONS };
         if (typeof import.meta.glob === "function") {
-          migrations = import.meta.glob("/migrations/*.sql", {
+          const globbed = import.meta.glob("/migrations/*.sql", {
             query: "?raw",
             import: "default",
             eager: true,
           }) as Record<string, string>;
+          for (const [key, value] of Object.entries(globbed)) {
+            migrationsByName[key.split("/").pop() ?? key] = value;
+          }
         } else {
           const fs = await import("node:fs");
           const path = await import("node:path");
@@ -162,15 +170,15 @@ function createSupabaseSql(customUrl?: string): Promise<Sql> {
           if (fs.existsSync(migDir)) {
             const files = fs.readdirSync(migDir).filter((f) => f.endsWith(".sql"));
             for (const file of files) {
-              migrations[`/migrations/${file}`] = fs.readFileSync(path.join(migDir, file), "utf-8");
+              migrationsByName[file] = fs.readFileSync(path.join(migDir, file), "utf-8");
             }
           }
         }
-        const pending = pendingMigrations(Object.keys(migrations), done);
+        const pending = pendingMigrations(Object.keys(migrationsByName), done);
         for (const { name, path: mPath } of pending) {
           await client.query("BEGIN");
           try {
-            await client.query(migrations[mPath]);
+            await client.query(migrationsByName[mPath]);
             await client.query("INSERT INTO _migrations (name) VALUES ($1)", [name]);
             await client.query("COMMIT");
           } catch (mErr) {
