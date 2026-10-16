@@ -6,9 +6,24 @@ import type { AiSecurityReview } from "./audit/ai-review.server";
 
 const MAX_CHARS = 120_000;
 
-export const listScans = createServerFn({ method: "GET" }).handler(async () => {
-  const { listScanSummaries } = await import("./audit/persist.server");
-  return listScanSummaries();
+export const listScans = createServerFn({ method: "GET" })
+  .validator((input: unknown) => {
+    if (!input || typeof input !== "object") return { limit: 60, offset: 0 };
+    const o = input as { limit?: unknown; offset?: unknown };
+    return {
+      limit: typeof o.limit === "number" ? o.limit : 60,
+      offset: typeof o.offset === "number" ? o.offset : 0,
+    };
+  })
+  .handler(async ({ data }) => {
+    const { listScanSummaries } = await import("./audit/persist.server");
+    return listScanSummaries(data);
+  });
+
+/** True totals for the Records stat cards (not per-page sums). */
+export const getScansStatsFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { getScansStats } = await import("./audit/persist.server");
+  return getScansStats();
 });
 
 /**

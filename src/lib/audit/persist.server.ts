@@ -132,7 +132,13 @@ function summaryFrom(row: ScanRow): ScanSummary {
   };
 }
 
-export async function listScanSummaries(): Promise<ScanSummary[]> {
+export async function listScanSummaries(opts?: { limit?: number; offset?: number }): Promise<ScanSummary[]> {
+  // Paginated: the Records tab used to hard-cap at 60 with no way to see
+  // the rest, so a 43k-address run looked like 60 rows. Defaults keep
+  // every existing caller (route loader, history) on the first page.
+  // Values are clamped to integers; the sql tag parameterizes them.
+  const limit = Math.min(Math.max(Math.floor(opts?.limit ?? 60), 1), 500);
+  const offset = Math.max(Math.floor(opts?.offset ?? 0), 0);
   try {
     const sql = await getSql();
     const rows = await sql<ScanRow>`
@@ -142,12 +148,36 @@ export async function listScanSummaries(): Promise<ScanSummary[]> {
              created_at::text as created_at
       from contract_scans
       order by created_at desc
-      limit 60
+      limit ${limit} offset ${offset}
     `;
     return rows.map(summaryFrom);
   } catch (err) {
     console.warn("[kiln] DB scans table not ready or empty:", err);
     return [];
+  }
+}
+
+/** True totals for the stat cards (not per-page sums). */
+export async function getScansStats(): Promise<{ total: number; critical: number; high: number; ragIndexed: number }> {
+  const zero = { total: 0, critical: 0, high: 0, ragIndexed: 0 };
+  try {
+    const sql = await getSql();
+    const rows = await sql<{ total: string; critical: string; high: string; rag_indexed: string }>`
+      select count(*) as total,
+             coalesce(sum(critical_count), 0) as critical,
+             coalesce(sum(high_count), 0) as high,
+             coalesce(sum(case when is_rag_indexed then 1 else 0 end), 0) as rag_indexed
+      from contract_scans`;
+    const r = rows[0];
+    if (!r) return zero;
+    const num = (v: string | undefined) => {
+      const n = Number.parseInt(v ?? "0", 10);
+      return Number.isFinite(n) ? n : 0;
+    };
+    return { total: num(r.total), critical: num(r.critical), high: num(r.high), ragIndexed: num(r.rag_indexed) };
+  } catch (err) {
+    console.warn("[kiln] DB scans stats failed:", err);
+    return zero;
   }
 }
 
