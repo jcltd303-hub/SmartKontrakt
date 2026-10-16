@@ -79,3 +79,17 @@ export type AstNode = {
   range?: [number, number];
   [key: string]: unknown;
 };
+
+/** Outcome of one Foundry fork-PoC run against the Termux local backend. */
+export type PocStatus = "passed" | "failed" | "error" | "backend_unreachable" | "skipped";
+
+export type PocResult = {
+  status: PocStatus;
+  /** Forge output (tail-capped) or a short explanation for non-run statuses. */
+  logs: string;
+  durationMs: number;
+  /** ISO timestamp of when the run finished (or was attempted). */
+  runAt: string;
+  /** Backend-side error message, when status is "error". */
+  error?: string;
+};

@@ -1,7 +1,7 @@
 import { writeAuditBatch } from "./bulk-persist.server";
 import { getSql } from "@/lib/db";
 import { analyzeInput } from "./engine";
-import type { Finding, Inventory, Report, Severity } from "./types";
+import type { Finding, Inventory, PocResult, Report, Severity } from "./types";
 import type { ProxyAnalysis } from "./proxy-resolver";
 import type { CallProbeResult } from "./simulator";
 import type { AiSecurityReview } from "./ai-review.server";
@@ -37,6 +37,7 @@ export type StoredScan = ScanSummary & {
   probes?: CallProbeResult[];
   aiReview?: AiSecurityReview | null;
   triageStates?: Record<string, string>;
+  pocResult?: PocResult | null;
 };
 
 type ScanRow = {
@@ -64,6 +65,10 @@ type ScanRow = {
   inventory_json: string;
   ai_narrative: string | null;
   ai_status: string;
+  poc_status?: string | null;
+  poc_logs?: string | null;
+  poc_duration_ms?: number | null;
+  poc_run_at?: string | null;
   created_at: string;
 };
 
@@ -154,6 +159,7 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
            triage_states_json, cert_hash, source_origin, is_rag_indexed,
            risk_score, critical_count, high_count, medium_count, low_count, info_count,
            summary, inventory_json, ai_narrative, ai_status,
+           poc_status, poc_logs, poc_duration_ms, poc_run_at::text as poc_run_at,
            created_at::text as created_at
     from contract_scans
     where id = ${id}
@@ -232,6 +238,16 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
     }
   }
 
+  let pocResult: PocResult | null = null;
+  if (row.poc_status) {
+    pocResult = {
+      status: row.poc_status as PocResult["status"],
+      logs: row.poc_logs ?? "",
+      durationMs: row.poc_duration_ms ?? 0,
+      runAt: row.poc_run_at ?? row.created_at,
+    };
+  }
+
   return {
     ...summaryFrom(row),
     body: payloads[0]?.body ?? "",
@@ -240,6 +256,7 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
     probes,
     aiReview,
     triageStates,
+    pocResult,
   };
 }
 
@@ -273,6 +290,7 @@ export async function saveComprehensiveRecord(input: {
   certHash?: string | null;
   sourceOrigin?: string;
   indexToRag?: boolean;
+  pocResult?: PocResult | null;
 }): Promise<StoredScan> {
   const sql = await getSql();
   const id = input.id && input.id.trim() ? input.id : crypto.randomUUID();
@@ -302,7 +320,8 @@ export async function saveComprehensiveRecord(input: {
       compiler_version, proxy_info_json, probes_json, ai_review_json,
       triage_states_json, cert_hash, source_origin, is_rag_indexed,
       risk_score, critical_count, high_count, medium_count, low_count, info_count,
-      summary, inventory_json, ai_narrative, ai_status
+      summary, inventory_json, ai_narrative, ai_status,
+      poc_status, poc_logs, poc_duration_ms, poc_run_at
     ) values (
       ${id},
       ${input.label},
@@ -327,7 +346,11 @@ export async function saveComprehensiveRecord(input: {
       ${report.summary},
       ${JSON.stringify(report.inventory)},
       ${report.aiNarrative ?? input.aiReview?.threatModelReport ?? null},
-      ${report.aiStatus}
+      ${report.aiStatus},
+      ${input.pocResult?.status ?? null},
+      ${input.pocResult?.logs ?? null},
+      ${input.pocResult?.durationMs ?? null},
+      ${input.pocResult?.runAt ?? null}
     )
     on conflict (id) do update set
       label = excluded.label,
@@ -351,7 +374,11 @@ export async function saveComprehensiveRecord(input: {
       summary = excluded.summary,
       inventory_json = excluded.inventory_json,
       ai_narrative = excluded.ai_narrative,
-      ai_status = excluded.ai_status
+      ai_status = excluded.ai_status,
+      poc_status = excluded.poc_status,
+      poc_logs = excluded.poc_logs,
+      poc_duration_ms = excluded.poc_duration_ms,
+      poc_run_at = excluded.poc_run_at
   `;
 
   // Payload upsert
@@ -427,6 +454,7 @@ export type ComprehensiveRecordInput = {
   certHash?: string | null;
   sourceOrigin?: string;
   indexToRag?: boolean;
+  pocResult?: PocResult | null;
 };
 
 /**

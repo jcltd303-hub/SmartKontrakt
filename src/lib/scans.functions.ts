@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import type { Report } from "./audit/types";
+import type { PocResult, Report } from "./audit/types";
 import type { ProxyAnalysis } from "./audit/proxy-resolver";
 import type { CallProbeResult } from "./audit/simulator";
 import type { AiSecurityReview } from "./audit/ai-review.server";
@@ -58,6 +58,7 @@ export const saveComprehensiveScanFn = createServerFn({ method: "POST" })
       certHash?: string | null;
       sourceOrigin?: string;
       indexToRag?: boolean;
+      pocResult?: PocResult | null;
     };
     if (!val.label || !val.report || typeof val.body !== "string") {
       throw new Error("Missing mandatory audit report fields");

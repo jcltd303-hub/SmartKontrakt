@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
 import { Play, Loader2, CheckCircle2, XCircle, Server, AlertTriangle } from "lucide-react";
+import {
+  ADDRESS_RE,
+  BACKEND_KEY,
+  DEFAULT_BACKEND,
+  checkFoundryBackend,
+  runPocOnBackend,
+  type BackendHealth,
+} from "@/lib/audit/foundry-backend";
+import type { PocResult } from "@/lib/audit/types";
 
 /**
  * FoundryLocalRun — run the AI-generated Foundry exploit test against a
@@ -22,28 +31,8 @@ interface FoundryLocalRunProps {
   rpcUrl?: string;
 }
 
-type Health = { ok: boolean; forge: boolean; anvil: boolean } | null;
-type RunResult = {
-  ok: boolean;
-  passed: boolean;
-  logs: string;
-  durationMs: number;
-  error?: string;
-} | null;
-
-const BACKEND_KEY = "sk-foundry-backend-url";
-const DEFAULT_BACKEND = "http://127.0.0.1:8787";
-const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
-
-async function fetchWithTimeout(url: string, init: RequestInit, ms: number) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
-  try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
+type Health = BackendHealth;
+type RunResult = (PocResult & { passed: boolean }) | null;
 
 export function FoundryLocalRun({ testCode, address, rpcUrl }: FoundryLocalRunProps) {
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND);
@@ -78,9 +67,9 @@ export function FoundryLocalRun({ testCode, address, rpcUrl }: FoundryLocalRunPr
     setChecking(true);
     setHealthError(null);
     try {
-      const res = await fetchWithTimeout(`${backendUrl.replace(/\/$/, "")}/health`, {}, 10_000);
-      if (!res.ok) throw new Error(`backend answered ${res.status}`);
-      setHealth((await res.json()) as Health);
+      const health = await checkFoundryBackend(backendUrl);
+      if (!health) throw new Error("unreachable");
+      setHealth(health);
     } catch {
       setHealth(null);
       setHealthError("Backend not reachable");
@@ -93,34 +82,13 @@ export function FoundryLocalRun({ testCode, address, rpcUrl }: FoundryLocalRunPr
     setRunning(true);
     setRunError(null);
     setResult(null);
-    try {
-      const res = await fetchWithTimeout(
-        `${backendUrl.replace(/\/$/, "")}/run-poc`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            address: address.trim(),
-            testCode,
-            ...(rpcUrl ? { rpcUrl } : {}),
-          }),
-        },
-        180_000, // covers the backend's 120s forge timeout + overhead
-      );
-      const data = (await res.json()) as RunResult & { error?: string };
-      if (!res.ok && res.status !== 500) {
-        throw new Error((data as { error?: string })?.error ?? `backend answered ${res.status}`);
-      }
-      setResult(data);
-    } catch (err) {
-      setRunError(
-        err instanceof Error && err.name === "AbortError"
-          ? "Timed out waiting for the backend (forge runs cap at 120s — check Termux)"
-          : "Backend not reachable — start it in Termux (see below), then retry.",
-      );
-    } finally {
-      setRunning(false);
+    const poc = await runPocOnBackend(backendUrl, { address, testCode, ...(rpcUrl ? { rpcUrl } : {}) });
+    if (poc.status === "backend_unreachable") {
+      setRunError(poc.logs);
+    } else {
+      setResult({ ...poc, passed: poc.status === "passed" });
     }
+    setRunning(false);
   };
 
   return (
