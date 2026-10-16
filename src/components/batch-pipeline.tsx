@@ -27,6 +27,7 @@ import type { Report } from "@/lib/audit/types";
 import { saveBatchComprehensiveScansFn, listScans } from "@/lib/scans.functions";
 import type { ComprehensiveRecordInput } from "@/lib/audit/persist.server";
 import { SupabaseDbModal } from "./supabase-db-modal";
+import { PipelineWorkerStatus } from "./pipeline-worker-status";
 import {
   Play,
   Pause,
@@ -756,6 +757,9 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
         onChange={handleFileUpload}
         className="hidden"
       />
+
+      {/* Headless pipeline worker (Termux) — survives browser close. */}
+      <PipelineWorkerStatus />
 
       {/* Supabase Connection Modal */}
       {isSupabaseModalOpen && (

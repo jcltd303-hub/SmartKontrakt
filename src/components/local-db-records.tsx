@@ -5,6 +5,7 @@ import {
   removeScan,
   saveComprehensiveScanFn,
   getDatabaseStatusFn,
+  getScansStatsFn,
 } from "@/lib/scans.functions";
 import type { ScanSummary, StoredScan } from "@/lib/audit/persist.server";
 import { SUPPORTED_CHAINS } from "@/lib/audit/address-fetcher";
@@ -48,6 +49,10 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [indexingId, setIndexingId] = useState<string | null>(null);
   const [isDbModalOpen, setIsDbModalOpen] = useState<boolean>(false);
+  // True totals from the server (the list below is paged; per-page sums
+  // would undercount once the table grows past one page).
+  const [stats, setStats] = useState<{ total: number; critical: number; high: number; ragIndexed: number } | null>(null);
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
   const [dbStatus, setDbStatus] = useState<{ isSupabase: boolean; label: string }>({
     isSupabase: true,
     label: "Supabase PostgreSQL (Live)",
@@ -56,8 +61,13 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
   const fetchRecords = async () => {
     setIsLoading(true);
     try {
-      const data = await listScans();
+      const data = await listScans({ data: { limit: 60, offset: 0 } });
       setRecords(data);
+      try {
+        setStats(await getScansStatsFn());
+      } catch {
+        // stats stay null — totals fall back to loaded records
+      }
       try {
         const status = await getDatabaseStatusFn();
         setDbStatus({
@@ -71,6 +81,24 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
       console.warn("[kiln] Failed to fetch Supabase DB records:", err);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchMore = async () => {
+    if (isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      const page = await listScans({ data: { limit: 60, offset: records.length } });
+      if (page.length > 0) {
+        setRecords((prev) => {
+          const seen = new Set(prev.map((r) => r.id));
+          return [...prev, ...page.filter((r) => !seen.has(r.id))];
+        });
+      }
+    } catch (err) {
+      console.warn("[kiln] Failed to fetch more Supabase DB records:", err);
+    } finally {
+      setIsLoadingMore(false);
     }
   };
 
@@ -99,9 +127,22 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
 
   const handleDelete = async (id: string, label: string) => {
     if (!confirm(`Permanently remove audit record "${label}" from Supabase database?`)) return;
+    const doomed = records.find((r) => r.id === id);
     try {
       await removeScan({ data: { id } });
       setRecords((prev) => prev.filter((r) => r.id !== id));
+      if (doomed) {
+        setStats((prev) =>
+          prev
+            ? {
+                total: Math.max(0, prev.total - 1),
+                critical: Math.max(0, prev.critical - doomed.criticalCount),
+                high: Math.max(0, prev.high - doomed.highCount),
+                ragIndexed: Math.max(0, prev.ragIndexed - (doomed.isRagIndexed ? 1 : 0)),
+              }
+            : prev,
+        );
+      }
       if (selectedRecord?.id === id) setSelectedRecord(null);
       setActionNotice("Record deleted from Supabase DB.");
       setTimeout(() => setActionNotice(null), 3000);
@@ -172,11 +213,13 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
     return true;
   });
 
-  // Aggregated Stats
-  const totalAudits = records.length;
-  const criticalFindings = records.reduce((acc, r) => acc + r.criticalCount, 0);
-  const highFindings = records.reduce((acc, r) => acc + r.highCount, 0);
-  const ragIndexedCount = records.filter((r) => r.isRagIndexed).length;
+  // Aggregated Stats — true totals from the server, not per-page sums.
+  // (With pagination, summing only the loaded page would undercount.)
+  const totalAudits = stats?.total ?? records.length;
+  const criticalFindings = stats?.critical ?? records.reduce((acc, r) => acc + r.criticalCount, 0);
+  const highFindings = stats?.high ?? records.reduce((acc, r) => acc + r.highCount, 0);
+  const ragIndexedCount = stats?.ragIndexed ?? records.filter((r) => r.isRagIndexed).length;
+  const hasMore = records.length < totalAudits;
 
   return (
     <div className="flex flex-col gap-6 animate-fadeIn pb-12 font-sans">
@@ -515,6 +558,21 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+        {hasMore && !isLoading && (
+          <div className="p-4 text-center border-t border-[#3a3428]/60">
+            <div className="text-[11px] text-[#a39886] font-mono mb-2">
+              Loaded {records.length} of {totalAudits} audits
+            </div>
+            <button
+              onClick={fetchMore}
+              disabled={isLoadingMore}
+              className="px-4 py-1.5 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-xs font-mono text-[#f4efe6] flex items-center gap-1.5 mx-auto transition-colors disabled:opacity-50"
+            >
+              {isLoadingMore ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+              <span>{isLoadingMore ? "Loading…" : "Load more (next 60)"}</span>
+            </button>
           </div>
         )}
       </div>
