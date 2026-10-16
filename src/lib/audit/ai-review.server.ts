@@ -74,43 +74,31 @@ function buildFallbackReview(contractName: string, findings: Finding[], _codeOrB
   const topIssue = critList[0]?.title ?? "Potential Reentrancy / State Desynchronization";
 
   const foundryTestCode = `// SPDX-License-Identifier: MIT
-pragma solidity >=0.7.0 <0.9.0;
+pragma solidity ^0.8.24;
 
-// Foundry Exploit Verification Suite for ${contractName}
-// Run with: forge test -vvvv
+import "forge-std/Test.sol";
 
-interface ITestTarget {
-    function deposit() external payable;
-    function withdraw() external;
-    function owner() external view returns (address);
-}
-
-contract ExploitTest {
-    ITestTarget target;
-    address attacker = address(0xBEEF);
-    uint256 public attackCount;
-
-    event AttackTriggered(address indexed attacker, uint256 amountDrained);
+// Fallback PoC for ${contractName} (used when the AI review is unavailable).
+// Fork-ready: the Termux backend runs it with --match-contract PoC against a
+// live-net fork, with POC_TARGET / POC_RPC_URL / POC_FORK_BLOCK in env.
+// This is a sanity check (target has code), NOT an exploit reproduction —
+// replace with the AI-generated exploit test for a real attack PoC.
+contract PoC is Test {
+    address public target;
 
     function setUp() public {
-        // Deploy or attach to deployed target instance
-        // vm.prank(attacker);
+        string memory rpc = vm.envString("POC_RPC_URL");
+        uint256 forkBlock = vm.envUint("POC_FORK_BLOCK");
+        if (forkBlock > 0) vm.createSelectFork(rpc, forkBlock);
+        else vm.createSelectFork(rpc);
+        target = vm.envAddress("POC_TARGET");
     }
 
-    function test_exploit_${(critList[0]?.detector || "vulnerability").replace(/[^a-zA-Z0-9_]/g, "_")}() public {
-        // Primary Finding: ${topIssue}
-        // 1. Initial State verification
-        // 2. Exploit execution sequence
-        // 3. Assertion: Attacker balance increases or target invariant broken
+    function test_targetHasCode() public view {
+        assertGt(target.code.length, 0, "target has no code at this fork");
     }
 
-    // Fallback handler for reentrancy tests
-    receive() external payable {
-        if (attackCount < 5 && address(target).balance >= 1 ether) {
-            attackCount++;
-            target.withdraw();
-        }
-    }
+    // Primary finding (unverified — needs the AI-generated exploit test): ${topIssue}
 }
 `;
 
@@ -167,7 +155,10 @@ ${findingsSummary || "No static detectors triggered."}
 
 Your tasks:
 1. Provide a rigorous, concise Executive Threat Model Report (economic flash loan attack vectors, oracle spot-price manipulation, ERC-4626 share inflation risks, and administrative rug vectors).
-2. Generate a complete, compilation-ready Foundry test suite contract in Solidity (\`test/Exploit.t.sol\`) that tests and confirms the primary vulnerability.
+2. Generate a complete, compilation-ready Foundry test suite contract in Solidity (\`test/Exploit.t.sol\`) that tests and confirms the primary vulnerability. The test MUST:
+   - declare \`contract PoC is Test\` and \`import "forge-std/Test.sol";\`
+   - in setUp(): fork live chain state with \`vm.createSelectFork(vm.envString("POC_RPC_URL"))\` (pin a block with \`vm.envUint("POC_FORK_BLOCK")\` when it is nonzero) and attach to the live target via \`vm.envAddress("POC_TARGET")\` — never hardcode a target address
+   - fund an attacker with \`vm.deal\`, execute the attack against the forked live contract, and assert a balance/profit change
 3. Provide a 2-sentence economic risk summary.
 
 Format your response strictly as JSON with this schema:
