@@ -65,7 +65,14 @@ function loadEnvFile(): void {
     fileVars.set(key, value);
   }
   for (const [key, value] of fileVars) {
-    if (process.env[key] === undefined) process.env[key] = value;
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    } else if (process.env[key] !== value) {
+      // Shell env wins — but say so. A stale shell DATABASE_URL silently
+      // pointing at another Supabase project is exactly how the worker
+      // ends up writing to a DB the dashboard isn't showing.
+      console.warn(`[worker] ${key} is set in the shell environment — shell value wins over pipeline-worker/.env`);
+    }
   }
 }
 
@@ -479,6 +486,47 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   sendJson(res, 200, { ok: true, started: true, total: items.length, skipped });
 }
 
+// Which database is the worker actually talking to? The dashboard-shows-0
+// confusion (2026-10-16) came from not knowing this: the effective
+// DATABASE_URL may come from the shell env (which wins over .env) and may
+// point at a different Supabase project than the one open in the dashboard.
+// /status reports the identity (host/user/database, NEVER the password)
+// plus a live row count, so one glance settles "which DB" and "how many".
+function describeDatabase(): { host: string; port: string; user: string; database: string } | null {
+  const value = process.env.DATABASE_URL?.trim();
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return {
+      host: url.hostname,
+      port: url.port,
+      user: decodeURIComponent(url.username),
+      database: decodeURIComponent(url.pathname.replace(/^\//, "")),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function handleStatus(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  let dbScans: number | null = null;
+  let dbError: string | null = null;
+  const dbProblem = databaseUrlProblem(process.env.DATABASE_URL);
+  if (dbProblem) {
+    dbError = dbProblem;
+  } else {
+    try {
+      const sql = await getSql();
+      const rows = await sql<{ n: string }>`SELECT count(*) AS n FROM contract_scans`;
+      const n = Number.parseInt(rows[0]?.n ?? "", 10);
+      dbScans = Number.isFinite(n) ? n : null;
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  sendJson(res, 200, { ...status, pending: pending.length, db: describeDatabase(), dbScans, dbError });
+}
+
 const server = http.createServer((req, res) => {
   // Loopback-only backend; permissive CORS is fine here.
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -493,7 +541,7 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? HOST}`);
 
   if (req.method === "GET" && url.pathname === "/status") {
-    sendJson(res, 200, { ...status, pending: pending.length });
+    void handleStatus(req, res);
     return;
   }
 
@@ -584,6 +632,8 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 server.listen(PORT, HOST, () => {
   console.log(`[worker] SmartKontrakt pipeline worker listening on http://${HOST}:${PORT} (loopback only)`);
+  const db = describeDatabase();
+  if (db) console.log(`[worker] database: ${db.user}@${db.host}:${db.port}/${db.database}`);
   console.log(
     `[worker] DATABASE_URL ${process.env.DATABASE_URL ? "set" : "MISSING — set it in pipeline-worker/.env before starting a run"}${process.env.DATABASE_URL && databaseUrlProblem(process.env.DATABASE_URL) ? ` — WARNING: ${databaseUrlProblem(process.env.DATABASE_URL)}` : ""}`,
   );

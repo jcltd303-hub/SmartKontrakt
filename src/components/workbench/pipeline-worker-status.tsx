@@ -32,6 +32,9 @@ type WorkerStatus = {
   aiSecondPass: boolean;
   delayMs: number;
   pending: number;
+  db?: { host: string; port: string; user: string; database: string } | null;
+  dbScans?: number | null;
+  dbError?: string | null;
 };
 
 const WORKER_KEY = "sk-pipeline-worker-url";
@@ -192,6 +195,20 @@ export function PipelineWorkerStatus() {
             {status.startedAt ? `Started: ${new Date(status.startedAt).toLocaleString()} • ` : ""}
             {status.lastFlushAt ? `Last flush: ${new Date(status.lastFlushAt).toLocaleString()}` : "No flush yet"}
           </p>
+          {status.db && (
+            <p className="text-[11px] text-[#a39886]">
+              DB: <span className="text-[#f4efe6]">{status.db.user}@{status.db.host}:{status.db.port}/{status.db.database}</span>
+              {" • "}
+              Scans in DB: <span className="text-[#f4efe6]">{status.dbScans ?? "?"}</span>
+              {" — if this count and the Supabase dashboard disagree, the dashboard is open on a different project"}
+            </p>
+          )}
+          {status.dbError && (
+            <p className="text-[11px] text-red-400 flex items-start gap-1">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>DB: {status.dbError}</span>
+            </p>
+          )}
           {status.lastError && (
             <p className="text-[11px] text-red-400 flex items-start gap-1">
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
