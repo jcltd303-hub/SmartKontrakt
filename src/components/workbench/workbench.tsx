@@ -19,7 +19,7 @@ import { requestAiReview } from "@/lib/audit/ai.functions";
 import { getBackendUrl, runPocOnBackend } from "@/lib/audit/foundry-backend";
 import type { PocResult } from "@/lib/audit/types";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
-import { saveComprehensiveScanFn, queryRagKnowledgebaseFn } from "@/lib/scans.functions";
+import { saveComprehensiveScanFn, queryRagKnowledgebaseFn, getDbInfo } from "@/lib/scans.functions";
 import type { StoredScan } from "@/lib/audit/persist.server";
 import type { RagChunk } from "@/lib/audit/rag.server";
 import {
@@ -156,6 +156,21 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
   const [isSavingDb, setIsSavingDb] = useState<boolean>(false);
   const [isSupabaseDbModalOpen, setIsSupabaseDbModalOpen] = useState<boolean>(false);
   const [dbSavedNotice, setDbSavedNotice] = useState<string | null>(null);
+  // Which database the app is actually reading (from getDbInfo). Rendered
+  // in the header so a wrong-project mismatch is visible at a glance.
+  const [dbInfo, setDbInfo] = useState<{ host: string | null; port: string | null; user: string | null; database: string | null; error: string | null } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void getDbInfo().then((info) => {
+      if (!cancelled) setDbInfo(info);
+    }).catch(() => {
+      // getDbInfo returns { error } instead of throwing; a transport
+      // failure just leaves the label hidden.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [ragModalFinding, setRagModalFinding] = useState<Finding | null>(null);
   const [ragModalResults, setRagModalResults] = useState<RagChunk[]>([]);
   const [isLoadingRagModal, setIsLoadingRagModal] = useState<boolean>(false);
@@ -734,6 +749,16 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
               <Database className="w-3.5 h-3.5" />
               <span>Supabase Config</span>
             </button>
+            {dbInfo && (
+              <span
+                className={`text-[11px] font-mono truncate ${dbInfo.error ? "text-red-400" : "text-[#a39886]"}`}
+                title={dbInfo.error ?? `Database the app is reading: ${dbInfo.user}@${dbInfo.host}:${dbInfo.port}/${dbInfo.database}`}
+              >
+                {dbInfo.error
+                  ? "DB: not configured — set DATABASE_URL in Vercel"
+                  : `DB: ${dbInfo.user}@${dbInfo.host}`}
+              </span>
+            )}
 
             {workbenchMode === "audit" && (
               <div className="flex flex-wrap items-center gap-2">
