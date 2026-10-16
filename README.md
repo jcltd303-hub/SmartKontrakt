@@ -55,6 +55,14 @@ The application has no account/tenant isolation, so deploy it only with access a
 
 Local development can use PGLite without a database connection. On Vercel, archive writes fail clearly when no Postgres URL is present rather than acknowledging writes into a temporary in-memory database.
 
+## AI review via OpenRouter
+
+AI threat-model reviews run server-side through OpenRouter (`POST https://openrouter.ai/api/v1/chat/completions`, OpenAI-compatible). No vendor SDK is used — just `fetch` with a bearer key.
+
+- Set `OPENROUTER_API_KEY` in the Vercel project's production + preview environments (server-only, never a browser variable).
+- Optional: set `OPENROUTER_MODEL` to pick the model (default `openai/gpt-4o-mini`). Any OpenRouter model id works.
+- Without a key, reviews fall back to the deterministic template review (`source: "template"`) — the audit still completes.
+
 ## Optional Supabase summary sync
 
 The pipeline's Supabase settings take a project URL, a publishable/legacy anon key, and an existing table name (default `kiln_batch_audits`). Secret and service-role keys cannot be used by the browser writer. The table must provide the summary columns sent by `toSupabaseBatchRow` in `src/lib/supabase.ts`, with `id` as a primary/unique key. Configure grants and RLS for your intended read, insert, and update access. A REST connection test does not create tables or prove write authorization.

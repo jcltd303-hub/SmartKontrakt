@@ -1,12 +1,58 @@
-import { GoogleGenAI } from "@google/genai";
 import type { Finding } from "./types";
 
 export type AiSecurityReview = {
   threatModelReport: string;
   foundryTestCode: string;
   economicRiskSummary: string;
-  source: "gemini" | "template";
+  source: "openrouter" | "template";
 };
+
+/** OpenRouter chat-completions endpoint (OpenAI-compatible). */
+export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+
+/** Default model — overridable with OPENROUTER_MODEL without a code change. */
+export const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
+
+export type OpenRouterConfig = {
+  apiKey: string | undefined;
+  model: string;
+};
+
+const PLACEHOLDER_KEYS = new Set(["", "MY_OPENROUTER_API_KEY", "YOUR_OPENROUTER_API_KEY"]);
+
+/**
+ * Resolve OpenRouter config from the environment.
+ * Returns apiKey undefined when no real key is configured, so callers
+ * can fall back to the template review instead of calling the API.
+ */
+export function resolveOpenRouterConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): OpenRouterConfig {
+  const rawKey = env.OPENROUTER_API_KEY?.trim();
+  const apiKey = rawKey && !PLACEHOLDER_KEYS.has(rawKey) ? rawKey : undefined;
+  const model = env.OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
+  return { apiKey, model };
+}
+
+/**
+ * Extract the JSON payload from a model reply. Models sometimes wrap JSON
+ * in ```json fences or add prose around it — find the outermost object.
+ */
+export function extractJsonContent(content: string): unknown {
+  const trimmed = content.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1].trim() : trimmed;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(candidate.slice(start, end + 1));
+    }
+    throw new Error("Model reply did not contain a JSON object");
+  }
+}
 
 function buildFallbackReview(contractName: string, findings: Finding[], _codeOrBytecode: string): AiSecurityReview {
   const critList = findings.filter((f) => f.severity === "critical" || f.severity === "high");
@@ -78,22 +124,13 @@ export async function generateAiSecurityReview(
   body: string,
   findings: Finding[]
 ): Promise<AiSecurityReview> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const { apiKey, model } = resolveOpenRouterConfig();
 
-  if (!apiKey || !apiKey.trim() || apiKey === "MY_GEMINI_API_KEY") {
+  if (!apiKey) {
     return buildFallbackReview(contractName, findings, body);
   }
 
   try {
-    const ai = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
-
     const findingsSummary = findings
       .map(
         (f, i) =>
@@ -103,10 +140,7 @@ export async function generateAiSecurityReview(
       )
       .join("\n\n");
 
-    const prompt = `You are a Principal EVM Security Auditor and White-Hat Exploit Researcher.
-Analyze the following smart contract code / bytecode and detected vulnerabilities.
-
-Contract Name: ${contractName}
+    const userPrompt = `Contract Name: ${contractName}
 
 Contract Source / Decompiled Sample (truncated to first 12,000 chars):
 \`\`\`solidity
@@ -128,33 +162,66 @@ Format your response strictly as JSON with this schema:
   "economicRiskSummary": "Brief 2-sentence summary of the main economic/game-theoretic exposure"
 }`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
+    const referer =
+      process.env.APP_URL?.trim() ||
+      process.env.VERCEL_URL?.trim() ||
+      "https://smart-kontrakt.vercel.app";
+
+    const response = await fetch(OPENROUTER_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": referer,
+        "X-Title": "SmartKontrakt / Kiln",
       },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a Principal EVM Security Auditor and White-Hat Exploit Researcher. Analyze the smart contract code / bytecode and detected vulnerabilities. Respond strictly as JSON matching the requested schema.",
+          },
+          { role: "user", content: userPrompt },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.2,
+        max_tokens: 4000,
+      }),
+      signal: AbortSignal.timeout(60_000),
     });
 
-    const text = response.text;
-    if (text) {
-      const parsed = JSON.parse(text) as {
-        threatModelReport?: string;
-        foundryTestCode?: string;
-        economicRiskSummary?: string;
-      };
-
-      if (parsed.threatModelReport && parsed.foundryTestCode) {
-        return {
-          threatModelReport: parsed.threatModelReport,
-          foundryTestCode: parsed.foundryTestCode,
-          economicRiskSummary: parsed.economicRiskSummary || "Completed Gemini threat review.",
-          source: "gemini",
-        };
-      }
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => "")).slice(0, 500);
+      throw new Error(`OpenRouter returned HTTP ${response.status}: ${detail}`);
     }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string | null } }>;
+    };
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("OpenRouter returned no message content");
+    }
+
+    const parsed = extractJsonContent(content) as {
+      threatModelReport?: string;
+      foundryTestCode?: string;
+      economicRiskSummary?: string;
+    };
+
+    if (parsed.threatModelReport && parsed.foundryTestCode) {
+      return {
+        threatModelReport: parsed.threatModelReport,
+        foundryTestCode: parsed.foundryTestCode,
+        economicRiskSummary: parsed.economicRiskSummary || "Completed OpenRouter threat review.",
+        source: "openrouter",
+      };
+    }
+    throw new Error("OpenRouter reply was missing threatModelReport / foundryTestCode");
   } catch (err) {
-    console.warn("[Kiln] Gemini AI review failed, falling back to structured template:", err);
+    console.warn("[Kiln] OpenRouter AI review failed, falling back to structured template:", err);
   }
 
   return buildFallbackReview(contractName, findings, body);
