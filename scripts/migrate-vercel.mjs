@@ -80,22 +80,39 @@ async function main() {
   const pool = new pg.Pool({
     connectionString: databaseUrl,
     max: 1,
-    connectionTimeoutMillis: 10000,
+    connectionTimeoutMillis: 30000,
     ssl: { rejectUnauthorized: false },
   });
+  // Connect with retries: a paused Supabase project can take 20-30s to wake
+  // on first connection, and a single 10s attempt timed out in Vercel builds.
+  // If the DB is still unreachable after retries, warn and let the build
+  // SUCCEED — the runtime auto-migration (embedded SQL in
+  // src/lib/migrations-sql.ts) retries on each cold start / first DB
+  // connection, so a DB that wakes later still gets its tables. Failing the
+  // build here (tried in 97f1bfa) turned a transient cold-start timeout
+  // into a hard ERROR deploy and left prod on the old code with no tables.
   let client;
-  try {
-    client = await pool.connect();
-  } catch (connErr) {
-    // A configured URL that cannot connect must FAIL the build. The old
-    // warn-and-return hid exactly this failure: deploys went READY with no
-    // tables, and the first archive request died with
-    // `relation "contract_scans" does not exist`. No URL at all still skips
-    // cleanly (see run() above); a URL that cannot connect is an error.
-    await pool.end().catch(() => {});
-    throw new Error(
-      `[migrate] could not connect to PostgreSQL database: ${connErr.message}`,
+  let lastConnErr;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      client = await pool.connect();
+      lastConnErr = undefined;
+      break;
+    } catch (connErr) {
+      lastConnErr = connErr;
+      console.warn(`[migrate] connect attempt ${attempt}/3 failed: ${connErr.message}`);
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 10000));
+    }
+  }
+  if (!client) {
+    console.warn(
+      "[migrate] could not connect to PostgreSQL database after 3 attempts — " +
+        "skipping deploy-time migration. Runtime auto-migration will retry on " +
+        "first DB connection. Last error: " +
+        (lastConnErr?.message || "unknown"),
     );
+    await pool.end().catch(() => {});
+    return;
   }
 
   try {
