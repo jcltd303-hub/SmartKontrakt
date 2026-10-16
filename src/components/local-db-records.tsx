@@ -49,8 +49,8 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
   const [indexingId, setIndexingId] = useState<string | null>(null);
   const [isDbModalOpen, setIsDbModalOpen] = useState<boolean>(false);
   const [dbStatus, setDbStatus] = useState<{ isSupabase: boolean; label: string }>({
-    isSupabase: false,
-    label: "PGLite / Postgres",
+    isSupabase: true,
+    label: "Supabase PostgreSQL (Live)",
   });
 
   const fetchRecords = async () => {
@@ -60,16 +60,15 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
       setRecords(data);
       try {
         const status = await getDatabaseStatusFn();
-        if (status?.dbInfo?.source === "supabase") {
-          setDbStatus({ isSupabase: true, label: "Supabase Postgres (Live)" });
-        } else {
-          setDbStatus({ isSupabase: false, label: "Local PGLite (WASM)" });
-        }
+        setDbStatus({
+          isSupabase: true,
+          label: status?.activeUrlMasked ? `Supabase (Live)` : "Supabase PostgreSQL",
+        });
       } catch {
         // fallback
       }
     } catch (err) {
-      console.warn("[kiln] Failed to fetch local db records:", err);
+      console.warn("[kiln] Failed to fetch Supabase DB records:", err);
     } finally {
       setIsLoading(false);
     }
@@ -91,7 +90,7 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
       const full = await getScan({ data: { id } });
       setSelectedRecord(full);
     } catch {
-      setActionNotice("Could not load full audit record from local DB.");
+      setActionNotice("Could not load full audit record from Supabase DB.");
       setTimeout(() => setActionNotice(null), 3000);
     } finally {
       setLoadingDetailId(null);
@@ -99,12 +98,12 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
   };
 
   const handleDelete = async (id: string, label: string) => {
-    if (!confirm(`Permanently remove audit record "${label}" from local database?`)) return;
+    if (!confirm(`Permanently remove audit record "${label}" from Supabase database?`)) return;
     try {
       await removeScan({ data: { id } });
       setRecords((prev) => prev.filter((r) => r.id !== id));
       if (selectedRecord?.id === id) setSelectedRecord(null);
-      setActionNotice("Record deleted from local DB.");
+      setActionNotice("Record deleted from Supabase DB.");
       setTimeout(() => setActionNotice(null), 3000);
     } catch {
       setActionNotice("Failed to delete record.");
@@ -192,20 +191,14 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
                 <Database className="w-5 h-5 text-[#e8a54b]" />
               </div>
               <h2 className="text-xl font-bold font-mono tracking-tight text-[#f4efe6]">
-                Local DB Audit Dossiers & Archive
+                Supabase Audit Dossiers & Archive
               </h2>
-              <span
-                className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
-                  dbStatus.isSupabase
-                    ? "bg-emerald-950/60 text-emerald-400 border-emerald-700/60"
-                    : "bg-[#e8a54b]/20 text-[#e8a54b] border-[#e8a54b]/40"
-                }`}
-              >
-                {dbStatus.label}
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border bg-emerald-950/60 text-emerald-400 border-emerald-700/60">
+                Supabase PostgreSQL (Live)
               </span>
             </div>
             <p className="text-xs text-[#a39886] mt-1.5 max-w-2xl leading-relaxed">
-              Durable on-disk database records preserving comprehensive smart contract audit reports, AST inventories,
+              Durable Supabase PostgreSQL database records preserving comprehensive smart contract audit reports, AST inventories,
               EIP-1967 proxy resolutions, on-chain view probes, and official verification hashes.
             </p>
           </div>

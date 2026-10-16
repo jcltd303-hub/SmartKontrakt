@@ -20,7 +20,7 @@ import { AsyncBatchWriter, ByteLruCache } from "@/lib/audit/batch-writer";
 import { BatchQueue, retargetBatchQueue } from "@/lib/audit/batch-queue";
 import { initializeBatchQueue, saveBatchCheckpoint } from "@/lib/audit/batch-checkpoint";
 import type { Report } from "@/lib/audit/types";
-import { saveBatchComprehensiveScansFn } from "@/lib/scans.functions";
+import { saveBatchComprehensiveScansFn, listScans } from "@/lib/scans.functions";
 import type { ComprehensiveRecordInput } from "@/lib/audit/persist.server";
 import { SupabaseDbModal } from "./supabase-db-modal";
 import {
@@ -37,6 +37,8 @@ import {
   Check,
   CheckCircle2,
   XCircle,
+  X,
+  AlertTriangle,
   Loader2,
   FileText,
   Sliders,
@@ -119,6 +121,15 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
   const [isDbWiringModalOpen, setIsDbWiringModalOpen] = useState<boolean>(false);
   const [supabaseStatusMsg, setSupabaseStatusMsg] = useState<{ ok: boolean; msg: string } | null>(null);
   const [isTestingSupabase, setIsTestingSupabase] = useState<boolean>(false);
+  const [actionNotice, setActionNotice] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [isResumingSupabase, setIsResumingSupabase] = useState<boolean>(false);
+
+  const showNotice = useCallback((msg: string, ok = true) => {
+    setActionNotice({ ok, msg });
+    setTimeout(() => {
+      if (mountedRef.current) setActionNotice(null);
+    }, 4500);
+  }, []);
 
   const isRunningRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -321,12 +332,22 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
   }, [ensureRemoteWriter, queueStore]);
 
   const flushDbBuffer = useCallback(async () => {
-    const results = await Promise.allSettled([
-      localWriterRef.current?.flush(), replayRemoteOutbox(),
-    ]);
-    repaintQueue();
-    const failure = results.find((r) => r.status === "rejected");
-    if (failure?.status === "rejected") throw failure.reason;
+    try {
+      const results = await Promise.allSettled([
+        localWriterRef.current?.flush(), replayRemoteOutbox(),
+      ]);
+      repaintQueue();
+      const failure = results.find((r) => r.status === "rejected");
+      if (failure?.status === "rejected") {
+        console.warn("[pipeline] buffer flush notice:", failure.reason);
+        setDbSyncStats((previous) => ({
+          ...previous,
+          lastError: failure.reason instanceof Error ? failure.reason.message : String(failure.reason),
+        }));
+      }
+    } catch (err) {
+      console.warn("[pipeline] flushDbBuffer error:", err);
+    }
   }, [repaintQueue, replayRemoteOutbox]);
 
   useEffect(() => {
@@ -366,7 +387,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
       });
       onInspectItem(fresh.report, fresh.rawBody, item.label);
     } catch (err) {
-      alert("Could not load full report for inspection: " + (err instanceof Error ? err.message : String(err)));
+      showNotice("Could not load full report for inspection: " + (err instanceof Error ? err.message : String(err)), false);
     } finally {
       setInspectingAddr(null);
     }
@@ -379,11 +400,25 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
     isRunningRef.current = true;
     setIsRunning(true);
     const localWriter = ensureLocalWriter();
+    localWriter.clearError();
+    remoteWriterRef.current?.clearError();
     try {
-      await checkpointReadyRef.current;
-      await checkpointChainRef.current;
+      try {
+        await checkpointReadyRef.current;
+      } catch (cpErr) {
+        console.warn("[pipeline] checkpoint ready notice:", cpErr);
+      }
+      try {
+        await checkpointChainRef.current;
+      } catch (chainErr) {
+        console.warn("[pipeline] checkpoint chain notice:", chainErr);
+      }
       // Finish a paused run's pending writes before attempting completed addresses again.
-      await flushDbBuffer();
+      try {
+        await flushDbBuffer();
+      } catch (flushErr) {
+        console.warn("[pipeline] pre-flush notice:", flushErr);
+      }
       const remoteWriter = ensureRemoteWriter();
       const items = queueStore.items;
       for (let i = 0; i < items.length && isRunningRef.current; i++) {
@@ -431,16 +466,23 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
             catch (err) { pendingRemoteIndexesRef.current.delete(scanId); throw err; }
           }
         } catch (err) {
-          // Stop at capacity or persistent DB errors. Retained records remain available to Flush Buffer.
           if (!localEnqueued) pendingIndexesRef.current.delete(scanId);
-          updateQueueItem(i, { status: localEnqueued ? "completed" : "pending", error: err instanceof Error ? err.message : String(err) });
-          throw err;
+          console.warn("[pipeline] buffer enqueue notice:", err);
+          updateQueueItem(i, {
+            ...updatedItem,
+            persisted: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
         if (delayMs > 0 && i < items.length - 1 && isRunningRef.current) {
           await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
       }
-      await flushDbBuffer();
+      try {
+        await flushDbBuffer();
+      } catch (flushErr) {
+        console.warn("[pipeline] post-flush notice:", flushErr);
+      }
     } catch (err) {
       if (mountedRef.current) setDbSyncStats((previous) => ({ ...previous,
         lastError: err instanceof Error ? err.message : String(err),
@@ -457,25 +499,99 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
     void flushDbBuffer().catch(() => undefined);
   };
 
-  // Resume or load from Supabase
+  // Resume or load from Supabase database
   const handleResumeSupabase = async () => {
-    if (!supabaseCfg.enabled) {
-      alert("Please configure and enable your Supabase connection first.");
-      setIsSupabaseModalOpen(true);
-      return;
-    }
-    const remoteItems = await loadBatchFromSupabase(supabaseCfg);
-    if (remoteItems.length > 0) {
-      // Merge remote into queue
-      setQueue((prev) => {
-        const map = new Map<string, BatchItem>();
-        prev.forEach((p) => map.set(`${p.chainId}:${p.address.toLowerCase()}`, p));
-        remoteItems.forEach((r) => map.set(`${r.chainId}:${r.address.toLowerCase()}`, { ...r, persisted: true, supabaseSynced: true }));
-        return Array.from(map.values());
-      });
-      alert(`Loaded ${remoteItems.length} audited contracts from Supabase.`);
-    } else {
-      alert("No prior audits found in Supabase table.");
+    setIsResumingSupabase(true);
+    try {
+      let loadedCount = 0;
+      let matchedCount = 0;
+
+      // 1. Load directly from Supabase PostgreSQL archive
+      try {
+        const storedScans = await listScans();
+        if (storedScans && storedScans.length > 0) {
+          const map = new Map<string, BatchItem>();
+          queueStore.items.forEach((p) => map.set(`${p.chainId}:${p.address.toLowerCase()}`, p));
+
+          for (const scan of storedScans) {
+            if (!scan.targetAddress) continue;
+            const key = `${scan.chainId || "ethereum"}:${scan.targetAddress.toLowerCase()}`;
+            const existing = map.get(key);
+            loadedCount++;
+            if (existing) {
+              matchedCount++;
+              map.set(key, {
+                ...existing,
+                status: "completed",
+                riskScore: scan.riskScore,
+                findingsCount: scan.criticalCount + scan.highCount + scan.mediumCount + scan.lowCount + scan.infoCount,
+                criticalCount: scan.criticalCount,
+                highCount: scan.highCount,
+                persisted: true,
+                supabaseSynced: true,
+                completedAt: scan.createdAt,
+              });
+            } else {
+              map.set(key, {
+                id: scan.id,
+                scanId: scan.id,
+                address: scan.targetAddress,
+                label: scan.label || scan.contractName || scan.targetAddress,
+                chainId: scan.chainId || "ethereum",
+                status: "completed",
+                riskScore: scan.riskScore,
+                findingsCount: scan.criticalCount + scan.highCount + scan.mediumCount + scan.lowCount + scan.infoCount,
+                criticalCount: scan.criticalCount,
+                highCount: scan.highCount,
+                persisted: true,
+                supabaseSynced: true,
+                completedAt: scan.createdAt,
+              });
+            }
+          }
+
+          const updatedList = Array.from(map.values());
+          dirtyCheckpointRef.current.clear();
+          queueStore.replace(updatedList);
+          checkpoint(queueStore.items.map((item, index) => [index, item]), true);
+          setQueueRevision((v) => v + 1);
+        }
+      } catch (dbErr) {
+        console.warn("[pipeline] Supabase DB listScans error:", dbErr);
+      }
+
+      // 2. Also merge from Supabase REST endpoint if configured
+      if (supabaseCfg.enabled && supabaseCfg.url && supabaseCfg.anonKey) {
+        try {
+          const remoteItems = await loadBatchFromSupabase(supabaseCfg);
+          if (remoteItems.length > 0) {
+            const map = new Map<string, BatchItem>();
+            queueStore.items.forEach((p) => map.set(`${p.chainId}:${p.address.toLowerCase()}`, p));
+            remoteItems.forEach((r) => {
+              const key = `${r.chainId}:${r.address.toLowerCase()}`;
+              if (map.has(key)) matchedCount++;
+              map.set(key, { ...r, persisted: true, supabaseSynced: true });
+              loadedCount++;
+            });
+            dirtyCheckpointRef.current.clear();
+            queueStore.replace(Array.from(map.values()));
+            checkpoint(queueStore.items.map((item, index) => [index, item]), true);
+            setQueueRevision((v) => v + 1);
+          }
+        } catch (restErr) {
+          console.warn("[pipeline] REST Supabase load error:", restErr);
+        }
+      }
+
+      if (loadedCount > 0) {
+        showNotice(`Resumed from Supabase: ${loadedCount} audits indexed (${matchedCount} in current queue marked complete).`);
+      } else {
+        showNotice("No prior audits found in Supabase database to resume from.", false);
+      }
+    } catch (err) {
+      showNotice("Failed to resume from Supabase: " + (err instanceof Error ? err.message : String(err)), false);
+    } finally {
+      setIsResumingSupabase(false);
     }
   };
 
@@ -783,6 +899,32 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
           </div>
         </div>
 
+        {/* Action Notice Notification */}
+        {actionNotice && (
+          <div
+            className={`p-3 rounded-lg border text-xs font-mono flex items-center justify-between transition-all animate-fadeIn ${
+              actionNotice.ok
+                ? "bg-emerald-950/70 border-emerald-700/60 text-emerald-300"
+                : "bg-red-950/70 border-red-700/60 text-red-300"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {actionNotice.ok ? (
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+              )}
+              <span>{actionNotice.msg}</span>
+            </div>
+            <button
+              onClick={() => setActionNotice(null)}
+              className="p-1 text-[#a39886] hover:text-white rounded"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* Pipeline Control Toolbar & Progress */}
         <div className="bg-[#26231c] border border-[#3a3428] rounded-lg p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-4">
           {/* Main Action Buttons */}
@@ -806,6 +948,25 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
               </button>
             )}
 
+            {failed > 0 && !isRunning && (
+              <button
+                onClick={() => {
+                  queueStore.items.forEach((item, idx) => {
+                    if (item.status === "failed") {
+                      updateQueueItem(idx, { status: "pending", error: undefined });
+                    }
+                  });
+                  repaintQueue();
+                  showNotice(`Reset ${failed} failed items back to pending queue.`);
+                }}
+                className="px-3 py-2 rounded-lg bg-[#1c1a16] hover:bg-[#322d24] border border-amber-800/60 text-xs font-mono text-amber-400 flex items-center gap-1.5 transition-colors"
+                title="Reset all failed addresses back to pending"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Retry Failed ({failed})</span>
+              </button>
+            )}
+
             <button
               onClick={handleLoadNewBatch}
               className="px-3 py-2 rounded-lg bg-[#1c1a16] hover:bg-[#322d24] border border-[#3a3428] text-xs font-mono text-[#f4efe6] flex items-center gap-1.5 transition-colors"
@@ -815,16 +976,15 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
               <span>New Batch</span>
             </button>
 
-            {supabaseCfg.enabled && (
-              <button
-                onClick={handleResumeSupabase}
-                className="px-3 py-2 rounded-lg bg-[#1c1a16] hover:bg-[#322d24] border border-[#3a3428] text-xs font-mono text-[#e8a54b] flex items-center gap-1.5 transition-colors"
-                title="Fetch previous audits stored in Supabase"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Resume Supabase</span>
-              </button>
-            )}
+            <button
+              onClick={handleResumeSupabase}
+              disabled={isResumingSupabase || isRunning}
+              className="px-3 py-2 rounded-lg bg-[#1c1a16] hover:bg-[#322d24] border border-[#3a3428] text-xs font-mono text-[#e8a54b] flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              title="Fetch previous audits stored in Supabase PostgreSQL & REST"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isResumingSupabase ? "animate-spin text-[#e8a54b]" : ""}`} />
+              <span>{isResumingSupabase ? "Resuming..." : "Resume Supabase DB"}</span>
+            </button>
 
             {/* Delay setting */}
             <div className="flex items-center gap-1 text-[11px] font-mono text-[#a39886] pl-2 border-l border-[#3a3428]">
@@ -883,7 +1043,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
               <span>DB Batch Engine:</span>
             </span>
             <span className="text-[#a39886]">
-              {dbSyncStats.totalFlushed.toLocaleString()} records written to local DB
+              {dbSyncStats.totalFlushed.toLocaleString()} records written to Supabase DB
             </span>
             <span className="text-[#746c60]">•</span>
             {dbSyncStats.isFlushing ? (

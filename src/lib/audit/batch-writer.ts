@@ -114,6 +114,23 @@ export class AsyncBatchWriter<T> {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
+
+  clearError(): void {
+    this.error = null;
+    this.publish();
+  }
+
+  reset(): void {
+    this.queue = [];
+    this.pendingBytes = 0;
+    this.error = null;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.active = null;
+    this.publish();
+  }
 }
 
 /** Bounds both entry count and retained source/report bytes; keys include chain. */

@@ -88,7 +88,7 @@ export function buildSupabasePostgresUrl(cfg: SupabaseDbConfig): string {
     return `postgresql://${cfg.user.trim()}:${encPw}@${cfg.host.trim()}:${port}/${db}`;
   }
 
-  const cleanRef = (cfg.projectRef || "")
+  const cleanRef = (cfg.projectRef || DEFAULT_SUPABASE_DB_CONFIG.projectRef)
     .trim()
     .replace(/^https?:\/\//i, "")
     .replace(/\.supabase\.co.*$/i, "")
@@ -102,7 +102,7 @@ export function buildSupabasePostgresUrl(cfg: SupabaseDbConfig): string {
     return `postgresql://postgres:${encPw}@db.${cleanRef}.supabase.co:5432/postgres`;
   }
 
-  // Supabase Connection Pooler (Transaction Mode, port 6543) - ideal for serverless / edge workloads
+  // Supabase Connection Pooler (Transaction Mode, port 6543)
   return `postgresql://postgres.${cleanRef}:${encPw}@aws-0-${region}.pooler.supabase.com:6543/postgres`;
 }
 
@@ -132,9 +132,11 @@ export async function testPostgresConnection(connectionString: string): Promise<
   }
 
   const start = Date.now();
+  const cleanUrl = connectionString.trim().replace(/([?&])sslmode=[^&]*(&|$)/, "$1").replace(/[?&]$/, "");
   const pool = new pg.Pool({
-    connectionString: connectionString.trim(),
-    connectionTimeoutMillis: 12_000,
+    connectionString: cleanUrl,
+    ssl: { rejectUnauthorized: false },
+    connectionTimeoutMillis: 15_000,
     max: 1,
   });
 
@@ -187,8 +189,10 @@ export async function applyMigrationsToPostgres(connectionString: string): Promi
   appliedCount: number;
   message: string;
 }> {
+  const cleanUrl = connectionString.trim().replace(/([?&])sslmode=[^&]*(&|$)/, "$1").replace(/[?&]$/, "");
   const pool = new pg.Pool({
-    connectionString: connectionString.trim(),
+    connectionString: cleanUrl,
+    ssl: { rejectUnauthorized: false },
     connectionTimeoutMillis: 15_000,
     max: 1,
   });

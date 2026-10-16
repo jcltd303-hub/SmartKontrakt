@@ -288,11 +288,11 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           indexToRag: andIndexRag,
         },
       });
-      setDbSavedNotice(andIndexRag ? "Saved to Local DB & Ingested to RAG KB!" : "Saved to Local DB!");
+      setDbSavedNotice(andIndexRag ? "Saved to Supabase DB & Ingested to RAG KB!" : "Saved to Supabase DB!");
       setTimeout(() => setDbSavedNotice(null), 3000);
     } catch (err) {
-      console.warn("DB save failed:", err);
-      setDbSavedNotice("Local DB save failed: " + String(err));
+      console.warn("Supabase DB save failed:", err);
+      setDbSavedNotice("Supabase DB save failed: " + String(err));
       setTimeout(() => setDbSavedNotice(null), 3500);
     } finally {
       setIsSavingDb(false);
@@ -642,7 +642,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 }`}
               >
                 <Database className="w-3.5 h-3.5" />
-                <span>Local DB Records</span>
+                <span>Supabase Records</span>
               </button>
               <button
                 onClick={() => setWorkbenchMode("rag")}
@@ -663,7 +663,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
               title="Configure Supabase Database (SmartKontrakt)"
             >
               <Database className="w-3.5 h-3.5" />
-              <span>Wire Supabase DB</span>
+              <span>Supabase Config</span>
             </button>
 
             {workbenchMode === "audit" && (
@@ -672,14 +672,14 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                   onClick={() => handleSaveToLocalDb(true)}
                   disabled={isSavingDb}
                   className="px-3 py-1.5 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-xs font-medium text-[#f4efe6] flex items-center gap-1.5 transition-colors"
-                  title="Save comprehensive audit dossier to local DB and auto-index to RAG knowledgebase"
+                  title="Save comprehensive audit dossier to Supabase PostgreSQL database and auto-index to RAG knowledgebase"
                 >
                   {isSavingDb ? (
                     <Loader2 className="w-3.5 h-3.5 text-[#e8a54b] animate-spin" />
                   ) : (
                     <Database className="w-3.5 h-3.5 text-[#e8a54b]" />
                   )}
-                  <span>Save to Local DB</span>
+                  <span>Save to Supabase DB</span>
                 </button>
 
                 <button

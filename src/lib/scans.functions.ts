@@ -279,16 +279,14 @@ export const saveDatabaseConfigFn = createServerFn({ method: "POST" })
       switchDatabase(null);
       return {
         ok: true,
-        message: "Supabase connection saved (in inactive mode). Using embedded PGLite.",
+        message: "Supabase connection configuration updated.",
         appliedMigrations: 0,
       };
     }
   });
 
 export const disconnectDatabaseFn = createServerFn({ method: "POST" }).handler(async () => {
-  const { saveSupabaseDbConfig } = await import("./supabase-db.server");
-  const { switchDatabase } = await import("./db");
-  saveSupabaseDbConfig({ active: false });
-  switchDatabase(null);
-  return { ok: true, message: "Switched back to embedded PGLite database." };
+  const { resetDatabasePool } = await import("./db");
+  resetDatabasePool();
+  return { ok: true, message: "Database connection pool refreshed." };
 });

@@ -191,15 +191,13 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
     }
   };
 
-  const handleSwitchToPglite = async () => {
+  const handleRefreshPool = async () => {
     setIsSaving(true);
     try {
       await disconnectDatabaseFn();
-      setIsActive(false);
-      setActiveUrlMasked("");
       setStatusMsg({
         ok: true,
-        msg: "Switched back to local embedded PGLite database.",
+        msg: "Refreshed Supabase database connection pool.",
       });
       onDatabaseChanged?.();
     } catch (err: unknown) {
@@ -229,7 +227,7 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
                 </span>
               </h3>
               <p className="text-[11px] text-[#a39886] font-sans">
-                Wire durable PostgreSQL archive storage & RAG indexing to your Supabase project
+                Dedicated PostgreSQL storage & RAG vectors for Vercel production deployment
               </p>
             </div>
           </div>
@@ -252,32 +250,21 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
             <div>
               <div className="text-[10px] text-[#746c60] uppercase tracking-wider">Active Storage Engine</div>
               <div className="text-xs font-bold text-[#f4efe6] mt-0.5 flex items-center gap-1.5">
-                {isActive ? (
-                  <>
-                    <span className="text-emerald-400">Supabase PostgreSQL (Live)</span>
-                    <span className="text-[10px] text-[#a39886] font-normal">
-                      {activeUrlMasked ? `• ${activeUrlMasked}` : ""}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-[#e8a54b]">Local PGLite (Embedded WASM)</span>
-                    <span className="text-[10px] text-[#a39886] font-normal">• In-memory dev fallback</span>
-                  </>
-                )}
+                <span className="text-emerald-400">Supabase PostgreSQL (Dedicated)</span>
+                <span className="text-[10px] text-[#a39886] font-normal">
+                  {activeUrlMasked ? `• ${activeUrlMasked}` : ""}
+                </span>
               </div>
             </div>
           </div>
 
-          {isActive && (
-            <button
-              onClick={handleSwitchToPglite}
-              disabled={isSaving}
-              className="px-2.5 py-1 text-[11px] rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#a39886] hover:text-[#f4efe6] transition-colors"
-            >
-              Disconnect
-            </button>
-          )}
+          <button
+            onClick={handleRefreshPool}
+            disabled={isSaving}
+            className="px-2.5 py-1 text-[11px] rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#a39886] hover:text-[#f4efe6] transition-colors"
+          >
+            Refresh Pool
+          </button>
         </div>
 
         {/* Configuration Form */}

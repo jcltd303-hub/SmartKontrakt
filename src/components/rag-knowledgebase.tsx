@@ -145,10 +145,10 @@ export function RagKnowledgebase({ onLoadContractInWorkbench }: RagKnowledgebase
                 <BookOpen className="w-5 h-5 text-[#e8a54b]" />
               </div>
               <h2 className="text-xl font-bold font-mono tracking-tight text-[#f4efe6]">
-                Local RAG Knowledgebase
+                Supabase RAG Knowledgebase
               </h2>
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-700/60">
-                Semantic Vectors + BM25 Local DB
+                Semantic Vectors + BM25 Supabase DB
               </span>
             </div>
             <p className="text-xs text-[#a39886] mt-1.5 max-w-2xl leading-relaxed">
@@ -284,7 +284,7 @@ export function RagKnowledgebase({ onLoadContractInWorkbench }: RagKnowledgebase
             <h3 className="text-sm font-bold font-mono text-[#f4efe6]">No Matching Knowledge Chunks</h3>
             <p className="text-xs text-[#a39886] max-w-md">
               No articles matched your query. Try broadening your terms or run an audit in the Workbench and click
-              "Save to Local DB" to auto-index new security knowledge.
+              "Save to Supabase DB" to auto-index new security knowledge.
             </p>
           </div>
         ) : (
