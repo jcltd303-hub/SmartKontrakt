@@ -1,6 +1,7 @@
 import { analyzeBytecode, looksLikeBytecode } from "./bytecode";
 import { detectSource } from "./detect";
 import { parseSource } from "./model";
+import { calibrateFindings } from "./severity-calibration";
 import type { Finding, Inventory, Report, Severity } from "./types";
 
 const WEIGHT: Record<Severity, number> = {
@@ -53,7 +54,7 @@ export function analyzeInput(body: string, label: string): Report {
   const text = body.replaceAll("\0", "").trim();
   if (looksLikeBytecode(text)) {
     const byte = analyzeBytecode(text);
-    const findings = byte.findings;
+    const findings = calibrateFindings(byte.findings);
     const name = byte.inventory.contractNames[0] ?? "Bytecode";
     return {
       label,
@@ -68,7 +69,9 @@ export function analyzeInput(body: string, label: string): Report {
   }
 
   const model = parseSource(text);
-  const findings = model.contracts.length ? detectSource(model, text) : regexFallback(text);
+  const findings = calibrateFindings(
+    model.contracts.length ? detectSource(model, text) : regexFallback(text),
+  );
   const names = model.contracts.map((c) => c.name);
   const notes = [
     model.parseError ?? `Parsed ${model.contracts.length} contract${model.contracts.length === 1 ? "" : "s"}.`,

@@ -1,5 +1,6 @@
 import type { AstNode, Finding, Severity } from "./types";
 import type { ContractModel, FnModel, ModModel, SourceModel, StateVar } from "./model";
+import { withAccessControlCap } from "./severity-calibration";
 
 type ExtKind =
   | "call"
@@ -307,7 +308,7 @@ function scanContract(
           : flow.seen.kind === "member" || flow.seen.kind === "erc20"
             ? "medium"
             : "high";
-      push(make({
+      push(withAccessControlCap(make({
         severity,
         swc: "SWC-107",
         title: guarded
@@ -324,7 +325,7 @@ function scanContract(
         locationFn: fn.name,
         locationLine: flow.seen.line,
         snippet: snippet(parsed, flow.seen.line + delta, delta),
-      }));
+      }), authed));
       for (const w of direct.get(fn.name)?.writes ?? []) reenterWrites.set(w, { fn: fn.name, call: flow.seen });
     } else if (flow.writeThenCall && flow.sawCall && /for\s*\(|while\s*\(/.test(fn.source)) {
       push(make({
@@ -543,7 +544,7 @@ require(ok, "transfer failed");`,
     }
     if (call.kind === "delegatecall" || call.kind === "callcode") {
       const severity: Severity = call.targetIsParam ? "critical" : call.targetIsConst ? "medium" : "high";
-      push(make({
+      push(withAccessControlCap(make({
         severity,
         swc: "SWC-112",
         title: call.targetIsParam
@@ -561,7 +562,7 @@ require(ok, "transfer failed");`,
         locationFn: fn.name,
         locationLine: call.line,
         snippet: snippet(parsed, call.line + delta, delta),
-      }));
+      }), authed));
     }
     if (call.kind === "erc20" && !call.checked) {
       push(make({
@@ -748,7 +749,7 @@ keccak256(abi.encodePacked("a", "bc"));`,
       const args = (node.arguments as AstNode[] | undefined) ?? [];
       const slot = rootIdent(args[0]);
       if (slot && params.has(slot)) {
-        push(make({
+        push(withAccessControlCap(make({
           severity: "critical",
           swc: "SWC-124",
           title: `${fn.name} SSTOREs to a caller-chosen slot`,
@@ -761,7 +762,7 @@ keccak256(abi.encodePacked("a", "bc"));`,
           locationFn: fn.name,
           locationLine: lineOf(node, delta, fn.line),
           snippet: snippet(parsed, (node.loc?.start.line ?? fn.line + delta), delta),
-        }));
+        }), authed));
       } else {
         noteWrite(node);
         push(make({
