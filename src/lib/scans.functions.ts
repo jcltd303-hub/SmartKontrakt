@@ -11,6 +11,35 @@ export const listScans = createServerFn({ method: "GET" }).handler(async () => {
   return listScanSummaries();
 });
 
+/**
+ * Which database the app is actually reading (host/user/database, NEVER
+ * the password). The Records tab renders this next to "Connected" so a
+ * wrong-project mismatch is visible instead of showing 0 rows silently.
+ * When no database is configured, returns { error } instead of throwing,
+ * so the UI can show the fix instead of crashing.
+ */
+export const getDbInfo = createServerFn({ method: "GET" }).handler(async () => {
+  try {
+    const { getActiveDatabaseUrl } = await import("./db");
+    const url = new URL(getActiveDatabaseUrl());
+    return {
+      host: url.hostname,
+      port: url.port,
+      user: decodeURIComponent(url.username),
+      database: decodeURIComponent(url.pathname.replace(/^\//, "")),
+      error: null as string | null,
+    };
+  } catch (err) {
+    return {
+      host: null as string | null,
+      port: null as string | null,
+      user: null as string | null,
+      database: null as string | null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+});
+
 export const getScan = createServerFn({ method: "GET" })
   .validator((input: unknown) => {
     if (!input || typeof input !== "object" || !("id" in input) || typeof input.id !== "string") {

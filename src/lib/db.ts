@@ -4,7 +4,7 @@ import { EMBEDDED_MIGRATIONS } from "./migrations-sql";
 import {
   loadSupabaseDbConfig,
   buildSupabasePostgresUrl,
-  DEFAULT_SUPABASE_DB_CONFIG,
+  hasSupabaseDbConfig,
 } from "./supabase-db.server";
 export type { Sql } from "./sql-client";
 
@@ -35,6 +35,11 @@ function cleanPostgresUrl(value: string | undefined): string | undefined {
  * Reading them here is what actually wires a Vercel deploy to its
  * Vercel-enabled Supabase project — without them the app would fall back
  * to a bundled local config instead of the integration's database.
+ *
+ * If no env var is set, getActiveDatabaseUrl() prefers a saved
+ * .supabase-db-config.json when one exists, and otherwise THROWS rather
+ * than silently connecting to a hardcoded project (which once made the
+ * app report "Connected" with 0 rows while the data lived elsewhere).
  */
 export function resolveDatabaseUrlFromEnv(): string | undefined {
   if (typeof process === "undefined") return undefined;
@@ -58,19 +63,30 @@ export function getActiveDatabaseUrl(): string {
     return databaseUrl;
   }
 
-  // 2. Check Supabase saved config
-  try {
-    const cfg = loadSupabaseDbConfig();
-    const url = buildSupabasePostgresUrl(cfg);
-    if (url && (url.startsWith("postgresql://") || url.startsWith("postgres://"))) {
-      return url;
+  // 2. Saved config file (local dev / Supabase Config UI). Only when the
+  // file actually exists — loadSupabaseDbConfig() returns a hardcoded
+  // default project when it doesn't, and that default must never be used
+  // silently (see step 3).
+  if (hasSupabaseDbConfig()) {
+    try {
+      const cfg = loadSupabaseDbConfig();
+      const url = buildSupabasePostgresUrl(cfg);
+      if (url && (url.startsWith("postgresql://") || url.startsWith("postgres://"))) {
+        return url;
+      }
+    } catch {
+      // fall through to the loud failure below
     }
-  } catch {
-    // fallback below
   }
 
-  // 3. Fallback to default SmartKontrakt Supabase config
-  return buildSupabasePostgresUrl(DEFAULT_SUPABASE_DB_CONFIG);
+  // 3. No database configured. Previously this silently fell back to a
+  // hardcoded Supabase project, which made the app report "Connected"
+  // with 0 rows while the real data lived in another project — the
+  // exact confusion of 2026-10-16. Fail loudly instead: the operator
+  // sets DATABASE_URL (Supabase pooler URL, port 6543) and redeploys.
+  throw new Error(
+    "No database configured: set DATABASE_URL (Supabase pooler URL, port 6543) in Vercel, or connect the Supabase integration. Refusing to fall back to a hardcoded project.",
+  );
 }
 
 /**

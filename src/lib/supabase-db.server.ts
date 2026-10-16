@@ -36,6 +36,19 @@ function getConfigFilePath(): string {
   return join(process.cwd(), CONFIG_FILE);
 }
 
+/**
+ * True only when a saved config file exists. loadSupabaseDbConfig() below
+ * falls back to a hardcoded default project when the file is missing, so
+ * callers that must not silently use that default (db.ts) gate on this.
+ */
+export function hasSupabaseDbConfig(): boolean {
+  try {
+    return existsSync(getConfigFilePath());
+  } catch {
+    return false;
+  }
+}
+
 export function loadSupabaseDbConfig(): SupabaseDbConfig {
   try {
     const path = getConfigFilePath();
