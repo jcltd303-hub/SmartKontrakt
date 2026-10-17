@@ -94,7 +94,9 @@ This is round 1 — no prior PoC results yet.
 
   // Starting-point templates matched to the static findings, plus the
   // catalog so the agent knows which shapes exist for other detectors.
-  const startingTemplates = selectPocFallbacks(findings, 3);
+  // Two templates, not three: each full template is several KB, and the
+  // prompt is already large — the third is the least relevant match.
+  const startingTemplates = selectPocFallbacks(findings, 2);
   const catalogLines = POC_FALLBACK_CATALOG.map(
     (c) => `- ${c.file}: ${c.scenario} (detectors: ${c.detectors.join(", ")})`,
   ).join("\n");
@@ -198,9 +200,26 @@ export async function runDeepAgentRound(
         temperature: 0.7,
         max_tokens: 8000,
       }),
-      signal: AbortSignal.timeout(60_000),
+      // The prompt carries source + templates + prior results, and the
+      // model must emit up to 2 full PoCs — 60s was not enough (every
+      // round timed out on the pipeline). 180s for one attempt.
+      signal: AbortSignal.timeout(180_000),
     });
-  }, { retries: 3, baseDelayMs: 2000 });
+  }, {
+    retries: 3,
+    baseDelayMs: 2000,
+    // Do NOT retry timeouts/aborts: a timeout means the model is too
+    // slow for this prompt, and retrying the same huge prompt just
+    // burns 4x the time (that is how every flagged address ate 4
+    // minutes of timeouts). Fail fast after one long attempt. Keep
+    // retrying 429 / 5xx / network errors, which are transient.
+    retryOn: (err) => {
+      if (!(err instanceof Error)) return false;
+      if (err.name === "AbortError" || err.name === "TimeoutError") return false;
+      if (/timeout|timed out|abort/i.test(err.message)) return false;
+      return /429|rate.?limit|too many|network|fetch failed|econnreset|etimedout|econnrefused|socket hang up|503|502|500/i.test(err.message);
+    },
+  });
 
   if (!response.ok) {
     const detail = (await response.text().catch(() => "")).slice(0, 500);
