@@ -20,7 +20,7 @@ interface FoundryExportProps {
   contractName?: string;
 }
 
-function downloadFile(filename: string, content: string) {
+export function downloadFile(filename: string, content: string) {
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -52,7 +52,7 @@ Never add \`--broadcast\` to these commands.
 
 \`\`\`bash
 # From the repo root. Starts a local anvil fork, runs the test, kills anvil.
-export ETH_RPC_URL="https://eth.llamarpc.com"   # or your own node
+export ETH_RPC_URL="https://ethereum.publicnode.com"   # or your own node
 cp Exploit.t.sol foundry/test/Exploit.t.sol
 ./scripts/run-fork-poc.sh ${target} test/Exploit.t.sol
 \`\`\`
@@ -84,7 +84,7 @@ export function FoundryExport({ testCode, contractAddress = "", contractName = "
   const copyCommands = async () => {
     const target = contractAddress || "0x<target-address>";
     const text = [
-      `export ETH_RPC_URL="https://eth.llamarpc.com"`,
+      `export ETH_RPC_URL="https://ethereum.publicnode.com"`,
       `./scripts/run-fork-poc.sh ${target} test/Exploit.t.sol`,
     ].join("\n");
     try {
@@ -104,7 +104,8 @@ export function FoundryExport({ testCode, contractAddress = "", contractName = "
       </div>
       <p className="text-[11px] font-mono text-[#a39886] leading-relaxed">
         Downloads the test + a README with the exact commands. Runs on your machine via the repo&apos;s
-        anvil fork harness — fork-only, no keys, nothing broadcast.
+        anvil fork harness — fork-only, no keys, nothing broadcast. The test file also downloads
+        automatically when a review generates, and the PoC auto-runs on your local backend.
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <button

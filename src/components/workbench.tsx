@@ -6,7 +6,7 @@ import type { Finding, Report, Severity } from "@/lib/audit/types";
 import type { ScanSummary } from "@/lib/audit/persist.server";
 import { BatchPipeline } from "./batch-pipeline";
 import { CfgViewer } from "./cfg-viewer";
-import { FoundryExport } from "./foundry-export";
+import { FoundryExport, downloadFile } from "./foundry-export";
 import { FoundryLocalRun } from "./foundry-local-run";
 import { AuditCertificate } from "./audit-certificate";
 import { LocalDbRecords } from "./local-db-records";
@@ -452,6 +452,14 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       } });
       setAiReview(res);
       setActiveTab("ai");
+
+      // Auto-download the generated PoC test. Single file only — a second
+      // auto-download (README) trips Chrome's "multiple automatic downloads"
+      // prompt. The README stays a manual button. The download needs no
+      // address; the auto-run below does.
+      if (res.foundryTestCode?.trim()) {
+        downloadFile("Exploit.t.sol", res.foundryTestCode);
+      }
 
       // Auto-run the generated PoC on the local Termux backend (forge fork),
       // then persist the outcome to Supabase with this scan.
