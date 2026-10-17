@@ -23,6 +23,16 @@ type ExtCall = {
   targetIsConst: boolean;
   argCount: number;
   raw: string;
+  /** ERC-20 recipient (transfer/safeTransfer arg 0, transferFrom arg 1) — Fix 25. */
+  recipient?: string;
+  /** True when the call is the contract's own/inherited transfer/transferFrom — Fix 16. */
+  ownToken?: boolean;
+  /** Ether-send amount text (transfer/send arg 0, call{value:} arg) — Fix 17. */
+  amount?: string;
+  /** True for the synthetic call standing in for an internal callee's
+   * external effects — it has no statement-level recipient/amount, so
+   * it is excluded from sendDetails (Fix 17). */
+  synthetic?: boolean;
 };
 
 type Flow = {
@@ -52,6 +62,17 @@ type Flow = {
    * (uint256 r = msg.value - fee; msg.sender.transfer(r)) is NOT
    * recognized: fail closed, the finding still fires. */
   allSendsAreRefunds: boolean;
+  /** First write line per state var (Fix 12: the window close). */
+  writeLines: Map<string, number>;
+  /** Read lines per state var (Fix 12: demonstrated stale-read path).
+   * Recorded for bare Identifier nodes that reach noteExpr — LHS
+   * writes never reach noteExpr (they go to noteWrite), so a read
+   * here is a genuine read, not a write. */
+  readLines: Map<string, number[]>;
+  /** Internal (bare-identifier) calls with their lines (Fix 12). */
+  calleeCalls: { name: string; line: number }[];
+  /** Genuine ether sends with their amounts (Fix 17). */
+  sendDetails: { target: string; amount: string }[];
 };
 
 const ASSIGN = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
@@ -145,6 +166,14 @@ function isCallerControlled(expr: string, fn: FnModel, contract: ContractModel):
   const text = expr.trim();
   if (!text) return true; // unknown -> conservative
   if (/^0x[0-9a-fA-F]+$/.test(text)) return false; // address literal
+  // Fix 13: address(this) / payable(address(this)) is the contract's own
+  // address, not a caller-chosen beneficiary. Burn's constructor
+  // selfdestruct(payable(address(this))) is a self-burn, not a theft.
+  // Whitespace and the payable cast are normalized away; anything
+  // larger (address(this).balance, a function of the address) falls
+  // through to the conservative rules below.
+  const squashed = text.replace(/\s+/g, "");
+  if (squashed === "address(this)" || squashed === "payable(address(this))") return false;
   if (/\bmsg\.sender\b/.test(text)) return true;
   for (const p of fn.params) {
     if (p.name && new RegExp(`\\b${p.name}\\b`).test(text)) return true;
@@ -214,8 +243,48 @@ function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel, sk
 // (any dotted owner — item.owner, items[id].owner) or
 // ownerOf(...) == msg.sender. `!=` never matches: the check must be
 // an equality grant, not an exclusion.
+//
+// Fix 26: the helper-call form also counts — a require (or if) whose
+// condition calls a helper whose name signals an ownership/approval
+// check with msg.sender (or _msgSender()) and a token/id argument:
+// require(_isApprovedOrOwner(_msgSender(), tokenId), "...") or
+// require(_isApprovedOrOwner(msg.sender, tokenId), "...") — the
+// ERC721Burnable.burn shape. The pushed Fix 10 only matched direct
+// ownerOf/owner comparisons, so both burn forms still flagged. The
+// helper must be called inside a require/if guard (not merely
+// mentioned), and it must take a second argument (the token/id) after
+// the sender argument, so a bare _isApprovedOrOwner(msg.sender) call
+// with no asset does not count as per-item auth.
 function isPerItemAuthed(src: string): boolean {
-  return /[A-Za-z_][\w.\[\]]*\.owner\s*==\s*msg\.sender/.test(src) || /\bownerOf\s*\([^)]*\)\s*==\s*msg\.sender/.test(src);
+  if (/[A-Za-z_][\w.\[\]]*\.owner\s*==\s*msg\.sender/.test(src) || /\bownerOf\s*\([^)]*\)\s*==\s*msg\.sender/.test(src)) return true;
+  // Guard spans: the condition text of every require(...) / if(...)
+  // in the source, found by paren-depth scan so nested calls (e.g.
+  // _msgSender() inside the helper's own argument list) do not cut
+  // the span short.
+  const spans: string[] = [];
+  for (const m of src.matchAll(/\b(?:require|if)\s*\(/g)) {
+    let depth = 1;
+    let i = m.index! + m[0].length;
+    while (i < src.length && depth > 0) {
+      if (src[i] === "(") depth += 1;
+      else if (src[i] === ")") depth -= 1;
+      i += 1;
+    }
+    spans.push(src.slice(m.index! + m[0].length, i - 1));
+  }
+  for (const span of spans) {
+    const nameRe = /\b\w*(ApprovedOrOwner|isOwner|isApproved)\w*\s*\(/gi;
+    let nm: RegExpExecArray | null;
+    while ((nm = nameRe.exec(span)) !== null) {
+      const rest = span.slice(nm.index + nm[0].length - 1);
+      const sender = rest.search(/msg\.sender|_msgSender\s*\(/);
+      if (sender < 0) continue;
+      // A comma AFTER the sender argument means a second (token/id)
+      // argument follows — this is a per-item check, not a global one.
+      if (rest.indexOf(",", sender) >= 0) return true;
+    }
+  }
+  return false;
 }
 
 function hasGuard(fn: FnModel): boolean {
@@ -363,6 +432,14 @@ function isMerkleBoundedPayout(
 
 function debitsOwnCredit(fn: FnModel, source?: string): boolean {
   const src = source ?? fn.source;
+  // Fix 22: a cross-contract burn of the caller's own tokens
+  // (token.burnAll(msg.sender) / burnFrom(msg.sender, ...) /
+  // burn(msg.sender, ...)) is a per-user debit — StakeWar's payout
+  // burns ALL the caller's bonds before paying them. A bare
+  // token.burn(amount) is NOT a debit of the caller: it burns the
+  // calling contract's own tokens (msg.sender to the token is this
+  // contract), so it does not count.
+  if (/\.(burn|burnFrom|burnAll)\s*\(\s*msg\.sender\b/.test(src)) return true;
   // Credit mappings: balance-family names match by content — usersBalance,
   // tokenBalanceLedger_, balances, _balances, balanceOf are all balance
   // accounting (the ERC721Token withdrawUsers FP: usersBalance[msg.sender]
@@ -573,6 +650,158 @@ function hasBalanceDeltaCheck(src: string): boolean {
   return /require\s*\([^;]*(balance|before|after)/i.test(src);
 }
 
+/**
+ * Function names defined in the contract's bases, transitively
+ * (Fix 16). The model does not flatten inheritance: contract.functions
+ * holds only the functions defined in that contract. A bare
+ * transfer(...) call in a token that inherits ERC20 resolves to the
+ * base's transfer, which is still the contract's OWN transfer.
+ */
+function inheritedFnNames(contract: ContractModel, model: SourceModel): Set<string> {
+  const names = new Set<string>();
+  const byContract = new Map(model.contracts.map((c) => [c.name, c]));
+  const seen = new Set<string>();
+  const queue = [...contract.bases];
+  while (queue.length) {
+    const name = queue.shift()!;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const base = byContract.get(name);
+    if (!base) continue;
+    for (const f of base.functions) names.add(f.name);
+    queue.push(...base.bases);
+  }
+  return names;
+}
+
+/**
+ * Fix 17: true when EVERY ether send in the function is ledger-bound —
+ * recipient AND amount both come from the SAME stored mapping/struct
+ * entry (pendingBids[id].bidder.transfer(pendingBids[id].amount)).
+ * A send whose recipient is a stored entry but whose amount is a
+ * caller-chosen value (or vice versa) is NOT ledger-bound. A function
+ * with no sends is not a payout (false).
+ */
+/**
+ * Strip payable(...) casts and outer parens from an expression.
+ * Send targets arrive as the call base, so a transfer to
+ * payable(msg.sender) has target `payable(msg.sender)`, not
+ * `msg.sender` — the exemptions below compare against the bare form.
+ */
+function stripPayable(expr: string): string {
+  let t = expr.trim();
+  for (;;) {
+    const m = t.match(/^payable\s*\((.*)\)$/s);
+    if (m) { t = m[1].trim(); continue; }
+    const p = t.match(/^\((.*)\)$/s);
+    if (p) { t = p[1].trim(); continue; }
+    return t;
+  }
+}
+
+function allSendsLedgerBound(sendDetails: { target: string; amount: string }[]): boolean {
+  if (sendDetails.length === 0) return false;
+  const entry = /^([\w.]+)\[([^\]]+)\]\.(\w+)$/;
+  return sendDetails.every(({ target, amount }) => {
+    const t = entry.exec(stripPayable(target));
+    const a = entry.exec(stripPayable(amount).replace(/^\(+|\)+$/g, ""));
+    return Boolean(t && a && t[1] === a[1] && t[2] === a[2]);
+  });
+}
+
+/**
+ * Fix 18: true when EVERY ether send goes to an address a require
+ * (or if) proves == msg.sender in stored-field form
+ * (X.field == msg.sender / msg.sender == X.field) and the send target
+ * is exactly that stored field. A bare `to == msg.sender` proof does
+ * NOT count: a param equal to the caller is not a stored entitlement,
+ * and exempting it would silence a full-balance drain with a vacuous
+ * require. A literal msg.sender recipient with NO such require is
+ * also NOT exempt (the open-drain shape: anyone drains the balance
+ * to themselves).
+ */
+function allSendsRequireProvenSelf(fn: FnModel, sendTargets: string[]): boolean {
+  if (sendTargets.length === 0) return false;
+  const src = stripCommentsAndStrings(fn.source);
+  // Exprs proven == msg.sender by an == comparison in the function.
+  const senderEq = new Set<string>();
+  for (const m of src.matchAll(/([A-Za-z_][\w.\[\]]*)\s*==\s*msg\.sender|msg\.sender\s*==\s*([A-Za-z_][\w.\[\]]*)/g)) {
+    senderEq.add((m[1] ?? m[2] ?? "").trim());
+  }
+  if (senderEq.size === 0) return false;
+  const isStoredField = (e: string) => e.includes(".") || e.includes("[");
+  // Stored-field exprs appearing on the RHS of an assignment to target
+  // (possibly wrapped, e.g. payable(pendingBids[id].bidder)).
+  // `=(?!=)` keeps a `==` comparison from counting as an assignment.
+  const assignedFromStoredField = (target: string): string[] => {
+    const out: string[] = [];
+    for (const m of src.matchAll(new RegExp(`\\b${escapeRegExp(target)}\\s*=(?!=)\\s*([^;]*)`, "g"))) {
+      for (const sm of m[1].matchAll(/[A-Za-z_][\w.]*\[[^\]]+\][\w.\[\]]*/g)) out.push(sm[0]);
+    }
+    return out;
+  };
+  return sendTargets.every((t) => {
+    const target = stripPayable(t);
+    // (A) The target itself is proven == msg.sender and is a stored
+    // field, or a local assigned from a stored field (case 78, and
+    // the require-on-local shape, case 79).
+    if (senderEq.has(target) && (isStoredField(target) || assignedFromStoredField(target).length > 0)) return true;
+    // (B) The target is a local assigned from a stored-field expr
+    // that is itself proven == msg.sender (require on the field,
+    // send via a local).
+    for (const s of assignedFromStoredField(target)) {
+      if (senderEq.has(s)) return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * Fix 23: true when the function clears a per-user mapping entry for
+ * the caller (M[msg.sender] = 0, -=, or = M[...] - ...) AND every
+ * ether send goes to msg.sender (or a local assigned from it). The
+ * mapping name is unrestricted — presidentSalaries, votes, anything —
+ * because the clearing IS the debit. Tying the exemption to a
+ * self-send keeps a clearing + drain-to-param shape flagged.
+ */
+function isSameMappingClearingSelfPayout(fn: FnModel, sendTargets: string[]): boolean {
+  if (sendTargets.length === 0) return false;
+  const src = fn.source;
+  // Sender aliases: msg.sender plus locals assigned from it.
+  const aliases = new Set<string>(["msg.sender"]);
+  for (const m of src.matchAll(/\b([A-Za-z_]\w*)\s*=\s*msg\.sender\b/g)) aliases.add(m[1]);
+  const targetIsSelf = sendTargets.every((t) => aliases.has(stripPayable(t)));
+  if (!targetIsSelf) return false;
+  for (const alias of aliases) {
+    const esc = escapeRegExp(alias);
+    if (new RegExp(`\\w+\\s*\\[\\s*${esc}\\s*\\]\\s*(=\\s*0\\b|-=)`).test(src)) return true;
+    if (new RegExp(`\\w+\\s*\\[\\s*${esc}\\s*\\]\\s*=\\s*\\w+\\s*\\[\\s*${esc}\\s*\\]\\s*-`).test(src)) return true;
+  }
+  return false;
+}
+
+/**
+ * Fix 24: true when a library function is called from a non-library
+ * contract function in this compilation — a qualified call
+ * (Address.functionDelegateCall(...)) or a using-for member call
+ * (.functionDelegateCall(...)). A library-internal delegatecall
+ * utility with NO such call site is dead code for the contracts in
+ * this file, not a reachable finding. Name-based for the member form
+ * (fail closed: a same-named unrelated function still counts as a
+ * call site); the qualified form is exact.
+ */
+function isLibraryDelegatecallCalledFromContract(libraryName: string, fnName: string, model: SourceModel): boolean {
+  const qualified = new RegExp(`\\b${escapeRegExp(libraryName)}\\s*\\.\\s*${escapeRegExp(fnName)}\\s*\\(`);
+  const member = new RegExp(`\\.\\s*${escapeRegExp(fnName)}\\s*\\(`);
+  for (const c of model.contracts) {
+    if (c.kind === "library") continue;
+    for (const f of c.functions) {
+      if (qualified.test(f.source) || member.test(f.source)) return true;
+    }
+  }
+  return false;
+}
+
 function scanContract(
   contract: ContractModel,
   model: SourceModel,
@@ -670,13 +899,19 @@ function scanContract(
 
   let anyPayable = false;
   let anyValueSend = false;
-  const reenterWrites = new Map<string, { fn: string; call: ExtCall }>();
+  // Fix 12: read-only reentrancy needs the writer's own window — its
+  // first post-call write line, its in-window reads, and its in-window
+  // internal calls — plus each callee's reads. Collected per function
+  // during the walk; the read-only loop below consumes them.
+  const flowsByFn = new Map<string, Flow>();
+  const reenterWrites = new Map<string, { fn: string; call: ExtCall; writeLine: number }>();
 
   for (const fn of contract.functions) {
     if (fn.mutability === "payable" || fn.isReceive) anyPayable = true;
     if (!fn.body) continue;
     const authed = isAuthed(fn, contract, model) || fn.isConstructor;
     const flow = walkFn(fn, contract, model, stateNames, byName, direct, parsed, delta, push, authed);
+    flowsByFn.set(fn.name, flow);
     if (flow.sawCall && flowSends(flow)) anyValueSend = true;
     if (/(\.call\s*\{[^}]*value|\.transfer\s*\(|\.send\s*\()/.test(fn.source)) anyValueSend = true;
 
@@ -752,7 +987,10 @@ function scanContract(
       // constructor calls router.WETH() before assigning WETH/startBlock/
       // numdays — flagged as 4 read-only highs, all impossible.
       if (!stipendCall && !fn.isConstructor) {
-        for (const w of flow.postCallWrites) reenterWrites.set(w, { fn: fn.name, call: flow.seen });
+        for (const w of flow.postCallWrites) {
+          const writeLine = flow.writeLines.get(w);
+          if (writeLine !== undefined) reenterWrites.set(w, { fn: fn.name, call: flow.seen, writeLine });
+        }
       }
     } else if (flow.writeThenCall && flow.sawCall && !fn.isConstructor && /for\s*\(|while\s*\(/.test(fn.source)) {
       push(make({
@@ -774,30 +1012,71 @@ function scanContract(
     scanSimple(fn, contract, model, parsed, delta, authed, push);
   }
 
+  // Fix 12: read-only reentrancy fires ONLY on a demonstrated
+  // in-contract stale-read path. A public getter that no in-contract
+  // code reads in the window is not a finding — the "second protocol
+  // reads the getter" story is speculation, and every reaudit in this
+  // batch (MC2long ×11, StakeWar rounds(), F3Dx ×6, OTTERY ×4,
+  // AsyncArtwork) showed it firing on getters nobody consumes.
+  // Consumer shapes:
+  //   (a) the writer itself reads the var after its call but before
+  //       its write (self-read in-window);
+  //   (b) the writer calls another function in that window which
+  //       reads the var (callee-read in-window).
+  // The window is (call line, first post-call write line). A read on
+  // the call line itself (the call target) or on the write line does
+  // not count. The finding names the demonstrated consumer.
+  // Limitation: (b) only sees own-contract callees (byName). A
+  // super/base-contract callee that reads the var is not tracked, so
+  // such a path is missed — accepted for this batch; no transitive
+  // callee-body analysis.
   for (const [varName, info] of reenterWrites) {
     const variable = contract.stateVars.find((v) => v.name === varName);
-    if (variable?.visibility === "public") {
+    if (variable?.visibility !== "public") continue;
+    const writerFlow = flowsByFn.get(info.fn);
+    let consumer: string | null = null;
+    let consumerFn: string | null = null;
+    if (writerFlow) {
+      const selfReads = writerFlow.readLines.get(varName) ?? [];
+      const selfRead = selfReads.find((l) => l > info.call.line && l < info.writeLine);
+      if (selfRead !== undefined) {
+        consumer = `${info.fn} itself reads ${varName} at line ${selfRead}, after the call but before the write`;
+        consumerFn = info.fn;
+      } else {
+        for (const cc of writerFlow.calleeCalls) {
+          if (cc.line <= info.call.line || cc.line >= info.writeLine) continue;
+          const calleeReads = flowsByFn.get(cc.name)?.readLines.get(varName) ?? [];
+          if (calleeReads.length > 0) {
+            consumer = `${info.fn} calls ${cc.name} at line ${cc.line}, which reads ${varName}`;
+            consumerFn = cc.name;
+            break;
+          }
+        }
+      }
+    }
+    if (consumer === null) continue;
+    {
       push(make({
         severity: "high",
         swc: "SWC-107",
         title: `Read-only reentrancy on ${varName}()`,
         confidence: "medium",
         detector: "read-only-reentrancy",
-        summary: `${info.fn} calls out before ${varName} is updated, and ${varName} is a public getter. A view consumer (a vault, a price, a collateral check) can read the stale value mid-callback.`,
+        summary: `${info.fn} calls out before ${varName} is updated, and ${varName} is a public getter. The stale value is consumed in-contract: ${consumer}.`,
         walkthrough: [
           `1. ${info.fn} transfers control at line ${info.call.line} via ${info.call.kind}.`,
-          `2. ${varName} still holds the pre-call value, because the write happens after the call returns.`,
-          `3. The attacker's receive() calls a second protocol whose quote reads ${contract.name}.${varName}().`,
-          "4. That second protocol prices collateral or shares off the stale number and can be borrowed against.",
+          `2. ${varName} still holds the pre-call value, because the write happens at line ${info.writeLine}, after the call returns.`,
+          `3. The stale value is consumed in-contract: ${consumer}.`,
+          "4. A re-entrant call during the window observes the pre-call value and can price or settle off it.",
         ].join("\n"),
-        exploitSolidity: `interface IVictim { function ${varName}(address) external view returns (uint256); function ${info.fn}() external; }
-interface ILender { function borrowAgainst(address vault, address user) external; }
+        exploitSolidity: `interface IVictim { function ${varName}(address) external view returns (uint256); function ${info.fn}() external; function ${consumerFn}() external; }
 contract ReadOnlyAttack {
-    function attack(address victim, address lender) external {
+    function attack(address victim) external {
         IVictim(victim).${info.fn}();
     }
     receive() external payable {
-        ILender(msg.sender).borrowAgainst(msg.sender, address(this));
+        // The in-window consumer reads the stale value here.
+        IVictim(msg.sender).${consumerFn}();
     }
 }`,
         remediationSolidity: `// Update ${varName} before the call, and add a nonReentrant guard
@@ -901,7 +1180,9 @@ function profile(fn: FnModel, stateNames: Set<string>, byName: Map<string, FnMod
     }
     if (n.type === "FunctionCall") {
       const callee = unwrapCallee(n.expression as AstNode);
-      if (callee.member && LOW_LEVEL.has(callee.member)) {
+      // Fix 15: super.* calls are internal JUMPs, not external calls.
+      const isSuper = callee.base?.type === "Identifier" && (callee.base as AstNode).name === "super";
+      if (callee.member && LOW_LEVEL.has(callee.member) && !isSuper) {
         external = true;
         externalKinds.add(callee.member);
       }
@@ -939,9 +1220,10 @@ function walkFn(
   push: (f: Finding) => void,
   authed: boolean,
 ): Flow {
-  const flow: Flow = { seen: null, sawWrite: false, sawCall: false, callThenWrite: false, writeThenCall: false, preCallWrites: new Set(), postCallWrites: new Set(), sawEtherSend: false, sendTargets: [], allSendsAreRefunds: true };
+  const flow: Flow = { seen: null, sawWrite: false, sawCall: false, callThenWrite: false, writeThenCall: false, preCallWrites: new Set(), postCallWrites: new Set(), sawEtherSend: false, sendTargets: [], allSendsAreRefunds: true, writeLines: new Map(), readLines: new Map(), calleeCalls: [], sendDetails: [] };
   const consts = new Set(contract.stateVars.filter((v) => v.constOrImmutable).map((v) => v.name));
   const params = new Set(fn.params.map((p) => p.name).filter(Boolean));
+  const inherited = inheritedFnNames(contract, model);
 
   const noteWrite = (node: AstNode | undefined) => {
     const id = rootIdent(node);
@@ -951,6 +1233,7 @@ function walkFn(
     if (flow.seen) {
       flow.callThenWrite = true;
       flow.postCallWrites.add(id);
+      if (!flow.writeLines.has(id)) flow.writeLines.set(id, lineOf(node, delta, fn.line));
     } else {
       flow.preCallWrites.add(id);
     }
@@ -961,6 +1244,7 @@ function walkFn(
     if (call.kind === "transfer" || call.kind === "send" || (call.kind === "call" && call.sendsValue)) {
       flow.sawEtherSend = true;
       flow.sendTargets.push(call.target);
+      if (!call.synthetic) flow.sendDetails.push({ target: call.target, amount: call.amount ?? "" });
       if (!/msg\.sender/.test(call.target ?? "") || !/msg\.value/.test(call.raw ?? "")) flow.allSendsAreRefunds = false;
     }
     if (flow.sawWrite && !flow.callThenWrite) flow.writeThenCall = true;
@@ -989,7 +1273,18 @@ require(ok, "transfer failed");`,
         snippet: snippet(parsed, call.line + delta, delta),
       }));
     }
-    if (call.kind === "delegatecall" || call.kind === "callcode") {
+    // Fix 24: a library-internal delegatecall utility with no reachable
+    // call site in a non-library contract is not a finding — the OZ
+    // Address functionDelegateCall shape (BallerBananas, saudibird,
+    // Rugs: the library utility is dead code for the contracts in the
+    // file). The finding still fires when a non-library function calls
+    // the utility, or when the delegatecall is in a non-library
+    // contract (existing rules below). Scope note: an internal
+    // delegatecall in a NON-library contract with no caller is still
+    // flagged — dead-code analysis for ordinary contracts is out of
+    // scope for this batch; the library-utility case is the one with
+    // three confirmed FPs.
+    if ((call.kind === "delegatecall" || call.kind === "callcode") && !(contract.kind === "library" && !isLibraryDelegatecallCalledFromContract(contract.name, fn.name, model))) {
       // StarkWare upgradeTo: the target is NOT freely chosen — it must
       // be a governance-pre-registered, time-locked implementation.
       // An access-controlled function whose delegatecall target is
@@ -1034,14 +1329,33 @@ require(ok, "transfer failed");`,
       }), authed));
       }
     }
-    if (call.kind === "erc20" && !call.checked && !hasBalanceDeltaCheck(fn.source)) {
+    // Fix 16: erc20-unchecked fires ONLY for EXTERNAL token calls.
+    // The contract's own/inherited transfer/transferFrom (the token
+    // being transferred is THIS contract's token) does not count —
+    // Fibonum's sellAllTokens calls its own transfer, which always
+    // returns true and whose _transfer reverts on failure.
+    // Fix 25: downgrade to LOW when the function is access-controlled,
+    // the recipient is fixed/stored (not caller-chosen), and a silent
+    // failure is recoverable — no claimed/paid marker and no per-user
+    // debit, so the tokens stay in the contract and the caller can
+    // retry (saudibird withdrawAllERC20: onlyOwner, fixed 5/95 split
+    // to stored addresses). A user claim payout (debit + transfer)
+    // stays HIGH: a silent failure would strand the user's funds.
+    // A non-authed transfer, or one to a caller-chosen recipient,
+    // also stays HIGH.
+    if (call.kind === "erc20" && !call.checked && !call.ownToken && !hasBalanceDeltaCheck(fn.source)) {
+      const recipientFixed = call.recipient !== undefined && call.recipient !== "" && !isCallerControlled(call.recipient, fn, contract);
+      const recoverable = !/claimed|paidOut|withdrawn/.test(fn.source) && !debitsOwnCredit(fn);
+      const downgraded = authed && recipientFixed && recoverable;
       push(make({
-        severity: "high",
+        severity: downgraded ? "low" : "high",
         swc: "SWC-104",
         title: `${fn.name} ignores an ERC-20 bool`,
         confidence: "medium",
         detector: "erc20-unchecked",
-        summary: "transfer or transferFrom is used as a statement. Tokens that return false instead of reverting (including some USDT-like tokens, and any token that can fail a fee) look successful.",
+        summary: downgraded
+          ? "transfer or transferFrom is used as a statement. Tokens that return false instead of reverting (including some USDT-like tokens, and any token that can fail a fee) look successful. Downgraded: the function is access-controlled, the recipient is a fixed/stored address, and a silent failure leaves the tokens in the contract for a retry — no attacker can exploit the discarded bool and no third-party victim loses funds."
+          : "transfer or transferFrom is used as a statement. Tokens that return false instead of reverting (including some USDT-like tokens, and any token that can fail a fee) look successful.",
         walkthrough: "1. The ERC-20 spec allows returning false.\n2. A statement-level call discards the bool.\n3. The contract then mints credit, releases collateral, or burns a position the token never moved.",
         exploitSolidity: `contract FalseToken {
     function transfer(address, uint256) external pure returns (bool) { return false; }
@@ -1076,6 +1390,17 @@ require(ok, "pay");`,
   const noteExpr = (expr: unknown, asStatement: boolean) => {
     if (!expr || typeof expr !== "object") return;
     const node = expr as AstNode;
+    // Fix 12: record reads of state vars. Only bare Identifiers that
+    // reach noteExpr are recorded — assignment LHS writes go to
+    // noteWrite, and FunctionCall callees are not recursed into, so
+    // a write is never misread as a read here. A read inside a
+    // `V += 1` LHS is not recorded (it is part of the write itself,
+    // not a stale-read consumer).
+    if (node.type === "Identifier" && typeof node.name === "string" && stateNames.has(node.name)) {
+      const reads = flow.readLines.get(node.name) ?? [];
+      reads.push(lineOf(node, delta, fn.line));
+      flow.readLines.set(node.name, reads);
+    }
     if (node.type === "BinaryOperation" && typeof node.operator === "string" && ASSIGN.has(node.operator)) {
       noteExpr(node.right, false);
       noteWrite(node.left as AstNode);
@@ -1090,6 +1415,14 @@ require(ok, "pay");`,
       args.forEach((a) => noteExpr(a, false));
       const callee = unwrapCallee(node.expression as AstNode);
       const member = callee.member;
+      // Fix 12 (b): record EVERY bare internal call, not only the
+      // LOW_LEVEL ones. The `internal` branch below sits inside a gate
+      // that requires LOW_LEVEL / selfdestruct / a base, so an
+      // ordinary bare call like readX() never reaches it — the
+      // callee-read consumer check would never see it.
+      if (!callee.base && member && byName.has(member)) {
+        flow.calleeCalls.push({ name: member, line: lineOf(node, delta, fn.line) });
+      }
       if (member && (LOW_LEVEL.has(member) || member === "selfdestruct" || member === "suicide" || (!BUILTIN.has(member) && callee.base))) {
         const baseName = rootIdent(callee.base ?? undefined);
         const target = sliceOf(parsed, callee.base ?? undefined);
@@ -1110,6 +1443,17 @@ require(ok, "pay");`,
 
         const isLow = kind === "call" || kind === "delegatecall" || kind === "staticcall" || kind === "callcode" || kind === "send" || kind === "transfer" || kind === "selfdestruct" || kind === "erc20";
         const internal = !callee.base && member && byName.has(member);
+        // Fix 15: super.* calls are NOT external calls. A super call
+        // is an internal JUMP to the base implementation — no CALL
+        // opcode, no control transfer to another contract. TRYfinance
+        // read-only ×2 + the _transfer reentrancy medium (whose
+        // "external call" was super._transfer) and AsyncArtwork's
+        // expectedTokenSupply read-only (super._safeMint) all die
+        // here. Documented limitation: a super call to a hook-carrying
+        // function (standard OZ ERC721 _transferFrom with its receiver
+        // hook) + a demonstrated consumer is missed — exotic, accepted
+        // for this batch; no transitive callee-body analysis.
+        const isSuperCall = callee.base?.type === "Identifier" && (callee.base as AstNode).name === "super";
         // Library calls are compile-time inlined — no CALL opcode, no
         // control transfer — but ONLY when the library fn itself cannot
         // call out. A pure/view library fn (MerkleProof.verify) can only
@@ -1126,7 +1470,7 @@ require(ok, "pay");`,
         const isPureLibraryCall =
           libraryFn !== undefined &&
           (libraryFn.mutability === "pure" || libraryFn.mutability === "view");
-        if (!internal && !isPureLibraryCall && (isLow || kind === "member") && member && !BUILTIN.has(member) && !SAFE_MATH.has(member)) {
+        if (!internal && !isSuperCall && !isPureLibraryCall && (isLow || kind === "member") && member && !BUILTIN.has(member) && !SAFE_MATH.has(member)) {
           // Skip obvious value-type methods and type conversions.
           // A call that CONSTRUCTS a value is not an external call and
           // transfers no control: a struct constructor
@@ -1150,8 +1494,35 @@ require(ok, "pay");`,
             baseName !== null &&
             typeNames.has(baseName) &&
             libraryFn === undefined;
-          if (member !== "push" && member !== "pop" && !isConstruction) {
+          // Fix 16: own/inherited token transfer — a bare
+          // transfer/transferFrom resolving to this contract's own
+          // or an inherited function, or this.transfer(...). The
+          // token being transferred is THIS contract's token, not
+          // an external token's. The whole block (noteCall +
+          // token-drain) is skipped: an own transfer is an internal
+          // call, not an external one — it must not set flow.seen
+          // (a write after the own transfer is not reentrancy) and
+          // it is not a drain of an external token.
+          const isThisTokenCall = callee.base?.type === "Identifier" && (callee.base as AstNode).name === "this" && (member === "transfer" || member === "transferFrom");
+          const ownToken = (member === "transfer" || member === "transferFrom") && (((!callee.base && (byName.has(member) || inherited.has(member))) || isThisTokenCall));
+          if (member !== "push" && member !== "pop" && !isConstruction && !ownToken) {
             const checked = kind === "transfer" || kind === "selfdestruct" ? true : !asStatement;
+            // Fix 25: the ERC-20 recipient for the downgrade check
+            // (transfer/safeTransfer arg 0, transferFrom arg 1).
+            const recipient = kind === "erc20"
+              ? sliceOf(parsed, args[member === "transferFrom" ? 1 : 0] as AstNode)
+              : "";
+            // Fix 17: the ether-send amount for the ledger-bound
+            // check (transfer/send arg 0, call{value:} arg).
+            let amount = "";
+            if (member === "transfer" || member === "send") amount = sliceOf(parsed, args[0] as AstNode);
+            else if (member === "call" && callee.named) {
+              const named = callee.named as AstNode;
+              const names = (named.names as string[] | undefined) ?? [];
+              const namedArgs = (named.arguments as AstNode[] | undefined) ?? [];
+              const vi = names.indexOf("value");
+              if (vi >= 0) amount = sliceOf(parsed, namedArgs[vi]);
+            }
             noteCall({
               kind,
               line: lineOf(node, delta, fn.line),
@@ -1162,6 +1533,9 @@ require(ok, "pay");`,
               targetIsConst: Boolean(baseName && consts.has(baseName)),
               argCount: args.length,
               raw: sliceOf(parsed, node),
+              recipient,
+              ownToken,
+              amount,
             });
             // Token drain: an unauthenticated function moves an
             // arbitrary amount of the contract's tokens to a FIXED
@@ -1255,6 +1629,7 @@ require(ok, "pay");`,
               targetIsConst: false,
               argCount: args.length,
               raw: member + "()",
+              synthetic: true,
             });
           }
         }
@@ -1401,6 +1776,19 @@ keccak256(abi.encodePacked("a", "bc"));`,
       flow.sawEtherSend = left.sawEtherSend || right.sawEtherSend || before.sawEtherSend;
       flow.sendTargets = [...before.sendTargets, ...left.sendTargets, ...right.sendTargets];
       flow.allSendsAreRefunds = left.allSendsAreRefunds && right.allSendsAreRefunds && before.allSendsAreRefunds;
+      // Fix 12: merge the window bookkeeping across branches — first
+      // write line per var is the minimum across branches, reads and
+      // callee calls union.
+      flow.writeLines = new Map([...before.writeLines, ...left.writeLines, ...right.writeLines].map(([k]) => {
+        const vals = [before.writeLines.get(k), left.writeLines.get(k), right.writeLines.get(k)].filter((v): v is number => v !== undefined);
+        return [k, Math.min(...vals)] as [string, number];
+      }));
+      flow.readLines = new Map([...before.readLines, ...left.readLines, ...right.readLines].map(([k]) => {
+        const vals = [...(before.readLines.get(k) ?? []), ...(left.readLines.get(k) ?? []), ...(right.readLines.get(k) ?? [])];
+        return [k, vals] as [string, number[]];
+      }));
+      flow.calleeCalls = [...before.calleeCalls, ...left.calleeCalls, ...right.calleeCalls];
+      flow.sendDetails = [...before.sendDetails, ...left.sendDetails, ...right.sendDetails];
       return;
     }
     if (stmt.type === "ForStatement" || stmt.type === "WhileStatement" || stmt.type === "DoWhileStatement") {
@@ -1482,7 +1870,13 @@ keccak256(abi.encodePacked("a", "bc"));`,
   // price) does not count — only a send whose VALUE is the balance.
   const perItemOnly = !fn.isConstructor && authed && !isAuthed(fn, contract, model, true);
   const sendsFullBalance = /\.(transfer|send)\s*\(\s*address\s*\(\s*this\s*\)\.balance\s*\)|call\s*\{\s*value\s*:\s*address\s*\(\s*this\s*\)\.balance/.test(fn.source);
-  if (sends && drainable && (!authed || (perItemOnly && sendsFullBalance)) && !flow.allSendsAreRefunds && !/ecrecover\s*\(/.test(fn.source) && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && !debitsOwnCredit(fn, allSources) && !isMerkleBoundedPayout(fn, flow.sendTargets, allSources) && fn.mutability !== "view" && fn.mutability !== "pure") {
+  // Fix 17: a ledger-bound refund/payout (recipient AND amount from
+  // the SAME stored mapping/struct entry) is not a drain.
+  // Fix 18: a send to an address a require proves == msg.sender in
+  // stored-field form is a self-refund, not a drain.
+  // Fix 23: a same-mapping clearing self-payout (M[msg.sender] = 0
+  // + send to msg.sender) is a debit, whatever M is named.
+  if (sends && drainable && (!authed || (perItemOnly && sendsFullBalance)) && !flow.allSendsAreRefunds && !allSendsLedgerBound(flow.sendDetails) && !allSendsRequireProvenSelf(fn, flow.sendTargets) && !isSameMappingClearingSelfPayout(fn, flow.sendTargets) && !/ecrecover\s*\(/.test(fn.source) && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && !debitsOwnCredit(fn, allSources) && !isMerkleBoundedPayout(fn, flow.sendTargets, allSources) && fn.mutability !== "view" && fn.mutability !== "pure") {
     push(make({
       severity: "critical",
       swc: "SWC-105",
@@ -1515,6 +1909,10 @@ function snapshot(flow: Flow): Flow {
     postCallWrites: new Set(flow.postCallWrites),
     sendTargets: [...flow.sendTargets],
     allSendsAreRefunds: flow.allSendsAreRefunds,
+    writeLines: new Map(flow.writeLines),
+    readLines: new Map([...flow.readLines].map(([k, v]) => [k, [...v]] as [string, number[]])),
+    calleeCalls: [...flow.calleeCalls],
+    sendDetails: [...flow.sendDetails],
   };
 }
 
@@ -1529,6 +1927,10 @@ function restore(flow: Flow, snap: Flow) {
   flow.sawEtherSend = snap.sawEtherSend;
   flow.sendTargets = [...snap.sendTargets];
   flow.allSendsAreRefunds = snap.allSendsAreRefunds;
+  flow.writeLines = new Map(snap.writeLines);
+  flow.readLines = new Map([...snap.readLines].map(([k, v]) => [k, [...v]] as [string, number[]]));
+  flow.calleeCalls = [...snap.calleeCalls];
+  flow.sendDetails = [...snap.sendDetails];
 }
 
 function namedAmountZero(named: AstNode | undefined): boolean {
@@ -1576,6 +1978,155 @@ function flagUnchecked(
     locationLine: lineOf(stmt, delta, fn.line),
     snippet: snippet(parsed, (stmt.loc?.start.line ?? fn.line + delta), delta),
   }));
+}
+
+/**
+ * Strip comments and string literals from Solidity source (Fix 1c).
+ * Single-pass scanner: a `//` inside a string is not a comment, and a
+ * quote inside a comment is not a string. Comments become spaces and
+ * strings become `""`, so positions shift — use the result for boolean
+ * tests and span scans only, never for line numbers.
+ */
+function stripCommentsAndStrings(src: string): string {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (c === "/" && n === "/") {
+      while (i < src.length && src[i] !== "\n") i += 1;
+    } else if (c === "/" && n === "*") {
+      i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i += 1;
+      i += 2;
+    } else if (c === '"' || c === "'") {
+      const q = c;
+      i += 1;
+      while (i < src.length && src[i] !== q) {
+        if (src[i] === "\\") i += 1;
+        i += 1;
+      }
+      i += 1;
+      out += '""';
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/** Block data that can act as entropy: clock fields plus beacon/hash sources. */
+const BLOCK_DATA = /block\.timestamp|\bnow\b|block\.number|block\.coinbase|blockhash\s*\(|block\.prevrandao|block\.difficulty/;
+
+/**
+ * True when a keccak256(/sha3( call has block data INSIDE its hash
+ * input (Fix 1b). Paren-depth scan from the call to its matching
+ * close paren, then test the span. keccak of non-block-data (EIP-712
+ * typed data — TRYfinance delegateBySig) is not entropy mixing.
+ */
+function hashInputHasBlockData(src: string): boolean {
+  for (const m of src.matchAll(/\b(?:keccak256|sha3)\s*\(/g)) {
+    let depth = 1;
+    let i = m.index! + m[0].length;
+    while (i < src.length && depth > 0) {
+      if (src[i] === "(") depth += 1;
+      else if (src[i] === ")") depth -= 1;
+      i += 1;
+    }
+    if (BLOCK_DATA.test(src.slice(m.index! + m[0].length, i - 1))) return true;
+  }
+  return false;
+}
+
+/**
+ * True when block data is the left operand of a % selection (Fix 1b):
+ * a block-data expression followed by % in the same statement
+ * (block.timestamp % n, (block.timestamp + x) % n). The [^;{}]*
+ * bound keeps the match inside one statement, so a % in a later
+ * statement does not count.
+ */
+function moduloOfBlockData(src: string): boolean {
+  return /(?:block\.timestamp|\bnow\b|block\.number|block\.coinbase|blockhash\s*\([^)]*\)|block\.prevrandao|block\.difficulty)[^;{}]*%/.test(src);
+}
+
+/**
+ * True when the block data in src flows ONLY into an oracle-query
+ * nonce/commitment (Fix 19): the function calls
+ * oraclize_query/provable_query, and every block-data occurrence is
+ * inside a query/commitment call's argument span or an `unonce`
+ * nonce mstore. Block data anywhere else (a selection, a deadline,
+ * a branch) means it is NOT oracle-only. EtherHiLo's
+ * oraclize_newRandomDSQuery and QueryNpmAuthentication's
+ * provable_newRandomDSQuery hash blockhash/coinbase/timestamp into
+ * the `unonce` nonce for an off-chain random source.
+ */
+function oracleNonceOnly(src: string, fnName: string): boolean {
+  void fnName;
+  if (!/\b(?:oraclize_query|provable_query)\s*\(/.test(src)) return false;
+  // Blank the unonce nonce mstore spans (paren-depth from mstore().
+  let blanked = src;
+  for (const m of src.matchAll(/\bmstore\s*\(/g)) {
+    let depth = 1;
+    let i = m.index! + m[0].length;
+    while (i < src.length && depth > 0) {
+      if (src[i] === "(") depth += 1;
+      else if (src[i] === ")") depth -= 1;
+      i += 1;
+    }
+    if (/unonce/.test(src.slice(m.index!, i))) {
+      blanked = blanked.slice(0, m.index!) + " ".repeat(i - m.index!) + blanked.slice(i);
+    }
+  }
+  // Blank oracle query / commitment call argument spans.
+  for (const m of src.matchAll(/\b(?:oraclize_query|provable_query|oraclize_randomDS_setCommitment|provable_randomDS_setCommitment)\s*\(/g)) {
+    let depth = 1;
+    let i = m.index! + m[0].length;
+    while (i < src.length && depth > 0) {
+      if (src[i] === "(") depth += 1;
+      else if (src[i] === ")") depth -= 1;
+      i += 1;
+    }
+    blanked = blanked.slice(0, m.index!) + " ".repeat(i - m.index!) + blanked.slice(i);
+  }
+  return !BLOCK_DATA.test(blanked);
+}
+
+/**
+ * True when every hash-of-block-data in src is assigned to an
+ * identifier (an *id field/variable) and there is no selection use
+ * (Fix 20): no % operator anywhere in the function and no hash used
+ * as an array index. EtherHiLo's beginGame
+ * (keccak256(block.number, player, bet) -> game id) is an identifier,
+ * not randomness. A hash that is %'d, indexed, returned, or branched
+ * on is a selection and does not count. Scoped to the clock+mix path:
+ * bare blockhash/prevrandao/difficulty are entropy by nature, so the
+ * caller only applies this when no entropy source is present.
+ */
+function hashOnlyAsIdentifier(src: string): boolean {
+  let anyHash = false;
+  for (const m of src.matchAll(/\b(?:keccak256|sha3)\s*\(/g)) {
+    let depth = 1;
+    let i = m.index! + m[0].length;
+    while (i < src.length && depth > 0) {
+      if (src[i] === "(") depth += 1;
+      else if (src[i] === ")") depth -= 1;
+      i += 1;
+    }
+    const span = src.slice(m.index! + m[0].length, i - 1);
+    if (!BLOCK_DATA.test(span)) continue;
+    anyHash = true;
+    // The text before the hash call must end with an id assignment:
+    // `gameId =`, `id:`, `id: uint(`, `game.id = uint(`. The separator
+    // excludes `[` so a mapping key (balances[tokenId] = ...) is not
+    // mistaken for the assignment target.
+    const before = src.slice(0, m.index!).replace(/\s+$/, "");
+    if (!/(?:^|[;{},()])(\s*(?:[\w.]+\.)?[\w$]*[Ii][Dd]\s*[:=]\s*(?:[a-zA-Z0-9_]+\s*\()?\s*)$/.test(before)) return false;
+  }
+  if (!anyHash) return false;
+  if (/%/.test(src)) return false;
+  if (/\[\s*(?:uint\d*|int\d*)?\s*\(?\s*(?:keccak256|sha3)\s*\(/.test(src)) return false;
+  return true;
 }
 
 function scanSimple(
@@ -1671,11 +2222,30 @@ function scanSimple(
     // beneficiary: a param, msg.sender, or storage this function writes.
     // selfdestruct(burn) with burn a constant sends to a fixed address —
     // anyone can trigger the destruction (griefing), but nobody profits.
-    const sdMatch = src.match(/\b(?:selfdestruct|suicide)\s*\(\s*([^)]*)\)/);
-    const sdArg = (sdMatch?.[1] ?? "").trim();
+    // The beneficiary arg is extracted by paren-depth scan, not a
+    // [^)]* regex: selfdestruct(payable(address(this))) has nested
+    // parens, and a naive capture truncates to `payable(address(this`
+    // (which Fix 13's address(this) check would never match).
+    const sdCall = src.match(/\b(?:selfdestruct|suicide)\s*\(/);
+    let sdArg = "";
+    if (sdCall && sdCall.index !== undefined) {
+      let depth = 1;
+      let i = sdCall.index + sdCall[0].length;
+      while (i < src.length && depth > 0) {
+        if (src[i] === "(") depth += 1;
+        else if (src[i] === ")") depth -= 1;
+        i += 1;
+      }
+      sdArg = src.slice(sdCall.index + sdCall[0].length, i - 1).trim();
+    }
     const sdControlled = sdArg ? isCallerControlled(sdArg, fn, contract) : true;
+    // Fix 21: an access-controlled selfdestruct is MEDIUM, not high —
+    // the owner key can destroy the contract, but only the gated key
+    // can do it, so it is a governance-trust note, not an open kill
+    // switch. Uncontrolled selfdestruct to a caller-chosen address
+    // keeps the critical rule; a fixed beneficiary stays low.
     push(make({
-      severity: sdControlled ? (authed ? "high" : "critical") : "low",
+      severity: sdControlled ? (authed ? "medium" : "critical") : "low",
       swc: "SWC-106",
       title: sdControlled
         ? (authed ? `${fn.name} can selfdestruct` : `${fn.name} selfdestructs without an access check`)
@@ -1722,7 +2292,21 @@ function scanSimple(
   }
 
   const writesPriv = contract.stateVars.some((v) => PRIVILEGED.test(v.name) && new RegExp(`\\b${v.name}\\s*=`).test(src));
-  const adminName = /^(mint|burn|setOwner|transferOwnership|upgrade|upgradeTo|upgradeToAndCall|pause|unpause|setFee|setTax|setOracle|setImplementation|execute)$/.test(fn.name);
+  // Fix 14: a self-burn is a standard user action, not an admin action.
+  // `burn` stays in the name list, but a burn that burns the caller's
+  // OWN tokens (_burn(msg.sender, ...) / _burn(_msgSender(), ...)) does
+  // not trigger on name alone — TRYfinance's burn(amount) burns the
+  // caller's own tokens via _burn(_msgSender()). A burn that burns
+  // someone else's tokens with no gate still flags. (Dropping `burn`
+  // outright would also silence a bare, ungated burn of another
+  // account — Fix 26 requires that case to keep flagging.)
+  const isSelfBurn = fn.name === "burn" && /_burn\s*\(\s*(msg\.sender|_msgSender\s*\(\s*\))/.test(src);
+  // Fix 14b: a paid mint is a sale, not an admin action. `mint` drops
+  // out when the function requires payment — a require mentioning
+  // msg.value (BallerBananas: require(msg.value >= cost * _mintAmount)).
+  // An unpaid, ungated mint still flags on name alone.
+  const isPaidMint = fn.name === "mint" && /require\s*\([^;]*?msg\.value/.test(src);
+  const adminName = /^(mint|burn|setOwner|transferOwnership|upgrade|upgradeTo|upgradeToAndCall|pause|unpause|setFee|setTax|setOracle|setImplementation|execute)$/.test(fn.name) && !isSelfBurn && !isPaidMint;
   if (!initName && (writesPriv || adminName) && !authed && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && fn.mutability !== "view" && fn.mutability !== "pure") {
     push(make({
       severity: adminName || writesPriv ? "critical" : "high",
@@ -1890,10 +2474,22 @@ function scanSimple(
   // buyCore, reLoadCore use `now` as a round clock and mention
   // winnerAddr in an event, but draw no randomness. View/pure functions
   // cannot draw randomness that decides anything on-chain.
-  const entropySource = /blockhash\s*\(|block\.prevrandao|block\.difficulty/.test(src);
-  const clockSource = /block\.timestamp|\bnow\b|block\.number|block\.coinbase/.test(src);
-  const mixesEntropy = /%|\bkeccak256\s*\(|\bsha3\s*\(/.test(src);
-  const randomish = fn.mutability !== "view" && fn.mutability !== "pure" && (entropySource || (clockSource && mixesEntropy));
+  //
+  // All randomness regexes run on `clean` (comments and string
+  // literals stripped, Fix 1c): F3Dx endRound's only `%` were the
+  // `// 40% to winner` / `// 10% to dev rewards` comments, and a `%`
+  // in a string is not a modulo. Entropy mixing requires block data
+  // INSIDE the hash input (Fix 1b): keccak of EIP-712 typed data
+  // (delegateBySig) does not mix entropy. An oracle-query nonce
+  // (Fix 19) and a hash used only as an identifier (Fix 20) are not
+  // randomness either.
+  const clean = stripCommentsAndStrings(src);
+  const entropySource = /blockhash\s*\(|block\.prevrandao|block\.difficulty/.test(clean);
+  const clockSource = /block\.timestamp|\bnow\b|block\.number|block\.coinbase/.test(clean);
+  const mixesEntropy = hashInputHasBlockData(clean) || moduloOfBlockData(clean);
+  const oracleOnly = oracleNonceOnly(clean, fn.name);
+  const idOnly = !entropySource && hashOnlyAsIdentifier(clean);
+  const randomish = fn.mutability !== "view" && fn.mutability !== "pure" && !oracleOnly && !idOnly && (entropySource || (clockSource && mixesEntropy));
   if (randomish) {
     push(make({
       severity: "high",
@@ -1909,12 +2505,12 @@ function scanSimple(
       locationLine: fn.line,
       snippet: snippet(parsed, fn.line + delta, delta),
     }));
-  } else if (/block\.timestamp|\bnow\b/.test(src) && /(require|if)\s*\(/.test(src)) {
+  } else if (/block\.timestamp|\bnow\b/.test(clean) && /(require|if)\s*\(/.test(clean)) {
     // Long-window computation: timestamp divided by >= 1 hour (e.g.
     // (block.timestamp - last) / (60*60*24)) — a ~15s producer shift is
     // immaterial over a days-scale window, so that is info, not low.
-    const tsIdx = src.indexOf("block.timestamp");
-    const afterTs = tsIdx >= 0 ? src.slice(tsIdx) : src;
+    const tsIdx = clean.indexOf("block.timestamp");
+    const afterTs = tsIdx >= 0 ? clean.slice(tsIdx) : clean;
     const longWindow = (() => {
       const paren = afterTs.match(/\/\s*\(\s*([\d\s*]+)\)/);
       if (paren) {
