@@ -19,6 +19,9 @@ import { requestAiReview, requestDeepAgentRound, requestPocRepair } from "@/lib/
 import { resolveFourbyte } from "@/lib/audit/fourbyte.functions";
 import { applyFourbyteResults, fourbyteResultsFromReport } from "@/lib/audit/fourbyte";
 import { getBackendUrl, isPocCompileError, runPocOnBackend } from "@/lib/audit/foundry-backend";
+import { getStoredSupabaseConfig } from "@/lib/supabase";
+import { savePocRun, type PocRunResult } from "../lib/poc-runs";
+import { wrapPocSnippet } from "../lib/audit/poc-wrap";
 import type { PocResult } from "@/lib/audit/types";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
 import type {
@@ -153,6 +156,19 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
   const [pocResult, setPocResult] = useState<PocResult | null>(null);
   const [pocRunning, setPocRunning] = useState(false);
   const [pocSaved, setPocSaved] = useState(false);
+  // Per-finding PoC runs (Run button on each finding's Attack Contract
+  // block, under findings). One run at a time across all findings:
+  // findingPocRunLockRef guards the race, and every Run button disables
+  // while any run is in flight.
+  type FindingPocRun = {
+    running: boolean;
+    result: PocRunResult | null; // set on terminal result; null while running
+    save: "idle" | "saving" | "saved" | "failed" | "not-configured";
+    saveError: string | null;
+  };
+  const [findingPocRuns, setFindingPocRuns] = useState<Record<string, FindingPocRun>>({});
+  const findingPocRunLockRef = useRef(false);
+  const findingPocRunning = Object.values(findingPocRuns).some((r) => r.running);
   const [savedScanId, setSavedScanId] = useState<string | null>(null);
   const [isLoadingAi, setIsLoadingAi] = useState<boolean>(false);
   // Deep Agent state — agentic exploit search (see deep-agent.server.ts).
@@ -237,6 +253,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     setPocResult(null);
     setPocRunning(false);
     setPocSaved(false);
+    setFindingPocRuns({});
     setSavedScanId(null);
     try {
       const generated = analyzeInput(bodyToAnalyze, labelToAnalyze);
@@ -514,6 +531,133 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       }
     }
     return { poc, testCode };
+  };
+
+  // --- Per-finding PoC runs (Run button on each finding's Attack Contract
+  // block). The displayed snippet is wrapped by wrapPocSnippet into a
+  // runnable Foundry Test before it is passed to runPocOnBackend; when
+  // wrapping fails (null), the raw snippet is sent and forge reports
+  // zero tests ran, which maps to "error", NEVER "passed"
+  // (the old false-PASS lesson — forge exits 0 on no match).
+  const POC_OUTPUT_CAP = 4000;
+  const NO_TESTS_RE = /no tests (match|found)|ran 0 tests|0 passed;\s*0 failed/i;
+  const newRunId = () => {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+    const bytes = Array.from({ length: 16 }, () => Math.floor(Math.random() * 256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  };
+  const mapFindingPocStatus = (poc: PocResult): PocRunResult["status"] => {
+    if (poc.status === "passed" && NO_TESTS_RE.test(poc.logs ?? "")) return "error";
+    if (poc.status === "passed") return "passed";
+    if (poc.status === "failed") return "failed";
+    return "error"; // "error" | "skipped" | "backend_unreachable" are all infra, not a verdict
+  };
+  const attemptFindingPocSave = async (result: PocRunResult, findingId: string) => {
+    setFindingPocRuns((prev) => ({
+      ...prev,
+      [findingId]: { ...prev[findingId]!, running: false, save: "saving", saveError: null },
+    }));
+    try {
+      const cfg = getStoredSupabaseConfig();
+      if (!cfg.enabled) {
+        setFindingPocRuns((prev) => ({
+          ...prev,
+          [findingId]: { ...prev[findingId]!, save: "not-configured", saveError: "Supabase not configured — result not saved." },
+        }));
+        return;
+      }
+      await savePocRun(result, cfg);
+      setFindingPocRuns((prev) => ({
+        ...prev,
+        [findingId]: { ...prev[findingId]!, save: "saved", saveError: null },
+      }));
+    } catch (err) {
+      setFindingPocRuns((prev) => ({
+        ...prev,
+        [findingId]: { ...prev[findingId]!, save: "failed", saveError: err instanceof Error ? err.message : String(err) },
+      }));
+    }
+  };
+  const handleRunFindingPoc = async (finding: Finding) => {
+    const source = finding.exploitSolidity ?? "";
+    // Wrap the attack-contract snippet into a runnable Foundry Test.
+    // When wrapping fails (null), fall back to the raw snippet — it
+    // errors with the zero-tests note below.
+    const wrapped = wrapPocSnippet(source);
+    const testCode = wrapped ? wrapped.testFile : source;
+    if (!source.trim() || findingPocRunLockRef.current) return;
+    findingPocRunLockRef.current = true;
+    const startedAt = new Date().toISOString();
+    const runId = newRunId();
+    setFindingPocRuns((prev) => ({
+      ...prev,
+      [finding.id]: { running: true, result: null, save: "idle", saveError: null },
+    }));
+    try {
+      const addr = singleAddress.trim();
+      if (!addr || !isValidEvmAddress(addr)) {
+        // No valid target — record an error row without calling the backend
+        // (runPocOnBackend would return "skipped"). Not a real run, so no
+        // save is attempted; save stays "idle" and no save line renders.
+        setFindingPocRuns((prev) => ({
+          ...prev,
+          [finding.id]: {
+            running: false,
+            result: {
+              id: runId, source, status: "error", startedAt,
+              finishedAt: new Date().toISOString(), durationMs: 0,
+              chainId: SUPPORTED_CHAINS.find((c) => c.id === singleAddressChain)?.chainId ?? 1,
+              exitCode: null, output: "No valid 0x target address — fetch an on-chain address first.", truncated: false,
+            },
+            save: "idle", saveError: null,
+          },
+        }));
+        return;
+      }
+      const poc = await runPocOnBackend(getBackendUrl(), { address: addr, testCode });
+      // Release the run lock as soon as the backend call returns — the
+      // save attempt below must not block other runs (it can take up to
+      // the 30s save timeout on a failing endpoint). The finally still
+      // releases on every other path.
+      findingPocRunLockRef.current = false;
+      const finishedAt = new Date().toISOString();
+      const status = mapFindingPocStatus(poc);
+      // Zero-tests-matched must never read as passed: when the backend
+      // claimed "passed" but no test ran, the logs say so explicitly.
+      const fullLogs = status === "error" && poc.status === "passed"
+        ? `${poc.logs ?? ""}\nNo test functions ran — this PoC snippet is an attack contract, not a runnable Foundry test.`
+        : (poc.logs ?? "");
+      const truncated = fullLogs.length > POC_OUTPUT_CAP;
+      const result: PocRunResult = {
+        id: runId,
+        source: testCode,
+        status,
+        startedAt,
+        finishedAt,
+        durationMs: poc.durationMs ?? 0,
+        chainId: SUPPORTED_CHAINS.find((c) => c.id === singleAddressChain)?.chainId ?? 1,
+        exitCode: null, // the backend response carries no exit code
+        output: truncated ? fullLogs.slice(0, POC_OUTPUT_CAP) : fullLogs,
+        truncated,
+      };
+      setFindingPocRuns((prev) => ({
+        ...prev,
+        [finding.id]: { running: false, result, save: "idle", saveError: null },
+      }));
+      await attemptFindingPocSave(result, finding.id);
+    } finally {
+      findingPocRunLockRef.current = false;
+    }
+  };
+  // Retry Save calls persistence ONLY — it re-saves the stored result and
+  // never reruns the PoC.
+  const handleRetryFindingPocSave = async (findingId: string) => {
+    const run = findingPocRuns[findingId];
+    if (!run?.result || run.save !== "failed") return;
+    await attemptFindingPocSave(run.result, findingId);
   };
 
   // Request AI Threat Modeling & Foundry Test Suite (OpenRouter API)
@@ -1508,6 +1652,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 filteredFindings.map((finding) => {
                   const cfg = SEVERITY_CONFIG[finding.severity] ?? SEVERITY_CONFIG.info;
                   const isExpanded = Boolean(expandedFindings[finding.id]);
+                  const findingRun = findingPocRuns[finding.id];
 
                   return (
                     <div
@@ -1596,21 +1741,92 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                                   <Crosshair className="w-3.5 h-3.5" />
                                   Attack Contract (PoC):
                                 </span>
-                                <button
-                                  onClick={() => copyToClipboard(finding.exploitSolidity, `poc-${finding.id}`)}
-                                  className="flex items-center gap-1 text-[10px] text-[#e8a54b] hover:underline"
-                                >
-                                  {copiedKey === `poc-${finding.id}` ? (
-                                    <Check className="w-3 h-3 text-emerald-400" />
-                                  ) : (
-                                    <Copy className="w-3 h-3" />
-                                  )}
-                                  <span>Copy PoC</span>
-                                </button>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => handleRunFindingPoc(finding)}
+                                    disabled={findingPocRunning || !isValidEvmAddress(singleAddress.trim()) || !finding.exploitSolidity?.trim()}
+                                    title={
+                                      !isValidEvmAddress(singleAddress.trim())
+                                        ? "Fetch an on-chain address first"
+                                        : "Run this PoC on the local backend (Termux + Foundry, fork-only)"
+                                    }
+                                    className="flex items-center gap-1 text-[10px] text-[#e8a54b] hover:underline disabled:opacity-50 disabled:no-underline"
+                                  >
+                                    {findingRun?.running ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : null}
+                                    <span>{findingRun?.running ? "Running…" : "Run"}</span>
+                                  </button>
+                                  <button
+                                    onClick={() => copyToClipboard(finding.exploitSolidity, `poc-${finding.id}`)}
+                                    className="flex items-center gap-1 text-[10px] text-[#e8a54b] hover:underline"
+                                  >
+                                    {copiedKey === `poc-${finding.id}` ? (
+                                      <Check className="w-3 h-3 text-emerald-400" />
+                                    ) : (
+                                      <Copy className="w-3 h-3" />
+                                    )}
+                                    <span>Copy PoC</span>
+                                  </button>
+                                </div>
                               </div>
                               <div className="p-3 bg-[#12110e] rounded-lg border border-red-950 font-mono text-xs text-red-200 overflow-x-auto">
                                 <pre>{finding.exploitSolidity}</pre>
                               </div>
+                              {findingRun?.running && (
+                                <div className="mt-2 p-3 bg-[#12110e] rounded-lg border border-[#3a3428] text-xs font-mono text-[#e8a54b]">
+                                  Running PoC on local backend…
+                                </div>
+                              )}
+                              {findingRun?.result && (
+                                <div className="mt-2 p-3 bg-[#12110e] rounded-lg border border-[#3a3428] flex flex-col gap-2">
+                                  <p
+                                    className={`text-xs font-mono font-bold ${
+                                      findingRun.result.status === "passed"
+                                        ? "text-emerald-400"
+                                        : findingRun.result.status === "failed"
+                                          ? "text-red-400"
+                                          : "text-amber-300"
+                                    }`}
+                                  >
+                                    {findingRun.result.status === "passed"
+                                      ? `PoC PASSED — exploit reproduced on fork (${findingRun.result.durationMs}ms)`
+                                      : findingRun.result.status === "failed"
+                                        ? `PoC FAILED — exploit did not reproduce on fork (${findingRun.result.durationMs}ms)`
+                                        : "PoC run error (see output below)"}
+                                  </p>
+                                  <pre className="max-h-64 overflow-y-auto bg-[#0a0908] border border-[#3a3428] rounded p-2 text-[11px] font-mono text-[#f4efe6] whitespace-pre-wrap">
+                                    {findingRun.result.output || "(no output)"}
+                                    {findingRun.result.truncated ? "\n… (output truncated)" : ""}
+                                  </pre>
+                                  {findingRun.save !== "idle" && (
+                                    <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
+                                      {findingRun.save === "saving" && (
+                                        <span className="text-[#a39886]">Saving to poc_runs…</span>
+                                      )}
+                                      {findingRun.save === "saved" && (
+                                        <span className="text-emerald-400">Saved to poc_runs</span>
+                                      )}
+                                      {findingRun.save === "not-configured" && (
+                                        <span className="text-amber-300">Not saved — Supabase not configured.</span>
+                                      )}
+                                      {findingRun.save === "failed" && (
+                                        <>
+                                          <span className="text-red-400">
+                                            Save failed{findingRun.saveError ? `: ${findingRun.saveError}` : ""}
+                                          </span>
+                                          <button
+                                            onClick={() => handleRetryFindingPocSave(finding.id)}
+                                            className="text-[10px] text-[#e8a54b] hover:underline"
+                                          >
+                                            Retry Save
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           )}
 
