@@ -286,3 +286,103 @@ export async function runDeepAgentRound(
     llmMs: Date.now() - started,
   };
 }
+
+/**
+ * Repair ONE PoC that failed to compile: a single LLM call that fixes
+ * only the failure, changing as little as possible. The caller re-runs
+ * the fixed PoC once; there is no second repair. Throws on LLM failure
+ * or on a fixed PoC that is not a PoC test — the caller treats that as
+ * an error, same as the original compile failure.
+ */
+export async function repairPocCode(
+  contractName: string,
+  originalCode: string,
+  errorLogs: string,
+): Promise<{ fixedCode: string; llmMs: number }> {
+  const { apiKey, model } = resolveOpenRouterConfig();
+  if (!apiKey) {
+    throw new Error("OPENROUTER_API_KEY is not set");
+  }
+  const started = Date.now();
+  const referer =
+    process.env.APP_URL?.trim() ||
+    process.env.VERCEL_URL?.trim() ||
+    "https://smart-kontrakt.vercel.app";
+
+  const user = `Contract: ${contractName}
+
+The Foundry PoC below FAILED TO COMPILE / RUN with this output:
+
+\`\`\`
+${errorLogs.slice(0, 8000)}
+\`\`\`
+
+Original PoC:
+
+\`\`\`solidity
+${originalCode.slice(0, 30000)}
+\`\`\`
+
+Fix ONLY the failure shown. Change as little as possible: keep \`contract PoC is Test\`, the fork setUp() shape (vm.createSelectFork + vm.envAddress POC_TARGET), and the observable-state assertions. Do NOT invent a new harness, a new attack, or interfaces the target does not have — if the failure is a call to a function that does not exist, remove that call path rather than guessing a signature.
+
+Respond strictly as JSON matching this schema:
+\`{"foundryTestCode": "complete fixed Solidity code string"}\``;
+
+  const response = await withRetry(async () => {
+    await openRouterLimiter.acquire();
+    return fetch(OPENROUTER_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: ["Bearer", apiKey].join(" "),
+        "Content-Type": "application/json",
+        "HTTP-Referer": referer,
+        "X-Title": "SmartKontrakt / Kiln PoC repair",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You repair Foundry PoC tests that failed to compile or run. Fix only the failure shown, changing as little as possible. Respond strictly as JSON matching the requested schema.",
+          },
+          { role: "user", content: user },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.2,
+        max_tokens: 8000,
+      }),
+      // A repair is one PoC, not a full round — but the model still
+      // needs room to read the failure + rewrite the test.
+      signal: AbortSignal.timeout(180_000),
+    });
+  }, {
+    retries: 3,
+    baseDelayMs: 2000,
+    // Same fail-fast-on-timeout rule as runDeepAgentRound.
+    retryOn: (err) => {
+      if (!(err instanceof Error)) return false;
+      if (err.name === "AbortError" || err.name === "TimeoutError") return false;
+      if (/timeout|timed out|abort/i.test(err.message)) return false;
+      return /429|rate.?limit|too many|network|fetch failed|econnreset|etimedout|econnrefused|socket hang up|503|502|500/i.test(err.message);
+    },
+  });
+
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).slice(0, 500);
+    throw new Error(`OpenRouter returned HTTP ${response.status}: ${detail}`);
+  }
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string | null } }>;
+  };
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error("OpenRouter returned no message content");
+  }
+  const parsed = extractJsonContent(content) as { foundryTestCode?: unknown };
+  const fixedCode = typeof parsed.foundryTestCode === "string" ? parsed.foundryTestCode : "";
+  if (!fixedCode.includes("contract PoC")) {
+    throw new Error("Repair did not return a PoC test");
+  }
+  return { fixedCode, llmMs: Date.now() - started };
+}

@@ -112,6 +112,35 @@ export const requestDeepAgentRound = createServerFn({ method: "POST" })
   });
 
 /**
+ * PoC repair: ONE LLM call that fixes a PoC which failed to compile.
+ * The caller re-runs the fixed PoC once; there is no second repair
+ * (a PoC that fails twice is a dead hypothesis, not a conversation).
+ */
+export const requestPocRepair = createServerFn({ method: "POST" })
+  .validator((input: unknown) => {
+    if (!input || typeof input !== "object") {
+      throw new Error("Invalid request payload");
+    }
+    const { contractName, originalCode, errorLogs } = input as {
+      contractName?: string;
+      originalCode?: string;
+      errorLogs?: string;
+    };
+    if (typeof originalCode !== "string" || originalCode.trim().length === 0) {
+      throw new Error("Repair requires the original PoC code");
+    }
+    return {
+      contractName: contractName || "TargetContract",
+      originalCode: originalCode.slice(0, 30000),
+      errorLogs: typeof errorLogs === "string" ? errorLogs.slice(0, 8000) : "",
+    };
+  })
+  .handler(async ({ data }) => {
+    const { repairPocCode } = await import("./deep-agent.server");
+    return repairPocCode(data.contractName, data.originalCode, data.errorLogs);
+  });
+
+/**
  * Per-item OpenRouter second pass for the pipeline. Kept separate from the
  * bulk save on purpose: a bulk save with per-record LLM calls blows past the
  * serverless function timeout and stalls the flush at 0 records. The pipeline

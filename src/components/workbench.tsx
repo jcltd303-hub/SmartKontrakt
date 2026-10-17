@@ -15,10 +15,10 @@ import { SupabaseDbModal } from "./supabase-db-modal";
 import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit/address-fetcher";
 import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
 import { probeContractInterfaces, type CallProbeResult } from "@/lib/audit/simulator";
-import { requestAiReview, requestDeepAgentRound } from "@/lib/audit/ai.functions";
+import { requestAiReview, requestDeepAgentRound, requestPocRepair } from "@/lib/audit/ai.functions";
 import { resolveFourbyte } from "@/lib/audit/fourbyte.functions";
 import { applyFourbyteResults, fourbyteResultsFromReport } from "@/lib/audit/fourbyte";
-import { getBackendUrl, runPocOnBackend } from "@/lib/audit/foundry-backend";
+import { getBackendUrl, isPocCompileError, runPocOnBackend } from "@/lib/audit/foundry-backend";
 import type { PocResult } from "@/lib/audit/types";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
 import type {
@@ -493,6 +493,28 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     }
   };
 
+  // Single-PoC run with one LLM repair on compile failure. Returns the
+  // final PoC result + the final test code (repaired when repair ran).
+  // Repair failure is NOT a new verdict — the caller keeps the original
+  // compile-error result, so a failed repair never hides the real error.
+  const runSinglePocWithRepair = async (address: string, testCode: string) => {
+    let poc = await runPocOnBackend(getBackendUrl(), { address, testCode });
+    if (poc.status === "error" && isPocCompileError(poc.logs ?? "")) {
+      try {
+        const repaired = await requestPocRepair({ data: {
+          contractName: report?.label ?? "TargetContract",
+          originalCode: testCode,
+          errorLogs: poc.logs ?? "",
+        } });
+        testCode = repaired.fixedCode;
+        poc = await runPocOnBackend(getBackendUrl(), { address, testCode });
+      } catch (repairErr) {
+        console.warn("[Kiln] PoC repair failed:", repairErr);
+      }
+    }
+    return { poc, testCode };
+  };
+
   // Request AI Threat Modeling & Foundry Test Suite (OpenRouter API)
   const handleTriggerAiReview = async () => {
     if (!report) return;
@@ -507,16 +529,9 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       setAiReview(res);
       setActiveTab("ai");
 
-      // Auto-download the generated PoC test. Single file only — a second
-      // auto-download (README) trips Chrome's "multiple automatic downloads"
-      // prompt. The README stays a manual button. The download needs no
-      // address; the auto-run below does.
-      if (res.foundryTestCode?.trim()) {
-        downloadFile("Exploit.t.sol", res.foundryTestCode);
-      }
-
       // Auto-run the generated PoC on the local Termux backend (forge fork),
-      // then persist the outcome to Supabase with this scan.
+      // with one LLM repair if it fails to compile — then persist the
+      // outcome to Supabase with this scan.
       const addr = singleAddress.trim();
       if (!addr || !isValidEvmAddress(addr) || !res.foundryTestCode?.trim()) {
         setPocResult({
@@ -525,13 +540,23 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           durationMs: 0,
           runAt: new Date().toISOString(),
         });
+        // No run — download the original PoC as before.
+        if (res.foundryTestCode?.trim()) {
+          downloadFile("Exploit.t.sol", res.foundryTestCode);
+        }
         return;
       }
       setPocRunning(true);
       setPocSaved(false);
-      const poc = await runPocOnBackend(getBackendUrl(), { address: addr, testCode: res.foundryTestCode });
+      const { poc, testCode } = await runSinglePocWithRepair(addr, res.foundryTestCode);
       setPocResult(poc);
       setPocRunning(false);
+      // The downloaded file + saved review carry the FINAL PoC (repaired
+      // when repair ran) — the user downloads the working test, not the
+      // broken original, and the record keeps what actually ran.
+      const finalReview = { ...res, foundryTestCode: testCode };
+      setAiReview(finalReview);
+      downloadFile("Exploit.t.sol", testCode);
       // Upsert the same scan row (when known) with the AI review + PoC result.
       // indexToRag: false — the analysis auto-persist already indexed this report.
       saveComprehensiveScanFn({
@@ -545,7 +570,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           compilerVersion: report.inventory.compiler,
           proxyInfo: proxyInfo ?? null,
           probes: probes ?? [],
-          aiReview: res,
+          aiReview: finalReview,
           pocResult: poc,
           triageStates: Object.fromEntries(Object.entries(findingTriage).map(([k, v]) => [k, v.status])),
           sourceOrigin: "workbench",
@@ -634,9 +659,30 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         let stoppedOnError = false;
         for (const h of res.hypotheses) {
           setDeepAgentStatus(`Round ${round}: running PoC for "${h.title}"…`);
-          const poc = await runPocOnBackend(getBackendUrl(), { address: addr, testCode: h.foundryTestCode });
+          let testCode = h.foundryTestCode;
+          let poc = await runPocOnBackend(getBackendUrl(), { address: addr, testCode });
+          // Repair loop (same as the worker): a PoC that fails to
+          // COMPILE gets ONE LLM repair + one re-run.
+          if (poc.status === "error" && isPocCompileError(poc.logs ?? "")) {
+            setDeepAgentStatus(`Round ${round}: PoC for "${h.title}" failed to compile — asking the model to repair it…`);
+            try {
+              const repaired = await requestPocRepair({ data: {
+                contractName: report.label,
+                originalCode: testCode,
+                errorLogs: poc.logs ?? "",
+              } });
+              testCode = repaired.fixedCode;
+              poc = await runPocOnBackend(getBackendUrl(), { address: addr, testCode });
+            } catch (repairErr) {
+              setDeepAgentError(
+                `PoC repair failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)} — stopping the search.`,
+              );
+              stoppedOnError = true;
+              break;
+            }
+          }
           const outcome = poc.status === "passed" ? "confirmed" : poc.status === "failed" ? "refuted" : "error";
-          roundRun.hypotheses.push({ ...h, pocResult: poc });
+          roundRun.hypotheses.push({ ...h, foundryTestCode: testCode, pocResult: poc });
           priorResults.push({
             title: h.title,
             detector: h.detector,

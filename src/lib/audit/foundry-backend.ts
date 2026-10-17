@@ -1,6 +1,18 @@
 import type { PocResult } from "./types";
 
 /**
+ * Forge compile-error detector for PoC logs. Compile failures are the
+ * repairable kind — the model can fix a syntax/interface error from the
+ * compiler output. Infra failures (RPC down, timeout, backend busy) are
+ * NOT repairable by editing the PoC, so they must not trigger a repair
+ * LLM call. Used by the workbench loop and the worker Deep Agent loop.
+ */
+export function isPocCompileError(logs: string): boolean {
+  if (!logs) return false;
+  return /(compiler run failed|compilation failed|failed to compile|error\[\d+\])/i.test(logs);
+}
+
+/**
  * Client for the Termux Foundry local backend (http://127.0.0.1:8787).
  *
  * Shared by the manual "Run PoC" component and the auto-run that fires when

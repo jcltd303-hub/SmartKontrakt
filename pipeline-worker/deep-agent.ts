@@ -31,12 +31,12 @@ import type {
   DeepAgentHypothesis,
   DeepAgentPriorResult,
 } from "../src/lib/audit/deep-agent.server.ts";
-import { runDeepAgentRound } from "../src/lib/audit/deep-agent.server.ts";
+import { repairPocCode, runDeepAgentRound } from "../src/lib/audit/deep-agent.server.ts";
 // runPocOnBackend is the shared helper also used by the workbench. It
 // never touches localStorage here: the backend URL is passed explicitly,
 // and the helper only reads localStorage inside getBackendUrl(), which
 // this module never calls.
-import { runPocOnBackend } from "../src/lib/audit/foundry-backend.ts";
+import { isPocCompileError, runPocOnBackend } from "../src/lib/audit/foundry-backend.ts";
 import { fourbyteResultsFromReport, type FourbyteResults } from "../src/lib/audit/fourbyte.ts";
 
 export const WORKER_DEEP_AGENT_MAX_ROUNDS = 3;
@@ -214,9 +214,28 @@ export async function runWorkerDeepAgent(
       let stopRound = false;
       for (let i = 0; i < hypotheses.length; i += 1) {
         const h = hypotheses[i]!;
-        const poc = await runPocWithBusyRetry(opts.backendUrl, input.address, h.foundryTestCode);
+        let testCode = h.foundryTestCode;
+        let poc = await runPocWithBusyRetry(opts.backendUrl, input.address, testCode);
+        // Repair loop: a PoC that fails to COMPILE gets ONE LLM repair
+        // + one re-run. A compile failure is a fixable PoC, not a
+        // refuted hypothesis — without this, every near-miss PoC is
+        // wasted. Infra failures (RPC/timeout) are not compile errors
+        // and never trigger a repair call.
+        if (poc.status === "error" && isPocCompileError(poc.logs ?? "")) {
+          try {
+            const repaired = await repairPocCode(input.contractName, testCode, poc.logs ?? "");
+            totalLlmMs += repaired.llmMs;
+            testCode = repaired.fixedCode;
+            poc = await runPocWithBusyRetry(opts.backendUrl, input.address, testCode);
+          } catch (repairErr) {
+            base.errors += 1;
+            stopped = `PoC repair failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)}`;
+            stopRound = true;
+            break;
+          }
+        }
         if (poc.status === "passed") {
-          const finding = confirmedFinding(h, round, i, poc);
+          const finding = confirmedFinding({ ...h, foundryTestCode: testCode }, round, i, poc);
           base.confirmed.push(finding);
           findingsForPrompt.push(finding);
           priorResults.push({ title: h.title, detector: h.detector, outcome: "confirmed", pocLogs: poc.logs.slice(0, 1500) });
