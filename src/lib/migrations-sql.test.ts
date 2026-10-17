@@ -9,6 +9,7 @@ test("embedded migrations include both archive migrations", () => {
     "0004_poc_results.sql",
     "0005_fourbyte.sql",
     "0006_fourbyte_events.sql",
+    "0007_unparsed.sql",
   ]);
 });
 
@@ -43,4 +44,11 @@ test("embedded 0006 creates fourbyte_event_signatures keyed by (topic, signature
   const sql = EMBEDDED_MIGRATIONS["0006_fourbyte_events.sql"];
   assert.match(sql, /create table if not exists fourbyte_event_signatures/i);
   assert.match(sql, /primary key \(topic, signature\)/i);
+});
+
+test("embedded 0007 adds unparsed to contract_scans and backfills unparsed records", () => {
+  const sql = EMBEDDED_MIGRATIONS["0007_unparsed.sql"];
+  assert.match(sql, /alter table contract_scans add column if not exists unparsed boolean/i);
+  assert.match(sql, /detector <> 'parse'/i);
+  assert.match(sql, /contractNames.*Fragment/i);
 });

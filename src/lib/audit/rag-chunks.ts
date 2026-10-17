@@ -1,6 +1,7 @@
 import type { Finding, Report, Severity } from "./types";
 import type { ProxyAnalysis } from "./proxy-resolver";
 import type { CallProbeResult } from "./simulator";
+import { resolveContractDisplayName } from "./simulator";
 import type { AiSecurityReview } from "./ai-review.server";
 
 
@@ -43,7 +44,8 @@ function tokenize(text: string): string[] {
 
 export function buildReportRagChunks(params: RagIndexInput): Omit<RagDbRow, "created_at">[] {
   const { scanId, report, targetAddress, chainId, proxyInfo, probes, aiReview } = params;
-  const contractName = report.inventory.contractNames[0] ?? report.label;
+  // Item 1: RAG chunks carry the same unified display name as the record.
+  const contractName = resolveContractDisplayName(probes, report);
   const chunksToInsert: Omit<RagDbRow, "created_at">[] = [];
 
   // 1. Chunks for each finding

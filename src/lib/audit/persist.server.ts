@@ -4,6 +4,7 @@ import { analyzeInput } from "./engine";
 import type { Finding, Inventory, PocResult, Report, Severity } from "./types";
 import type { ProxyAnalysis } from "./proxy-resolver";
 import type { CallProbeResult } from "./simulator";
+import { resolveContractDisplayName } from "./simulator";
 import type { AiSecurityReview } from "./ai-review.server";
 import { OPENROUTER_API_URL, resolveOpenRouterConfig, stripThinkBlocks } from "./ai-review.server";
 import { indexReportToRag } from "./rag.server";
@@ -28,6 +29,11 @@ export type ScanSummary = {
   hasProxy?: boolean;
   probesCount?: number;
   createdAt: string;
+  /** True when the input did not parse (Item 3) — the record analyzed
+   * nothing and renders "Unparsed", never "Clean". Derived from the
+   * findings rows (all parse-detector) so records saved before the
+   * engine set report.unparsed are still labeled correctly. */
+  unparsed?: boolean;
 };
 
 export type StoredScan = ScanSummary & {
@@ -70,6 +76,7 @@ type ScanRow = {
   poc_duration_ms?: number | null;
   poc_run_at?: string | null;
   created_at: string;
+  unparsed?: boolean;
 };
 
 type FindingRow = {
@@ -129,6 +136,7 @@ function summaryFrom(row: ScanRow): ScanSummary {
     hasProxy,
     probesCount,
     createdAt: row.created_at,
+    unparsed: row.unparsed ?? false,
   };
 }
 
@@ -145,7 +153,7 @@ export async function listScanSummaries(opts?: { limit?: number; offset?: number
       select id, label, input_kind, contract_name, target_address, chain_id,
              proxy_info_json, probes_json, cert_hash, source_origin, is_rag_indexed,
              risk_score, critical_count, high_count, medium_count, low_count, info_count,
-             created_at::text as created_at
+             unparsed, created_at::text as created_at
       from contract_scans
       order by created_at desc
       limit ${limit} offset ${offset}
@@ -188,7 +196,7 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
            compiler_version, proxy_info_json, probes_json, ai_review_json,
            triage_states_json, cert_hash, source_origin, is_rag_indexed,
            risk_score, critical_count, high_count, medium_count, low_count, info_count,
-           summary, inventory_json, ai_narrative, ai_status,
+           summary, inventory_json, ai_narrative, ai_status, unparsed,
            poc_status, poc_logs, poc_duration_ms, poc_run_at::text as poc_run_at,
            created_at::text as created_at
     from contract_scans
@@ -221,6 +229,18 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
     snippet: f.snippet,
   }));
   const aiStatus = row.ai_status === "ok" || row.ai_status === "error" ? row.ai_status : "unavailable";
+  // Item 3: the stored column is authoritative; the derivation covers rows
+  // saved before migration 0007 (or by a client without the column):
+  // Fragment-only inventory with no findings (bare enum paste), or
+  // findings that are all the parse-failure INFO.
+  const inventoryIsFragmentOnly =
+    inventory.contractNames.length > 0 &&
+    inventory.contractNames.every((n) => n === "Fragment") &&
+    inventory.functions.length === 0;
+  const unparsed =
+    row.unparsed === true ||
+    (inventoryIsFragmentOnly && findings.length === 0) ||
+    (row.input_kind === "source" && findings.length > 0 && findings.every((f) => f.detector === "parse"));
   const report: Report = {
     label: row.label,
     inputKind: row.input_kind === "bytecode" ? "bytecode" : "source",
@@ -230,6 +250,8 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
     findings,
     aiNarrative: row.ai_narrative,
     aiStatus,
+    // Item 3: same derivation as the list query, from the findings rows.
+    unparsed,
   };
 
   let proxyInfo: ProxyAnalysis | null = null;
@@ -326,7 +348,9 @@ export async function saveComprehensiveRecord(input: {
   const id = input.id && input.id.trim() ? input.id : crypto.randomUUID();
   const report = input.report;
   const counts = tally(report.findings);
-  const contractName = report.inventory.contractNames[0] ?? null;
+  // Item 1: unified display name — on-chain name() probe first, then the
+  // analyzed/main contract — NOT the first contract in the file.
+  const contractName = resolveContractDisplayName(input.probes, report);
 
   // Automatic OpenRouter second pass: every saved audit gets an AI narrative
   // unless the report already carries one (e.g. re-saving a loaded scan).
@@ -351,7 +375,7 @@ export async function saveComprehensiveRecord(input: {
       triage_states_json, cert_hash, source_origin, is_rag_indexed,
       risk_score, critical_count, high_count, medium_count, low_count, info_count,
       summary, inventory_json, ai_narrative, ai_status,
-      poc_status, poc_logs, poc_duration_ms, poc_run_at
+      poc_status, poc_logs, poc_duration_ms, poc_run_at, unparsed
     ) values (
       ${id},
       ${input.label},
@@ -380,7 +404,8 @@ export async function saveComprehensiveRecord(input: {
       ${input.pocResult?.status ?? null},
       ${input.pocResult?.logs ?? null},
       ${input.pocResult?.durationMs ?? null},
-      ${input.pocResult?.runAt ?? null}
+      ${input.pocResult?.runAt ?? null},
+      ${report.unparsed ?? false}
     )
     on conflict (id) do update set
       label = excluded.label,
@@ -408,7 +433,8 @@ export async function saveComprehensiveRecord(input: {
       poc_status = excluded.poc_status,
       poc_logs = excluded.poc_logs,
       poc_duration_ms = excluded.poc_duration_ms,
-      poc_run_at = excluded.poc_run_at
+      poc_run_at = excluded.poc_run_at,
+      unparsed = excluded.unparsed
   `;
 
   // Payload upsert

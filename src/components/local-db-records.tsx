@@ -24,6 +24,7 @@ import {
   Activity,
   ShieldAlert,
   CheckCircle2,
+  AlertTriangle,
   RefreshCw,
   Loader2,
   X,
@@ -473,10 +474,16 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
                               {r.lowCount}L
                             </span>
                           )}
-                          {r.criticalCount === 0 && r.highCount === 0 && r.mediumCount === 0 && (
-                            <span className="text-emerald-400 flex items-center gap-1">
-                              <CheckCircle2 className="w-3 h-3" /> Clean
+                          {r.unparsed ? (
+                            <span className="text-amber-400 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3" /> Unparsed
                             </span>
+                          ) : (
+                            r.criticalCount === 0 && r.highCount === 0 && r.mediumCount === 0 && (
+                              <span className="text-emerald-400 flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3" /> Clean
+                              </span>
+                            )
                           )}
                         </div>
                       </td>

@@ -362,20 +362,41 @@ function forward(bytes calldata data) external returns (bytes memory) {
     );
   }
 
+  // Item 4: dedupe identical bytecode findings. The same CALL-popped
+  // shape compiled N times (one per call site) is ONE grouped finding
+  // reporting the count and every distinct location — not N identical
+  // rows. Grouping key = detector + title shape (opcode name); every
+  // grouped finding shares severity, SWC, summary template, walkthrough,
+  // exploit, and remediation, so nothing material is merged away. All
+  // pcs are listed in the summary/walkthrough; per-site snippets are
+  // capped at 10 with a "+M more sites" note.
   const unchecked = uncheckedCalls(ins);
-  for (const hit of unchecked.slice(0, 6)) {
+  const uncheckedByName = new Map<string, { pc: number }[]>();
+  for (const hit of unchecked) {
+    const group = uncheckedByName.get(hit.name) ?? [];
+    group.push(hit);
+    uncheckedByName.set(hit.name, group);
+  }
+  for (const [opName, hits] of uncheckedByName) {
+    const pcs = hits.map((h) => `0x${h.pc.toString(16)}`);
+    const countNote =
+      hits.length > 1 ? ` Found at ${hits.length} sites (pcs ${pcs.join(", ")}).` : "";
     findings.push(
       finding({
         severity: "medium",
         swc: "SWC-104",
-        title: `${hit.name} return value is popped`,
+        title:
+          hits.length > 1
+            ? `${opName} return value is popped (×${hits.length})`
+            : `${opName} return value is popped`,
         confidence: "medium",
         detector: "bytecode-unchecked-call",
-        summary: `${hit.name} pushes a success flag and a following POP discards it before any ISZERO/JUMPI. A reverting callee looks like success.`,
+        summary: `${opName} pushes a success flag and a following POP discards it before any ISZERO/JUMPI. A reverting callee looks like success.${countNote}`,
         walkthrough: [
-          `1. ${hit.name} pushes 1 on success and 0 on failure. It does not revert the caller by itself.`,
+          `1. ${opName} pushes 1 on success and 0 on failure. It does not revert the caller by itself.`,
           "2. The next instructions POP that flag, so both outcomes fall through.",
           "3. A callee that reverts (or returns false) still lets the caller continue into SSTORE or another value transfer.",
+          ...(hits.length > 1 ? [`4. Call sites (pcs): ${pcs.join(", ")}.`] : []),
         ].join("\n"),
         exploitSolidity: `contract Reverts {
     receive() external payable { revert("no"); }
@@ -386,7 +407,12 @@ function forward(bytes calldata data) external returns (bytes memory) {
 require(ok, "call failed");`,
         locationFn: "runtime",
         locationLine: null,
-        snippet: snippetFor(ins, hit.pc),
+        snippet:
+          hits
+            .slice(0, 10)
+            .map((h) => `--- pc 0x${h.pc.toString(16)} ---\n${snippetFor(ins, h.pc)}`)
+            .join("\n") +
+          (hits.length > 10 ? `\n... and ${hits.length - 10} more sites (see walkthrough for all pcs)` : ""),
       }),
     );
   }

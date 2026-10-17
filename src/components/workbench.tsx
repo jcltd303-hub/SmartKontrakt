@@ -14,7 +14,7 @@ import { RagKnowledgebase } from "./rag-knowledgebase";
 import { SupabaseDbModal } from "./supabase-db-modal";
 import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit/address-fetcher";
 import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
-import { probeContractInterfaces, type CallProbeResult } from "@/lib/audit/simulator";
+import { probeContractInterfaces, resolveContractDisplayName, type CallProbeResult } from "@/lib/audit/simulator";
 import { requestAiReview, requestDeepAgentRound, requestPocRepair } from "@/lib/audit/ai.functions";
 import { resolveFourbyte } from "@/lib/audit/fourbyte.functions";
 import { applyFourbyteResults, fourbyteResultsFromReport } from "@/lib/audit/fourbyte";
@@ -1282,7 +1282,10 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
 
                   <div>
                     <div className="flex items-center gap-2">
-                      <h2 className="text-base font-bold text-[#f4efe6]">{report.label}</h2>
+                      {/* Item 1: the header shows the unified display name —
+                          on-chain name() probe first, then the analyzed
+                          contract — and updates when probes land. */}
+                      <h2 className="text-base font-bold text-[#f4efe6]">{resolveContractDisplayName(probes, report)}</h2>
                       <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-bold ${risk.text} bg-[#26231c] border border-[#3a3428]`}>
                         {risk.label}
                       </span>

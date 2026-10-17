@@ -1,6 +1,6 @@
 import { analyzeBytecode, looksLikeBytecode } from "./bytecode";
 import { detectSource } from "./detect";
-import { parseSource } from "./model";
+import { parseSource, type SourceModel } from "./model";
 import { calibrateFindings } from "./severity-calibration";
 import type { Finding, Inventory, Report, Severity } from "./types";
 
@@ -50,7 +50,60 @@ function emptyInventory(kind: "source" | "bytecode", note: string): Inventory {
   };
 }
 
-export function analyzeInput(body: string, label: string, onlyContract?: string | null): Report {
+export type AnalyzeOptions = {
+  /** Address audits only: scope detection to the deployed contract.
+   * Paste callers omit this — a pasted file has no deployed contract,
+   * so all contracts in the file are analyzed (previous behavior). */
+  selectMainContract?: boolean;
+  /** On-chain name() probe value, when the caller already has it. Only
+   * used when it matches a contract in the file (normalized). The worker
+   * and workbench probe in parallel with analysis, so they do not pass
+   * this today — the most-derived fallback below does the work instead. */
+  deployedName?: string | null;
+};
+
+/**
+ * Which contract the analysis scopes to (Item 2). Rules, in order:
+ *  1. onlyContract, when it names a contract in the file (Sourcify
+ *     single-file match: Deed.sol -> contract Deed).
+ *  2. deployedName, when its normalized form (lowercase, non-alphanumerics
+ *     stripped) equals a contract name's normalized form.
+ *  3. When selectMainContract is true: the UNIQUE most-derived contract —
+ *     kind is neither "library" nor "interface", and no other contract in
+ *     the file lists it in bases. (The deployed contract is the
+ *     most-derived one; libraries/utilities are bases, never the target.
+ *     The model does not mark abstract contracts, so an abstract
+ *     most-derived singleton would be selected — documented limitation.)
+ *  4. Otherwise null: analyze every contract (previous behavior).
+ * Returns null, never a guess, when rules 1-3 do not resolve.
+ */
+function selectMainContract(
+  model: SourceModel,
+  onlyContract: string | null | undefined,
+  deployedName: string | null,
+  selectMain: boolean,
+): string | null {
+  const names = new Set(model.contracts.map((c) => c.name));
+  if (onlyContract && names.has(onlyContract)) return onlyContract;
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (deployedName && norm(deployedName) !== "") {
+    const hit = model.contracts.find((c) => norm(c.name) === norm(deployedName));
+    if (hit) return hit.name;
+  }
+  if (!selectMain) return null;
+  const based = new Set(model.contracts.flatMap((c) => c.bases));
+  const candidates = model.contracts.filter(
+    (c) =>
+      c.kind !== "library" &&
+      c.kind !== "interface" &&
+      // The synthetic Fragment wrapper is not a real deployed contract.
+      c.name !== "Fragment" &&
+      !based.has(c.name),
+  );
+  return candidates.length === 1 ? candidates[0]!.name : null;
+}
+
+export function analyzeInput(body: string, label: string, onlyContract?: string | null, opts?: AnalyzeOptions): Report {
   const text = body.replaceAll("\0", "").trim();
   if (looksLikeBytecode(text)) {
     const byte = analyzeBytecode(text);
@@ -65,12 +118,20 @@ export function analyzeInput(body: string, label: string, onlyContract?: string 
       findings,
       aiNarrative: null,
       aiStatus: "unavailable",
+      mainContract: null,
+      unparsed: false,
     };
   }
 
   const model = parseSource(text);
+  const mainContract = selectMainContract(
+    model,
+    onlyContract,
+    opts?.deployedName ?? null,
+    opts?.selectMainContract ?? false,
+  );
   const findings = calibrateFindings(
-    model.contracts.length ? detectSource(model, text, onlyContract) : regexFallback(text),
+    model.contracts.length ? detectSource(model, text, mainContract ?? onlyContract) : regexFallback(text),
   );
   const names = model.contracts.map((c) => c.name);
   const notes = [
@@ -117,7 +178,28 @@ export function analyzeInput(body: string, label: string, onlyContract?: string 
     disassembly: "",
   };
 
-  const name = (onlyContract && names.includes(onlyContract) ? onlyContract : names[0]) ?? (label || "Contract");
+  const name = (mainContract ?? names[0]) ?? (label || "Contract");
+  // Unparsed: no REAL contract was analyzed AND the only findings are
+  // the parse-failure INFO (or none). Two shapes:
+  //  - 0 contracts: the input failed even fragment-wrapping, so the
+  //    findings are regexFallback's (parse INFO, or a real-but-imprecise
+  //    tx.origin/delegatecall/selfdestruct hit — which is NOT unparsed).
+  //  - A synthetic Fragment contract with no functions/stateVars/
+  //    modifiers: a bare enum/struct/error paste the parser wrapped
+  //    (the Rocket Pool ENUM case). A Fragment WITH functions is a real
+  //    pasted fragment (a lone function) — it was analyzed, so it is
+  //    not unparsed even when it produces no findings.
+  const noRealContracts =
+    model.contracts.length === 0 ||
+    model.contracts.every(
+      (c) =>
+        c.name === "Fragment" &&
+        c.functions.length === 0 &&
+        c.stateVars.length === 0 &&
+        c.modifiers.length === 0,
+    );
+  const unparsed =
+    noRealContracts && (findings.length === 0 || findings.every((f) => f.detector === "parse"));
   return {
     label,
     inputKind: "source",
@@ -127,6 +209,8 @@ export function analyzeInput(body: string, label: string, onlyContract?: string 
     findings,
     aiNarrative: null,
     aiStatus: "unavailable",
+    mainContract,
+    unparsed,
   };
 }
 
@@ -217,5 +301,7 @@ export function emptyReport(): Report {
     findings: [],
     aiNarrative: null,
     aiStatus: "unavailable",
+    mainContract: null,
+    unparsed: false,
   };
 }

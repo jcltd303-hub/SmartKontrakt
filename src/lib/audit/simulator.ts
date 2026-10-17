@@ -1,5 +1,6 @@
 import { SUPPORTED_CHAINS } from "./address-fetcher";
 import { rpcLimiter, withRetry } from "./rate-limit";
+import type { Report } from "./types";
 
 export type CallProbeResult = {
   selector: string;
@@ -145,4 +146,45 @@ export async function probeContractInterfaces(address: string, chainId = "ethere
   );
 
   return probes;
+}
+
+/**
+ * The on-chain name() probe value, sanitized (Item 1). Returns null when
+ * the probe did not succeed, returned nothing printable, or returned
+ * something that is not a name (an address, a >120-char blob, control
+ * characters). A rejected probe name falls through to the analyzed
+ * contract name — never shown raw.
+ */
+export function probeOnChainName(probes: CallProbeResult[] | null | undefined): string | null {
+  const hit = probes?.find((p) => p.name === "name()" && p.success);
+  const s = hit?.decodedString?.trim() ?? "";
+  if (!s || s.length > 120) return null;
+  if (/[^\x20-\x7e]/.test(s)) return null;
+  if (/^0x[0-9a-fA-F]{40}$/.test(s)) return null;
+  return s;
+}
+
+/**
+ * THE record display-name rule (Item 1), shared by every surface that
+ * names a record: worker bulk save, workbench single save, RAG chunks,
+ * and the workbench header. Order:
+ *   1. On-chain name() probe value (what the deployed contract calls
+ *      itself — "The Baller Bananas", "My Rug NFT").
+ *   2. The analyzed/main contract's name (Item 2 selection: the
+ *      deployed contract, not the first file in the source).
+ *   3. First contract in the file (previous behavior, last resort).
+ *   4. The record label (CSV / file / paste label).
+ * Old records keep whatever contract_name they were saved with — this
+ * rule applies at save/render time going forward, with no backfill.
+ */
+export function resolveContractDisplayName(
+  probes: CallProbeResult[] | null | undefined,
+  report: Report,
+): string {
+  return (
+    probeOnChainName(probes) ??
+    report.mainContract ??
+    report.inventory.contractNames[0] ??
+    report.label
+  );
 }

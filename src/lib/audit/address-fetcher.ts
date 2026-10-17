@@ -446,7 +446,7 @@ export async function analyzeAddress(
   address: string,
   chainId = "ethereum",
   customLabel?: string,
-  opts?: { fourbyte?: FourbyteLookup },
+  opts?: { fourbyte?: FourbyteLookup; deployedName?: string | null },
 ): Promise<{ report: Report; rawBody: string; inputKind: "source" | "bytecode" }> {
   if (!isValidEvmAddress(address)) {
     throw new Error(`Invalid EVM address format: ${address}`);
@@ -458,7 +458,16 @@ export async function analyzeAddress(
   const sourcifyMatch = await fetchSourcifySource(address, chain.chainId);
   if (sourcifyMatch) {
     const label = customLabel || sourcifyMatch.name || `Verified (${address.slice(0, 6)}...)`;
-    const report = analyzeInput(sourcifyMatch.source, label, sourcifyMatch.contractName);
+    // Address audit: scope detection to the deployed contract (Item 2).
+    // Sourcify single-file matches already pass the contract name;
+    // multi-file matches rely on the deployed-name / most-derived
+    // fallback inside analyzeInput. Callers that already probed name()
+    // may pass opts.deployedName; the worker/workbench probe in parallel
+    // with analysis, so they do not pass it today.
+    const report = analyzeInput(sourcifyMatch.source, label, sourcifyMatch.contractName, {
+      selectMainContract: true,
+      deployedName: opts?.deployedName ?? null,
+    });
     // Also fetch the runtime bytecode so the Bytecode & CFG tab works for
     // verified contracts. Before this, a Sourcify hit returned a source-only
     // report and the tab showed 0 opcodes / N/A size. Bytecode FINDINGS are

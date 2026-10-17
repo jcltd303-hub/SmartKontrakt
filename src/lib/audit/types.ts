@@ -84,6 +84,18 @@ export type Report = {
   findings: Finding[];
   aiNarrative: string | null;
   aiStatus: "ok" | "unavailable" | "error";
+  /** The contract the analysis actually scoped to (Item 2 selection:
+   * onlyContract / deployed-name match / unique most-derived contract),
+   * or null when every contract in the file was analyzed. In-memory
+   * only — not persisted; the saved contract_name comes from
+   * resolveContractDisplayName (probes first). */
+  mainContract?: string | null;
+  /** True when the input did not parse AND the only findings are the
+   * parse-failure INFO (or there are no findings). Such a record
+   * analyzed NOTHING and must render "Unparsed", never "Clean".
+   * Set by engine.analyzeInput; loadScan/listScanSummaries derive the
+   * same state from findings rows for records saved before this field. */
+  unparsed?: boolean;
 };
 
 export type AstNode = {

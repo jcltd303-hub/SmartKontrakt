@@ -2,6 +2,7 @@ import type { Sql } from "../sql-client.ts";
 import type { ComprehensiveRecordInput } from "./persist.server.ts";
 import { buildReportRagChunks } from "./rag-chunks.ts";
 import { serializedBytes } from "./batch-writer.ts";
+import { resolveContractDisplayName } from "./simulator.ts";
 
 export const MAX_BATCH_RECORDS = 50;
 export const MAX_BATCH_BYTES = 1_500_000;
@@ -34,7 +35,10 @@ export async function writeAuditBatch(sql: Sql, records: ComprehensiveRecordInpu
     for (const f of r.report.findings) counts[f.severity]++;
     return {
       id: r.id, label: r.label, input_kind: r.report.inputKind,
-      contract_name: r.report.inventory.contractNames[0] ?? null,
+      // Item 1: the record name is the unified display name — on-chain
+      // name() probe first, then the analyzed/main contract — NOT the
+      // first contract in the file (SafeMath/Context/Strings/...).
+      contract_name: resolveContractDisplayName(r.probes, r.report),
       target_address: r.targetAddress ?? null, chain_id: r.chainId ?? "ethereum",
       compiler_version: r.compilerVersion ?? r.report.inventory.compiler ?? null,
       proxy_info_json: r.proxyInfo ? JSON.stringify(r.proxyInfo) : null,
@@ -48,6 +52,8 @@ export async function writeAuditBatch(sql: Sql, records: ComprehensiveRecordInpu
       inventory_json: JSON.stringify(r.report.inventory),
       ai_narrative: r.report.aiNarrative ?? r.aiReview?.threatModelReport ?? null,
       ai_status: r.report.aiStatus,
+      // Item 3: explicit unparsed state (migration 0007).
+      unparsed: r.report.unparsed ?? false,
     };
   });
   const findings = records.flatMap((r) => r.report.findings.map((f, ord) => ({
@@ -68,14 +74,14 @@ export async function writeAuditBatch(sql: Sql, records: ComprehensiveRecordInpu
         id, label, input_kind, contract_name, target_address, chain_id, compiler_version,
         proxy_info_json, probes_json, ai_review_json, triage_states_json, cert_hash,
         source_origin, is_rag_indexed, risk_score, critical_count, high_count, medium_count,
-        low_count, info_count, summary, inventory_json, ai_narrative, ai_status
+        low_count, info_count, summary, inventory_json, ai_narrative, ai_status, unparsed
       ) select * from jsonb_to_recordset($1::jsonb) as r(
         id text, label text, input_kind text, contract_name text, target_address text,
         chain_id text, compiler_version text, proxy_info_json text, probes_json text,
         ai_review_json text, triage_states_json text, cert_hash text, source_origin text,
         is_rag_indexed boolean, risk_score integer, critical_count integer, high_count integer,
         medium_count integer, low_count integer, info_count integer, summary text,
-        inventory_json text, ai_narrative text, ai_status text
+        inventory_json text, ai_narrative text, ai_status text, unparsed boolean
       ) on conflict (id) do update set
         label=excluded.label, input_kind=excluded.input_kind, contract_name=excluded.contract_name,
         target_address=excluded.target_address, chain_id=excluded.chain_id,
@@ -87,7 +93,7 @@ export async function writeAuditBatch(sql: Sql, records: ComprehensiveRecordInpu
         high_count=excluded.high_count, medium_count=excluded.medium_count,
         low_count=excluded.low_count, info_count=excluded.info_count, summary=excluded.summary,
         inventory_json=excluded.inventory_json, ai_narrative=excluded.ai_narrative,
-        ai_status=excluded.ai_status`, [JSON.stringify(scans)]);
+        ai_status=excluded.ai_status, unparsed=excluded.unparsed`, [JSON.stringify(scans)]);
     await tx.query(`insert into scan_payloads (scan_id, body)
       select scan_id, body from jsonb_to_recordset($1::jsonb) as r(scan_id text, body text)
       on conflict (scan_id) do update set body=excluded.body`,
