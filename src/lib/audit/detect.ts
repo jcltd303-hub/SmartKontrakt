@@ -31,6 +31,10 @@ type Flow = {
   sawCall: boolean;
   callThenWrite: boolean;
   writeThenCall: boolean;
+  /** State vars written before the first external call (checks-effects order). */
+  preCallWrites: Set<string>;
+  /** State vars written after the first external call (the stale-read surface). */
+  postCallWrites: Set<string>;
 };
 
 const ASSIGN = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
@@ -110,8 +114,30 @@ function hasGuard(fn: FnModel): boolean {
   return fn.modifiers.some((m) => /nonreentrant|noreentrant|reentrancyguard/i.test(m));
 }
 
-function usesCredit(fn: FnModel): boolean {
-  return /balances\s*\[|_balances\s*\[|deposits\s*\[|credits\s*\[/.test(fn.source);
+/**
+ * True when the function pays out of a credited balance it is entitled to
+ * spend: it DEBITS a per-user credit mapping, and either the debited
+ * account is msg.sender itself, or an allowance check proves msg.sender
+ * may spend that account's credit (the transferFrom shape). Such a send
+ * is a withdrawal / authorized transfer of credited funds, not an
+ * unprotected drain — the debit IS the access check.
+ *
+ * A mere require bound (require(balanceOf[msg.sender] >= x)) with NO
+ * debit does NOT exempt: the caller could repeat the send without ever
+ * losing credit. A debit of someone else's balance with NO allowance
+ * check is still flagged. This replaces the old usesCredit exemption,
+ * which exempted any function that merely mentioned a balance mapping.
+ */
+function debitsOwnCredit(fn: FnModel): boolean {
+  const src = fn.source;
+  const credit = "(?:balances|_balances|balanceOf|deposits|credits)";
+  // Debit: balanceOf[<account>] -= wad — entitled if account is msg.sender,
+  // or if allowance[<account>][msg.sender] >= wad is required.
+  const debit = src.match(new RegExp(`${credit}\\s*\\[\\s*([\\w.]+)\\s*\\]\\s*[-+*/%]?=`));
+  if (!debit) return false;
+  const account = debit[1];
+  if (account === "msg.sender") return true;
+  return new RegExp(`allowance\\s*\\[\\s*${account}\\s*\\]\\s*\\[\\s*msg\\.sender\\s*\\]\\s*>=`).test(src);
 }
 
 let seq = 0;
@@ -301,24 +327,54 @@ function scanContract(
 
     if (flow.callThenWrite && flow.seen) {
       const guarded = hasGuard(fn);
-      const severity: Severity = guarded
-        ? "low"
-        : flow.seen.sendsValue || flow.seen.kind === "call" || flow.seen.kind === "delegatecall"
-          ? "critical"
-          : flow.seen.kind === "member" || flow.seen.kind === "erc20"
-            ? "medium"
-            : "high";
+      // Evidence checks before calling it reentrancy:
+      // - transfer/send forward only 2300 gas: a reentrant call cannot fit
+      //   in that stipend, so there is no reentrancy window at all. The
+      //   post-call write is ordering hygiene, not an exploit.
+      // - If a per-user credit mapping (balanceOf, balances, ...) was written
+      //   BEFORE the call and no credit mapping is written AFTER it, the
+      //   double-spend path is closed: a reentrant call hits the require
+      //   against the already-debited balance. Only aggregate state
+      //   (e.g. totalSupply) updates after the call.
+      const stipendCall = flow.seen.kind === "transfer" || flow.seen.kind === "send";
+      const creditVars = new Set(
+        contract.stateVars.filter((v) => v.typeName.trim().startsWith("mapping(")).map((v) => v.name),
+      );
+      const creditSettledPreCall =
+        [...flow.preCallWrites].some((w) => creditVars.has(w)) &&
+        ![...flow.postCallWrites].some((w) => creditVars.has(w));
+      const severity: Severity = stipendCall
+        ? "info"
+        : guarded
+          ? "low"
+          : creditSettledPreCall
+            ? "low"
+            : flow.seen.sendsValue || flow.seen.kind === "call" || flow.seen.kind === "delegatecall"
+              ? "critical"
+              : flow.seen.kind === "member" || flow.seen.kind === "erc20"
+                ? "medium"
+                : "high";
+      const title = stipendCall
+        ? `State written after a 2300-gas transfer in ${fn.name} — no reentrancy window`
+        : guarded
+          ? `State is written after an external call in ${fn.name}, but a reentrancy guard is present`
+          : creditSettledPreCall
+            ? `Reentrancy: ${fn.name} updates non-credit state after an external call`
+            : `Reentrancy: ${fn.name} updates state after an external call`;
+      const summary = stipendCall
+        ? `${fn.name} calls ${flow.seen.kind} at line ${flow.seen.line}, which forwards only 2300 gas — a reentrant call cannot fit in that stipend, so there is no window for an attacker to re-enter before the storage update. The post-call write is ordering hygiene, not an exploit.`
+        : guarded
+          ? `${fn.name} still does the external call before the storage update. The guard should hold, but the ordering is the bug the guard is papering over.`
+          : creditSettledPreCall
+            ? `${fn.name} hands control to another contract at line ${flow.seen.line}, then writes storage — but the caller's per-user credit was already debited before the call, so a reentrant call hits the balance check against the reduced balance and cannot double-spend. Only non-credit (aggregate) state updates after the call.`
+            : `${fn.name} hands control to another contract at line ${flow.seen.line}, then writes storage. The callee can re-enter and observe the stale values.`;
       push(withAccessControlCap(make({
         severity,
         swc: "SWC-107",
-        title: guarded
-          ? `State is written after an external call in ${fn.name}, but a reentrancy guard is present`
-          : `Reentrancy: ${fn.name} updates state after an external call`,
+        title,
         confidence: guarded ? "medium" : "high",
         detector: "reentrancy",
-        summary: guarded
-          ? `${fn.name} still does the external call before the storage update. The guard should hold, but the ordering is the bug the guard is papering over.`
-          : `${fn.name} hands control to another contract at line ${flow.seen.line}, then writes storage. The callee can re-enter and observe the stale values.`,
+        summary,
         walkthrough: reentrancyWalk(contract.name, fn, flow.seen),
         exploitSolidity: reentrancyExploit(contract.name, fn.name),
         remediationSolidity: reentrancyFix(fn.name),
@@ -326,7 +382,13 @@ function scanContract(
         locationLine: flow.seen.line,
         snippet: snippet(parsed, flow.seen.line + delta, delta),
       }), authed));
-      for (const w of direct.get(fn.name)?.writes ?? []) reenterWrites.set(w, { fn: fn.name, call: flow.seen });
+      // Read-only reentrancy only cares about vars that are actually stale
+      // mid-callback: written AFTER the call. A var written only before the
+      // call cannot be observed stale. And a 2300-gas transfer/send creates
+      // no mid-callback window at all, so it produces no read-only surface.
+      if (!stipendCall) {
+        for (const w of flow.postCallWrites) reenterWrites.set(w, { fn: fn.name, call: flow.seen });
+      }
     } else if (flow.writeThenCall && flow.sawCall && /for\s*\(|while\s*\(/.test(fn.source)) {
       push(make({
         severity: "medium",
@@ -502,7 +564,7 @@ function walkFn(
   push: (f: Finding) => void,
   authed: boolean,
 ): Flow {
-  const flow: Flow = { seen: null, sawWrite: false, sawCall: false, callThenWrite: false, writeThenCall: false };
+  const flow: Flow = { seen: null, sawWrite: false, sawCall: false, callThenWrite: false, writeThenCall: false, preCallWrites: new Set(), postCallWrites: new Set() };
   const consts = new Set(contract.stateVars.filter((v) => v.constOrImmutable).map((v) => v.name));
   const params = new Set(fn.params.map((p) => p.name).filter(Boolean));
 
@@ -511,7 +573,12 @@ function walkFn(
     const assembly = node?.type === "AssemblyCall";
     if (!assembly && (!id || !stateNames.has(id))) return;
     flow.sawWrite = true;
-    if (flow.seen) flow.callThenWrite = true;
+    if (flow.seen) {
+      flow.callThenWrite = true;
+      flow.postCallWrites.add(id);
+    } else {
+      flow.preCallWrites.add(id);
+    }
   };
 
   const noteCall = (call: ExtCall) => {
@@ -676,6 +743,7 @@ require(ok, "pay");`,
           if (info && info.writes.size > 0) {
             flow.sawWrite = true;
             if (flow.seen) flow.callThenWrite = true;
+            for (const w of info.writes) (flow.seen ? flow.postCallWrites : flow.preCallWrites).add(w);
           }
         }
       }
@@ -816,6 +884,8 @@ keccak256(abi.encodePacked("a", "bc"));`,
       flow.sawCall = left.sawCall || right.sawCall || before.sawCall;
       flow.callThenWrite = left.callThenWrite || right.callThenWrite || before.callThenWrite;
       flow.writeThenCall = left.writeThenCall || right.writeThenCall || before.writeThenCall;
+      flow.preCallWrites = new Set([...before.preCallWrites, ...left.preCallWrites, ...right.preCallWrites]);
+      flow.postCallWrites = new Set([...before.postCallWrites, ...left.postCallWrites, ...right.postCallWrites]);
       return;
     }
     if (stmt.type === "ForStatement" || stmt.type === "WhileStatement" || stmt.type === "DoWhileStatement") {
@@ -875,7 +945,7 @@ keccak256(abi.encodePacked("a", "bc"));`,
 
   // Admin / ether paths that the walker doesn't phrase as a single finding.
   const sends = /call\s*\{[^}]*value|\.transfer\s*\(|\.send\s*\(/.test(fn.source);
-  if (sends && !authed && !/ecrecover\s*\(/.test(fn.source) && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && !usesCredit(fn) && fn.mutability !== "view" && fn.mutability !== "pure") {
+  if (sends && !authed && !/ecrecover\s*\(/.test(fn.source) && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && !debitsOwnCredit(fn) && fn.mutability !== "view" && fn.mutability !== "pure") {
     push(make({
       severity: "critical",
       swc: "SWC-105",
@@ -886,7 +956,7 @@ keccak256(abi.encodePacked("a", "bc"));`,
       walkthrough: [
         `1. ${fn.name} is ${fn.visibility || "public"} and has no onlyOwner-style modifier and no msg.sender == owner check.`,
         "2. The body contains a value-bearing call, transfer, or send.",
-        "3. There is no balances[msg.sender] debit, so this is not a normal withdrawal of the caller's own credit.",
+        "3. There is no per-user credit debit (balances/balanceOf[msg.sender]), so this is not a normal withdrawal of the caller's own credit.",
         "4. Call it directly. If it transfers address(this).balance or pays an address argument, the contract is drainable.",
       ].join("\n"),
       exploitSolidity: `interface IVictim { function ${fn.name}(address payable to) external; }\ncontract Drain {\n    function go(address victim, address payable me) external {\n        IVictim(victim).${fn.name}(me);\n    }\n}`,
@@ -901,7 +971,12 @@ keccak256(abi.encodePacked("a", "bc"));`,
 }
 
 function snapshot(flow: Flow): Flow {
-  return { ...flow, seen: flow.seen };
+  return {
+    ...flow,
+    seen: flow.seen,
+    preCallWrites: new Set(flow.preCallWrites),
+    postCallWrites: new Set(flow.postCallWrites),
+  };
 }
 
 function restore(flow: Flow, snap: Flow) {
@@ -910,6 +985,8 @@ function restore(flow: Flow, snap: Flow) {
   flow.sawCall = snap.sawCall;
   flow.callThenWrite = snap.callThenWrite;
   flow.writeThenCall = snap.writeThenCall;
+  flow.preCallWrites = new Set(snap.preCallWrites);
+  flow.postCallWrites = new Set(snap.postCallWrites);
 }
 
 function namedAmountZero(named: AstNode | undefined): boolean {
