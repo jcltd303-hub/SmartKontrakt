@@ -39,6 +39,14 @@ for (const f of index.fallbacks) {
   }
 }
 
+// Full catalog (file -> scenario + detectors) so the agent knows which
+// template shapes exist when it proposes a hypothesis for a new detector.
+const catalog = index.fallbacks.map((f) => ({
+  file: f.file,
+  scenario: f.scenario,
+  detectors: f.detectors,
+}));
+
 const header = `// GENERATED — do not edit by hand.
 // Regenerate: node scripts/generate-poc-fallbacks-ts.mjs
 // Source of truth: foundry/poc-fallbacks/*.t.sol + index.json
@@ -53,6 +61,9 @@ export const POC_FALLBACK_TEMPLATES: Record<string, string> = ${JSON.stringify(t
 
 /** Detector id -> fallback template file(s), from the library index. */
 export const POC_FALLBACK_BY_DETECTOR: Record<string, string[]> = ${JSON.stringify(byDetector, null, 2)};
+
+/** Full fallback catalog: file -> scenario + detectors. */
+export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detectors: string[] }> = ${JSON.stringify(catalog, null, 2)};
 
 const SEVERITY_RANK: Record<string, number> = {
   critical: 0,

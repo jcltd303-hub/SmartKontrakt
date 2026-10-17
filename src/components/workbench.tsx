@@ -15,10 +15,14 @@ import { SupabaseDbModal } from "./supabase-db-modal";
 import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit/address-fetcher";
 import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
 import { probeContractInterfaces, type CallProbeResult } from "@/lib/audit/simulator";
-import { requestAiReview } from "@/lib/audit/ai.functions";
+import { requestAiReview, requestDeepAgentRound } from "@/lib/audit/ai.functions";
 import { getBackendUrl, runPocOnBackend } from "@/lib/audit/foundry-backend";
 import type { PocResult } from "@/lib/audit/types";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
+import type {
+  DeepAgentHypothesis,
+  DeepAgentPriorResult,
+} from "@/lib/audit/deep-agent.server";
 import { saveComprehensiveScanFn, queryRagKnowledgebaseFn, getDbInfo } from "@/lib/scans.functions";
 import type { StoredScan } from "@/lib/audit/persist.server";
 import type { RagChunk } from "@/lib/audit/rag.server";
@@ -149,6 +153,13 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
   const [pocSaved, setPocSaved] = useState(false);
   const [savedScanId, setSavedScanId] = useState<string | null>(null);
   const [isLoadingAi, setIsLoadingAi] = useState<boolean>(false);
+  // Deep Agent state — agentic exploit search (see deep-agent.server.ts).
+  const [deepAgentRunning, setDeepAgentRunning] = useState<boolean>(false);
+  const [deepAgentStatus, setDeepAgentStatus] = useState<string | null>(null);
+  const [deepAgentError, setDeepAgentError] = useState<string | null>(null);
+  const [deepAgentRounds, setDeepAgentRounds] = useState<
+    Array<{ round: number; hypotheses: Array<DeepAgentHypothesis & { pocResult: PocResult | null }> }>
+  >([]);
   const [showCertificate, setShowCertificate] = useState<boolean>(false);
   const [findingTriage, setFindingTriage] = useState<Record<string, { status: "active" | "acknowledged" | "false_positive" | "remediated"; note?: string }>>({});
 
@@ -509,6 +520,105 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       console.warn("[Kiln] AI review failed:", err);
     } finally {
       setIsLoadingAi(false);
+    }
+  };
+
+  // Deep Agent — DeepRL-style agentic exploit search. The browser
+  // orchestrates because PoC execution lives on the phone backend:
+  //   propose (LLM round) -> run each PoC on the fork -> feed the
+  //   pass/fail back as the reward signal -> next round goes deeper
+  //   on confirmed surfaces, never repeats a refuted hypothesis.
+  // Bounded: at most 3 rounds, 2 hypotheses per round (server caps).
+  const DEEP_AGENT_MAX_ROUNDS = 3;
+  const handleRunDeepAgent = async () => {
+    if (!report) return;
+    const addr = singleAddress.trim();
+    if (!addr || !isValidEvmAddress(addr)) {
+      setDeepAgentError("Fetch an on-chain address first — the Deep Agent proves hypotheses with fork PoCs.");
+      return;
+    }
+    setDeepAgentRunning(true);
+    setDeepAgentError(null);
+    setDeepAgentRounds([]);
+    setDeepAgentStatus("Round 1: proposing hypotheses…");
+    const priorResults: DeepAgentPriorResult[] = [];
+    const rounds: Array<{ round: number; hypotheses: Array<DeepAgentHypothesis & { pocResult: PocResult | null }> }> = [];
+    try {
+      for (let round = 1; round <= DEEP_AGENT_MAX_ROUNDS; round += 1) {
+        // Confirmed hypotheses join the findings so the next round goes
+        // deeper on the proven attack surface.
+        const confirmedFindings: Finding[] = rounds.flatMap((r) =>
+          r.hypotheses
+            .filter((h) => h.pocResult?.status === "passed")
+            .map((h, i) => ({
+              id: `deep-${r.round}-${i}`,
+              severity: h.severity,
+              swc: null,
+              title: h.title,
+              confidence: "high" as const,
+              detector: h.detector,
+              summary: `Deep Agent confirmed on fork: ${h.hypothesis}`,
+              walkthrough: "",
+              exploitSolidity: h.foundryTestCode,
+              remediationSolidity: "",
+              locationFn: null,
+              locationLine: null,
+              snippet: "",
+            })),
+        );
+        const res = await requestDeepAgentRound({ data: {
+          contractName: report.label,
+          body: contractBody,
+          findings: [...report.findings, ...confirmedFindings],
+          priorResults,
+          round,
+        } });
+        if (res.hypotheses.length === 0) {
+          setDeepAgentStatus(
+            res.stopReason
+              ? `Search stopped: ${res.stopReason}`
+              : "Search stopped: no new hypotheses.",
+          );
+          break;
+        }
+        const roundRun: { round: number; hypotheses: Array<DeepAgentHypothesis & { pocResult: PocResult | null }> } = {
+          round,
+          hypotheses: [],
+        };
+        rounds.push(roundRun);
+        setDeepAgentRounds([...rounds]);
+        let stoppedOnError = false;
+        for (const h of res.hypotheses) {
+          setDeepAgentStatus(`Round ${round}: running PoC for "${h.title}"…`);
+          const poc = await runPocOnBackend(getBackendUrl(), { address: addr, testCode: h.foundryTestCode });
+          const outcome = poc.status === "passed" ? "confirmed" : poc.status === "failed" ? "refuted" : "error";
+          roundRun.hypotheses.push({ ...h, pocResult: poc });
+          priorResults.push({
+            title: h.title,
+            detector: h.detector,
+            outcome,
+            pocLogs: (poc.logs ?? "").slice(0, 1500),
+          });
+          setDeepAgentRounds([...rounds]);
+          if (outcome === "error") {
+            setDeepAgentError(
+              `PoC run failed (${poc.status}): ${(poc.error ?? poc.logs ?? "").slice(0, 300)} — stopping the search.`,
+            );
+            stoppedOnError = true;
+            break;
+          }
+        }
+        if (stoppedOnError) break;
+        if (round === DEEP_AGENT_MAX_ROUNDS) {
+          setDeepAgentStatus("Search complete: max rounds reached.");
+        } else {
+          setDeepAgentStatus(`Round ${round} done — proposing round ${round + 1}…`);
+        }
+      }
+    } catch (err) {
+      setDeepAgentError(`Deep Agent failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setDeepAgentRunning(false);
     }
   };
 
@@ -1898,6 +2008,73 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                   </button>
                 </div>
               )}
+
+              {/* Deep Agent — agentic exploit search */}
+              <div className="mt-6 border-t border-[#3a3428] pt-4 flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-mono font-bold text-[#e8a54b] uppercase flex items-center gap-1.5">
+                    <Crosshair className="w-3.5 h-3.5" />
+                    Deep Agent — agentic exploit search
+                  </span>
+                  <button
+                    onClick={handleRunDeepAgent}
+                    disabled={deepAgentRunning || !report}
+                    className="px-3 py-1.5 rounded bg-[#e8a54b] text-[#12110e] font-bold font-mono text-xs shadow hover:brightness-110 disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    {deepAgentRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Crosshair className="w-3.5 h-3.5" />}
+                    <span>{deepAgentRunning ? "Running…" : "Run Deep Agent"}</span>
+                  </button>
+                </div>
+                <p className="text-[11px] font-mono text-[#a39886]">
+                  Proposes hypotheses the static detectors missed, proves each with a fork PoC, and feeds the result back — confirmed findings drive the next round deeper. Max 3 rounds, 2 hypotheses each. Each PoC runs on the local backend (forge fork), same as the AI PoC run.
+                </p>
+                {deepAgentStatus && (
+                  <p className="text-xs font-mono text-[#f4efe6]">{deepAgentStatus}</p>
+                )}
+                {deepAgentError && (
+                  <p className="text-xs font-mono text-red-400">{deepAgentError}</p>
+                )}
+                {deepAgentRounds.flatMap((r) => r.hypotheses).filter((h) => h.pocResult?.status === "passed").length > 0 && (
+                  <p className="text-xs font-mono font-bold text-emerald-400">
+                    Confirmed on fork: {deepAgentRounds.flatMap((r) => r.hypotheses).filter((h) => h.pocResult?.status === "passed").length} new vulnerabilit{deepAgentRounds.flatMap((r) => r.hypotheses).filter((h) => h.pocResult?.status === "passed").length === 1 ? "y" : "ies"} the static detectors missed
+                  </p>
+                )}
+                {deepAgentRounds.map((r) => (
+                  <div key={r.round} className="flex flex-col gap-2">
+                    <span className="text-[11px] font-mono font-bold text-[#a39886] uppercase">Round {r.round}</span>
+                    {r.hypotheses.map((h, i) => (
+                      <details key={i} className="bg-[#12110e] rounded-lg border border-[#3a3428] p-3">
+                        <summary className="cursor-pointer text-xs font-mono font-bold text-[#f4efe6] flex items-center gap-2 flex-wrap">
+                          <span>{h.title}</span>
+                          <span className="text-[10px] text-[#746c60]">({h.detector} · {h.severity})</span>
+                          {h.pocResult ? (
+                            <span className={`text-[10px] font-bold ${h.pocResult.status === "passed" ? "text-emerald-400" : h.pocResult.status === "failed" ? "text-red-400" : "text-amber-300"}`}>
+                              {h.pocResult.status === "passed" ? "CONFIRMED on fork" : h.pocResult.status === "failed" ? "refuted — did not reproduce" : `PoC ${h.pocResult.status}`}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-amber-300">running PoC…</span>
+                          )}
+                        </summary>
+                        <p className="mt-2 text-[11px] font-mono text-[#a39886] whitespace-pre-wrap">{h.hypothesis}</p>
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="text-[10px] font-mono font-bold text-[#e8a54b] uppercase">PoC (test/Exploit.t.sol)</span>
+                          <button
+                            onClick={() => copyToClipboard(h.foundryTestCode, `deep-poc-${r.round}-${i}`)}
+                            className="text-[11px] font-mono text-[#e8a54b] hover:underline flex items-center gap-1"
+                          >
+                            {copiedKey === `deep-poc-${r.round}-${i}` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                            <span>Copy PoC</span>
+                          </button>
+                        </div>
+                        <pre className="mt-1 max-h-64 overflow-y-auto bg-[#0a0908] border border-[#3a3428] rounded p-2 text-[11px] font-mono text-amber-200 whitespace-pre-wrap">{h.foundryTestCode}</pre>
+                        {h.pocResult && (
+                          <pre className="mt-2 max-h-48 overflow-y-auto bg-[#0a0908] border border-[#3a3428] rounded p-2 text-[11px] font-mono text-[#f4efe6] whitespace-pre-wrap">{h.pocResult.logs || "(no output)"}</pre>
+                        )}
+                      </details>
+                    ))}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

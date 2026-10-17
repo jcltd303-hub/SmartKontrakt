@@ -199,6 +199,315 @@ export const POC_FALLBACK_BY_DETECTOR: Record<string, string[]> = {
   ]
 };
 
+/** Full fallback catalog: file -> scenario + detectors. */
+export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detectors: string[] }> = [
+  {
+    "file": "01-reentrancy-classic.t.sol",
+    "scenario": "Classic ETH reentrancy drain",
+    "detectors": [
+      "reentrancy"
+    ]
+  },
+  {
+    "file": "02-reentrancy-cross-function.t.sol",
+    "scenario": "Cross-function reentrancy (shared balance, second function)",
+    "detectors": [
+      "reentrancy"
+    ]
+  },
+  {
+    "file": "03-reentrancy-erc777.t.sol",
+    "scenario": "ERC777 tokensReceived hook reentrancy",
+    "detectors": [
+      "reentrancy"
+    ]
+  },
+  {
+    "file": "04-reentrancy-erc721.t.sol",
+    "scenario": "ERC721 onERC721Received reentrancy",
+    "detectors": [
+      "reentrancy"
+    ]
+  },
+  {
+    "file": "05-reentrancy-read-only.t.sol",
+    "scenario": "Read-only reentrancy (stale view mid-callback)",
+    "detectors": [
+      "read-only-reentrancy"
+    ]
+  },
+  {
+    "file": "06-open-drain.t.sol",
+    "scenario": "Open drain (unprotected ether send)",
+    "detectors": [
+      "unprotected-ether"
+    ]
+  },
+  {
+    "file": "07-unprotected-admin.t.sol",
+    "scenario": "Unprotected privileged function (mint / setOwner / pause)",
+    "detectors": [
+      "unprotected-admin"
+    ]
+  },
+  {
+    "file": "08-unprotected-initializer.t.sol",
+    "scenario": "Unprotected initializer (proxy takeover)",
+    "detectors": [
+      "unprotected-initializer"
+    ]
+  },
+  {
+    "file": "09-tx-origin-phishing.t.sol",
+    "scenario": "tx.origin auth bypass via phishing contract",
+    "detectors": [
+      "tx-origin",
+      "bytecode-origin"
+    ]
+  },
+  {
+    "file": "10-delegatecall-takeover.t.sol",
+    "scenario": "Delegatecall to attacker-controlled logic (slot-0 overwrite)",
+    "detectors": [
+      "delegatecall",
+      "bytecode-delegatecall",
+      "bytecode-callcode"
+    ]
+  },
+  {
+    "file": "11-proxy-uninitialized-implementation.t.sol",
+    "scenario": "Uninitialized implementation behind a proxy (direct initialize)",
+    "detectors": [
+      "unprotected-initializer",
+      "bytecode-proxy"
+    ]
+  },
+  {
+    "file": "12-selfdestruct.t.sol",
+    "scenario": "Selfdestruct destroy-sweep + forced ETH",
+    "detectors": [
+      "selfdestruct",
+      "bytecode-selfdestruct"
+    ]
+  },
+  {
+    "file": "13-unchecked-call.t.sol",
+    "scenario": "Unchecked low-level call return",
+    "detectors": [
+      "unchecked-call",
+      "bytecode-unchecked-call"
+    ]
+  },
+  {
+    "file": "14-erc20-unchecked-bool.t.sol",
+    "scenario": "Unchecked ERC-20 bool (false return, no revert)",
+    "detectors": [
+      "erc20-unchecked"
+    ]
+  },
+  {
+    "file": "15-fee-on-transfer.t.sol",
+    "scenario": "Fee-on-transfer accounting mismatch",
+    "detectors": [
+      "fee-on-transfer"
+    ]
+  },
+  {
+    "file": "16-oracle-manipulation.t.sol",
+    "scenario": "Oracle manipulation: spot price via swap + balance-as-price via donation",
+    "detectors": [
+      "oracle-spot",
+      "balance-as-price"
+    ]
+  },
+  {
+    "file": "17-slippage-sandwich.t.sol",
+    "scenario": "Sandwich attack on zero-slippage swap",
+    "detectors": [
+      "slippage"
+    ]
+  },
+  {
+    "file": "18-signature-replay.t.sol",
+    "scenario": "Signature replay (no nonce / deadline / chain binding)",
+    "detectors": [
+      "signature-replay"
+    ]
+  },
+  {
+    "file": "19-signature-malleability.t.sol",
+    "scenario": "Signature malleability (low-s not enforced)",
+    "detectors": [
+      "signature-malleability"
+    ]
+  },
+  {
+    "file": "20-chain-randomness-timestamp.t.sol",
+    "scenario": "Chain randomness prediction + timestamp gate bypass",
+    "detectors": [
+      "weak-randomness",
+      "timestamp",
+      "bytecode-timestamp"
+    ]
+  },
+  {
+    "file": "21-strict-balance-dos.t.sol",
+    "scenario": "Strict balance equality DoS via forced ETH",
+    "detectors": [
+      "strict-balance"
+    ]
+  },
+  {
+    "file": "22-msg-value-loop.t.sol",
+    "scenario": "msg.value used inside a loop (per-iteration payout)",
+    "detectors": [
+      "msg-value-loop"
+    ]
+  },
+  {
+    "file": "23-unchecked-arithmetic-wrap.t.sol",
+    "scenario": "Unchecked arithmetic wraps instead of reverting",
+    "detectors": [
+      "unchecked-block"
+    ]
+  },
+  {
+    "file": "24-div-before-mul.t.sol",
+    "scenario": "Division before multiplication (precision loss to zero)",
+    "detectors": [
+      "div-before-mul"
+    ]
+  },
+  {
+    "file": "25-encode-packed-collision.t.sol",
+    "scenario": "abi.encodePacked hash collision (dynamic args)",
+    "detectors": [
+      "encode-packed"
+    ]
+  },
+  {
+    "file": "26-assembly-arbitrary-sstore.t.sol",
+    "scenario": "Assembly SSTORE to a caller-chosen slot",
+    "detectors": [
+      "assembly-sstore",
+      "assembly-param-sstore"
+    ]
+  },
+  {
+    "file": "27-extcodesize-bypass.t.sol",
+    "scenario": "extcodesize identity bypass via constructor call",
+    "detectors": [
+      "extcodesize"
+    ]
+  },
+  {
+    "file": "28-centralization-owner-rug.t.sol",
+    "scenario": "Centralization: owner can drain / mint / pause (capability proof via prank)",
+    "detectors": [
+      "centralization",
+      "locked-ether"
+    ]
+  },
+  {
+    "file": "29-locked-ether.t.sol",
+    "scenario": "Locked ether (can receive, cannot send)",
+    "detectors": [
+      "locked-ether"
+    ]
+  },
+  {
+    "file": "30-zero-address-brick.t.sol",
+    "scenario": "Zero-address write bricks the contract",
+    "detectors": [
+      "zero-address"
+    ]
+  },
+  {
+    "file": "31-gas-assumptions.t.sol",
+    "scenario": "Gas assumptions: 2300 stipend failure + hardcoded gas failure",
+    "detectors": [
+      "eth-gas-stipend",
+      "hardcoded-gas"
+    ]
+  },
+  {
+    "file": "32-storage-collision-upgrade.t.sol",
+    "scenario": "Storage collision via unguarded upgrade",
+    "detectors": [
+      "storage-gap",
+      "unprotected-admin",
+      "delegatecall"
+    ]
+  },
+  {
+    "file": "33-shadowing-mismatch.t.sol",
+    "scenario": "Variable shadowing (write lands in the shadow)",
+    "detectors": [
+      "shadowing"
+    ]
+  },
+  {
+    "file": "34-private-secret-onchain.t.sol",
+    "scenario": "Private secret readable from storage",
+    "detectors": [
+      "private-secret"
+    ]
+  },
+  {
+    "file": "35-flash-loan-generic.t.sol",
+    "scenario": "Generic flash loan (borrow / use / repay round-trip)",
+    "detectors": [
+      "oracle-spot",
+      "balance-as-price",
+      "slippage"
+    ]
+  },
+  {
+    "file": "36-merkle-double-claim.t.sol",
+    "scenario": "Merkle claim double-claim (same proof twice)",
+    "detectors": [
+      "unprotected-ether"
+    ]
+  },
+  {
+    "file": "37-approval-abuse.t.sol",
+    "scenario": "Approval abuse: infinite approval drain + approve race",
+    "detectors": [
+      "erc20-unchecked"
+    ]
+  },
+  {
+    "file": "38-governance-flash-vote.t.sol",
+    "scenario": "Governance flash-loan vote",
+    "detectors": [
+      "centralization"
+    ]
+  },
+  {
+    "file": "39-dos.t.sol",
+    "scenario": "DoS: revert-in-loop bricks distribution + unbounded loop gas growth",
+    "detectors": [
+      "unchecked-call"
+    ]
+  },
+  {
+    "file": "40-erc4626-inflation.t.sol",
+    "scenario": "ERC4626 inflation / first-depositor attack",
+    "detectors": [
+      "balance-as-price",
+      "div-before-mul"
+    ]
+  },
+  {
+    "file": "41-create2-metamorphic.t.sol",
+    "scenario": "CREATE2 metamorphic redeploy (same address, new code)",
+    "detectors": [
+      "bytecode-create2",
+      "selfdestruct"
+    ]
+  }
+];
+
 const SEVERITY_RANK: Record<string, number> = {
   critical: 0,
   high: 1,
