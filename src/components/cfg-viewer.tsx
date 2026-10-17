@@ -11,7 +11,10 @@ export type CfgBlock = {
   isRevert: boolean;
   hasSensitiveOpcode: boolean;
   sensitiveOpcodes: string[];
+  /** Static jump target pushed before a JUMP/JUMPI, if one was found. */
   jumpTarget?: number;
+  /** Resolved successor block start pcs (jump target + fall-through). */
+  successors: number[];
 };
 
 const TERMINAL_OPS = new Set(["REVERT", "RETURN", "STOP", "SELFDESTRUCT", "INVALID"]);
@@ -50,10 +53,16 @@ export function parseCfgBlocks(disassembly: string): CfgBlock[] {
   let blockStartPc = 0;
   let blockEndPc = 0;
   let blockIndex = 0;
+  // Immediate of the most recent PUSH in the current block. The standard
+  // pattern is PUSHn <dest> … JUMP/JUMPI, so the last PUSH immediate is
+  // the static jump target. Reset on every block boundary.
+  let lastPushValue: number | null = null;
 
   const pushBlock = (endPc: number, terminator: string) => {
     if (currentInstructions.length === 0) return;
     const sensitive = [...new Set(currentOps.filter((o) => SENSITIVE_OPS.has(o)))];
+    const jumpTarget =
+      terminator === "JUMP" || terminator === "JUMPI" ? lastPushValue ?? undefined : undefined;
     parsedBlocks.push({
       id: `block-${blockIndex++}`,
       startPc: blockStartPc,
@@ -64,9 +73,12 @@ export function parseCfgBlocks(disassembly: string): CfgBlock[] {
       isRevert: terminator === "REVERT" || terminator === "INVALID",
       hasSensitiveOpcode: sensitive.length > 0,
       sensitiveOpcodes: sensitive,
+      jumpTarget,
+      successors: [],
     });
     currentInstructions = [];
     currentOps = [];
+    lastPushValue = null;
   };
 
   for (let i = 0; i < lines.length; i++) {
@@ -86,12 +98,45 @@ export function parseCfgBlocks(disassembly: string): CfgBlock[] {
     currentOps.push(op);
     blockEndPc = pc;
 
+    // Track the PUSH immediate feeding a later JUMP/JUMPI. PUSH0 pushes 0.
+    if (op === "PUSH0") {
+      lastPushValue = 0;
+    } else if (op.startsWith("PUSH")) {
+      const imm = line.match(/0x([0-9a-fA-F]+)\s*$/);
+      lastPushValue = imm ? parseInt(imm[1]!, 16) : null;
+    }
+
     // Terminator opcodes trigger block completion.
     if (TERMINATOR_OPS.has(op)) pushBlock(pc, op);
   }
   // Flush a trailing block that ends without a terminator.
   if (currentInstructions.length > 0) {
     pushBlock(blockEndPc, currentOps[currentOps.length - 1] ?? "FALLTHROUGH");
+  }
+
+  // Second pass: resolve successors. A jump target only becomes an edge
+  // when it lands on a real block start (a JUMPDEST); anything else is an
+  // invalid/dynamic jump and stays out of the edge list. JUMPI also falls
+  // through to the next block; plain fall-through blocks point at the next
+  // block. Terminal blocks have no successors.
+  const startPcs = new Set(parsedBlocks.map((b) => b.startPc));
+  for (let i = 0; i < parsedBlocks.length; i++) {
+    const block = parsedBlocks[i]!;
+    const next = parsedBlocks[i + 1];
+    const successors: number[] = [];
+    if (block.terminator === "JUMP") {
+      if (block.jumpTarget !== undefined && startPcs.has(block.jumpTarget)) {
+        successors.push(block.jumpTarget);
+      }
+    } else if (block.terminator === "JUMPI") {
+      if (block.jumpTarget !== undefined && startPcs.has(block.jumpTarget)) {
+        successors.push(block.jumpTarget);
+      }
+      if (next) successors.push(next.startPc);
+    } else if (!block.isTerminal && next) {
+      successors.push(next.startPc);
+    }
+    block.successors = [...new Set(successors)];
   }
 
   return parsedBlocks;
@@ -103,6 +148,12 @@ export function CfgViewer({ disassembly }: CfgViewerProps) {
 
   // Parse disassembly into EVM Basic Blocks
   const blocks: CfgBlock[] = useMemo(() => parseCfgBlocks(disassembly), [disassembly]);
+
+  // The stored disassembly is capped (420 instructions); the CFG then only
+  // covers the head of the contract. The workbench passes the full
+  // disassembly for fresh analyses, so this badge only fires for loaded
+  // records that still carry the capped text.
+  const truncated = disassembly.includes("more instructions truncated");
 
   // Filter blocks
   const filteredBlocks = useMemo(() => {
@@ -135,6 +186,11 @@ export function CfgViewer({ disassembly }: CfgViewerProps) {
           <span className="text-[10px] px-2 py-0.5 rounded bg-[#26231c] text-[#a39886] border border-[#3a3428]">
             {blocks.length} Basic Blocks
           </span>
+          {truncated && (
+            <span className="text-[10px] px-2 py-0.5 rounded bg-amber-950/40 text-amber-300 border border-amber-900/60">
+              CFG covers the first 420 instructions only — re-analyze for the full graph
+            </span>
+          )}
         </div>
 
         <div className="relative w-48">
@@ -205,6 +261,12 @@ export function CfgViewer({ disassembly }: CfgViewerProps) {
                       <span>{block.sensitiveOpcodes.join(", ")}</span>
                     </div>
                   )}
+
+                  {block.successors.length > 0 && (
+                    <div className="text-[9px] text-[#a39886]">
+                      → {block.successors.map((s) => `0x${s.toString(16).padStart(4, "0")}`).join(", ")}
+                    </div>
+                  )}
                 </button>
               );
             })}
@@ -239,6 +301,35 @@ export function CfgViewer({ disassembly }: CfgViewerProps) {
                   </span>
                 )}
               </div>
+
+              {/* Successors / jump target */}
+              {(activeBlock.successors.length > 0 || activeBlock.jumpTarget !== undefined) && (
+                <div className="flex flex-col gap-1.5 text-[10px] pb-2 border-b border-[#3a3428]">
+                  {activeBlock.jumpTarget !== undefined && (
+                    <div className="text-[#a39886]">
+                      Jump target: 0x{activeBlock.jumpTarget.toString(16).padStart(4, "0")}
+                      {!activeBlock.successors.includes(activeBlock.jumpTarget) &&
+                        " (no block — invalid or dynamic jump)"}
+                    </div>
+                  )}
+                  {activeBlock.successors.length > 0 && (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[#a39886]">Successors:</span>
+                      {activeBlock.successors.map((s) => (
+                        <button
+                          key={s}
+                          onClick={() =>
+                            setSelectedBlockId(blocks.find((b) => b.startPc === s)?.id ?? null)
+                          }
+                          className="px-1.5 py-0.5 rounded bg-[#26231c] text-[#e8a54b] border border-[#3a3428] hover:border-[#e8a54b]"
+                        >
+                          0x{s.toString(16).padStart(4, "0")}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Instructions stream */}
               <div className="bg-[#12110e] border border-[#3a3428] rounded-lg p-3 max-h-[340px] overflow-y-auto flex flex-col gap-1 leading-relaxed">

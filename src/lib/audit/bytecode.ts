@@ -48,6 +48,17 @@ function stripMetadata(code: Uint8Array): { body: Uint8Array; compiler: string |
   if (first < 0xa0 || first > 0xbf) return { body: code, compiler: null, hasIpfs: false };
   const meta = code.slice(start, code.length - 2);
   const latin = String.fromCharCode(...meta);
+  // Require positive evidence this tail is really compiler metadata.
+  // Without this, any contract whose last 2 bytes happen to decode as a
+  // plausible length + a CBOR-map first byte gets its tail instructions
+  // silently cut — ~2-4% of metadata-less contracts. Real solc metadata
+  // always carries a "solc" version entry plus an "ipfs" or "bzzr" hash.
+  const hasSolcMarker = latin.includes("solc");
+  const hasIpfsMarker = latin.includes("ipfs");
+  const hasBzzrMarker = latin.includes("bzzr");
+  if (!hasSolcMarker && !hasIpfsMarker && !hasBzzrMarker) {
+    return { body: code, compiler: null, hasIpfs: false };
+  }
   const idx = latin.indexOf("solc");
   let compiler: string | null = null;
   if (idx >= 0 && meta[idx + 4] === 0x43) {
@@ -143,6 +154,21 @@ function finding(partial: Omit<Finding, "id">): Finding {
 
 export function decodeHex(input: string): Uint8Array | null {
   return hexToBytes(input);
+}
+
+/**
+ * Full disassembly for the CFG viewer. The stored inventory.disassembly is
+ * capped at 420 instructions (kept small because it is persisted per
+ * record), which truncates the CFG for most contracts. This recomputes the
+ * full stream in memory — never persisted — from the raw input, with the
+ * same metadata strip analyzeBytecode applies.
+ */
+export function fullDisassembly(raw: string): string {
+  const code = hexToBytes(raw);
+  if (!code) return "";
+  const meta = stripMetadata(code);
+  const body = meta.body.length > 0 ? meta.body : code;
+  return formatDisassembly(disassemble(body), 20000).text;
 }
 
 export function looksLikeBytecode(input: string): boolean {
