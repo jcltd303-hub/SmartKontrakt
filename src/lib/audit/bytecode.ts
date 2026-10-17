@@ -508,10 +508,12 @@ require(keccak256(initCode) == expected, "init code");`,
     count: counts.get(name) ?? 0,
   }));
 
+  // Full census, NOT a top-N list: the Bytecode tab sums this array for
+  // OPCODES PARSED and looks up sensitive opcodes (CALL, SELFDESTRUCT,
+  // ...) by name. A top-14 slice made every opcode outside the top 14
+  // read as 0 — a Deed with a real SELFDESTRUCT showed SELFDESTRUCT 0.
   const opcodes = [...counts.entries()]
-    .filter(([name]) => !name.startsWith("PUSH") && !name.startsWith("DUP") && !name.startsWith("SWAP"))
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 14)
     .map(([name, count]) => ({ name, count }));
 
   const inventory: Inventory = {
