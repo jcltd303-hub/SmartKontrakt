@@ -456,7 +456,9 @@ export async function analyzeAddress(
     // report and the tab showed 0 opcodes / N/A size. Bytecode FINDINGS are
     // deliberately NOT merged (source findings already cover the logic) —
     // only the inventory fields the tab renders. If the bytecode fetch
-    // fails (RPC outage), the source audit still stands.
+    // fails (RPC outage), the source audit still stands — but the failure
+    // is noted, so the tab's empty state is explained instead of silent.
+    let bytecodeNote: string | null = null;
     try {
       const bytecode = await fetchBytecodeRpc(address, chain.rpcUrls);
       if (bytecode) {
@@ -472,10 +474,14 @@ export async function analyzeAddress(
           ...inv.notes,
           `Runtime bytecode also fetched (${byte.inventory.bytecodeBytes} bytes) — Bytecode & CFG tab reflects on-chain code.`,
         ];
+      } else {
+        bytecodeNote = "Runtime bytecode fetch returned no code — Bytecode & CFG tab unavailable for this audit.";
       }
     } catch {
       // Bytecode unavailable — source audit still stands.
+      bytecodeNote = "Runtime bytecode fetch failed (RPC) — Bytecode & CFG tab unavailable for this audit.";
     }
+    if (bytecodeNote) report.inventory.notes = [...report.inventory.notes, bytecodeNote];
     return {
       report,
       rawBody: sourcifyMatch.source,
