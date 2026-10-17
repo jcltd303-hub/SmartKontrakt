@@ -1,7 +1,7 @@
-import type { Finding } from "./types";
-import { openRouterLimiter, withRetry } from "./rate-limit";
-import { selectPocFallbacks } from "./poc-fallbacks";
-import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte";
+import type { Finding } from "./types.ts";
+import { openRouterLimiter, withRetry } from "./rate-limit.ts";
+import { selectPocFallbacks } from "./poc-fallbacks.ts";
+import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte.ts";
 
 export type AiSecurityReview = {
   threatModelReport: string;

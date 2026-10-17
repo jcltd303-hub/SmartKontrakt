@@ -10,7 +10,14 @@ import { record } from "../../../scripts/audit-fixture.ts";
 async function database() {
   const pg = new PGlite();
   await pg.waitReady;
-  for (const f of ["0002_scans.sql", "0003_comprehensive_records_and_rag.sql"]) {
+  for (const f of [
+    "0002_scans.sql",
+    "0003_comprehensive_records_and_rag.sql",
+    "0004_poc_results.sql",
+    "0005_fourbyte.sql",
+    "0006_fourbyte_events.sql",
+    "0007_unparsed.sql",
+  ]) {
     await pg.exec(await readFile(new URL(`../../../migrations/${f}`, import.meta.url), "utf8"));
   }
   let queries = 0;

@@ -12,7 +12,11 @@ export class RateLimiter {
   private last = 0;
   private chain: Promise<void> = Promise.resolve();
 
-  constructor(private intervalMs: number) {}
+  private intervalMs: number;
+
+  constructor(intervalMs: number) {
+    this.intervalMs = intervalMs;
+  }
 
   acquire(): Promise<void> {
     const run = this.chain.then(async () => {

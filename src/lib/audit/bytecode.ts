@@ -1,6 +1,6 @@
-import { disassemble, formatDisassembly, type Instruction } from "./disassemble";
-import { lookupSelector } from "./selectors";
-import type { Finding, Inventory, SelectorHit, TopicHit } from "./types";
+import { disassemble, formatDisassembly, type Instruction } from "./disassemble.ts";
+import { lookupSelector } from "./selectors.ts";
+import type { Finding, Inventory, SelectorHit, TopicHit } from "./types.ts";
 
 const IMPL_SLOT = "360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
 const ADMIN_SLOT = "b53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";

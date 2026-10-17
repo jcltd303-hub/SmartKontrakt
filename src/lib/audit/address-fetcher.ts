@@ -1,8 +1,8 @@
-import type { Report } from "./types";
-import { analyzeInput } from "./engine";
-import { analyzeBytecode } from "./bytecode";
-import { rpcLimiter, sourcifyLimiter, withRetry } from "./rate-limit";
-import { enrichReportFourbyte, type FourbyteLookup } from "./fourbyte";
+import type { Report } from "./types.ts";
+import { analyzeInput } from "./engine.ts";
+import { analyzeBytecode } from "./bytecode.ts";
+import { rpcLimiter, sourcifyLimiter, withRetry } from "./rate-limit.ts";
+import { enrichReportFourbyte, type FourbyteLookup } from "./fourbyte.ts";
 
 export type SupportedChain = {
   id: string;

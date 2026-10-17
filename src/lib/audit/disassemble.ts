@@ -1,4 +1,4 @@
-import { opcodeName, pushWidth } from "./opcodes";
+import { opcodeName, pushWidth } from "./opcodes.ts";
 
 export type Instruction = {
   pc: number;

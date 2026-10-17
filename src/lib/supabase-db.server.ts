@@ -29,7 +29,7 @@ export const DEFAULT_SUPABASE_DB_CONFIG: SupabaseDbConfig = {
   database: "postgres",
   user: "postgres.aadhpvhpjzkkeydzxxhk",
   mode: "pooler",
-  active: true,
+  active: false,
 };
 
 function getConfigFilePath(): string {

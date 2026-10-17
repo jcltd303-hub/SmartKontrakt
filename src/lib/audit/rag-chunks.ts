@@ -1,8 +1,8 @@
-import type { Finding, Report, Severity } from "./types";
-import type { ProxyAnalysis } from "./proxy-resolver";
-import type { CallProbeResult } from "./simulator";
-import { resolveContractDisplayName } from "./simulator";
-import type { AiSecurityReview } from "./ai-review.server";
+import type { Finding, Report, Severity } from "./types.ts";
+import type { ProxyAnalysis } from "./proxy-resolver.ts";
+import type { CallProbeResult } from "./simulator.ts";
+import { resolveContractDisplayName } from "./simulator.ts";
+import type { AiSecurityReview } from "./ai-review.server.ts";
 
 
 export interface RagDbRow {

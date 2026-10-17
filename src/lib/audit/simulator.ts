@@ -1,6 +1,6 @@
-import { SUPPORTED_CHAINS } from "./address-fetcher";
-import { rpcLimiter, withRetry } from "./rate-limit";
-import type { Report } from "./types";
+import { SUPPORTED_CHAINS } from "./address-fetcher.ts";
+import { rpcLimiter, withRetry } from "./rate-limit.ts";
+import type { Report } from "./types.ts";
 
 export type CallProbeResult = {
   selector: string;

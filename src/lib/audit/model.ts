@@ -1,5 +1,5 @@
 import parser from "@solidity-parser/parser";
-import type { AstNode } from "./types";
+import type { AstNode } from "./types.ts";
 
 export type StateVar = {
   name: string;

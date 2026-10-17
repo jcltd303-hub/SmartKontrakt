@@ -1,4 +1,4 @@
-import type { Finding } from "./types";
+import type { Finding } from "./types.ts";
 
 /**
  * Severity calibration — a "critical" must be earned, not assumed.

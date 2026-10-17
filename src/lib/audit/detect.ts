@@ -1,6 +1,6 @@
-import type { AstNode, Finding, Severity } from "./types";
-import type { ContractModel, FnModel, ModModel, SourceModel, StateVar } from "./model";
-import { withAccessControlCap } from "./severity-calibration";
+import type { AstNode, Finding, Severity } from "./types.ts";
+import type { ContractModel, FnModel, ModModel, SourceModel, StateVar } from "./model.ts";
+import { withAccessControlCap } from "./severity-calibration.ts";
 
 type ExtKind =
   | "call"
@@ -381,7 +381,7 @@ function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel, sk
 // the sender argument, so a bare _isApprovedOrOwner(msg.sender) call
 // with no asset does not count as per-item auth.
 function isPerItemAuthed(src: string): boolean {
-  if (/[A-Za-z_][\w.\[\]]*\.owner\s*==\s*msg\.sender/.test(src) || /\bownerOf\s*\([^)]*\)\s*==\s*msg\.sender/.test(src)) return true;
+  if (/[A-Za-z_][\w.[\]]*\.owner\s*==\s*msg\.sender/.test(src) || /\bownerOf\s*\([^)]*\)\s*==\s*msg\.sender/.test(src)) return true;
   // Guard spans: the condition text of every require(...) / if(...)
   // in the source, found by paren-depth scan so nested calls (e.g.
   // _msgSender() inside the helper's own argument list) do not cut
@@ -850,7 +850,7 @@ function allSendsRequireProvenSelf(fn: FnModel, sendTargets: string[]): boolean 
   const src = stripCommentsAndStrings(fn.source);
   // Exprs proven == msg.sender by an == comparison in the function.
   const senderEq = new Set<string>();
-  for (const m of src.matchAll(/([A-Za-z_][\w.\[\]]*)\s*==\s*msg\.sender|msg\.sender\s*==\s*([A-Za-z_][\w.\[\]]*)/g)) {
+  for (const m of src.matchAll(/([A-Za-z_][\w.[\]]*)\s*==\s*msg\.sender|msg\.sender\s*==\s*([A-Za-z_][\w.[\]]*)/g)) {
     senderEq.add((m[1] ?? m[2] ?? "").trim());
   }
   if (senderEq.size === 0) return false;
@@ -861,7 +861,7 @@ function allSendsRequireProvenSelf(fn: FnModel, sendTargets: string[]): boolean 
   const assignedFromStoredField = (target: string): string[] => {
     const out: string[] = [];
     for (const m of src.matchAll(new RegExp(`\\b${escapeRegExp(target)}\\s*=(?!=)\\s*([^;]*)`, "g"))) {
-      for (const sm of m[1].matchAll(/[A-Za-z_][\w.]*\[[^\]]+\][\w.\[\]]*/g)) out.push(sm[0]);
+      for (const sm of m[1].matchAll(/[A-Za-z_][\w.]*\[[^\]]+\][\w.[\]]*/g)) out.push(sm[0]);
     }
     return out;
   };
@@ -1354,13 +1354,14 @@ function walkFn(
     const id = rootIdent(node);
     const assembly = node?.type === "AssemblyCall";
     if (!assembly && (!id || !stateNames.has(id))) return;
+    const writeKey = id || "*";
     flow.sawWrite = true;
     if (flow.seen) {
       flow.callThenWrite = true;
-      flow.postCallWrites.add(id);
-      if (!flow.writeLines.has(id)) flow.writeLines.set(id, lineOf(node, delta, fn.line));
+      flow.postCallWrites.add(writeKey);
+      if (!flow.writeLines.has(writeKey)) flow.writeLines.set(writeKey, lineOf(node, delta, fn.line));
     } else {
-      flow.preCallWrites.add(id);
+      flow.preCallWrites.add(writeKey);
     }
   };
 

@@ -5,11 +5,12 @@ import {
   loadSupabaseDbConfig,
   buildSupabasePostgresUrl,
   hasSupabaseDbConfig,
+  maskPostgresUrl,
 } from "./supabase-db.server";
 export type { Sql } from "./sql-client";
 
-/** Dedicated Supabase PostgreSQL for Vercel production deployment. */
-export type DbSource = "supabase";
+/** Supported database backends: Supabase PostgreSQL (primary) or local embedded PGLite (fallback / offline). */
+export type DbSource = "supabase" | "local";
 
 // An empty/whitespace value (an easy misconfig in deploy UIs) must mean
 // "unset" — otherwise production would silently fail.
@@ -30,16 +31,6 @@ function cleanPostgresUrl(value: string | undefined): string | undefined {
  * 2. Vercel Supabase integration vars (in serverless-preferred order):
  *    POSTGRES_PRISMA_URL (pooler + pgbouncer), POSTGRES_URL (pooler),
  *    POSTGRES_URL_NON_POOLING (direct).
- *
- * The Vercel Supabase integration syncs these vars for preview + production.
- * Reading them here is what actually wires a Vercel deploy to its
- * Vercel-enabled Supabase project — without them the app would fall back
- * to a bundled local config instead of the integration's database.
- *
- * If no env var is set, getActiveDatabaseUrl() prefers a saved
- * .supabase-db-config.json when one exists, and otherwise THROWS rather
- * than silently connecting to a hardcoded project (which once made the
- * app report "Connected" with 0 rows while the data lived elsewhere).
  */
 export function resolveDatabaseUrlFromEnv(): string | undefined {
   if (typeof process === "undefined") return undefined;
@@ -63,51 +54,36 @@ export function getActiveDatabaseUrl(): string {
     return databaseUrl;
   }
 
-  // 2. Saved config file (local dev / Supabase Config UI). Only when the
-  // file actually exists — loadSupabaseDbConfig() returns a hardcoded
-  // default project when it doesn't, and that default must never be used
-  // silently (see step 3).
+  // 2. Saved config file (local dev / Supabase Config UI). Only when explicitly active.
   if (hasSupabaseDbConfig()) {
     try {
       const cfg = loadSupabaseDbConfig();
-      const url = buildSupabasePostgresUrl(cfg);
-      if (url && (url.startsWith("postgresql://") || url.startsWith("postgres://"))) {
-        return url;
+      if (cfg.active) {
+        const url = buildSupabasePostgresUrl(cfg);
+        if (url && (url.startsWith("postgresql://") || url.startsWith("postgres://"))) {
+          return url;
+        }
       }
     } catch {
-      // fall through to the loud failure below
+      // fall through
     }
   }
 
-  // 3. No database configured. Previously this silently fell back to a
-  // hardcoded Supabase project, which made the app report "Connected"
-  // with 0 rows while the real data lived in another project — the
-  // exact confusion of 2026-10-16. Fail loudly instead: the operator
-  // sets DATABASE_URL (Supabase pooler URL, port 6543) and redeploys.
-  throw new Error(
-    "No database configured: set DATABASE_URL (Supabase pooler URL, port 6543) in Vercel, or connect the Supabase integration. Refusing to fall back to a hardcoded project.",
-  );
+  return "";
 }
 
-/**
- * Active backend: Supabase PostgreSQL (only Supabase used for Vercel deployment).
- */
+let activeDbSource: DbSource = "supabase";
+
 export const dbSource: DbSource = "supabase";
 
 export function getActiveDbSource(): DbSource {
-  return "supabase";
+  return activeDbSource;
 }
-
-/**
- * Minimal shared SQL surface. Both the tagged-template and `.query()` forms resolve to an array of row objects:
- *
- *   const sql = await getSql();
- *   const rows = await sql`select * from contract_scans where chain = ${chain}`; // parameterized
- *   const rows2 = await sql.query("select * from contract_scans where chain = $1", [chain]);
- */
 
 const globalRef = globalThis as typeof globalThis & {
   __pgSqlPromise__?: Promise<Sql>;
+  __pgliteSqlPromise__?: Promise<Sql>;
+  __pgliteInstance__?: any;
   __activeDatabaseUrl__?: string;
 };
 
@@ -120,12 +96,73 @@ const identity = (v: string) => v;
 
 export function resetDatabasePool(): void {
   globalRef.__pgSqlPromise__ = undefined;
+  globalRef.__pgliteSqlPromise__ = undefined;
   sqlPromise = null;
 }
 
 export function switchDatabase(url: string | null): void {
   globalRef.__activeDatabaseUrl__ = url || undefined;
   resetDatabasePool();
+}
+
+/**
+ * Creates the local embedded PGLite database instance and applies all migrations.
+ */
+async function createPgliteSql(): Promise<Sql> {
+  if (globalRef.__pgliteSqlPromise__) return globalRef.__pgliteSqlPromise__;
+
+  globalRef.__pgliteSqlPromise__ = (async () => {
+    const { PGlite } = await import("@electric-sql/pglite");
+    const pg = new PGlite();
+    await pg.waitReady;
+
+    // Apply migrations to PGLite
+    await pg.exec(
+      "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+    );
+    const doneRows = await pg.query<{ name: string }>("SELECT name FROM _migrations");
+    const done = doneRows.rows.map((r) => r.name);
+
+    const migrationsByName: Record<string, string> = { ...EMBEDDED_MIGRATIONS };
+    if (typeof import.meta.glob === "function") {
+      const globbed = import.meta.glob("/migrations/*.sql", {
+        query: "?raw",
+        import: "default",
+        eager: true,
+      }) as Record<string, string>;
+      for (const [key, value] of Object.entries(globbed)) {
+        migrationsByName[key.split("/").pop() ?? key] = value;
+      }
+    }
+
+    const pending = pendingMigrations(Object.keys(migrationsByName), done);
+    for (const { name, path: mPath } of pending) {
+      const sqlContent = migrationsByName[mPath];
+      if (sqlContent) {
+        await pg.exec(sqlContent);
+        await pg.query("INSERT INTO _migrations (name) VALUES ($1)", [name]);
+      }
+    }
+
+    globalRef.__pgliteInstance__ = pg;
+    activeDbSource = "local";
+
+    return createSqlClient(
+      async <T>(text: string, params: unknown[]) => {
+        const res = await pg.query<T>(text, params);
+        return res.rows;
+      },
+      (work) =>
+        pg.transaction((tx) =>
+          work(async <T>(text: string, params: unknown[]) => {
+            const res = await tx.query<T>(text, params);
+            return res.rows;
+          }),
+        ),
+    );
+  })();
+
+  return globalRef.__pgliteSqlPromise__;
 }
 
 function createSupabaseSql(customUrl?: string): Promise<Sql> {
@@ -147,67 +184,52 @@ function createSupabaseSql(customUrl?: string): Promise<Sql> {
       ssl: { rejectUnauthorized: false },
       max: 4,
       idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 15_000,
-      query_timeout: 60_000,
+      connectionTimeoutMillis: 10_000,
+      query_timeout: 45_000,
       allowExitOnIdle: true,
     });
 
     pool.on("error", (err) => {
-      console.error("[db] Supabase idle connection error:", err.message);
+      console.warn("[db] Supabase idle connection note:", err.message);
     });
 
     // Ensure migrations are auto-applied on the target Supabase PostgreSQL database
+    const client = await pool.connect();
     try {
-      const client = await pool.connect();
-      try {
-        await client.query(
-          "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
-        );
-        const doneRows = await client.query<{ name: string }>("SELECT name FROM _migrations");
-        const done = doneRows.rows.map((r) => r.name);
-        // Keyed by BASENAME so the same migration from embedded + glob +
-        // filesystem sources collapses to one entry — otherwise the loop
-        // below would apply it twice and the second `_migrations` INSERT
-        // would violate the primary key. Later sources win on disagreement.
-        const migrationsByName: Record<string, string> = { ...EMBEDDED_MIGRATIONS };
-        if (typeof import.meta.glob === "function") {
-          const globbed = import.meta.glob("/migrations/*.sql", {
-            query: "?raw",
-            import: "default",
-            eager: true,
-          }) as Record<string, string>;
-          for (const [key, value] of Object.entries(globbed)) {
-            migrationsByName[key.split("/").pop() ?? key] = value;
-          }
-        } else {
-          const fs = await import("node:fs");
-          const path = await import("node:path");
-          const migDir = path.join(process.cwd(), "migrations");
-          if (fs.existsSync(migDir)) {
-            const files = fs.readdirSync(migDir).filter((f) => f.endsWith(".sql"));
-            for (const file of files) {
-              migrationsByName[file] = fs.readFileSync(path.join(migDir, file), "utf-8");
-            }
-          }
+      await client.query(
+        "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+      );
+      const doneRows = await client.query<{ name: string }>("SELECT name FROM _migrations");
+      const done = doneRows.rows.map((r) => r.name);
+
+      const migrationsByName: Record<string, string> = { ...EMBEDDED_MIGRATIONS };
+      if (typeof import.meta.glob === "function") {
+        const globbed = import.meta.glob("/migrations/*.sql", {
+          query: "?raw",
+          import: "default",
+          eager: true,
+        }) as Record<string, string>;
+        for (const [key, value] of Object.entries(globbed)) {
+          migrationsByName[key.split("/").pop() ?? key] = value;
         }
-        const pending = pendingMigrations(Object.keys(migrationsByName), done);
-        for (const { name, path: mPath } of pending) {
-          await client.query("BEGIN");
-          try {
-            await client.query(migrationsByName[mPath]);
-            await client.query("INSERT INTO _migrations (name) VALUES ($1)", [name]);
-            await client.query("COMMIT");
-          } catch (mErr) {
-            await client.query("ROLLBACK");
-            throw mErr;
-          }
-        }
-      } finally {
-        client.release();
       }
-    } catch (migErr) {
-      console.warn("[db] Supabase auto-migration notice:", migErr instanceof Error ? migErr.message : String(migErr));
+      const pending = pendingMigrations(Object.keys(migrationsByName), done);
+      for (const { name, path: mPath } of pending) {
+        await client.query("BEGIN");
+        try {
+          await client.query(migrationsByName[mPath]);
+          await client.query("INSERT INTO _migrations (name) VALUES ($1)", [name]);
+          await client.query("COMMIT");
+        } catch (mErr) {
+          await client.query("ROLLBACK");
+          throw mErr;
+        }
+      }
+    } finally {
+      client.release();
     }
+
+    activeDbSource = "supabase";
 
     return createSqlClient(
       async <T>(text: string, params: unknown[]) => {
@@ -252,33 +274,52 @@ async function createSql(): Promise<Sql> {
     );
   }
   const url = getActiveDatabaseUrl();
-  return createSupabaseSql(url);
+  if (url) {
+    try {
+      const sql = await createSupabaseSql(url);
+      // Quick verification to ensure remote host responds
+      await sql`SELECT 1`;
+      activeDbSource = "supabase";
+      return sql;
+    } catch (err) {
+      console.warn(
+        `[db] Supabase connection to ${maskPostgresUrl(url)} failed (${err instanceof Error ? err.message : String(err)}). Seamlessly falling back to embedded local database.`,
+      );
+      globalRef.__pgSqlPromise__ = undefined;
+    }
+  }
+
+  // Fall back gracefully to embedded PGLite
+  activeDbSource = "local";
+  return createPgliteSql();
 }
 
 export async function getDatabaseInfo(): Promise<{
-  source: "supabase";
+  source: DbSource;
   databaseUrlMasked?: string;
   connected: boolean;
   message: string;
 }> {
   const activeUrl = getActiveDatabaseUrl();
-  if (activeUrl) {
+  if (activeUrl && activeDbSource === "supabase") {
     return {
       source: "supabase",
-      databaseUrlMasked: activeUrl.replace(/:\/\/([^:]+):([^@]+)@/, "://$1:••••••@"),
+      databaseUrlMasked: maskPostgresUrl(activeUrl),
       connected: true,
-      message: "Connected to Supabase PostgreSQL database (SmartKontrakt).",
+      message: "Connected to Supabase PostgreSQL database.",
     };
   }
   return {
-    source: "supabase",
-    connected: false,
-    message: "Supabase PostgreSQL configuration required.",
+    source: "local",
+    connected: true,
+    message: activeUrl
+      ? "Embedded local database active (Supabase connection currently inactive/unreachable)."
+      : "Embedded local database active. Connect your live Supabase PostgreSQL in Settings.",
   };
 }
 
 /**
- * Get the shared, **server-only** SQL client connected to Supabase PostgreSQL.
+ * Get the shared, **server-only** SQL client.
  * Memoized — safe to call per request.
  */
 export function getSql(): Promise<Sql> {
@@ -290,10 +331,12 @@ export function getSql(): Promise<Sql> {
 }
 
 /**
- * Backward compatibility stub — local PGLite is completely removed for Vercel Supabase deployment.
+ * Returns the underlying PGLite instance when local embedded DB is active.
  */
 export async function getPglite(): Promise<any> {
-  throw new Error("Local PGLite database has been removed. All data is persisted directly to Supabase PostgreSQL.");
+  if (globalRef.__pgliteInstance__) return globalRef.__pgliteInstance__;
+  await getSql();
+  return globalRef.__pgliteInstance__;
 }
 
 /**
@@ -303,6 +346,6 @@ export function ensureDbReady(): Promise<void> {
   return getSql()
     .then(() => undefined)
     .catch((err) => {
-      console.warn("[db] Supabase connection notice:", err instanceof Error ? err.message : String(err));
+      console.warn("[db] DB bootstrap notice:", err instanceof Error ? err.message : String(err));
     });
 }

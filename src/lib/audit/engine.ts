@@ -1,8 +1,8 @@
-import { analyzeBytecode, looksLikeBytecode } from "./bytecode";
-import { detectSource } from "./detect";
-import { parseSource, type SourceModel } from "./model";
-import { calibrateFindings } from "./severity-calibration";
-import type { Finding, Inventory, Report, Severity } from "./types";
+import { analyzeBytecode, looksLikeBytecode } from "./bytecode.ts";
+import { detectSource } from "./detect.ts";
+import { parseSource, type SourceModel } from "./model.ts";
+import { calibrateFindings } from "./severity-calibration.ts";
+import type { Finding, Inventory, Report, Severity } from "./types.ts";
 
 const WEIGHT: Record<Severity, number> = {
   critical: 28,

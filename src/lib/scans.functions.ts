@@ -6,14 +6,13 @@ import type { AiSecurityReview } from "./audit/ai-review.server";
 
 const MAX_CHARS = 120_000;
 
-export const listScans = createServerFn({ method: "GET" }).handler(async ({ data }) => {
-  // No .validator(): the two existing no-arg callers (route loader,
-  // pipeline resume) must keep working, and a validator changes the
-  // call signature. Defaults keep them on the first page.
-  const opts = (data ?? {}) as { limit?: number; offset?: number };
-  const { listScanSummaries } = await import("./audit/persist.server");
-  return listScanSummaries(opts);
-});
+export const listScans = createServerFn({ method: "GET" })
+  .validator((input?: { limit?: number; offset?: number }) => input)
+  .handler(async ({ data }) => {
+    const opts = (data ?? {}) as { limit?: number; offset?: number };
+    const { listScanSummaries } = await import("./audit/persist.server");
+    return listScanSummaries(opts);
+  });
 
 /** True totals for the Records stat cards (not per-page sums). */
 export const getScansStatsFn = createServerFn({ method: "GET" }).handler(async () => {

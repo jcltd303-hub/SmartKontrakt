@@ -192,7 +192,7 @@ let runCtx: { items: BatchItem[]; index: number } | null = null;
 let runPromise: Promise<void> | null = null;
 let pauseRequested = false;
 let stopRequested = false;
-let pending: ComprehensiveRecordInput[] = [];
+const pending: ComprehensiveRecordInput[] = [];
 let pendingSince: number | null = null;
 let shuttingDown = false;
 

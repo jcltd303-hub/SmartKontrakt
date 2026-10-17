@@ -1,5 +1,5 @@
-import { SUPPORTED_CHAINS } from "./address-fetcher";
-import { rpcLimiter, withRetry } from "./rate-limit";
+import { SUPPORTED_CHAINS } from "./address-fetcher.ts";
+import { rpcLimiter, withRetry } from "./rate-limit.ts";
 
 export type ProxyAnalysis = {
   isProxy: boolean;

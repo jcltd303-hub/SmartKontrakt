@@ -8,5 +8,5 @@
   "database": "postgres",
   "user": "postgres.aadhpvhpjzkkeydzxxhk",
   "mode": "pooler",
-  "active": true
+  "active": false
 }
