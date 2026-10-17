@@ -1,1 +1,152 @@
-aW1wb3J0IHsgdXNlU3RhdGUgfSBmcm9tICJyZWFjdCI7CmltcG9ydCB7IENvcHksIENoZWNrLCBEb3dubG9hZCwgRmxhc2tDb25pY2FsIH0gZnJvbSAibHVjaWRlLXJlYWN0IjsKCi8qKgogKiBGb3VuZHJ5RXhwb3J0IOKAlCBkb3dubG9hZCB0aGUgQUktZ2VuZXJhdGVkIEZvdW5kcnkgZXhwbG9pdCB0ZXN0IGFzIGEKICogcnVubmFibGUgUG9DIHBhY2thZ2UuIENsaWVudC1zaWRlIG9ubHk6IGJ1aWxkcyB0d28gZmlsZXMgKHRoZSB0ZXN0ICsgYQogKiBSRUFETUUgd2l0aCB0aGUgZXhhY3QgZm9yay1ydW4gY29tbWFuZHMpIHZpYSBCbG9iIGFuZCB0cmlnZ2VycyBkb3dubG9hZHMuCiAqIE5vIHNlcnZlciBjYWxsLCBubyBrZXlzLCBub3RoaW5nIGV4ZWN1dGVzIGluIHRoZSBicm93c2VyLgogKgogKiBXaXJpbmcgKHNlZSB3aXJpbmcgbm90ZSBhdCB0aGUgYm90dG9tKTogcmVuZGVyIGluc2lkZSB0aGUgd29ya2JlbmNoIEFJCiAqIHRhYiwgbmV4dCB0byB0aGUgZ2VuZXJhdGVkIEZvdW5kcnkgdGVzdCwgcGFzc2luZyB0aGUgZ2VuZXJhdGVkIGNvZGUgYW5kCiAqIHRoZSBhdWRpdGVkIGNvbnRyYWN0J3MgYWRkcmVzcy4KICovCmludGVyZmFjZSBGb3VuZHJ5RXhwb3J0UHJvcHMgewogIC8qKiBHZW5lcmF0ZWQgRm91bmRyeSB0ZXN0IGNvZGUgKGFpUmV2aWV3LmZvdW5kcnlUZXN0Q29kZSkuICovCiAgdGVzdENvZGU6IHN0cmluZzsKICAvKiogQWRkcmVzcyBvZiB0aGUgYXVkaXRlZCBjb250cmFjdCwgaWYgdGhlIHdvcmtiZW5jaCBmZXRjaGVkIG9uZS4gKi8KICBjb250cmFjdEFkZHJlc3M/OiBzdHJpbmc7CiAgLyoqIERpc3BsYXkgbmFtZSBmb3IgdGhlIGNvbnRyYWN0LCBmb3IgdGhlIFJFQURNRSBoZWFkZXIuICovCiAgY29udHJhY3ROYW1lPzogc3RyaW5nOwp9CgpmdW5jdGlvbiBkb3dubG9hZEZpbGUoZmlsZW5hbWU6IHN0cmluZywgY29udGVudDogc3RyaW5nKSB7CiAgY29uc3QgYmxvYiA9IG5ldyBCbG9iKFtjb250ZW50XSwgeyB0eXBlOiAidGV4dC9wbGFpbjtjaGFyc2V0PXV0Zi04IiB9KTsKICBjb25zdCB1cmwgPSBVUkwuY3JlYXRlT2JqZWN0VVJMKGJsb2IpOwogIGNvbnN0IGEgPSBkb2N1bWVudC5jcmVhdGVFbGVtZW50KCJhIik7CiAgYS5ocmVmID0gdXJsOwogIGEuZG93bmxvYWQgPSBmaWxlbmFtZTsKICBkb2N1bWVudC5ib2R5LmFwcGVuZENoaWxkKGEpOwogIGEuY2xpY2soKTsKICBhLnJlbW92ZSgpOwogIC8vIFJldm9rZSBvbiB0aGUgbmV4dCB0aWNrIHNvIHRoZSBkb3dubG9hZCBoYXMgc3RhcnRlZC4KICBzZXRUaW1lb3V0KCgpID0+IFVSTC5yZXZva2VPYmplY3RVUkwodXJsKSwgMTAwMCk7Cn0KCmZ1bmN0aW9uIGJ1aWxkUG9jUmVhZG1lKGNvbnRyYWN0TmFtZTogc3RyaW5nLCBjb250cmFjdEFkZHJlc3M6IHN0cmluZyk6IHN0cmluZyB7CiAgY29uc3QgdGFyZ2V0ID0gY29udHJhY3RBZGRyZXNzIHx8ICIweDx0YXJnZXQtYWRkcmVzcz4iOwogIHJldHVybiBgIyBGb3VuZHJ5IEZvcmsgUG9DIOKAlCAke2NvbnRyYWN0TmFtZX0KCkV4cGxvaXQgdGVzdCBleHBvcnRlZCBmcm9tIFNtYXJ0S29udHJha3QuIFRoaXMgdGVzdCB3YXMgZ2VuZXJhdGVkIGJ5IHRoZSBBSQpyZXZpZXdlciDigJQgdHJlYXQgaXQgYXMgYSBzdGFydGluZyBwb2ludDogY2hlY2sgdGhlIFRPRE9zIGluIHRoZSBmaWxlLCBjb25maXJtCnRoZSB0YXJnZXQgaW50ZXJmYWNlIG1hdGNoZXMgdGhlIGF1ZGl0ZWQgY29udHJhY3QsIGFuZCBydW4gaXQgYWdhaW5zdCBhIGZvcmsKYmVmb3JlIHRydXN0aW5nIGl0LgoKIyMgU2FmZXR5CgpGb3JrLW9ubHkuIEV2ZXJ5IGNvbW1hbmQgYmVsb3cgcnVucyBhZ2FpbnN0IGEgTE9DQUwgY29weSBvZiBjaGFpbiBzdGF0ZS4KTm90aGluZyBpcyBicm9hZGNhc3QsIG5vdGhpbmcgaXMgc3BlbnQsIG5vIHByaXZhdGUga2V5IGlzIG5lZWRlZCBvciBhY2NlcHRlZC4KTmV2ZXIgYWRkIFxgLS1icm9hZGNhc3RcYCB0byB0aGVzZSBjb21tYW5kcy4KCiMjIFJ1biBpdCAocmVwbyBoYXJuZXNzLCByZWNvbW1lbmRlZCkKClxgXGBcYGJhc2gKIyBGcm9tIHRoZSByZXBvIHJvb3QuIFN0YXJ0cyBhIGxvY2FsIGFudmlsIGZvcmssIHJ1bnMgdGhlIHRlc3QsIGtpbGxzIGFudmlsLgpleHBvcnQgRVRIX1JQQ19VUkw9Imh0dHBzOi8vZXRoLmxsYW1hcnBjLmNvbSIgICAjIG9yIHlvdXIgb3duIG5vZGUKY3AgRXhwbG9pdC50LnNvbCBmb3VuZHJ5L3Rlc3QvRXhwbG9pdC50LnNvbAouL3NjcmlwdHMvcnVuLWZvcmstcG9jLnNoICR7dGFyZ2V0fSB0ZXN0L0V4cGxvaXQudC5zb2wKXGBcYFxgCgojIyBSdW4gaXQgKHBsYWluIEZvdW5kcnksIG5vIGFudmlsKQoKXGBcYFxgYmFzaApjZCBmb3VuZHJ5ClBPQ19UQVJHRVQ9JHt0YXJnZXR9IGZvcmdlIHRlc3QgLS1mb3JrLXVybCAiJEVUSF9SUENfVVJMIiAtLW1hdGNoLXBhdGggdGVzdC9FeHBsb2l0LnQuc29sIC12dnYKXGBcYFxgCgojIyBSZWFkaW5nIHJlc3VsdHMKCi0gVGVzdCBwYXNzZXMgIC0+IHRoZSBleHBsb2l0IHJlcHJvZHVjZWQgb24gZm9yayBzdGF0ZS4KLSBUZXN0IGZhaWxzICAgIC0+IGV4cGxvaXQgZGlkIE5PVCByZXByb2R1Y2UgKGd1YXJkZWQgdGFyZ2V0LCB3cm9uZwogIGludGVyZmFjZSwgb3IgZm9yayBzdGF0ZSBtb3ZlZCkuIFRoYXQgZmFpbHVyZSBpcyB0aGUgc2lnbmFsLCBub3QgYSBidWcuCgojIyBSZWZlcmVuY2UgaGFybmVzcwoKXGBmb3VuZHJ5L3Rlc3QvUG9DLnQuc29sXGAgaW4gdGhlIHJlcG8gaXMgdGhlIHJ1bm5hYmxlIHRlbXBsYXRlIChmb3JrIHNldHVwLApzYW5pdHkgY2hlY2ssIHJlZW50cmFuY3kgZXhhbXBsZSkuIEFkYXB0IGl0cyBzaGFwZSB3aGVuIHRoZSBBSS1nZW5lcmF0ZWQKdGVzdCBuZWVkcyB0aGUgdGFyZ2V0IGFkZHJlc3MsIGEgcGlubmVkIGZvcmsgYmxvY2ssIG9yIGhlbHBlciBjb250cmFjdHMuCmA7Cn0KCmV4cG9ydCBmdW5jdGlvbiBGb3VuZHJ5RXhwb3J0KHsgdGVzdENvZGUsIGNvbnRyYWN0QWRkcmVzcyA9ICIiLCBjb250cmFjdE5hbWUgPSAiQ29udHJhY3QiIH06IEZvdW5kcnlFeHBvcnRQcm9wcykgewogIGNvbnN0IFtjb3BpZWQsIHNldENvcGllZF0gPSB1c2VTdGF0ZShmYWxzZSk7CgogIGNvbnN0IGNvcHlDb21tYW5kcyA9IGFzeW5jICgpID0+IHsKICAgIGNvbnN0IHRhcmdldCA9IGNvbnRyYWN0QWRkcmVzcyB8fCAiMHg8dGFyZ2V0LWFkZHJlc3M+IjsKICAgIGNvbnN0IHRleHQgPSBbCiAgICAgIGBleHBvcnQgRVRIX1JQQ19VUkw9Imh0dHBzOi8vZXRoLmxsYW1hcnBjLmNvbSJgLAogICAgICBgLi9zY3JpcHRzL3J1bi1mb3JrLXBvYy5zaCAke3RhcmdldH0gdGVzdC9FeHBsb2l0LnQuc29sYCwKICAgIF0uam9pbigiXG4iKTsKICAgIHRyeSB7CiAgICAgIGF3YWl0IG5hdmlnYXRvci5jbGlwYm9hcmQud3JpdGVUZXh0KHRleHQpOwogICAgICBzZXRDb3BpZWQodHJ1ZSk7CiAgICAgIHNldFRpbWVvdXQoKCkgPT4gc2V0Q29waWVkKGZhbHNlKSwgMjAwMCk7CiAgICB9IGNhdGNoIHsKICAgICAgLy8gQ2xpcGJvYXJkIHVuYXZhaWxhYmxlIChwZXJtaXNzaW9ucykg4oCUIHRoZSBSRUFETUUgZG93bmxvYWQgaGFzIHRoZSBzYW1lIGNvbW1hbmRzLgogICAgfQogIH07CgogIHJldHVybiAoCiAgICA8ZGl2IGNsYXNzTmFtZT0ibXQtMiBwLTMgYmctWyMxMjExMGVdIHJvdW5kZWQtbGcgYm9yZGVyIGJvcmRlci1bIzNhMzQyOF0gZmxleCBmbGV4LWNvbCBnYXAtMiI+CiAgICAgIDxkaXYgY2xhc3NOYW1lPSJmbGV4IGl0ZW1zLWNlbnRlciBnYXAtMS41IHRleHQteHMgZm9udC1tb25vIGZvbnQtYm9sZCB0ZXh0LVsjZThhNTRiXSI+CiAgICAgICAgPEZsYXNrQ29uaWNhbCBjbGFzc05hbWU9InctMy41IGgtMy41IiAvPgogICAgICAgIDxzcGFuPlJ1biB0aGlzIFBvQyBhZ2FpbnN0IGEgbGl2ZS1uZXQgZm9yayAobG9jYWwgb25seSDigJQgbmV2ZXIgb24gVmVyY2VsKTwvc3Bhbj4KICAgICAgPC9kaXY+CiAgICAgIDxwIGNsYXNzTmFtZT0idGV4dC1bMTFweF0gZm9udC1tb25vIHRleHQtWyNhMzk4ODZdIGxlYWRpbmctcmVsYXhlZCI+CiAgICAgICAgRG93bmxvYWRzIHRoZSB0ZXN0ICsgYSBSRUFETUUgd2l0aCB0aGUgZXhhY3QgY29tbWFuZHMuIFJ1bnMgb24geW91ciBtYWNoaW5lIHZpYSB0aGUgcmVwbyZhcG9zO3MKICAgICAgICBhbnZpbCBmb3JrIGhhcm5lc3Mg4oCUIGZvcmstb25seSwgbm8ga2V5cywgbm90aGluZyBicm9hZGNhc3QuCiAgICAgIDwvcD4KICAgICAgPGRpdiBjbGFzc05hbWU9ImZsZXggZmxleC13cmFwIGl0ZW1zLWNlbnRlciBnYXAtMiI+CiAgICAgICAgPGJ1dHRvbgogICAgICAgICAgb25DbGljaz17KCkgPT4gZG93bmxvYWRGaWxlKCJFeHBsb2l0LnQuc29sIiwgdGVzdENvZGUpfQogICAgICAgICAgY2xhc3NOYW1lPSJ0ZXh0LXhzIGZvbnQtbW9ubyBweC0yLjUgcHktMS41IHJvdW5kZWQgYmctWyNlOGE1NGJdIHRleHQtWyMxMjExMGVdIGZvbnQtYm9sZCBmbGV4IGl0ZW1zLWNlbnRlciBnYXAtMS41IGhvdmVyOmJnLVsjZjBiMjVlXSIKICAgICAgICA+CiAgICAgICAgICA8RG93bmxvYWQgY2xhc3NOYW1lPSJ3LTMuNSBoLTMuNSIgLz4KICAgICAgICAgIERvd25sb2FkIEV4cGxvaXQudC5zb2wKICAgICAgICA8L2J1dHRvbj4KICAgICAgICA8YnV0dG9uCiAgICAgICAgICBvbkNsaWNrPXsoKSA9PiBkb3dubG9hZEZpbGUoIlBPQy1SRUFETUUubWQiLCBidWlsZFBvY1JlYWRtZShjb250cmFjdE5hbWUsIGNvbnRyYWN0QWRkcmVzcykpfQogICAgICAgICAgY2xhc3NOYW1lPSJ0ZXh0LXhzIGZvbnQtbW9ubyBweC0yLjUgcHktMS41IHJvdW5kZWQgYm9yZGVyIGJvcmRlci1bIzNhMzQyOF0gdGV4dC1bI2Y0ZWZlNl0gZmxleCBpdGVtcy1jZW50ZXIgZ2FwLTEuNSBob3Zlcjpib3JkZXItWyNlOGE1NGJdIgogICAgICAgID4KICAgICAgICAgIDxEb3dubG9hZCBjbGFzc05hbWU9InctMy41IGgtMy41IiAvPgogICAgICAgICAgRG93bmxvYWQgUG9DIFJFQURNRQogICAgICAgIDwvYnV0dG9uPgogICAgICAgIDxidXR0b24KICAgICAgICAgIG9uQ2xpY2s9e2NvcHlDb21tYW5kc30KICAgICAgICAgIGNsYXNzTmFtZT0idGV4dC14cyBmb250LW1vbm8gdGV4dC1bI2EzOTg4Nl0gaG92ZXI6dGV4dC1bI2Y0ZWZlNl0gZmxleCBpdGVtcy1jZW50ZXIgZ2FwLTEiCiAgICAgICAgPgogICAgICAgICAge2NvcGllZCA/IDxDaGVjayBjbGFzc05hbWU9InctMy41IGgtMy41IHRleHQtZW1lcmFsZC00MDAiIC8+IDogPENvcHkgY2xhc3NOYW1lPSJ3LTMuNSBoLTMuNSIgLz59CiAgICAgICAgICA8c3Bhbj57Y29waWVkID8gIkNvcGllZCIgOiAiQ29weSBydW4gY29tbWFuZHMifTwvc3Bhbj4KICAgICAgICA8L2J1dHRvbj4KICAgICAgPC9kaXY+CiAgICA8L2Rpdj4KICApOwp9CgovKgpXSVJJTkcgKDUgbGluZXMsIGluIHNyYy9jb21wb25lbnRzL3dvcmtiZW5jaC50c3gg4oCUIGRvIE5PVCBlZGl0IHRoYXQgZmlsZSBoZXJlKToKCjEuIEltcG9ydCAodG9wIG9mIGZpbGUsIG5leHQgdG8gdGhlIG90aGVyIGNvbXBvbmVudCBpbXBvcnRzKToKICAgICBpbXBvcnQgeyBGb3VuZHJ5RXhwb3J0IH0gZnJvbSAiLi9mb3VuZHJ5LWV4cG9ydCI7CgoyLiBJbiB0aGUgQUkgdGFiLCBpbnNpZGUgdGhlICJGb3VuZHJ5IEV4cGxvaXQgVmVyaWZpY2F0aW9uIFRlc3QiIGJsb2NrLAogICByaWdodCBhZnRlciB0aGUgPHByZT57YWlSZXZpZXcuZm91bmRyeVRlc3RDb2RlfTwvcHJlPiBjb250YWluZXIsIGFkZDoKICAgICA8Rm91bmRyeUV4cG9ydAogICAgICAgdGVzdENvZGU9e2FpUmV2aWV3LmZvdW5kcnlUZXN0Q29kZX0KICAgICAgIGNvbnRyYWN0QWRkcmVzcz17c2luZ2xlQWRkcmVzc30KICAgICAgIGNvbnRyYWN0TmFtZT17cmVwb3J0Py5sYWJlbCA/PyAiQ29udHJhY3QifQogICAgIC8+CgozLiBEb25lIOKAlCBubyBwcm9wcyBkcmlsbGluZywgbm8gc2VydmVyIGNoYW5nZXMsIG5vIG5ldyBkZXBzIChsdWNpZGUtcmVhY3QKICAgaXMgYWxyZWFkeSB1c2VkIGJ5IHRoZSB3b3JrYmVuY2gpLgoqLwo=
+import { useState } from "react";
+import { Copy, Check, Download, FlaskConical } from "lucide-react";
+
+/**
+ * FoundryExport — download the AI-generated Foundry exploit test as a
+ * runnable PoC package. Client-side only: builds two files (the test + a
+ * README with the exact fork-run commands) via Blob and triggers downloads.
+ * No server call, no keys, nothing executes in the browser.
+ *
+ * Wiring (see wiring note at the bottom): render inside the workbench AI
+ * tab, next to the generated Foundry test, passing the generated code and
+ * the audited contract's address.
+ */
+interface FoundryExportProps {
+  /** Generated Foundry test code (aiReview.foundryTestCode). */
+  testCode: string;
+  /** Address of the audited contract, if the workbench fetched one. */
+  contractAddress?: string;
+  /** Display name for the contract, for the README header. */
+  contractName?: string;
+}
+
+function downloadFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke on the next tick so the download has started.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function buildPocReadme(contractName: string, contractAddress: string): string {
+  const target = contractAddress || "0x<target-address>";
+  return `# Foundry Fork PoC — ${contractName}
+
+Exploit test exported from SmartKontrakt. This test was generated by the AI
+reviewer — treat it as a starting point: check the TODOs in the file, confirm
+the target interface matches the audited contract, and run it against a fork
+before trusting it.
+
+## Safety
+
+Fork-only. Every command below runs against a LOCAL copy of chain state.
+Nothing is broadcast, nothing is spent, no private key is needed or accepted.
+Never add \`--broadcast\` to these commands.
+
+## Run it (repo harness, recommended)
+
+\`\`\`bash
+# From the repo root. Starts a local anvil fork, runs the test, kills anvil.
+export ETH_RPC_URL="https://eth.llamarpc.com"   # or your own node
+cp Exploit.t.sol foundry/test/Exploit.t.sol
+./scripts/run-fork-poc.sh ${target} test/Exploit.t.sol
+\`\`\`
+
+## Run it (plain Foundry, no anvil)
+
+\`\`\`bash
+cd foundry
+POC_TARGET=${target} forge test --fork-url "$ETH_RPC_URL" --match-path test/Exploit.t.sol -vvv
+\`\`\`
+
+## Reading results
+
+- Test passes  -> the exploit reproduced on fork state.
+- Test fails    -> exploit did NOT reproduce (guarded target, wrong
+  interface, or fork state moved). That failure is the signal, not a bug.
+
+## Reference harness
+
+\`foundry/test/PoC.t.sol\` in the repo is the runnable template (fork setup,
+sanity check, reentrancy example). Adapt its shape when the AI-generated
+test needs the target address, a pinned fork block, or helper contracts.
+`;
+}
+
+export function FoundryExport({ testCode, contractAddress = "", contractName = "Contract" }: FoundryExportProps) {
+  const [copied, setCopied] = useState(false);
+
+  const copyCommands = async () => {
+    const target = contractAddress || "0x<target-address>";
+    const text = [
+      `export ETH_RPC_URL="https://eth.llamarpc.com"`,
+      `./scripts/run-fork-poc.sh ${target} test/Exploit.t.sol`,
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard unavailable (permissions) — the README download has the same commands.
+    }
+  };
+
+  return (
+    <div className="mt-2 p-3 bg-[#12110e] rounded-lg border border-[#3a3428] flex flex-col gap-2">
+      <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-[#e8a54b]">
+        <FlaskConical className="w-3.5 h-3.5" />
+        <span>Run this PoC against a live-net fork (local only — never on Vercel)</span>
+      </div>
+      <p className="text-[11px] font-mono text-[#a39886] leading-relaxed">
+        Downloads the test + a README with the exact commands. Runs on your machine via the repo&apos;s
+        anvil fork harness — fork-only, no keys, nothing broadcast.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => downloadFile("Exploit.t.sol", testCode)}
+          className="text-xs font-mono px-2.5 py-1.5 rounded bg-[#e8a54b] text-[#12110e] font-bold flex items-center gap-1.5 hover:bg-[#f0b25e]"
+        >
+          <Download className="w-3.5 h-3.5" />
+          Download Exploit.t.sol
+        </button>
+        <button
+          onClick={() => downloadFile("POC-README.md", buildPocReadme(contractName, contractAddress))}
+          className="text-xs font-mono px-2.5 py-1.5 rounded border border-[#3a3428] text-[#f4efe6] flex items-center gap-1.5 hover:border-[#e8a54b]"
+        >
+          <Download className="w-3.5 h-3.5" />
+          Download PoC README
+        </button>
+        <button
+          onClick={copyCommands}
+          className="text-xs font-mono text-[#a39886] hover:text-[#f4efe6] flex items-center gap-1"
+        >
+          {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+          <span>{copied ? "Copied" : "Copy run commands"}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/*
+WIRING (5 lines, in src/components/workbench.tsx — do NOT edit that file here):
+
+1. Import (top of file, next to the other component imports):
+     import { FoundryExport } from "./foundry-export";
+
+2. In the AI tab, inside the "Foundry Exploit Verification Test" block,
+   right after the <pre>{aiReview.foundryTestCode}</pre> container, add:
+     <FoundryExport
+       testCode={aiReview.foundryTestCode}
+       contractAddress={singleAddress}
+       contractName={report?.label ?? "Contract"}
+     />
+
+3. Done — no props drilling, no server changes, no new deps (lucide-react
+   is already used by the workbench).
+*/

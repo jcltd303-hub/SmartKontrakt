@@ -1,1 +1,211 @@
-aW1wb3J0IHsgdXNlRWZmZWN0LCB1c2VTdGF0ZSB9IGZyb20gInJlYWN0IjsKaW1wb3J0IHsgUGxheSwgTG9hZGVyMiwgQ2hlY2tDaXJjbGUyLCBYQ2lyY2xlLCBTZXJ2ZXIsIEFsZXJ0VHJpYW5nbGUgfSBmcm9tICJsdWNpZGUtcmVhY3QiOwppbXBvcnQgewogIEFERFJFU1NfUkUsCiAgQkFDS0VORF9LRVksCiAgREVGQVVMVF9CQUNLRU5ELAogIGNoZWNrRm91bmRyeUJhY2tlbmQsCiAgcnVuUG9jT25CYWNrZW5kLAogIHR5cGUgQmFja2VuZEhlYWx0aCwKfSBmcm9tICJAL2xpYi9hdWRpdC9mb3VuZHJ5LWJhY2tlbmQiOwppbXBvcnQgdHlwZSB7IFBvY1Jlc3VsdCB9IGZyb20gIkAvbGliL2F1ZGl0L3R5cGVzIjsKCi8qKgogKiBGb3VuZHJ5TG9jYWxSdW4g4oCUIHJ1biB0aGUgQUktZ2VuZXJhdGVkIEZvdW5kcnkgZXhwbG9pdCB0ZXN0IGFnYWluc3QgYQogKiBsaXZlLW5ldCBmb3JrIHZpYSB0aGUgVGVybXV4IGxvY2FsIGJhY2tlbmQgKGh0dHA6Ly8xMjcuMC4wLjE6ODc4NykuCiAqCiAqIFRoZSBWZXJjZWwgYXBwIGNhbiBuZXZlciBzaGVsbCBvdXQgdG8gZm9yZ2UgKHNlcnZlcmxlc3MpLiBUaGUgYmFja2VuZCBydW5zCiAqIG9uIEplcidzIG93biBwaG9uZSB1bmRlciBUZXJtdXggYW5kIHNoZWxscyBvdXQgdG8gSElTIGZvcmdlIGJpbmFyeS4gVGhlCiAqIGJyb3dzZXIgKEhUVFBTIGFwcCkgZmV0Y2hlcyB0aGUgbG9vcGJhY2sgYmFja2VuZCAoaHR0cDovL2xvY2FsaG9zdCkg4oCUIAogKiBicm93c2VycyBleGVtcHQgbG9vcGJhY2sgZnJvbSBtaXhlZC1jb250ZW50IGJsb2NraW5nLCBzbyB0aGlzIHdvcmtzLgogKgogKiBXaXJpbmcgKHNlZSB3aXJpbmcgbm90ZSBhdCB0aGUgYm90dG9tKTogcmVuZGVyIGluc2lkZSB0aGUgd29ya2JlbmNoIEFJCiAqIHRhYiwgbmV4dCB0byB0aGUgZ2VuZXJhdGVkIEZvdW5kcnkgdGVzdCAvIEZvdW5kcnlFeHBvcnQuCiAqLwppbnRlcmZhY2UgRm91bmRyeUxvY2FsUnVuUHJvcHMgewogIC8qKiBHZW5lcmF0ZWQgRm91bmRyeSB0ZXN0IGNvZGUgKGFpUmV2aWV3LmZvdW5kcnlUZXN0Q29kZSkuIE11c3QgZGVjbGFyZSBgY29udHJhY3QgUG9DYC4gKi8KICB0ZXN0Q29kZTogc3RyaW5nOwogIC8qKiBBZGRyZXNzIG9mIHRoZSBhdWRpdGVkIGNvbnRyYWN0LCBpZiB0aGUgd29ya2JlbmNoIGZldGNoZWQgb25lLiAqLwogIGFkZHJlc3M6IHN0cmluZzsKICAvKiogVXBzdHJlYW0gUlBDIHRoZSBiYWNrZW5kIGZvcmtzIGZyb20uIERlZmF1bHRzIHRvIHRoZSBiYWNrZW5kJ3MgRVRIX1JQQ19VUkwgLyBwdWJsaWMgZW5kcG9pbnQuICovCiAgcnBjVXJsPzogc3RyaW5nOwp9Cgp0eXBlIEhlYWx0aCA9IEJhY2tlbmRIZWFsdGg7CnR5cGUgUnVuUmVzdWx0ID0gKFBvY1Jlc3VsdCAmIHsgcGFzc2VkOiBib29sZWFuIH0pIHwgbnVsbDsKCmV4cG9ydCBmdW5jdGlvbiBGb3VuZHJ5TG9jYWxSdW4oeyB0ZXN0Q29kZSwgYWRkcmVzcywgcnBjVXJsIH06IEZvdW5kcnlMb2NhbFJ1blByb3BzKSB7CiAgY29uc3QgW2JhY2tlbmRVcmwsIHNldEJhY2tlbmRVcmxdID0gdXNlU3RhdGUoREVGQVVMVF9CQUNLRU5EKTsKICBjb25zdCBbaGVhbHRoLCBzZXRIZWFsdGhdID0gdXNlU3RhdGU8SGVhbHRoPihudWxsKTsKICBjb25zdCBbaGVhbHRoRXJyb3IsIHNldEhlYWx0aEVycm9yXSA9IHVzZVN0YXRlPHN0cmluZyB8IG51bGw+KG51bGwpOwogIGNvbnN0IFtjaGVja2luZywgc2V0Q2hlY2tpbmddID0gdXNlU3RhdGUoZmFsc2UpOwogIGNvbnN0IFtydW5uaW5nLCBzZXRSdW5uaW5nXSA9IHVzZVN0YXRlKGZhbHNlKTsKICBjb25zdCBbcmVzdWx0LCBzZXRSZXN1bHRdID0gdXNlU3RhdGU8UnVuUmVzdWx0PihudWxsKTsKICBjb25zdCBbcnVuRXJyb3IsIHNldFJ1bkVycm9yXSA9IHVzZVN0YXRlPHN0cmluZyB8IG51bGw+KG51bGwpOwoKICB1c2VFZmZlY3QoKCkgPT4gewogICAgdHJ5IHsKICAgICAgY29uc3Qgc2F2ZWQgPSBsb2NhbFN0b3JhZ2UuZ2V0SXRlbShCQUNLRU5EX0tFWSk7CiAgICAgIGlmIChzYXZlZCkgc2V0QmFja2VuZFVybChzYXZlZCk7CiAgICB9IGNhdGNoIHsKICAgICAgLy8gbG9jYWxTdG9yYWdlIHVuYXZhaWxhYmxlIOKAlCBkZWZhdWx0IHN0YW5kcy4KICAgIH0KICB9LCBbXSk7CgogIGNvbnN0IHNhdmVCYWNrZW5kVXJsID0gKHY6IHN0cmluZykgPT4gewogICAgc2V0QmFja2VuZFVybCh2KTsKICAgIHRyeSB7CiAgICAgIGxvY2FsU3RvcmFnZS5zZXRJdGVtKEJBQ0tFTkRfS0VZLCB2KTsKICAgIH0gY2F0Y2ggewogICAgICAvLyBpZ25vcmUg4oCUIHBlcnNpc3RlbmNlIGlzIGEgbmljZXR5CiAgICB9CiAgfTsKCiAgY29uc3QgYWRkcmVzc1ZhbGlkID0gQUREUkVTU19SRS50ZXN0KGFkZHJlc3MudHJpbSgpKTsKCiAgY29uc3QgY2hlY2tCYWNrZW5kID0gYXN5bmMgKCkgPT4gewogICAgc2V0Q2hlY2tpbmcodHJ1ZSk7CiAgICBzZXRIZWFsdGhFcnJvcihudWxsKTsKICAgIHRyeSB7CiAgICAgIGNvbnN0IGhlYWx0aCA9IGF3YWl0IGNoZWNrRm91bmRyeUJhY2tlbmQoYmFja2VuZFVybCk7CiAgICAgIGlmICghaGVhbHRoKSB0aHJvdyBuZXcgRXJyb3IoInVucmVhY2hhYmxlIik7CiAgICAgIHNldEhlYWx0aChoZWFsdGgpOwogICAgfSBjYXRjaCB7CiAgICAgIHNldEhlYWx0aChudWxsKTsKICAgICAgc2V0SGVhbHRoRXJyb3IoIkJhY2tlbmQgbm90IHJlYWNoYWJsZSIpOwogICAgfSBmaW5hbGx5IHsKICAgICAgc2V0Q2hlY2tpbmcoZmFsc2UpOwogICAgfQogIH07CgogIGNvbnN0IHJ1blBvYyA9IGFzeW5jICgpID0+IHsKICAgIHNldFJ1bm5pbmcodHJ1ZSk7CiAgICBzZXRSdW5FcnJvcihudWxsKTsKICAgIHNldFJlc3VsdChudWxsKTsKICAgIGNvbnN0IHBvYyA9IGF3YWl0IHJ1blBvY09uQmFja2VuZChiYWNrZW5kVXJsLCB7IGFkZHJlc3MsIHRlc3RDb2RlLCAuLi4ocnBjVXJsID8geyBycGNVcmwgfSA6IHt9KSB9KTsKICAgIGlmIChwb2Muc3RhdHVzID09PSAiYmFja2VuZF91bnJlYWNoYWJsZSIpIHsKICAgICAgc2V0UnVuRXJyb3IocG9jLmxvZ3MpOwogICAgfSBlbHNlIHsKICAgICAgc2V0UmVzdWx0KHsgLi4ucG9jLCBwYXNzZWQ6IHBvYy5zdGF0dXMgPT09ICJwYXNzZWQiIH0pOwogICAgfQogICAgc2V0UnVubmluZyhmYWxzZSk7CiAgfTsKCiAgcmV0dXJuICgKICAgIDxkaXYgY2xhc3NOYW1lPSJtdC0yIHAtMyBiZy1bIzEyMTEwZV0gcm91bmRlZC1sZyBib3JkZXIgYm9yZGVyLVsjM2EzNDI4XSBmbGV4IGZsZXgtY29sIGdhcC0yIj4KICAgICAgPGRpdiBjbGFzc05hbWU9ImZsZXggaXRlbXMtY2VudGVyIGdhcC0xLjUgdGV4dC14cyBmb250LW1vbm8gZm9udC1ib2xkIHRleHQtWyNlOGE1NGJdIj4KICAgICAgICA8U2VydmVyIGNsYXNzTmFtZT0idy0zLjUgaC0zLjUiIC8+CiAgICAgICAgPHNwYW4+UnVuIHRoaXMgUG9DIG9uIHlvdXIgbG9jYWwgYmFja2VuZCAoVGVybXV4ICsgRm91bmRyeSwgZm9yay1vbmx5KTwvc3Bhbj4KICAgICAgPC9kaXY+CiAgICAgIDxwIGNsYXNzTmFtZT0idGV4dC1bMTFweF0gZm9udC1tb25vIHRleHQtWyNhMzk4ODZdIGxlYWRpbmctcmVsYXhlZCI+CiAgICAgICAgRXhlY3V0ZXMgdGhlIHRlc3QgYWdhaW5zdCBhIGZvcmsgb2YgbGl2ZSBjaGFpbiBzdGF0ZSBvbiB5b3VyIHBob25lLiBOb3RoaW5nIGlzIGJyb2FkY2FzdCwKICAgICAgICBub3RoaW5nIGlzIHNwZW50LCBubyBwcml2YXRlIGtleSBpcyBpbnZvbHZlZC4gVGhlIGJhY2tlbmQgcnVucyBvbmUgUG9DIGF0IGEgdGltZS4KICAgICAgPC9wPgoKICAgICAgPGRpdiBjbGFzc05hbWU9ImZsZXggZmxleC13cmFwIGl0ZW1zLWNlbnRlciBnYXAtMiI+CiAgICAgICAgPGxhYmVsIGNsYXNzTmFtZT0idGV4dC1bMTFweF0gZm9udC1tb25vIHRleHQtWyNhMzk4ODZdIj5CYWNrZW5kPC9sYWJlbD4KICAgICAgICA8aW5wdXQKICAgICAgICAgIHR5cGU9InRleHQiCiAgICAgICAgICB2YWx1ZT17YmFja2VuZFVybH0KICAgICAgICAgIG9uQ2hhbmdlPXsoZSkgPT4gc2F2ZUJhY2tlbmRVcmwoZS50YXJnZXQudmFsdWUpfQogICAgICAgICAgY2xhc3NOYW1lPSJmbGV4LTEgbWluLXctNDQgYmctWyMxMjExMGVdIGJvcmRlciBib3JkZXItWyMzYTM0MjhdIHJvdW5kZWQgcHgtMiBweS0xIHRleHQteHMgdGV4dC1bI2Y0ZWZlNl0gZm9udC1tb25vIGZvY3VzOm91dGxpbmUtbm9uZSBmb2N1czpib3JkZXItWyNlOGE1NGJdIgogICAgICAgIC8+CiAgICAgICAgPGJ1dHRvbgogICAgICAgICAgb25DbGljaz17Y2hlY2tCYWNrZW5kfQogICAgICAgICAgZGlzYWJsZWQ9e2NoZWNraW5nfQogICAgICAgICAgY2xhc3NOYW1lPSJ0ZXh0LXhzIGZvbnQtbW9ubyBweC0yLjUgcHktMS41IHJvdW5kZWQgYm9yZGVyIGJvcmRlci1bIzNhMzQyOF0gdGV4dC1bI2Y0ZWZlNl0gZmxleCBpdGVtcy1jZW50ZXIgZ2FwLTEuNSBob3Zlcjpib3JkZXItWyNlOGE1NGJdIGRpc2FibGVkOm9wYWNpdHktNTAiCiAgICAgICAgPgogICAgICAgICAge2NoZWNraW5nID8gPExvYWRlcjIgY2xhc3NOYW1lPSJ3LTMuNSBoLTMuNSBhbmltYXRlLXNwaW4iIC8+IDogPFNlcnZlciBjbGFzc05hbWU9InctMy41IGgtMy41IiAvPn0KICAgICAgICAgIHtjaGVja2luZyA/ICJDaGVja2luZ+KApiIgOiAiQ2hlY2sgYmFja2VuZCJ9CiAgICAgICAgPC9idXR0b24+CiAgICAgIDwvZGl2PgoKICAgICAge2hlYWx0aCAmJiAoCiAgICAgICAgPHAgY2xhc3NOYW1lPSJ0ZXh0LVsxMXB4XSBmb250LW1vbm8gdGV4dC1bI2EzOTg4Nl0iPgogICAgICAgICAgQmFja2VuZCB1cCDigJQgZm9yZ2U6eyIgIn0KICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT17aGVhbHRoLmZvcmdlID8gInRleHQtZW1lcmFsZC00MDAgZm9udC1ib2xkIiA6ICJ0ZXh0LXJlZC00MDAgZm9udC1ib2xkIn0+CiAgICAgICAgICAgIHtoZWFsdGguZm9yZ2UgPyAieWVzIiA6ICJNSVNTSU5HIn0KICAgICAgICAgIDwvc3Bhbj4KICAgICAgICAgIHsiLCBhbnZpbDogIn0KICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT17aGVhbHRoLmFudmlsID8gInRleHQtZW1lcmFsZC00MDAgZm9udC1ib2xkIiA6ICJ0ZXh0LVsjYTM5ODg2XSJ9PgogICAgICAgICAgICB7aGVhbHRoLmFudmlsID8gInllcyIgOiAibm90IGluc3RhbGxlZCAob3B0aW9uYWwg4oCUIGZvcmdlIGZvcmtzIGRpcmVjdGx5KSJ9CiAgICAgICAgICA8L3NwYW4+CiAgICAgICAgPC9wPgogICAgICApfQogICAgICB7aGVhbHRoRXJyb3IgJiYgKAogICAgICAgIDxkaXYgY2xhc3NOYW1lPSJ0ZXh0LVsxMXB4XSBmb250LW1vbm8gdGV4dC1hbWJlci0zMDAgYmctYW1iZXItOTUwLzMwIGJvcmRlciBib3JkZXItYW1iZXItOTAwLzUwIHJvdW5kZWQgcC0yIGxlYWRpbmctcmVsYXhlZCI+CiAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9ImZvbnQtYm9sZCI+QmFja2VuZCBub3QgcmVhY2hhYmxlLjwvc3Bhbj4gU3RhcnQgaXQgaW4gVGVybXV4OgogICAgICAgICAgPHByZSBjbGFzc05hbWU9Im10LTEgdGV4dC1bI2Y0ZWZlNl0gd2hpdGVzcGFjZS1wcmUtd3JhcCI+Y2Qgfi9TbWFydEtvbnRyYWt0ICYmIG5vZGUgdGVybXV4LWJhY2tlbmQvc2VydmVyLm1qczwvcHJlPgogICAgICAgIDwvZGl2PgogICAgICApfQoKICAgICAgeyFhZGRyZXNzVmFsaWQgJiYgKAogICAgICAgIDxwIGNsYXNzTmFtZT0idGV4dC1bMTFweF0gZm9udC1tb25vIHRleHQtYW1iZXItMzAwIGZsZXggaXRlbXMtY2VudGVyIGdhcC0xIj4KICAgICAgICAgIDxBbGVydFRyaWFuZ2xlIGNsYXNzTmFtZT0idy0zLjUgaC0zLjUiIC8+IE5vIHZhbGlkIDB4IHRhcmdldCBhZGRyZXNzIOKAlCBmZXRjaCBhbiBvbi1jaGFpbiBhZGRyZXNzIGZpcnN0LgogICAgICAgIDwvcD4KICAgICAgKX0KCiAgICAgIDxidXR0b24KICAgICAgICBvbkNsaWNrPXtydW5Qb2N9CiAgICAgICAgZGlzYWJsZWQ9e3J1bm5pbmcgfHwgIWFkZHJlc3NWYWxpZCB8fCAhdGVzdENvZGUudHJpbSgpfQogICAgICAgIGNsYXNzTmFtZT0idy1maXQgdGV4dC14cyBmb250LW1vbm8gcHgtMyBweS0xLjUgcm91bmRlZCBiZy1bI2U4YTU0Yl0gdGV4dC1bIzEyMTEwZV0gZm9udC1ib2xkIGZsZXggaXRlbXMtY2VudGVyIGdhcC0xLjUgaG92ZXI6YmctWyNmMGIyNWVdIGRpc2FibGVkOm9wYWNpdHktNTAiCiAgICAgID4KICAgICAgICB7cnVubmluZyA/IDxMb2FkZXIyIGNsYXNzTmFtZT0idy0zLjUgaC0zLjUgYW5pbWF0ZS1zcGluIiAvPiA6IDxQbGF5IGNsYXNzTmFtZT0idy0zLjUgaC0zLjUiIC8+fQogICAgICAgIHtydW5uaW5nID8gIlJ1bm5pbmcgUG9DIG9uIGxvY2FsIGJhY2tlbmTigKYiIDogIlJ1biBQb0Mgb24gbG9jYWwgYmFja2VuZCJ9CiAgICAgIDwvYnV0dG9uPgoKICAgICAge3J1bkVycm9yICYmICgKICAgICAgICA8ZGl2IGNsYXNzTmFtZT0idGV4dC1bMTFweF0gZm9udC1tb25vIHRleHQtYW1iZXItMzAwIGJnLWFtYmVyLTk1MC8zMCBib3JkZXIgYm9yZGVyLWFtYmVyLTkwMC81MCByb3VuZGVkIHAtMiBsZWFkaW5nLXJlbGF4ZWQiPgogICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPSJmb250LWJvbGQiPntydW5FcnJvcn08L3NwYW4+CiAgICAgICAgICA8cHJlIGNsYXNzTmFtZT0ibXQtMSB0ZXh0LVsjZjRlZmU2XSB3aGl0ZXNwYWNlLXByZS13cmFwIj5jZCB+L1NtYXJ0S29udHJha3QgJiYgbm9kZSB0ZXJtdXgtYmFja2VuZC9zZXJ2ZXIubWpzPC9wcmU+CiAgICAgICAgPC9kaXY+CiAgICAgICl9CgogICAgICB7cmVzdWx0ICYmICgKICAgICAgICA8ZGl2IGNsYXNzTmFtZT0iZmxleCBmbGV4LWNvbCBnYXAtMiI+CiAgICAgICAgICA8ZGl2CiAgICAgICAgICAgIGNsYXNzTmFtZT17YGZsZXggaXRlbXMtY2VudGVyIGdhcC0xLjUgdGV4dC14cyBmb250LW1vbm8gZm9udC1ib2xkICR7CiAgICAgICAgICAgICAgcmVzdWx0LnBhc3NlZCA/ICJ0ZXh0LWVtZXJhbGQtNDAwIiA6ICJ0ZXh0LXJlZC00MDAiCiAgICAgICAgICAgIH1gfQogICAgICAgICAgPgogICAgICAgICAgICB7cmVzdWx0LnBhc3NlZCA/ICgKICAgICAgICAgICAgICA8Q2hlY2tDaXJjbGUyIGNsYXNzTmFtZT0idy00IGgtNCIgLz4KICAgICAgICAgICAgKSA6ICgKICAgICAgICAgICAgICA8WENpcmNsZSBjbGFzc05hbWU9InctNCBoLTQiIC8+CiAgICAgICAgICAgICl9CiAgICAgICAgICAgIHtyZXN1bHQucGFzc2VkCiAgICAgICAgICAgICAgPyBgUG9DIFBBU1NFRCDigJQgZXhwbG9pdCByZXByb2R1Y2VkIG9uIGZvcmsgKCR7cmVzdWx0LmR1cmF0aW9uTXN9bXMpYAogICAgICAgICAgICAgIDogcmVzdWx0LmVycm9yCiAgICAgICAgICAgICAgICA/IGBCYWNrZW5kIGVycm9yOiAke3Jlc3VsdC5lcnJvcn1gCiAgICAgICAgICAgICAgICA6IGBQb0MgRkFJTEVEIOKAlCBleHBsb2l0IGRpZCBub3QgcmVwcm9kdWNlIG9uIGZvcmsgKCR7cmVzdWx0LmR1cmF0aW9uTXN9bXMpYH0KICAgICAgICAgIDwvZGl2PgogICAgICAgICAgeyFyZXN1bHQucGFzc2VkICYmICFyZXN1bHQuZXJyb3IgJiYgKAogICAgICAgICAgICA8cCBjbGFzc05hbWU9InRleHQtWzExcHhdIGZvbnQtbW9ubyB0ZXh0LVsjYTM5ODg2XSI+CiAgICAgICAgICAgICAgRmFpbHVyZSBpcyB0aGUgc2lnbmFsLCBub3QgYSBidWc6IGd1YXJkZWQgdGFyZ2V0LCB3cm9uZyBpbnRlcmZhY2UsIG9yIGZvcmsgc3RhdGUgbW92ZWQuCiAgICAgICAgICAgIDwvcD4KICAgICAgICAgICl9CiAgICAgICAgICA8cHJlIGNsYXNzTmFtZT0ibWF4LWgtOTYgb3ZlcmZsb3cteS1hdXRvIGJnLVsjMGEwOTA4XSBib3JkZXIgYm9yZGVyLVsjM2EzNDI4XSByb3VuZGVkIHAtMiB0ZXh0LVsxMXB4XSBmb250LW1vbm8gdGV4dC1bI2Y0ZWZlNl0gd2hpdGVzcGFjZS1wcmUtd3JhcCI+CiAgICAgICAgICAgIHtyZXN1bHQubG9ncyB8fCAiKG5vIG91dHB1dCkifQogICAgICAgICAgPC9wcmU+CiAgICAgICAgPC9kaXY+CiAgICAgICl9CiAgICA8L2Rpdj4KICApOwp9CgovKgpXSVJJTkcgKGluIHNyYy9jb21wb25lbnRzL3dvcmtiZW5jaC50c3gg4oCUIGRvIE5PVCBlZGl0IHRoYXQgZmlsZSBoZXJlKToKCjEuIEltcG9ydCAodG9wIG9mIGZpbGUsIG5leHQgdG8gdGhlIG90aGVyIGNvbXBvbmVudCBpbXBvcnRzKToKICAgICBpbXBvcnQgeyBGb3VuZHJ5TG9jYWxSdW4gfSBmcm9tICIuL2ZvdW5kcnktbG9jYWwtcnVuIjsKCjIuIEluIHRoZSBBSSB0YWIsIGluc2lkZSB0aGUgIkZvdW5kcnkgRXhwbG9pdCBWZXJpZmljYXRpb24gVGVzdCIgYmxvY2ssCiAgIHJpZ2h0IGFmdGVyIDxGb3VuZHJ5RXhwb3J0IC4uLiAvPiwgYWRkOgogICAgIDxGb3VuZHJ5TG9jYWxSdW4KICAgICAgIHRlc3RDb2RlPXthaVJldmlldy5mb3VuZHJ5VGVzdENvZGV9CiAgICAgICBhZGRyZXNzPXtzaW5nbGVBZGRyZXNzfQogICAgIC8+CgozLiBEb25lIOKAlCBubyBwcm9wcyBkcmlsbGluZywgbm8gc2VydmVyIGNoYW5nZXMsIG5vIG5ldyBkZXBzIChsdWNpZGUtcmVhY3QKICAgaXMgYWxyZWFkeSB1c2VkIGJ5IHRoZSB3b3JrYmVuY2gpLgoqLwo=
+import { useEffect, useState } from "react";
+import { Play, Loader2, CheckCircle2, XCircle, Server, AlertTriangle } from "lucide-react";
+import {
+  ADDRESS_RE,
+  BACKEND_KEY,
+  DEFAULT_BACKEND,
+  checkFoundryBackend,
+  runPocOnBackend,
+  type BackendHealth,
+} from "@/lib/audit/foundry-backend";
+import type { PocResult } from "@/lib/audit/types";
+
+/**
+ * FoundryLocalRun — run the AI-generated Foundry exploit test against a
+ * live-net fork via the Termux local backend (http://127.0.0.1:8787).
+ *
+ * The Vercel app can never shell out to forge (serverless). The backend runs
+ * on Jer's own phone under Termux and shells out to HIS forge binary. The
+ * browser (HTTPS app) fetches the loopback backend (http://localhost) — 
+ * browsers exempt loopback from mixed-content blocking, so this works.
+ *
+ * Wiring (see wiring note at the bottom): render inside the workbench AI
+ * tab, next to the generated Foundry test / FoundryExport.
+ */
+interface FoundryLocalRunProps {
+  /** Generated Foundry test code (aiReview.foundryTestCode). Must declare `contract PoC`. */
+  testCode: string;
+  /** Address of the audited contract, if the workbench fetched one. */
+  address: string;
+  /** Upstream RPC the backend forks from. Defaults to the backend's ETH_RPC_URL / public endpoint. */
+  rpcUrl?: string;
+}
+
+type Health = BackendHealth;
+type RunResult = (PocResult & { passed: boolean }) | null;
+
+export function FoundryLocalRun({ testCode, address, rpcUrl }: FoundryLocalRunProps) {
+  const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND);
+  const [health, setHealth] = useState<Health>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<RunResult>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(BACKEND_KEY);
+      if (saved) setBackendUrl(saved);
+    } catch {
+      // localStorage unavailable — default stands.
+    }
+  }, []);
+
+  const saveBackendUrl = (v: string) => {
+    setBackendUrl(v);
+    try {
+      localStorage.setItem(BACKEND_KEY, v);
+    } catch {
+      // ignore — persistence is a nicety
+    }
+  };
+
+  const addressValid = ADDRESS_RE.test(address.trim());
+
+  const checkBackend = async () => {
+    setChecking(true);
+    setHealthError(null);
+    try {
+      const health = await checkFoundryBackend(backendUrl);
+      if (!health) throw new Error("unreachable");
+      setHealth(health);
+    } catch {
+      setHealth(null);
+      setHealthError("Backend not reachable");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const runPoc = async () => {
+    setRunning(true);
+    setRunError(null);
+    setResult(null);
+    const poc = await runPocOnBackend(backendUrl, { address, testCode, ...(rpcUrl ? { rpcUrl } : {}) });
+    if (poc.status === "backend_unreachable") {
+      setRunError(poc.logs);
+    } else {
+      setResult({ ...poc, passed: poc.status === "passed" });
+    }
+    setRunning(false);
+  };
+
+  return (
+    <div className="mt-2 p-3 bg-[#12110e] rounded-lg border border-[#3a3428] flex flex-col gap-2">
+      <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-[#e8a54b]">
+        <Server className="w-3.5 h-3.5" />
+        <span>Run this PoC on your local backend (Termux + Foundry, fork-only)</span>
+      </div>
+      <p className="text-[11px] font-mono text-[#a39886] leading-relaxed">
+        Executes the test against a fork of live chain state on your phone. Nothing is broadcast,
+        nothing is spent, no private key is involved. The backend runs one PoC at a time.
+      </p>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-[11px] font-mono text-[#a39886]">Backend</label>
+        <input
+          type="text"
+          value={backendUrl}
+          onChange={(e) => saveBackendUrl(e.target.value)}
+          className="flex-1 min-w-44 bg-[#12110e] border border-[#3a3428] rounded px-2 py-1 text-xs text-[#f4efe6] font-mono focus:outline-none focus:border-[#e8a54b]"
+        />
+        <button
+          onClick={checkBackend}
+          disabled={checking}
+          className="text-xs font-mono px-2.5 py-1.5 rounded border border-[#3a3428] text-[#f4efe6] flex items-center gap-1.5 hover:border-[#e8a54b] disabled:opacity-50"
+        >
+          {checking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Server className="w-3.5 h-3.5" />}
+          {checking ? "Checking…" : "Check backend"}
+        </button>
+      </div>
+
+      {health && (
+        <p className="text-[11px] font-mono text-[#a39886]">
+          Backend up — forge:{" "}
+          <span className={health.forge ? "text-emerald-400 font-bold" : "text-red-400 font-bold"}>
+            {health.forge ? "yes" : "MISSING"}
+          </span>
+          {", anvil: "}
+          <span className={health.anvil ? "text-emerald-400 font-bold" : "text-[#a39886]"}>
+            {health.anvil ? "yes" : "not installed (optional — forge forks directly)"}
+          </span>
+        </p>
+      )}
+      {healthError && (
+        <div className="text-[11px] font-mono text-amber-300 bg-amber-950/30 border border-amber-900/50 rounded p-2 leading-relaxed">
+          <span className="font-bold">Backend not reachable.</span> Start it in Termux:
+          <pre className="mt-1 text-[#f4efe6] whitespace-pre-wrap">cd ~/SmartKontrakt && node termux-backend/server.mjs</pre>
+        </div>
+      )}
+
+      {!addressValid && (
+        <p className="text-[11px] font-mono text-amber-300 flex items-center gap-1">
+          <AlertTriangle className="w-3.5 h-3.5" /> No valid 0x target address — fetch an on-chain address first.
+        </p>
+      )}
+
+      <button
+        onClick={runPoc}
+        disabled={running || !addressValid || !testCode.trim()}
+        className="w-fit text-xs font-mono px-3 py-1.5 rounded bg-[#e8a54b] text-[#12110e] font-bold flex items-center gap-1.5 hover:bg-[#f0b25e] disabled:opacity-50"
+      >
+        {running ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+        {running ? "Running PoC on local backend…" : "Run PoC on local backend"}
+      </button>
+
+      {runError && (
+        <div className="text-[11px] font-mono text-amber-300 bg-amber-950/30 border border-amber-900/50 rounded p-2 leading-relaxed">
+          <span className="font-bold">{runError}</span>
+          <pre className="mt-1 text-[#f4efe6] whitespace-pre-wrap">cd ~/SmartKontrakt && node termux-backend/server.mjs</pre>
+        </div>
+      )}
+
+      {result && (
+        <div className="flex flex-col gap-2">
+          <div
+            className={`flex items-center gap-1.5 text-xs font-mono font-bold ${
+              result.passed ? "text-emerald-400" : "text-red-400"
+            }`}
+          >
+            {result.passed ? (
+              <CheckCircle2 className="w-4 h-4" />
+            ) : (
+              <XCircle className="w-4 h-4" />
+            )}
+            {result.passed
+              ? `PoC PASSED — exploit reproduced on fork (${result.durationMs}ms)`
+              : result.error
+                ? `Backend error: ${result.error}`
+                : `PoC FAILED — exploit did not reproduce on fork (${result.durationMs}ms)`}
+          </div>
+          {!result.passed && !result.error && (
+            <p className="text-[11px] font-mono text-[#a39886]">
+              Failure is the signal, not a bug: guarded target, wrong interface, or fork state moved.
+            </p>
+          )}
+          <pre className="max-h-96 overflow-y-auto bg-[#0a0908] border border-[#3a3428] rounded p-2 text-[11px] font-mono text-[#f4efe6] whitespace-pre-wrap">
+            {result.logs || "(no output)"}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/*
+WIRING (in src/components/workbench.tsx — do NOT edit that file here):
+
+1. Import (top of file, next to the other component imports):
+     import { FoundryLocalRun } from "./foundry-local-run";
+
+2. In the AI tab, inside the "Foundry Exploit Verification Test" block,
+   right after <FoundryExport ... />, add:
+     <FoundryLocalRun
+       testCode={aiReview.foundryTestCode}
+       address={singleAddress}
+     />
+
+3. Done — no props drilling, no server changes, no new deps (lucide-react
+   is already used by the workbench).
+*/
