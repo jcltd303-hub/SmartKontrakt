@@ -77,6 +77,16 @@ type Flow = {
 
 const ASSIGN = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
 const LOW_LEVEL = new Set(["call", "delegatecall", "staticcall", "callcode", "send", "transfer"]);
+// Fix 27: receiver-hook carriers. These functions invoke an attacker
+// callback on the recipient by design (ERC721/1155 receiver hooks), so
+// a call to one genuinely opens a reentrancy window even when the
+// callee is inherited (not in byName) or profile() does not mark it
+// external (profile() only counts LOW_LEVEL calls).
+const HOOK_CARRIERS = new Set([
+  "_safeMint", "_safeTransfer",
+  "safeTransferFrom", "safeBatchTransferFrom",
+  "_checkOnERC721Received", "_checkOnERC1155Received",
+]);
 /**
  * Pure-arithmetic library methods (SafeMath). `balances[x].sub(wad)` is
  * arithmetic on a value, not a call to another contract — it must never
@@ -162,6 +172,121 @@ function namedValue(named: AstNode | undefined, key: string): boolean {
  * variable this function does not write is FIXED — anyone can trigger the
  * send, but they cannot redirect the funds to themselves.
  */
+// Fix 27/29 helper: resolve a member call's callee function via the
+// base expression. The base may be a state variable (resolve via its
+// declared type), a parameter (resolve via its declared type), or a
+// contract type name (the type itself). Returns the callee function
+// plus the contract it was found in, or undefined when unresolvable
+// (plain address, msg/block/abi, unknown type).
+function resolveCalleeFn(
+  member: string,
+  baseName: string | null,
+  fn: FnModel,
+  contract: ContractModel,
+  model: SourceModel,
+): { fn: FnModel; contractName: string } | undefined {
+  if (!member || !baseName) return undefined;
+  let typeName: string | undefined;
+  const sv = contract.stateVars.find((v) => v.name === baseName);
+  if (sv) typeName = sv.typeName.replace(/\[\]$/, "");
+  else {
+    const p = fn.params.find((x) => x.name === baseName);
+    if (p) typeName = p.typeName.replace(/\[\]$/, "");
+    else if (model.contracts.some((c) => c.name === baseName)) typeName = baseName;
+  }
+  if (!typeName) return undefined;
+  const target = model.contracts.find((c) => c.name === typeName);
+  if (!target) return undefined;
+  const calleeFn = target.functions.find((f) => f.name === member);
+  if (!calleeFn) return undefined;
+  return { fn: calleeFn, contractName: target.name };
+}
+
+// Paren-depth scan: given the index of an opening "(", return the
+// index of the matching ")" (or -1 when unbalanced).
+function parenClose(src: string, openIdx: number): number {
+  let depth = 0;
+  for (let i = openIdx; i < src.length; i++) {
+    if (src[i] === "(") depth++;
+    else if (src[i] === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+// Zero-guard check (shared by the zero-address finding and Fix 28):
+// the source guards `param != 0` in a require, or rejects `param == 0`
+// in an if.
+function hasZeroGuardFor(src: string, param: string): boolean {
+  const esc = param.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`require\\s*\\(\\s*${esc}\\s*!=`).test(src) ||
+    new RegExp(`if\\s*\\(\\s*${esc}\\s*==\\s*(0\\b|address\\s*\\(\\s*0\\s*\\))`).test(src);
+}
+
+// Split a call argument list on top-level commas (respecting nested
+// parens/brackets/braces), so positional args can be picked out.
+function splitTopLevel(argsText: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of argsText) {
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") depth--;
+    if (ch === "," && depth === 0) {
+      out.push(cur);
+      cur = "";
+    } else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+// Fix 28: does an INTERNAL zero-address setter have a reachable
+// caller that can pass zero without a gate? The setter's first
+// address parameter is the value written (matches the addrWrite
+// check in scanSimple); callers pass it positionally. A caller is
+// gated when its own source guards its corresponding argument.
+// A literal address(0) from a renounce-style caller ("renounce" in
+// the name) is intentional, not a bug. A literal non-zero address
+// or msg.sender can never be zero. Everything else (bare param with
+// no guard, expression, storage read) can be zero — fail closed.
+// No callers at all (dead code) counts as no ungated caller.
+// Limitation: only function bodies are searched; a modifier calling
+// the setter is not covered.
+function internalZeroSetterHasUngatedCaller(
+  fn: FnModel,
+  contract: ContractModel,
+  model: SourceModel,
+): boolean {
+  const paramIdx = fn.params.findIndex((p) => p.typeName === "address");
+  if (paramIdx < 0) return true; // not a setter of this shape — fail closed
+  const escName = fn.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const callRe = new RegExp(`\\b${escName}\\s*\\(`, "g");
+  for (const c of model.contracts) {
+    for (const g of c.functions) {
+      if (c.name === contract.name && g.name === fn.name) continue;
+      for (const m of g.source.matchAll(callRe)) {
+        const openIdx = m.index + m[0].length - 1; // the "("
+        const closeIdx = parenClose(g.source, openIdx);
+        if (closeIdx < 0) continue;
+        const arg = (splitTopLevel(g.source.slice(openIdx + 1, closeIdx))[paramIdx] ?? "").trim();
+        if (/^address\s*\(\s*0\s*\)$/.test(arg) || arg === "0") {
+          if (/renounce/i.test(g.name)) continue; // intentional zeroing
+          return true;
+        }
+        if (/^0x[0-9a-fA-F]{40}$/.test(arg)) continue; // literal non-zero
+        if (/^(msg\.sender|_msgSender\(\s*\))$/.test(arg)) continue; // never zero
+        const callerParam = g.params.find((p) => p.name === arg);
+        if (callerParam && hasZeroGuardFor(g.source, arg)) continue; // gated
+        return true; // bare ungated param, expression, or storage read
+      }
+    }
+  }
+  return false;
+}
+
 function isCallerControlled(expr: string, fn: FnModel, contract: ContractModel): boolean {
   const text = expr.trim();
   if (!text) return true; // unknown -> conservative
@@ -1368,15 +1493,26 @@ token.safeTransfer(to, amount);`,
         snippet: snippet(parsed, call.line + delta, delta),
       }));
     }
+    // Fix 31: the 2300-gas stipend finding fires at low ONLY when
+    // the send's return is UNCHECKED. When the return is checked
+    // (require(payable(x).send(y)), if(!send(...)) revert, assignment
+    // + check), a failed send reverts instead of silently losing
+    // funds — downgrade to INFO (a liveness note only). transfer()
+    // always reverts on failure, so it is always the checked shape.
     if ((call.kind === "transfer" || call.kind === "send") && call.sendsValue) {
+      const checkedSend = call.kind === "transfer" || call.checked;
       push(make({
-        severity: "low",
+        severity: checkedSend ? "info" : "low",
         swc: "SWC-134",
         title: `${fn.name} forwards ether with a 2300-gas stipend`,
         confidence: "high",
         detector: "eth-gas-stipend",
-        summary: "address.transfer and address.send forward 2300 gas. A receiving contract whose fallback uses more than that — a cold SLOAD is enough after Berlin — cannot be paid, and send's false return is easy to ignore.",
-        walkthrough: "1. The stipend was meant as a reentrancy mitigation. It is not enough anymore, and it breaks legitimate receivers.\n2. Use call{value} and a reentrancy guard, and check the bool.",
+        summary: checkedSend
+          ? "address.transfer and address.send forward 2300 gas. A receiving contract whose fallback uses more than that — a cold SLOAD is enough after Berlin — cannot be paid. The return is checked (or transfer() is used, which reverts on failure), so a failed send reverts instead of silently losing funds; the residual risk is liveness only."
+          : "address.transfer and address.send forward 2300 gas. A receiving contract whose fallback uses more than that — a cold SLOAD is enough after Berlin — cannot be paid, and send's false return is easy to ignore.",
+        walkthrough: checkedSend
+          ? "1. The stipend was meant as a reentrancy mitigation. It is not enough anymore, and it breaks legitimate receivers.\n2. The return value is checked (or transfer() reverts on failure), so a failed send reverts instead of silently losing funds.\n3. The residual risk is liveness: a recipient that cannot accept the transfer makes this function revert."
+          : "1. The stipend was meant as a reentrancy mitigation. It is not enough anymore, and it breaks legitimate receivers.\n2. Use call{value} and a reentrancy guard, and check the bool.",
         exploitSolidity: "",
         remediationSolidity: `(bool ok, ) = to.call{value: amount}("");
 require(ok, "pay");`,
@@ -1422,6 +1558,35 @@ require(ok, "pay");`,
       // callee-read consumer check would never see it.
       if (!callee.base && member && byName.has(member)) {
         flow.calleeCalls.push({ name: member, line: lineOf(node, delta, fn.line) });
+      }
+      // Fix 27 (hook window): a BARE call to a known receiver-hook
+      // carrier genuinely opens a reentrancy window — the callee
+      // invokes onERC721Received / onERC1155Received on the
+      // recipient — even when the callee is inherited (not in byName)
+      // or when profile() does not mark it external (profile() only
+      // counts LOW_LEVEL calls, and the hook call is a plain member
+      // call). This must live OUTSIDE the gate below: bare calls fail
+      // that gate (no callee.base), so the internal branch inside it
+      // never runs for them. Without this synthetic ExtCall, the
+      // inherited _safeMint hook would never produce a window, and
+      // the MettiApe mint reentrancy mediums would die with the view
+      // call they currently (wrongly) rest on. kind "member" keeps
+      // the severity at medium; sendsValue false (no ether moves).
+      // Member calls (token.safeTransferFrom(...)) already produce an
+      // ExtCall via noteCall below, so only bare calls need this.
+      if (!callee.base && member && HOOK_CARRIERS.has(member)) {
+        noteCall({
+          kind: "member",
+          line: lineOf(node, delta, fn.line),
+          checked: true,
+          sendsValue: false,
+          target: member,
+          targetIsParam: false,
+          targetIsConst: false,
+          argCount: args.length,
+          raw: sliceOf(parsed, node),
+          synthetic: true,
+        });
       }
       if (member && (LOW_LEVEL.has(member) || member === "selfdestruct" || member === "suicide" || (!BUILTIN.has(member) && callee.base))) {
         const baseName = rootIdent(callee.base ?? undefined);
@@ -1470,7 +1635,35 @@ require(ok, "pay");`,
         const isPureLibraryCall =
           libraryFn !== undefined &&
           (libraryFn.mutability === "pure" || libraryFn.mutability === "view");
-        if (!internal && !isSuperCall && !isPureLibraryCall && (isLow || kind === "member") && member && !BUILTIN.has(member) && !SAFE_MATH.has(member)) {
+        // Fix 29: self/base-qualified calls are internal JUMPs. A
+        // member call whose base is a BARE identifier naming a contract
+        // type in the inheritance hierarchy (this contract or one of
+        // its bases — ERC721.ownerOf(...) in a contract inheriting
+        // ERC721) is a qualified internal call, not an external CALL.
+        // The base must NOT be a state variable or parameter: a call
+        // on a contract-typed variable (token.transfer(...)) is a
+        // call on another instance, so it stays external.
+        const isSelfQualifiedCall =
+          callee.base?.type === "Identifier" &&
+          baseName !== null &&
+          !contract.stateVars.some((v) => v.name === baseName) &&
+          !fn.params.some((p) => p.name === baseName) &&
+          (baseName === contract.name || contract.bases.includes(baseName)) &&
+          model.contracts
+            .find((c) => c.name === baseName)
+            ?.functions.some((f) => f.name === member) === true;
+        // Fix 27: the window-opening call must be capable of reaching
+        // attacker code. A view/pure call to a NON-attacker-controlled
+        // callee has no hook path: the callee cannot execute attacker
+        // code, so it opens no window. The callee is resolved via the
+        // base's declared type (state var or parameter) or the type
+        // name itself; unresolvable callees fail closed (still count).
+        const resolved = member && baseName ? resolveCalleeFn(member, baseName, fn, contract, model) : undefined;
+        const isNonWindowViewCall =
+          resolved !== undefined &&
+          (resolved.fn.mutability === "view" || resolved.fn.mutability === "pure") &&
+          !isCallerControlled(baseName ?? "", fn, contract);
+        if (!internal && !isSuperCall && !isPureLibraryCall && !isSelfQualifiedCall && !isNonWindowViewCall && (isLow || kind === "member") && member && !BUILTIN.has(member) && !SAFE_MATH.has(member)) {
           // Skip obvious value-type methods and type conversions.
           // A call that CONSTRUCTS a value is not an external call and
           // transfers no control: a struct constructor
@@ -1650,37 +1843,8 @@ require(ok, "pay");`,
           snippet: snippet(parsed, (node.loc?.start.line ?? fn.line + delta), delta),
         }));
       }
-      if (member === "encodePacked" && args.length >= 2) {
-        const dynamic = args.some((a) => {
-          const id = rootIdent(a as AstNode);
-          const p = fn.params.find((x) => x.name === id);
-          const s = contract.stateVars.find((x) => x.name === id);
-          const t = p?.typeName ?? s?.typeName ?? "";
-          return /string|bytes|\[\]/.test(t) && !/bytes32|bytes16|bytes4/.test(t);
-        });
-        if (dynamic) {
-          push(make({
-            severity: "medium",
-            swc: "SWC-133",
-            title: `${fn.name} hashes abi.encodePacked dynamic arguments`,
-            confidence: "medium",
-            detector: "encode-packed",
-            summary: "encodePacked concatenates without lengths. Two dynamic values (string, bytes, arrays) can be rearranged by the caller so different inputs share one hash.",
-            walkthrough: [
-              "1. encodePacked(string a, string b) is just the raw bytes of a followed by b.",
-              '2. ("ab","c") and ("a","bc") produce the same payload and the same keccak.',
-              "3. If that hash is a signature preimage, an allowance, or a commitment, the collision is the exploit.",
-            ].join("\n"),
-            exploitSolidity: `// Both hash to the same digest:
-keccak256(abi.encodePacked("ab", "c"));
-keccak256(abi.encodePacked("a", "bc"));`,
-            remediationSolidity: `bytes32 hash = keccak256(abi.encode(id, note)); // length-prefixed`,
-            locationFn: fn.name,
-            locationLine: lineOf(node, delta, fn.line),
-            snippet: snippet(parsed, (node.loc?.start.line ?? fn.line + delta), delta),
-          }));
-        }
-      }
+      // Fix 30: the encodePacked check moved to scanSimple (text
+      // based): the packed bytes must flow into a hash. See there.
       const amountOut = namedAmountZero(callee.named);
       if (amountOut) {
         push(make({
@@ -2011,6 +2175,40 @@ function stripCommentsAndStrings(src: string): string {
     } else {
       out += c;
       i += 1;
+    }
+  }
+  return out;
+}
+
+// Length-preserving variant of stripCommentsAndStrings: comment and
+// string contents become spaces, newlines are kept, so line numbers
+// computed from the result match the original source. Used by Fix 30
+// so a commented-out or string-literal encodePacked/hash cannot flag
+// (the F3Dx Fix 1c class: a comment containing the pattern).
+function stripCommentsAndStringsKeepLines(src: string): string {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (c === "/" && n === "/") {
+      while (i < src.length && src[i] !== "\n") { out += " "; i += 1; }
+    } else if (c === "/" && n === "*") {
+      out += "  "; i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) {
+        out += src[i] === "\n" ? "\n" : " "; i += 1;
+      }
+      out += "  "; i += 2;
+    } else if (c === '"' || c === "'") {
+      const q = c;
+      out += " "; i += 1;
+      while (i < src.length && src[i] !== q) {
+        if (src[i] === "\\") { out += "  "; i += 2; continue; }
+        out += src[i] === "\n" ? "\n" : " "; i += 1;
+      }
+      out += " "; i += 1;
+    } else {
+      out += c; i += 1;
     }
   }
   return out;
@@ -2609,7 +2807,14 @@ function scanSimple(
         `(require\\s*\\(\\s*${zeroParam}\\s*!=|if\\s*\\(\\s*${zeroParam}\\s*==\\s*(0\\b|address\\s*\\(\\s*0\\s*\\)))`,
       ).test(src),
   );
-  if (addrWrite && !hasZeroGuard && !/address\s*\(\s*0\s*\)/.test(src) && !fn.isConstructor) {
+  // Fix 28: an INTERNAL (or private) zero-address setter fires only
+  // when some reachable caller can pass zero without a gate. OZ
+  // _transferOwnership's only callers are transferOwnership (requires
+  // newOwner != address(0)) and renounceOwnership (intentionally
+  // zeroes) — so it does not flag. Public/external setters keep
+  // flagging on their own shape (no caller analysis needed).
+  const isInternalSetter = fn.visibility === "internal" || fn.visibility === "private";
+  if (addrWrite && !hasZeroGuard && !/address\s*\(\s*0\s*\)/.test(src) && !fn.isConstructor && !(isInternalSetter && !internalZeroSetterHasUngatedCaller(fn, contract, model))) {
     push(make({
       severity: "medium",
       swc: null,
@@ -2662,6 +2867,81 @@ function scanSimple(
         locationFn: null,
         locationLine: v.line,
         snippet: snippet(parsed, v.line + delta, delta),
+      }));
+    }
+  }
+  // Fix 30: abi.encodePacked fires ONLY when the packed bytes flow
+  // into a hash (keccak256/sha3). Plain string concatenation
+  // (MettiApe tokenURI: abi.encodePacked(currentBaseURI,
+  // tokenId.toString(), baseExtension) for a string return) has no
+  // collision: there is no hash to collide on. Text-based: for each
+  // encodePacked call with >= 2 args and at least one dynamic arg (a
+  // param/state var whose type is string/bytes/array but not a fixed
+  // bytesN), flag only when (a) the call sits inside a keccak256( /
+  // sha3( argument span, or (b) its assigned variable flows into a
+  // hash call elsewhere in the function. Runs on a
+  // length-preserving comment/string-stripped copy (Fix 1c class):
+  // a commented-out or string-literal encodePacked/hash cannot flag,
+  // and line numbers still match the original source.
+  {
+    const text = stripCommentsAndStringsKeepLines(src);
+    const hashSpans: Array<[number, number]> = [];
+    for (const m of text.matchAll(/\b(keccak256|sha3)\s*\(/g)) {
+      const openIdx = m.index + m[0].length - 1;
+      const closeIdx = parenClose(text, openIdx);
+      if (closeIdx >= 0) hashSpans.push([openIdx, closeIdx]);
+    }
+    const dynamicArg = (arg: string): boolean => {
+      const id = arg.trim().match(/^([A-Za-z_$][\w$]*)/)?.[1] ?? "";
+      const p = fn.params.find((x) => x.name === id);
+      const s = contract.stateVars.find((x) => x.name === id);
+      const t = p?.typeName ?? s?.typeName ?? "";
+      return /string|bytes|\[\]/.test(t) && !/bytes32|bytes16|bytes4/.test(t);
+    };
+    for (const m of text.matchAll(/abi\.encodePacked\s*\(/g)) {
+      const openIdx = m.index + m[0].length - 1;
+      const closeIdx = parenClose(text, openIdx);
+      if (closeIdx < 0) continue;
+      const args = splitTopLevel(text.slice(openIdx + 1, closeIdx));
+      if (args.length < 2) continue;
+      if (!args.some(dynamicArg)) continue;
+      const callStart = m.index;
+      const callEnd = closeIdx;
+      const insideHash = hashSpans.some(([hs, he]) => hs < callStart && callEnd < he);
+      let varFlowsToHash = false;
+      if (!insideHash) {
+        // The variable assigned the packed bytes: the last
+        // `identifier =` before the call in this statement.
+        const stmtStart = Math.max(text.lastIndexOf(";", callStart), text.lastIndexOf("{", callStart), text.lastIndexOf("}", callStart)) + 1;
+        const stmtEnd = text.indexOf(";", callEnd);
+        const stmt = text.slice(stmtStart, stmtEnd < 0 ? src.length : stmtEnd);
+        const assignMatches = [...stmt.slice(0, callStart - stmtStart).matchAll(/([A-Za-z_$][\w$]*)\s*=(?!=)/g)];
+        const assigned = assignMatches[assignMatches.length - 1]?.[1];
+        if (assigned) {
+          varFlowsToHash = hashSpans.some(([hs, he]) => new RegExp(`\\b${assigned}\\b`).test(text.slice(hs, he)));
+        }
+      }
+      if (!insideHash && !varFlowsToHash) continue;
+      const callLine = fn.line + (text.slice(0, callStart).match(/\n/g) ?? []).length;
+      push(make({
+        severity: "medium",
+        swc: "SWC-133",
+        title: `${fn.name} hashes abi.encodePacked dynamic arguments`,
+        confidence: "medium",
+        detector: "encode-packed",
+        summary: "encodePacked concatenates without lengths. Two dynamic values (string, bytes, arrays) can be rearranged by the caller so different inputs share one hash.",
+        walkthrough: [
+          "1. encodePacked(string a, string b) is just the raw bytes of a followed by b.",
+          '2. ("ab","c") and ("a","bc") produce the same payload and the same keccak.',
+          "3. If that hash is a signature preimage, an allowance, or a commitment, the collision is the exploit.",
+        ].join("\n"),
+        exploitSolidity: `// Both hash to the same digest:
+keccak256(abi.encodePacked("ab", "c"));
+keccak256(abi.encodePacked("a", "bc"));`,
+        remediationSolidity: `bytes32 hash = keccak256(abi.encode(id, note)); // length-prefixed`,
+        locationFn: fn.name,
+        locationLine: callLine,
+        snippet: snippet(parsed, callLine + delta, delta),
       }));
     }
   }
