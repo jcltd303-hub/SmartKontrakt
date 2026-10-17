@@ -180,7 +180,7 @@ function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel): b
       // null (imported) -> fall through to the name list below.
     }
   }
-  if (fn.modifiers.some((m) => /onlyowner|onlyadmin|onlyrole|onlygovernor|onlyauth|requiresauth|authorized|onlyminter|onlyoperator|onlyguardian/i.test(m))) {
+  if (fn.modifiers.some((m) => /onlyowner|onlyadmin|onlyrole|onlygovernor|onlygovernance|onlyauth|requiresauth|authorized|onlyminter|onlyoperator|onlyguardian/i.test(m))) {
     return true;
   }
   const src = fn.source;
@@ -192,6 +192,74 @@ function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel): b
 
 function hasGuard(fn: FnModel): boolean {
   return fn.modifiers.some((m) => /nonreentrant|noreentrant|reentrancyguard/i.test(m));
+}
+
+/**
+ * True when the function body unconditionally reverts: the first
+ * statement is revert(...) / require(false) / assert(false), so no call
+ * can ever execute past it. StarkWare's Proxy.initialize is exactly
+ * this — a revert-only guard function that exists so upgradeTo can
+ * delegatecall the implementation's initialize by selector. Flagging it
+ * "callable by anyone" is a false positive: nobody can call it
+ * successfully at all.
+ */
+function alwaysReverts(fnSrc: string): boolean {
+  const clean = fnSrc
+    .replace(/\/\/[^\n]*/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+  const brace = clean.indexOf("{");
+  if (brace === -1) return false;
+  const body = clean.slice(brace + 1).trimStart();
+  return /^(revert\s*\(|require\s*\(\s*false\b|assert\s*\(\s*false\b)/.test(body);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * True when a delegatecall target parameter is constrained by stored
+ * state, not freely chosen by the caller at call time. Two shapes:
+ *
+ * - Direct: a require reads a mapping keyed by the target itself:
+ *   require(allowlist[target]).
+ * - Derived (StarkWare upgradeTo): the target flows through assignments
+ *   (implVectorHash = keccak256(abi.encode(newImplementation, ...));
+ *   activationTime = enabledTime[implVectorHash]), a require mentions a
+ *   derived identifier (activationTime > 0, activationTime <=
+ *   block.timestamp), and a mapping is keyed by a derived identifier.
+ *   The fixpoint follows the assignment chain transitively.
+ *
+ * Fails closed: anything it cannot prove constrained stays flagged.
+ */
+function delegateTargetIsConstrained(fnSrc: string, targetParam: string): boolean {
+  const clean = fnSrc
+    .replace(/\/\/[^\n]*/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+  const esc = escapeRegExp(targetParam);
+  // Direct: require(...) reads a mapping keyed by the target itself.
+  if (new RegExp(`require\\s*\\([^)]*\\[[^\\]]*\\b${esc}\\b[^\\]]*\\]`).test(clean)) return true;
+  // Derived: fixpoint over assignments mentioning the target or a
+  // previously derived identifier.
+  const derived = new Set<string>();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    const known = [targetParam, ...derived].map(escapeRegExp).join("|");
+    const assignRe = new RegExp(`\\b([A-Za-z_]\\w*)\\s*=(?!=)[^;=]*\\b(?:${known})\\b`, "g");
+    let m: RegExpExecArray | null;
+    while ((m = assignRe.exec(clean)) !== null) {
+      if (m[1] !== targetParam && !derived.has(m[1])) {
+        derived.add(m[1]);
+        grew = true;
+      }
+    }
+  }
+  if (derived.size === 0) return false;
+  const names = [...derived].map(escapeRegExp).join("|");
+  const requireMentionsDerived = new RegExp(`require\\s*\\([^)]*\\b(?:${names})\\b`).test(clean);
+  const mappingKeyedByDerived = new RegExp(`\\[[^\\]]*\\b(?:${names})\\b[^\\]]*\\]`).test(clean);
+  return requireMentionsDerived && mappingKeyedByDerived;
 }
 
 /**
@@ -217,7 +285,7 @@ function hasGuard(fn: FnModel): boolean {
 function transitiveSources(
   fn: FnModel,
   byName: Map<string, FnModel>,
-  direct: Map<string, { writes: Set<string>; external: boolean; callees: Set<string> }>,
+  direct: Map<string, { writes: Set<string>; external: boolean; callees: Set<string>; externalKinds: Set<string> }>,
 ): string {
   const seen = new Set<string>([fn.name]);
   const queue = [fn.name];
@@ -267,13 +335,19 @@ function isMerkleBoundedPayout(
 
 function debitsOwnCredit(fn: FnModel, source?: string): boolean {
   const src = source ?? fn.source;
-  const credit = "(?:balances|_balances|balanceOf|deposits|credits)";
-  // Debit: balanceOf[<account>] -= wad — entitled if account is msg.sender,
-  // or if allowance[<account>][msg.sender] >= wad is required.
+  // Credit mappings: balances-style (a -= marks the debit) AND
+  // dividend/payout accounting, where the write marks entitlement as
+  // consumed the other way: payoutsTo_ += marks dividends paid out,
+  // referralBalance_ = 0 zeroes the referral credit, claimed[x] = true
+  // closes a claim. \b-anchored so `unclaimed` does not match `claimed`.
+  const credit = "\\b(?:balances|_balances|balanceOf|deposits|credits|payoutsTo_?|paidOut|claimed|referralBalance_?|withdrawn)";
   const debit = src.match(new RegExp(`${credit}\\s*\\[\\s*([\\w.]+)\\s*\\]\\s*[-+*/%]?=`));
   if (!debit) return false;
   const account = debit[1];
   if (account === "msg.sender") return true;
+  // The debited account may be a local assigned from msg.sender
+  // (DailyDivs withdraw: `address _customerAddress = msg.sender`).
+  if (new RegExp(`\\b${escapeRegExp(account)}\\s*=\\s*msg\\.sender\\b`).test(src)) return true;
   return new RegExp(`allowance\\s*\\[\\s*${account}\\s*\\]\\s*\\[\\s*msg\\.sender\\s*\\]\\s*>=`).test(src);
 }
 
@@ -430,7 +504,7 @@ function scanContract(
   const stateNames = new Set(contract.stateVars.map((v) => v.name));
   const byName = new Map(contract.functions.map((f) => [f.name, f]));
 
-  const direct = new Map<string, { writes: Set<string>; external: boolean; callees: Set<string> }>();
+  const direct = new Map<string, { writes: Set<string>; external: boolean; callees: Set<string>; externalKinds: Set<string> }>();
   for (const fn of contract.functions) {
     direct.set(fn.name, profile(fn, stateNames, byName));
   }
@@ -447,6 +521,12 @@ function scanContract(
         if (other.external && !row.external) {
           row.external = true;
           moved = true;
+        }
+        for (const k of other.externalKinds) {
+          if (!row.externalKinds.has(k)) {
+            row.externalKinds.add(k);
+            moved = true;
+          }
         }
         for (const w of other.writes) {
           if (!row.writes.has(w)) {
@@ -679,6 +759,10 @@ function profile(fn: FnModel, stateNames: Set<string>, byName: Map<string, FnMod
   const writes = new Set<string>();
   const callees = new Set<string>();
   let external = false;
+  // Which low-level call kinds the function (transitively) uses. A
+  // callee whose only external effects are 2300-gas transfer/send has
+  // no reentrancy window; a callee using call/delegatecall does.
+  const externalKinds = new Set<string>();
   const visit = (node: unknown) => {
     if (!node || typeof node !== "object") return;
     if (Array.isArray(node)) {
@@ -696,7 +780,10 @@ function profile(fn: FnModel, stateNames: Set<string>, byName: Map<string, FnMod
     }
     if (n.type === "FunctionCall") {
       const callee = unwrapCallee(n.expression as AstNode);
-      if (callee.member && LOW_LEVEL.has(callee.member)) external = true;
+      if (callee.member && LOW_LEVEL.has(callee.member)) {
+        external = true;
+        externalKinds.add(callee.member);
+      }
       if (callee.member === "push" || callee.member === "pop") {
         const id = rootIdent(callee.base ?? undefined);
         if (id && stateNames.has(id)) writes.add(id);
@@ -704,7 +791,10 @@ function profile(fn: FnModel, stateNames: Set<string>, byName: Map<string, FnMod
       if (!callee.base && callee.member && byName.has(callee.member) && callee.member !== fn.name) {
         callees.add(callee.member);
       }
-      if (callee.base && rootIdent(callee.base) === "this") external = true;
+      if (callee.base && rootIdent(callee.base) === "this") {
+        external = true;
+        externalKinds.add("call");
+      }
     }
     if (n.type === "AssemblyCall" && n.functionName === "sstore") writes.add("*");
     for (const [k, v] of Object.entries(n)) {
@@ -713,7 +803,7 @@ function profile(fn: FnModel, stateNames: Set<string>, byName: Map<string, FnMod
     }
   };
   visit(fn.body);
-  return { writes, external, callees };
+  return { writes, external, callees, externalKinds };
 }
 
 function walkFn(
@@ -722,7 +812,7 @@ function walkFn(
   model: SourceModel,
   stateNames: Set<string>,
   byName: Map<string, FnModel>,
-  direct: Map<string, { writes: Set<string>; external: boolean; callees: Set<string> }>,
+  direct: Map<string, { writes: Set<string>; external: boolean; callees: Set<string>; externalKinds: Set<string> }>,
   parsed: string,
   delta: number,
   push: (f: Finding) => void,
@@ -778,7 +868,29 @@ require(ok, "transfer failed");`,
       }));
     }
     if (call.kind === "delegatecall" || call.kind === "callcode") {
-      const severity: Severity = call.targetIsParam ? "critical" : call.targetIsConst ? "medium" : "high";
+      // StarkWare upgradeTo: the target is NOT freely chosen — it must
+      // be a governance-pre-registered, time-locked implementation.
+      // An access-controlled function whose delegatecall target is
+      // constrained by stored-state validation is a governance-trust
+      // note (info), not a critical exploit: the caller cannot redirect
+      // execution to an arbitrary contract.
+      if (authed && call.targetIsParam && call.target && delegateTargetIsConstrained(fn.source, call.target)) {
+        push(make({
+          severity: "info",
+          swc: "SWC-112",
+          title: `${fn.name} delegatecalls a governance-allowlisted implementation`,
+          confidence: "high",
+          detector: "delegatecall",
+          summary: "The delegatecall target must pass stored-state validation (pre-registered / allowlisted, possibly time-locked) and the function is access-controlled, so the caller cannot redirect execution to an arbitrary contract. The residual risk is governance trust: whoever controls the allowlist controls the implementation.",
+          walkthrough: delegateWalk(fn.name, call),
+          exploitSolidity: "",
+          remediationSolidity: `Keep the allowlist + timelock, and keep the function access-controlled.`,
+          locationFn: fn.name,
+          locationLine: call.line,
+          snippet: snippet(parsed, call.line + delta, delta),
+        }));
+      } else {
+        const severity: Severity = call.targetIsParam ? "critical" : call.targetIsConst ? "medium" : "high";
       push(withAccessControlCap(make({
         severity,
         swc: "SWC-112",
@@ -798,6 +910,7 @@ require(ok, "transfer failed");`,
         locationLine: call.line,
         snippet: snippet(parsed, call.line + delta, delta),
       }), authed));
+      }
     }
     if (call.kind === "erc20" && !call.checked) {
       push(make({
@@ -911,9 +1024,30 @@ require(ok, "pay");`,
         if ((member === "push" || member === "pop") && baseName && stateNames.has(baseName)) noteWrite(callee.base ?? undefined);
         if (internal && member) {
           const info = direct.get(member);
+          // The callee's writes happen INSIDE the callee, around its own
+          // external call — not after a call in THIS function. Record
+          // them against the caller's own seen call (pre-call if none
+          // yet), THEN note the callee's external effects. The old
+          // order (synthetic call first) misattributed the callee's
+          // internal ordering to the caller: DailyDivs transferAndCall
+          // was flagged for transfer()'s writes, though transferAndCall
+          // writes nothing after its own external call. The callee
+          // itself is scanned separately and flagged on its own
+          // ordering, so nothing is lost.
+          if (info && info.writes.size > 0) {
+            flow.sawWrite = true;
+            if (flow.seen) flow.callThenWrite = true;
+            for (const w of info.writes) (flow.seen ? flow.postCallWrites : flow.preCallWrites).add(w);
+          }
           if (info?.external) {
+            // A callee whose only external effects are 2300-gas
+            // transfer/send has no reentrancy window: report the
+            // synthetic call as a stipend call so the reentrancy
+            // detector downgrades it to info instead of critical.
+            const kinds = info.externalKinds ?? new Set<string>();
+            const fullCall = [...kinds].some((k) => k === "call" || k === "delegatecall" || k === "staticcall" || k === "callcode");
             noteCall({
-              kind: "call",
+              kind: fullCall || kinds.size === 0 ? "call" : "transfer",
               line: lineOf(node, delta, fn.line),
               checked: true,
               sendsValue: true,
@@ -923,11 +1057,6 @@ require(ok, "pay");`,
               argCount: args.length,
               raw: member + "()",
             });
-          }
-          if (info && info.writes.size > 0) {
-            flow.sawWrite = true;
-            if (flow.seen) flow.callThenWrite = true;
-            for (const w of info.writes) (flow.seen ? flow.postCallWrites : flow.preCallWrites).add(w);
           }
         }
       }
@@ -1294,7 +1423,9 @@ function scanSimple(
   }
 
   const initName = /^init(ialize)?$/.test(fn.name);
-  if (initName && !authed && !fn.modifiers.some((m) => /initializer|reinitializer/i.test(m)) && !/require\s*\(\s*!?\s*initialized/.test(src)) {
+  // A revert-only initialize (StarkWare Proxy) cannot be called
+  // successfully by anyone — skip the unprotected-initializer flag.
+  if (initName && !alwaysReverts(src) && !authed && !fn.modifiers.some((m) => /initializer|reinitializer/i.test(m)) && !/require\s*\(\s*!?\s*initialized/.test(src)) {
     push(make({
       severity: "critical",
       swc: null,
