@@ -7,6 +7,7 @@ test("embedded migrations include both archive migrations", () => {
     "0002_scans.sql",
     "0003_comprehensive_records_and_rag.sql",
     "0004_poc_results.sql",
+    "0005_fourbyte.sql",
   ]);
 });
 
@@ -29,4 +30,10 @@ test("embedded 0004 adds PoC result columns to contract_scans", () => {
   assert.match(sql, /alter table contract_scans add column if not exists poc_logs/i);
   assert.match(sql, /alter table contract_scans add column if not exists poc_duration_ms/i);
   assert.match(sql, /alter table contract_scans add column if not exists poc_run_at/i);
+});
+
+test("embedded 0005 creates fourbyte_signatures keyed by (selector, signature)", () => {
+  const sql = EMBEDDED_MIGRATIONS["0005_fourbyte.sql"];
+  assert.match(sql, /create table if not exists fourbyte_signatures/i);
+  assert.match(sql, /primary key \(selector, signature\)/i);
 });
