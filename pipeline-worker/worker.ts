@@ -16,7 +16,15 @@
  *
  * Control API (loopback only, same pattern as termux-backend/server.mjs):
  *   GET  /status   — state, totals, current address, last flush/error
- *   POST /start    — { addressesFile, chainId?, aiSecondPass?, delayMs? }
+ *   POST /start    — { addressesFile, chainId?, aiSecondPass?, delayMs?,
+ *                     deepAgent?, deepAgentMaxItems?, deepAgentMinSeverity? }
+ *                     deepAgent runs the Deep Agent loop (propose ->
+ *                     fork-PoC -> reward -> deeper) for flagged addresses
+ *                     only: >= 1 finding at deepAgentMinSeverity
+ *                     (default "high"). deepAgentMaxItems caps how many
+ *                     addresses get the agent per run (default 250,
+ *                     0 = unlimited). PoCs run via the Foundry backend
+ *                     (:8787, FOUNDRY_BACKEND_URL).
  *   POST /pause    — stop after the current item, flush, keep the run to resume
  *   POST /resume   — continue a paused run
  *   POST /stop     — finish the current item, flush, drop the run
@@ -107,6 +115,18 @@ const { secondPass } = await import("../src/lib/audit/persist.server.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
 const { getSql } = await import("../src/lib/db.ts");
+// Deep Agent loop (pipeline-worker/deep-agent.ts) — same propose ->
+// fork-PoC -> reward -> deeper loop as the workbench, gated to flagged
+// addresses. Loaded after .env so OPENROUTER_API_KEY is visible.
+const {
+  runWorkerDeepAgent,
+  isDeepAgentFlagged,
+  applyConfirmedFindings,
+  WORKER_DEEP_AGENT_DEFAULT_BACKEND_URL,
+  WORKER_DEEP_AGENT_DEFAULT_MAX_ITEMS,
+  WORKER_DEEP_AGENT_DEFAULT_MIN_SEVERITY,
+  WORKER_DEEP_AGENT_MAX_ROUNDS,
+} = await import("./deep-agent.ts");
 
 // ------------------------------------------------------------------ config --
 const PORT = Number.parseInt(process.env.PORT ?? "8788", 10) || 8788;
@@ -136,6 +156,12 @@ type Status = {
   aiSecondPass: boolean;
   delayMs: number;
   pending: number;
+  deepAgent: boolean;
+  deepAgentMaxItems: number;
+  deepAgentMinSeverity: string;
+  deepAgentRuns: number;
+  deepAgentConfirmed: number;
+  deepAgentBackendDown: boolean;
 };
 
 let status: Status = {
@@ -153,6 +179,12 @@ let status: Status = {
   aiSecondPass: false,
   delayMs: 600,
   pending: 0,
+  deepAgent: false,
+  deepAgentMaxItems: WORKER_DEEP_AGENT_DEFAULT_MAX_ITEMS,
+  deepAgentMinSeverity: WORKER_DEEP_AGENT_DEFAULT_MIN_SEVERITY,
+  deepAgentRuns: 0,
+  deepAgentConfirmed: 0,
+  deepAgentBackendDown: false,
 };
 
 let runCtx: { items: BatchItem[]; index: number } | null = null;
@@ -287,6 +319,55 @@ async function runLoop(): Promise<void> {
         }
       }
 
+      // Deep Agent (agentic exploit search) for flagged addresses only.
+      // Never fails the item: the loop catches its own errors and the
+      // static-only record stands if the agent finds nothing or the
+      // backend is down. A paused/stopped run waits for the current
+      // item — including an in-flight agent loop — to finish first.
+      const capHit =
+        status.deepAgentMaxItems > 0 && status.deepAgentRuns >= status.deepAgentMaxItems;
+      if (status.deepAgent && !status.deepAgentBackendDown && !capHit) {
+        if (isDeepAgentFlagged(result.report, status.deepAgentMinSeverity as "critical" | "high" | "medium")) {
+          try {
+            const da = await runWorkerDeepAgent(
+              {
+                address: item.address,
+                contractName: result.report.label,
+                body: result.rawBody,
+                findings: result.report.findings,
+                inputKind: result.report.inputKind,
+              },
+              {
+                backendUrl:
+                  process.env.FOUNDRY_BACKEND_URL?.trim() || WORKER_DEEP_AGENT_DEFAULT_BACKEND_URL,
+                maxRounds: WORKER_DEEP_AGENT_MAX_ROUNDS,
+                minSeverity: status.deepAgentMinSeverity as "critical" | "high" | "medium",
+              },
+            );
+            if (da.ran) {
+              status.deepAgentRuns++;
+              status.deepAgentConfirmed += da.confirmed.length;
+              applyConfirmedFindings(result.report, da.confirmed, da.note);
+              if (status.deepAgentMaxItems > 0 && status.deepAgentRuns >= status.deepAgentMaxItems) {
+                console.log(`[worker] deep agent item cap reached (${status.deepAgentMaxItems}) — remaining flagged addresses keep static-only records`);
+              }
+            }
+            if (da.backendDown) {
+              // Circuit breaker: the PoC backend is down. Stop spending
+              // LLM calls on agent rounds for the rest of this run — the
+              // static pipeline keeps going. Restart the backend and
+              // start a new run (skip-check resumes past saved rows) to
+              // re-enable the agent.
+              status.deepAgentBackendDown = true;
+              console.warn("[worker] deep agent disabled for the rest of this run: PoC backend unreachable");
+            }
+            console.log(`[worker] deep agent ${item.address}: ${da.note}${da.skipReason ? ` (skipped: ${da.skipReason})` : ""}`);
+          } catch (err) {
+            console.warn("[worker] deep agent notice:", err instanceof Error ? err.message : String(err));
+          }
+        }
+      }
+
       const record: ComprehensiveRecordInput = {
         id: scanId,
         label: item.label,
@@ -412,10 +493,24 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   }
   const chainId = typeof body.chainId === "string" && body.chainId.trim() ? body.chainId.trim() : "ethereum";
   const aiSecondPass = body.aiSecondPass === true;
-  if (aiSecondPass && !process.env.OPENROUTER_API_KEY?.trim()) {
-    sendJson(res, 400, { error: "aiSecondPass needs OPENROUTER_API_KEY in pipeline-worker/.env" });
+  // Deep Agent: agentic exploit search for flagged addresses (see
+  // pipeline-worker/deep-agent.ts). Same OpenRouter key requirement as
+  // aiSecondPass — the agent loop is LLM-driven.
+  const deepAgent = body.deepAgent === true;
+  if ((aiSecondPass || deepAgent) && !process.env.OPENROUTER_API_KEY?.trim()) {
+    sendJson(res, 400, { error: "aiSecondPass / deepAgent needs OPENROUTER_API_KEY in pipeline-worker/.env" });
     return;
   }
+  // Budget guard: each flagged address costs up to 3 LLM calls + up to 6
+  // fork PoCs. 0 = unlimited (not recommended on a 43k run).
+  const deepAgentMaxItems =
+    typeof body.deepAgentMaxItems === "number" && Number.isFinite(body.deepAgentMaxItems) && body.deepAgentMaxItems >= 0
+      ? Math.floor(body.deepAgentMaxItems)
+      : WORKER_DEEP_AGENT_DEFAULT_MAX_ITEMS;
+  const deepAgentMinSeverity =
+    body.deepAgentMinSeverity === "critical" || body.deepAgentMinSeverity === "medium"
+      ? body.deepAgentMinSeverity
+      : WORKER_DEEP_AGENT_DEFAULT_MIN_SEVERITY;
   const delayMs =
     typeof body.delayMs === "number" && Number.isFinite(body.delayMs) && body.delayMs >= 0
       ? Math.floor(body.delayMs)
@@ -474,6 +569,12 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     aiSecondPass,
     delayMs,
     pending: 0,
+    deepAgent,
+    deepAgentMaxItems,
+    deepAgentMinSeverity,
+    deepAgentRuns: 0,
+    deepAgentConfirmed: 0,
+    deepAgentBackendDown: false,
   };
   runCtx = { items, index: 0 };
   pauseRequested = false;
@@ -482,8 +583,8 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     console.warn("[worker] run loop error:", err instanceof Error ? err.message : String(err));
   });
   writeStatusFile();
-  console.log(`[worker] started: ${items.length} addresses (${skipped} already saved, skipped), chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms`);
-  sendJson(res, 200, { ok: true, started: true, total: items.length, skipped });
+  console.log(`[worker] started: ${items.length} addresses (${skipped} already saved, skipped), chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems})`);
+  sendJson(res, 200, { ok: true, started: true, total: items.length, skipped, deepAgent, deepAgentMaxItems, deepAgentMinSeverity });
 }
 
 // Which database is the worker actually talking to? The dashboard-shows-0

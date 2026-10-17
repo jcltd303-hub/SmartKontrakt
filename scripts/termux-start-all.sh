@@ -65,5 +65,5 @@ wait_for "http://127.0.0.1:8788/status" "Worker" 60 || true
 curl -s http://127.0.0.1:8788/status | head -c 600; echo
 
 echo "--- to start the 43k-address run (when ready) ---"
-echo "curl -s -X POST http://127.0.0.1:8788/start -H 'Content-Type: application/json' -d '{\"addressesFile\":\"/root/addresses.csv\",\"chainId\":\"ethereum\",\"aiSecondPass\":true,\"delayMs\":600}'"
-echo "(If /start rejects aiSecondPass, the OpenRouter key is missing from pipeline-worker/.env — retry with aiSecondPass:false.)"
+echo "curl -s -X POST http://127.0.0.1:8788/start -H 'Content-Type: application/json' -d '{\"addressesFile\":\"/root/addresses.csv\",\"chainId\":\"ethereum\",\"aiSecondPass\":true,\"delayMs\":600,\"deepAgent\":true,\"deepAgentMaxItems\":250,\"deepAgentMinSeverity\":\"high\"}'"
+echo "(Deep Agent runs for flagged addresses only: >= 1 high finding, max 250 addresses/run, PoCs via the :8787 backend. If /start rejects aiSecondPass/deepAgent, the OpenRouter key is missing from pipeline-worker/.env — retry with both false.)"

@@ -43,7 +43,10 @@ OpenRouter 60/min.
      refuses to start a run without it — it never falls back to a
      bundled default, so a multi-day run can't land in the wrong database.
    - `OPENROUTER_API_KEY` — only needed if you start a run with
-     `aiSecondPass: true`.
+     `aiSecondPass: true` or `deepAgent: true`.
+   - `FOUNDRY_BACKEND_URL` — optional, default `http://127.0.0.1:8787`.
+     Only used when `deepAgent: true` (PoC runs). The Foundry backend
+     must be running (`bash scripts/termux-start-all.sh` boots it).
 4. Put your addresses file on the phone, e.g. `~/addresses.csv` (CSV or
    one address per line; first column = address, optional label column 2,
    optional chain column 3; headers and duplicates skipped).
@@ -72,6 +75,36 @@ curl -s -X POST http://127.0.0.1:8788/stop
 
 Ctrl+C stops it gracefully: finish the current item, flush pending
 records, exit 0. A second Ctrl+C exits immediately.
+
+## Deep Agent (agentic exploit search, gated)
+
+`deepAgent: true` runs the same propose → fork-PoC → reward → deeper
+loop as the workbench AI tab, but headless, per flagged address:
+
+```bash
+curl -s -X POST http://127.0.0.1:8788/start \
+  -H 'Content-Type: application/json' \
+  -d '{"addressesFile": "/root/addresses.csv", "chainId": "ethereum", "aiSecondPass": true, "delayMs": 600, "deepAgent": true, "deepAgentMaxItems": 250, "deepAgentMinSeverity": "high"}'
+```
+
+- **Gate:** only addresses whose static analysis found ≥ 1 finding at
+  `deepAgentMinSeverity` (`"high"` default; `"critical"` or `"medium"`).
+  Bytecode-only items are skipped (no source for hypotheses).
+- **Per address:** at most 3 LLM rounds × 2 hypotheses; each PoC runs on
+  the Foundry backend (`:8787`) against a live-net fork. Passed = a new
+  finding on the record (confidence high, PoC in `exploit_solidity`).
+  Refuted hypotheses steer the next round and are not persisted.
+- **Budget:** `deepAgentMaxItems` caps agent addresses per run (default
+  250, `0` = unlimited). Each costs up to 3 LLM calls + up to 6 PoC
+  runs (each up to 120s backend cap), so leave the cap on for a 43k run.
+- **Backend down:** if the PoC backend is unreachable, the agent stops
+  spending LLM calls for the rest of the run (status shows
+  `deepAgentBackendDown: true`) and the static pipeline keeps going.
+  Restart the backend and start a new run to re-enable it.
+- **Pause/stop** waits for the current item — including an in-flight
+  agent loop — to finish first.
+- `/status` reports `deepAgentRuns` (addresses that ran the agent) and
+  `deepAgentConfirmed` (fork-confirmed findings total).
 
 ## Resume
 
