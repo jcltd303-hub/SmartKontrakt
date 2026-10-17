@@ -42,6 +42,16 @@ type Flow = {
   /** Base expressions of genuine ether sends (recipients), for the
    * caller-control check in unprotected-ether. */
   sendTargets: string[];
+  /** True while every genuine ether send so far is a refund: to
+   * msg.sender, of an amount derived from this call's msg.value
+   * (payable(msg.sender).transfer(msg.value - fee)). A refund cannot
+   * drain anything — the caller only ever gets their own deposit back —
+   * so it is not an open drain. Starts true (vacuous); any send whose
+   * target is not msg.sender or whose amount is not msg.value-derived
+   * flips it false. A refund staged through a local variable
+   * (uint256 r = msg.value - fee; msg.sender.transfer(r)) is NOT
+   * recognized: fail closed, the finding still fires. */
+  allSendsAreRefunds: boolean;
 };
 
 const ASSIGN = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
@@ -167,7 +177,7 @@ function modifierGuardsSender(name: string, contract: ContractModel, model?: Sou
   return found ? false : null;
 }
 
-function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel): boolean {
+function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel, skipPerItem = false): boolean {
   // In-file modifier bodies beat names: onlyRegistrar (if (msg.sender !=
   // registrar) throw) IS access control; onlyActive (if (!active) throw)
   // is a state gate and is NOT. Only when the modifier is imported and
@@ -187,7 +197,25 @@ function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel): b
   if (/_checkOwner\s*\(|_requireOwner\s*\(|onlyOwner\s*\(/.test(src)) return true;
   if (/msg\.sender\s*==\s*[A-Za-z_]/.test(src) && !/tx\.origin/.test(src)) return true;
   if (/require\s*\(\s*msg\.sender\s*==/.test(src)) return true;
+  // Per-asset ownership: items[_itemId].owner == msg.sender or
+  // ownerOf(_itemId) == msg.sender. The asset's owner is the only party
+  // who may act on that asset — ERC-721 approve and marketplace
+  // buyback are gated exactly this way (ItemSelling's approve and
+  // buyback were flagged as unauthenticated because the existing
+  // msg.sender == X line only covers the msg.sender-first order). The
+  // dotted form keeps bare `owner == msg.sender` (a param named owner
+  // would make the check vacuous) out. skipPerItem lets the ether
+  // check keep flagging a per-item-gated FULL-balance send.
+  if (!skipPerItem && isPerItemAuthed(src)) return true;
   return false;
+}
+
+// True when src gates on per-asset ownership: X.owner == msg.sender
+// (any dotted owner — item.owner, items[id].owner) or
+// ownerOf(...) == msg.sender. `!=` never matches: the check must be
+// an equality grant, not an exclusion.
+function isPerItemAuthed(src: string): boolean {
+  return /[A-Za-z_][\w.\[\]]*\.owner\s*==\s*msg\.sender/.test(src) || /\bownerOf\s*\([^)]*\)\s*==\s*msg\.sender/.test(src);
 }
 
 function hasGuard(fn: FnModel): boolean {
@@ -335,12 +363,14 @@ function isMerkleBoundedPayout(
 
 function debitsOwnCredit(fn: FnModel, source?: string): boolean {
   const src = source ?? fn.source;
-  // Credit mappings: balances-style (a -= marks the debit) AND
-  // dividend/payout accounting, where the write marks entitlement as
-  // consumed the other way: payoutsTo_ += marks dividends paid out,
-  // referralBalance_ = 0 zeroes the referral credit, claimed[x] = true
-  // closes a claim. \b-anchored so `unclaimed` does not match `claimed`.
-  const credit = "\\b(?:balances|_balances|balanceOf|deposits|credits|payoutsTo_?|paidOut|claimed|referralBalance_?|withdrawn)";
+  // Credit mappings: balance-family names match by content — usersBalance,
+  // tokenBalanceLedger_, balances, _balances, balanceOf are all balance
+  // accounting (the ERC721Token withdrawUsers FP: usersBalance[msg.sender]
+  // = 0 is a full debit, but the old list missed the name). Dividend /
+  // payout accounting (payoutsTo_ += marks dividends paid, claimed[x] =
+  // true closes a claim) matches by name. `claimed` stays \b-anchored so
+  // `unclaimed` (an accrual mapping) does not match it.
+  const credit = "(?:[\\w]*[Bb]alance[\\w]*|[\\w]*deposits|[\\w]*credits|[\\w]*payoutsTo_?|\\bpaidOut|\\bclaimed|\\bwithdrawn)";
   const debit = src.match(new RegExp(`${credit}\\s*\\[\\s*([\\w.]+)\\s*\\]\\s*[-+*/%]?=`));
   if (!debit) return false;
   const account = debit[1];
@@ -436,12 +466,12 @@ export function detectSource(model: SourceModel, displaySource: string, onlyCont
 
   if (model.versionFloor !== null && model.versionFloor < 8_000) {
     push(make({
-      severity: "high",
+      severity: "low",
       swc: "SWC-101",
       title: "Compiler is older than 0.8.0",
       confidence: "high",
       detector: "old-compiler",
-      summary: "Solidity before 0.8.0 does not revert on overflow or underflow. Any balance math without SafeMath can wrap.",
+      summary: "Solidity before 0.8.0 does not revert on overflow or underflow. The version alone exploits nothing: the risk is unchecked arithmetic, which is covered by its own findings, and SafeMath mitigates it. This is a toolchain-hygiene note, not a vulnerability — it was scored high and inflated every pre-0.8 contract (FomoXP, EtherFlip).",
       walkthrough: [
         "1. `balances[msg.sender] += msg.value` wraps at 2^256-1.",
         "2. A balance near the max, plus a small deposit, becomes a tiny balance and breaks the invariant.",
@@ -461,12 +491,12 @@ credit += 2; // equals 1. The deposit was not rejected.`,
     const defaults = scopedContracts.flatMap((c) => c.functions.filter((f) => f.visibility === "default" && !f.isConstructor));
     if (defaults.length) {
       push(make({
-        severity: "high",
+        severity: "low",
         swc: "SWC-100",
         title: "Functions default to public",
         confidence: "high",
         detector: "default-visibility",
-        summary: `Before 0.5.0 a function with no visibility is public. ${defaults.map((f) => f.name).join(", ")} ${defaults.length === 1 ? "is" : "are"} callable by anyone.`,
+        summary: `Before 0.5.0 a function with no visibility is public. ${defaults.map((f) => f.name).join(", ")} ${defaults.length === 1 ? "is" : "are"} callable by anyone. Most such functions are intentionally public — this is a declare-your-visibility hygiene note. It is only a vulnerability if a function was meant to be internal, which the detector cannot tell from the source alone.`,
         walkthrough: "1. The compiler treats the missing keyword as public, not internal.\n2. A helper that moves ether or sets storage is then an external entrypoint.",
         exploitSolidity: "",
         remediationSolidity: "function helper() internal { /* ... */ }",
@@ -492,6 +522,55 @@ function formatVer(v: number): string {
   const minor = Math.floor((v % 1_000_000) / 1_000);
   const patch = v % 1_000;
   return `${major}.${minor}.${patch}`;
+}
+
+// True when the ONLY use of tx.origin in src is the EOA-gate comparison
+// msg.sender == tx.origin (either operand order). An EOA-gate BLOCKS
+// contracts; it does not authenticate anyone: a phished EOA calling
+// directly still passes, and no identity is derived from tx.origin.
+// FomoXP's isHuman and MyobuChef's boostWithNFT both use it exactly
+// this way ("no contracts"), and both were flagged as high-severity
+// tx.origin authentication. Any other tx.origin use (compared to an
+// owner, used as an address) stays the high auth finding.
+function isEoaGateOnly(src: string): boolean {
+  if (!/tx\.origin/.test(src)) return false;
+  const stripped = src.replace(/msg\.sender\s*==\s*tx\.origin|tx\.origin\s*==\s*msg\.sender/g, "");
+  return !/tx\.origin/.test(stripped);
+}
+
+// True when every remaining use of tx.origin (after EOA-gate
+// comparisons are stripped) is a DENY: a negated check
+// (!isBlacklisted(tx.origin)), an == false check, a != comparison,
+// or an if(...) revert. A deny check BLOCKS rather than grants —
+// CoinToken's require(!isBlacklisted(tx.origin)) extends its
+// blacklist to forwarded calls. It authenticates nobody, and the
+// auth-bypass framing does not apply (there is nothing to bypass:
+// the check can only revert). At most a low over-blocking note. Any
+// granting use (tx.origin == owner) stays the high auth finding.
+function isTxOriginDenyOnly(src: string): boolean {
+  if (!/tx\.origin/.test(src)) return false;
+  let stripped = src.replace(/msg\.sender\s*==\s*tx\.origin|tx\.origin\s*==\s*msg\.sender/g, "");
+  stripped = stripped
+    .replace(/!\s*\w+\s*\(\s*tx\.origin\s*\)/g, "")
+    .replace(/!\s*\w+\s*\[\s*tx\.origin\s*\]/g, "")
+    .replace(/\w+\s*\(\s*tx\.origin\s*\)\s*==\s*false/g, "")
+    .replace(/\w+\s*\[\s*tx\.origin\s*\]\s*==\s*false/g, "")
+    .replace(/tx\.origin\s*!==?\s*[^,;)]+/g, "")
+    .replace(/if\s*\(\s*\w+\s*\(\s*tx\.origin\s*\)\s*\)\s*revert/g, "");
+  return !/tx\.origin/.test(stripped);
+}
+
+// True when a transfer's result is verified by a balance-delta check:
+// balanceOf before, the transfer, balanceOf after, and a require on
+// the delta. Such a transfer does not need its bool: the balance check
+// catches false-returns AND fee-on-transfer shortfalls. Mythereum's
+// _processERC20TokenPackPurchase does exactly this (balanceOf,
+// transferFrom, balanceOf, require after >= before + cost) and was
+// flagged for "ignoring" the bool it correctly refuses to trust.
+function hasBalanceDeltaCheck(src: string): boolean {
+  const balanceReads = src.match(/\.balanceOf\s*\(/g) ?? [];
+  if (balanceReads.length < 2) return false;
+  return /require\s*\([^;]*(balance|before|after)/i.test(src);
 }
 
 function scanContract(
@@ -540,20 +619,52 @@ function scanContract(
 
   for (const mod of contract.modifiers) {
     if (/tx\.origin/.test(mod.source)) {
-      push(make({
-        severity: "high",
-        swc: "SWC-115",
-        title: `Modifier ${mod.name} trusts tx.origin`,
-        confidence: "high",
-        detector: "tx-origin",
-        summary: "An authorization modifier compares tx.origin. Any contract the authorized account calls can forward into a protected function.",
-        walkthrough: originWalk(mod.name),
-        exploitSolidity: originExploit(contract.name, "withdraw"),
-        remediationSolidity: originFix(),
-        locationFn: mod.name,
-        locationLine: mod.line,
-        snippet: mod.source.split("\n").slice(0, 12).join("\n"),
-      }));
+      if (isEoaGateOnly(mod.source)) {
+        push(make({
+          severity: "low",
+          swc: "SWC-115",
+          title: `Modifier ${mod.name} uses an EOA-gate (tx.origin == msg.sender)`,
+          confidence: "high",
+          detector: "tx-origin",
+          summary: "The modifier only requires msg.sender == tx.origin, which blocks contract callers. It authenticates nobody: a phished EOA calling directly still passes. It also blocks legitimate contract wallets, multisigs, and account-abstraction accounts.",
+          walkthrough: "1. The modifier requires msg.sender == tx.origin, so any contract call is rejected.\n2. That blocks vaults, multisigs, and account-abstraction wallets — not just attackers.\n3. It authenticates nobody: a phished EOA calling directly still passes.",
+          exploitSolidity: "",
+          remediationSolidity: "// If the goal is blocking contracts, accept the tradeoff explicitly (it breaks multisigs/AA). If the goal is authentication, check msg.sender against an allowlist instead.",
+          locationFn: mod.name,
+          locationLine: mod.line,
+          snippet: mod.source.split("\n").slice(0, 12).join("\n"),
+        }));
+      } else if (isTxOriginDenyOnly(mod.source)) {
+        push(make({
+          severity: "low",
+          swc: "SWC-115",
+          title: `Modifier ${mod.name} uses tx.origin in a deny check (blacklist)`,
+          confidence: "high",
+          detector: "tx-origin",
+          summary: "The modifier only uses tx.origin in a negated/blacklist check, which blocks rather than grants. It authenticates nobody, and the auth-bypass framing does not apply: the check can only revert. The residual effect is over-blocking — a blacklisted EOA cannot use any contract to call through.",
+          walkthrough: "1. The check denies when tx.origin is blacklisted; it never grants access.\n2. A forwarding contract cannot bypass it: tx.origin is still the blacklisted signer.\n3. The cost is over-blocking, not a bypass.",
+          exploitSolidity: "",
+          remediationSolidity: "// If the deny is intentional (blacklist covers forwarded calls), keep it and document the over-blocking. If the goal is authentication, check msg.sender instead.",
+          locationFn: mod.name,
+          locationLine: mod.line,
+          snippet: mod.source.split("\n").slice(0, 12).join("\n"),
+        }));
+      } else {
+        push(make({
+          severity: "high",
+          swc: "SWC-115",
+          title: `Modifier ${mod.name} trusts tx.origin`,
+          confidence: "high",
+          detector: "tx-origin",
+          summary: "An authorization modifier compares tx.origin. Any contract the authorized account calls can forward into a protected function.",
+          walkthrough: originWalk(mod.name),
+          exploitSolidity: originExploit(contract.name, "withdraw"),
+          remediationSolidity: originFix(),
+          locationFn: mod.name,
+          locationLine: mod.line,
+          snippet: mod.source.split("\n").slice(0, 12).join("\n"),
+        }));
+      }
     }
   }
 
@@ -569,7 +680,12 @@ function scanContract(
     if (flow.sawCall && flowSends(flow)) anyValueSend = true;
     if (/(\.call\s*\{[^}]*value|\.transfer\s*\(|\.send\s*\()/.test(fn.source)) anyValueSend = true;
 
-    if (flow.callThenWrite && flow.seen) {
+    // A constructor cannot be reentered either: during construction the
+    // contract has no code at its address, so no external caller can
+    // re-enter it mid-construction. FUUUU's constructor calls createPair
+    // then assigns router/pair/exemptFee — flagged as reentrancy, but
+    // there is no window. Same reason as the read-only skip below.
+    if (flow.callThenWrite && flow.seen && !fn.isConstructor) {
       const guarded = hasGuard(fn);
       // Evidence checks before calling it reentrancy:
       // - transfer/send forward only 2300 gas: a reentrant call cannot fit
@@ -630,10 +746,15 @@ function scanContract(
       // mid-callback: written AFTER the call. A var written only before the
       // call cannot be observed stale. And a 2300-gas transfer/send creates
       // no mid-callback window at all, so it produces no read-only surface.
-      if (!stipendCall) {
+      // And a constructor call cannot be reentered at all: during
+      // construction the contract has no code at its address, so no
+      // external caller can read its getters mid-callback. MyobuChef's
+      // constructor calls router.WETH() before assigning WETH/startBlock/
+      // numdays — flagged as 4 read-only highs, all impossible.
+      if (!stipendCall && !fn.isConstructor) {
         for (const w of flow.postCallWrites) reenterWrites.set(w, { fn: fn.name, call: flow.seen });
       }
-    } else if (flow.writeThenCall && flow.sawCall && /for\s*\(|while\s*\(/.test(fn.source)) {
+    } else if (flow.writeThenCall && flow.sawCall && !fn.isConstructor && /for\s*\(|while\s*\(/.test(fn.source)) {
       push(make({
         severity: "medium",
         swc: "SWC-107",
@@ -818,7 +939,7 @@ function walkFn(
   push: (f: Finding) => void,
   authed: boolean,
 ): Flow {
-  const flow: Flow = { seen: null, sawWrite: false, sawCall: false, callThenWrite: false, writeThenCall: false, preCallWrites: new Set(), postCallWrites: new Set(), sawEtherSend: false, sendTargets: [] };
+  const flow: Flow = { seen: null, sawWrite: false, sawCall: false, callThenWrite: false, writeThenCall: false, preCallWrites: new Set(), postCallWrites: new Set(), sawEtherSend: false, sendTargets: [], allSendsAreRefunds: true };
   const consts = new Set(contract.stateVars.filter((v) => v.constOrImmutable).map((v) => v.name));
   const params = new Set(fn.params.map((p) => p.name).filter(Boolean));
 
@@ -840,6 +961,7 @@ function walkFn(
     if (call.kind === "transfer" || call.kind === "send" || (call.kind === "call" && call.sendsValue)) {
       flow.sawEtherSend = true;
       flow.sendTargets.push(call.target);
+      if (!/msg\.sender/.test(call.target ?? "") || !/msg\.value/.test(call.raw ?? "")) flow.allSendsAreRefunds = false;
     }
     if (flow.sawWrite && !flow.callThenWrite) flow.writeThenCall = true;
     if (!flow.seen) flow.seen = call;
@@ -912,7 +1034,7 @@ require(ok, "transfer failed");`,
       }), authed));
       }
     }
-    if (call.kind === "erc20" && !call.checked) {
+    if (call.kind === "erc20" && !call.checked && !hasBalanceDeltaCheck(fn.source)) {
       push(make({
         severity: "high",
         swc: "SWC-104",
@@ -1006,7 +1128,29 @@ require(ok, "pay");`,
           (libraryFn.mutability === "pure" || libraryFn.mutability === "view");
         if (!internal && !isPureLibraryCall && (isLow || kind === "member") && member && !BUILTIN.has(member) && !SAFE_MATH.has(member)) {
           // Skip obvious value-type methods and type conversions.
-          if (member !== "push" && member !== "pop") {
+          // A call that CONSTRUCTS a value is not an external call and
+          // transfers no control: a struct constructor
+          // (F3Ddatasets.TeamFee(32, 0) — base is a BARE identifier
+          // naming a known contract or library, member is a Capitalized
+          // struct name, and the member is not a real function of that
+          // type). The bare-identifier base is what separates it from a
+          // real call on a converted type: IRouter(router).WETH() has
+          // member WETH and rootIdent IRouter, but its base is a
+          // FunctionCall, not a bare identifier, so it still counts.
+          // FomoXP's constructor only assigns
+          // fees_[i] = F3Ddatasets.TeamFee(...) — no CALL opcode — but
+          // was flagged for read-only reentrancy because the struct
+          // constructor counted as a call before the writes. Imported
+          // types are invisible to the model, so they still count as
+          // calls: fail closed.
+          const typeNames = new Set(model.contracts.map((c) => c.name));
+          const isConstruction =
+            callee.base?.type === "Identifier" &&
+            /^[A-Z]/.test(member) &&
+            baseName !== null &&
+            typeNames.has(baseName) &&
+            libraryFn === undefined;
+          if (member !== "push" && member !== "pop" && !isConstruction) {
             const checked = kind === "transfer" || kind === "selfdestruct" ? true : !asStatement;
             noteCall({
               kind,
@@ -1019,6 +1163,61 @@ require(ok, "pay");`,
               argCount: args.length,
               raw: sliceOf(parsed, node),
             });
+            // Token drain: an unauthenticated function moves an
+            // arbitrary amount of the contract's tokens to a FIXED
+            // address (FUUUU's rescueERC20: anyone calls
+            // token.transfer(devWallet, amount)). Scoped to the
+            // fixed-recipient shape on purpose: a param recipient
+            // (token.transfer(to, amt)) is also the DEX-pair / claim
+            // shape, where the payout is bounded by an invariant the
+            // detector cannot see — flagging it would FP every pair
+            // swap. transferFrom is excluded (it pulls the caller's
+            // own allowance-gated tokens), the token's own
+            // transfer/transferFrom is excluded, a recipient of
+            // msg.sender is a withdrawal, and a per-user debit is a
+            // withdrawal too. A literal amount (transfer(devWallet,
+            // 100)) is a bounded payout, not a drain; an amount
+            // derived from the caller's own balance
+            // (balances[msg.sender]) is the caller's own funds.
+            if (
+              (member === "transfer" || member === "safeTransfer") &&
+              args.length >= 2 &&
+              !authed &&
+              !fn.isConstructor &&
+              fn.visibility !== "internal" &&
+              fn.visibility !== "private" &&
+              fn.name !== "transfer" &&
+              fn.name !== "transferFrom" &&
+              fn.name !== "safeTransfer" &&
+              !debitsOwnCredit(fn)
+            ) {
+              const rawCall = sliceOf(parsed, node);
+              const drainMatch = rawCall.match(/\.\s*(transfer|safeTransfer)\s*\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)/);
+              const recipient = (drainMatch?.[2] ?? "").trim();
+              const amount = (drainMatch?.[3] ?? "").trim();
+              const recipientFixed = recipient !== "" && !isCallerControlled(recipient, fn, contract);
+              const amountControlled =
+                amount !== "" &&
+                !/^\d+(\.\d+)?\s*(ether|gwei|wei)?$/.test(amount) &&
+                !/msg\.sender/.test(amount) &&
+                isCallerControlled(amount, fn, contract);
+              if (recipientFixed && amountControlled) {
+                push(make({
+                  severity: "high",
+                  swc: "SWC-105",
+                  title: `${fn.name} sends tokens with no access check`,
+                  confidence: "medium",
+                  detector: "token-drain",
+                  summary: `${fn.name} calls ${member} on an external token, moving a caller-controlled amount to a fixed address, with no access check and no per-user debit. Anyone can drain whatever of that token the contract holds to the fixed recipient.`,
+                  walkthrough: `1. ${fn.name} is externally callable with no modifier or msg.sender check.\n2. It moves ${amount || "a caller-chosen amount"} of an external token to ${recipient || "a fixed address"}.\n3. There is no per-user credit debit, so this is not a withdrawal of the caller's own funds.\n4. Call it with any amount up to the contract's token balance.`,
+                  exploitSolidity: `interface IDrain { function ${fn.name}(address token, uint256 amount) external; }\ncontract Drain { function go(address victim, address token, uint256 amt) external { IDrain(victim).${fn.name}(token, amt); } }`,
+                  remediationSolidity: `function ${fn.name}(address token, uint256 amount) external onlyOwner {\n    IERC20(token).transfer(${recipient || "to"}, amount);\n}`,
+                  locationFn: fn.name,
+                  locationLine: lineOf(node, delta, fn.line),
+                  snippet: snippet(parsed, lineOf(node, delta, fn.line) + delta, delta),
+                }));
+              }
+            }
           }
         }
         if ((member === "push" || member === "pop") && baseName && stateNames.has(baseName)) noteWrite(callee.base ?? undefined);
@@ -1201,6 +1400,7 @@ keccak256(abi.encodePacked("a", "bc"));`,
       flow.postCallWrites = new Set([...before.postCallWrites, ...left.postCallWrites, ...right.postCallWrites]);
       flow.sawEtherSend = left.sawEtherSend || right.sawEtherSend || before.sawEtherSend;
       flow.sendTargets = [...before.sendTargets, ...left.sendTargets, ...right.sendTargets];
+      flow.allSendsAreRefunds = left.allSendsAreRefunds && right.allSendsAreRefunds && before.allSendsAreRefunds;
       return;
     }
     if (stmt.type === "ForStatement" || stmt.type === "WhileStatement" || stmt.type === "DoWhileStatement") {
@@ -1270,8 +1470,19 @@ keccak256(abi.encodePacked("a", "bc"));`,
   const drainable = flow.sendTargets.some((t) => isCallerControlled(t, fn, contract));
   // Bounds and debits may live in an internal helper (processClaim),
   // not the entry function — check the transitive call path.
+  // A pure refund (every send is to msg.sender of this call's own
+  // msg.value) is not a drain: the caller only ever gets their own
+  // deposit back. MyobuChef's addLiquidityNoFeeAndStake refunds
+  // msg.value - ETHUsed to msg.sender and was flagged CRITICAL.
   const allSources = transitiveSources(fn, byName, direct);
-  if (sends && drainable && !authed && !/ecrecover\s*\(/.test(fn.source) && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && !debitsOwnCredit(fn, allSources) && !isMerkleBoundedPayout(fn, flow.sendTargets, allSources) && fn.mutability !== "view" && fn.mutability !== "pure") {
+  // Per-item auth suppresses the ether finding for formula-priced
+  // payouts (ItemSelling buyback pays buybackPriceOf to the item
+  // owner) but NOT for a full-balance send: an item owner draining
+  // address(this).balance is still a drain. A require(balance >=
+  // price) does not count — only a send whose VALUE is the balance.
+  const perItemOnly = !fn.isConstructor && authed && !isAuthed(fn, contract, model, true);
+  const sendsFullBalance = /\.(transfer|send)\s*\(\s*address\s*\(\s*this\s*\)\.balance\s*\)|call\s*\{\s*value\s*:\s*address\s*\(\s*this\s*\)\.balance/.test(fn.source);
+  if (sends && drainable && (!authed || (perItemOnly && sendsFullBalance)) && !flow.allSendsAreRefunds && !/ecrecover\s*\(/.test(fn.source) && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && !debitsOwnCredit(fn, allSources) && !isMerkleBoundedPayout(fn, flow.sendTargets, allSources) && fn.mutability !== "view" && fn.mutability !== "pure") {
     push(make({
       severity: "critical",
       swc: "SWC-105",
@@ -1303,6 +1514,7 @@ function snapshot(flow: Flow): Flow {
     preCallWrites: new Set(flow.preCallWrites),
     postCallWrites: new Set(flow.postCallWrites),
     sendTargets: [...flow.sendTargets],
+    allSendsAreRefunds: flow.allSendsAreRefunds,
   };
 }
 
@@ -1316,6 +1528,7 @@ function restore(flow: Flow, snap: Flow) {
   flow.postCallWrites = new Set(snap.postCallWrites);
   flow.sawEtherSend = snap.sawEtherSend;
   flow.sendTargets = [...snap.sendTargets];
+  flow.allSendsAreRefunds = snap.allSendsAreRefunds;
 }
 
 function namedAmountZero(named: AstNode | undefined): boolean {
@@ -1376,16 +1589,77 @@ function scanSimple(
 ) {
   const src = fn.source;
   if (/tx\.origin/.test(src)) {
+    if (isEoaGateOnly(src)) {
+      push(make({
+        severity: "low",
+        swc: "SWC-115",
+        title: `${fn.name} uses an EOA-gate (tx.origin == msg.sender)`,
+        confidence: "high",
+        detector: "tx-origin",
+        summary: "The only tx.origin use here is require(msg.sender == tx.origin), which blocks contract callers. It authenticates nobody: a phished EOA calling directly still passes. It also blocks legitimate contract wallets, multisigs, and account-abstraction accounts.",
+        walkthrough: "1. The function requires msg.sender == tx.origin, so any contract call is rejected.\n2. That blocks vaults, multisigs, and account-abstraction wallets — not just attackers.\n3. It authenticates nobody: a phished EOA calling directly still passes.",
+        exploitSolidity: "",
+        remediationSolidity: "// If the goal is blocking contracts, accept the tradeoff explicitly (it breaks multisigs/AA). If the goal is authentication, check msg.sender against an allowlist instead.",
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    } else if (isTxOriginDenyOnly(src)) {
+      push(make({
+        severity: "low",
+        swc: "SWC-115",
+        title: `${fn.name} uses tx.origin in a deny check (blacklist)`,
+        confidence: "high",
+        detector: "tx-origin",
+        summary: "The only tx.origin use here is a negated/blacklist check, which blocks rather than grants. It authenticates nobody, and the auth-bypass framing does not apply: the check can only revert. The residual effect is over-blocking — a blacklisted EOA cannot use any contract to call through.",
+        walkthrough: "1. The check denies when tx.origin is blacklisted; it never grants access.\n2. A forwarding contract cannot bypass it: tx.origin is still the blacklisted signer.\n3. The cost is over-blocking, not a bypass.",
+        exploitSolidity: "",
+        remediationSolidity: "// If the deny is intentional (blacklist covers forwarded calls), keep it and document the over-blocking. If the goal is authentication, check msg.sender instead.",
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    } else {
+      push(make({
+        severity: "high",
+        swc: "SWC-115",
+        title: `${fn.name} authenticates with tx.origin`,
+        confidence: "high",
+        detector: "tx-origin",
+        summary: "tx.origin is the signer of the transaction, not the caller. A contract the signer uses can reenter this function and pass the check.",
+        walkthrough: originWalk(fn.name),
+        exploitSolidity: originExploit(contract.name, fn.name),
+        remediationSolidity: originFix(),
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+
+  // Zero slippage bound: a swap that accepts any output
+  // (amountOutMin 0) is sandwichable — a searcher moves the price
+  // against the swap and it still executes. CoinToken's handleTax
+  // calls swapExactTokensForETH(toSell, 0, ...) and
+  // addLiquidityETH(..., 0, 0, ...) with both mins 0. Only literal
+  // 0 counts: a param min (minOut) is a real bound. swapExactETH*
+  // takes amountOutMin as its FIRST arg, the other swapExact* as
+  // the second; addLiquidity takes two consecutive min args.
+  if (
+    /swapExact\w+\s*\(\s*0(\s*(ether|gwei|wei))?\s*,/.test(src) ||
+    /swapExact\w+\s*\(\s*[^,]+,\s*0(\s*(ether|gwei|wei))?\s*,/.test(src) ||
+    /addLiquidity\w*\s*\([^)]*,\s*0(\s*(ether|gwei|wei))?\s*,\s*0(\s*(ether|gwei|wei))?\s*,/.test(src)
+  ) {
     push(make({
-      severity: "high",
-      swc: "SWC-115",
-      title: `${fn.name} authenticates with tx.origin`,
+      severity: "medium",
+      swc: null,
+      title: `${fn.name} swaps with a zero slippage bound`,
       confidence: "high",
-      detector: "tx-origin",
-      summary: "tx.origin is the signer of the transaction, not the caller. A contract the signer uses can reenter this function and pass the check.",
-      walkthrough: originWalk(fn.name),
-      exploitSolidity: originExploit(contract.name, fn.name),
-      remediationSolidity: originFix(),
+      detector: "zero-slippage-swap",
+      summary: "A swap or liquidity add passes a literal 0 as its minimum-output bound, so it executes at any price. A searcher can sandwich the trade and the contract still accepts the worst fill.",
+      walkthrough: "1. amountOutMin (or both addLiquidity mins) is a literal 0.\n2. A searcher front-runs the swap, moves the pool price, and the swap still executes.\n3. Pass a real minimum derived from an oracle/TWAP or the caller's quote, and revert if the fill is worse.",
+      exploitSolidity: "",
+      remediationSolidity: `uint256 minOut = (amountIn * expectedPrice) / 1e18;\nminOut = (minOut * 995) / 1000; // 0.5% slippage tolerance\nrouter.swapExactTokensForETH(amountIn, minOut, path, address(this), block.timestamp);`,
       locationFn: fn.name,
       locationLine: fn.line,
       snippet: snippet(parsed, fn.line + delta, delta),
@@ -1522,16 +1796,30 @@ function scanSimple(
     // A view/pure function only quotes — nothing in this contract
     // settles on it. It becomes a risk only if another protocol treats
     // the quote as an oracle, so that is info, not high.
+    // And a BARE getReserves()/slot0() call (no receiver) is the
+    // contract pricing its OWN pool — SAGE's buy/sell/removeLiquidity
+    // call their own getReserves(), which returns their own balances.
+    // This contract IS the market; no outside protocol settles on
+    // this number. An external oracle always has a receiver
+    // (pair.getReserves(), feed.latestRoundData()), so strip the
+    // bare/this calls and only keep HIGH if an external one remains.
+    // The residual own-pool risk is sandwich/MEV on the caller's own
+    // trade, so that is low, not high.
     const viewOnly = fn.mutability === "view" || fn.mutability === "pure";
+    const withoutOwn = src.replace(/(^|[^\w.]|this\.)(getReserves|slot0|latestRoundData|latestAnswer)\s*\(/g, "$1");
+    const externalOracle = /(getReserves|slot0|latestRoundData|latestAnswer)\s*\(/.test(withoutOwn);
+    const ownPool = !externalOracle;
     push(make({
-      severity: viewOnly ? "info" : "high",
+      severity: viewOnly ? "info" : ownPool ? "low" : "high",
       swc: null,
-      title: viewOnly ? `${fn.name} quotes off a spot oracle (view-only)` : `${fn.name} prices off a spot oracle`,
+      title: viewOnly ? `${fn.name} quotes off a spot oracle (view-only)` : ownPool ? `${fn.name} prices its own pool from spot reserves (AMM)` : `${fn.name} prices off a spot oracle`,
       confidence: "medium",
       detector: "oracle-spot",
       summary: viewOnly
         ? "A reserves read, a Uniswap v3 slot0, or a spot Chainlink-style answer is used directly. This function is view-only: it quotes a price but nothing in this contract settles on it. It becomes a risk only if another protocol treats this quote as an oracle."
-        : "A reserves read, a Uniswap v3 slot0, or a spot Chainlink-style answer is used directly. Spot reserves move inside a single transaction; a stale or unchecked oracle answer is the other half of this class.",
+        : ownPool
+          ? "The price comes from this contract's own reserves (a bare getReserves()/slot0() call to its own function), not an external oracle — this contract is the market. No outside protocol settles on this number. The residual risk is sandwich/MEV on the caller's own trade; check the slippage bound."
+          : "A reserves read, a Uniswap v3 slot0, or a spot Chainlink-style answer is used directly. Spot reserves move inside a single transaction; a stale or unchecked oracle answer is the other half of this class.",
       walkthrough: "1. Borrow via a flash loan, move the pool, and read the new price in the same call.\n2. Anything that mints, borrows, or liquidates on that number is wrong for one block — which is long enough.\n3. Use a TWAP, or Chainlink with a freshness and min/max answer check. Never use slot0 or getReserves as a price.",
       exploitSolidity: `// Inside a flash swap callback:\nuint256 fake = victim.quote(pair);\n// fake reflects the pool you just skewed. Borrow against it, then repay the swap.`,
       remediationSolidity: `(uint80 roundId, int256 answer,, uint256 updatedAt,) = feed.latestRoundData();\nrequire(answer > 0 && updatedAt >= block.timestamp - 1 hours, "stale");\nrequire(feed.getAnswer(roundId) == answer);`,
@@ -1592,8 +1880,20 @@ function scanSimple(
     }));
   }
 
-  const timestamp = /block\.timestamp|\bnow\b|block\.prevrandao|block\.difficulty|blockhash\s*\(/.test(src);
-  const randomish = timestamp && (/%|\bkeccak256\s*\(/.test(src) || /random|winner|lottery|raffle/i.test(fn.name + src));
+  // Randomness = block data actually used as entropy, not merely read.
+  // blockhash / prevrandao / difficulty alone are entropy (a hash or a
+  // beacon value). block.timestamp / now / block.number / block.coinbase
+  // alone are a CLOCK (round deadlines, vesting) — they only become
+  // entropy when mixed into a hash or a modulo selection. The old
+  // keyword fallback (any mention of "winner"/"lottery"/...) fired on
+  // event fields, comments, and variable names: FomoXP's withdraw,
+  // buyCore, reLoadCore use `now` as a round clock and mention
+  // winnerAddr in an event, but draw no randomness. View/pure functions
+  // cannot draw randomness that decides anything on-chain.
+  const entropySource = /blockhash\s*\(|block\.prevrandao|block\.difficulty/.test(src);
+  const clockSource = /block\.timestamp|\bnow\b|block\.number|block\.coinbase/.test(src);
+  const mixesEntropy = /%|\bkeccak256\s*\(|\bsha3\s*\(/.test(src);
+  const randomish = fn.mutability !== "view" && fn.mutability !== "pure" && (entropySource || (clockSource && mixesEntropy));
   if (randomish) {
     push(make({
       severity: "high",
