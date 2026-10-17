@@ -332,7 +332,7 @@ export function parseAddressList(
 /**
  * Fetch verified source code from Sourcify public API
  */
-async function fetchSourcifySource(address: string, chainIdNumber: number): Promise<{ source: string; name: string } | null> {
+async function fetchSourcifySource(address: string, chainIdNumber: number): Promise<{ source: string; name: string; contractName: string | null } | null> {
   try {
     const url = `https://sourcify.dev/server/files/any/${chainIdNumber}/${address}`;
     const res = await withRetry(async () => {
@@ -361,7 +361,13 @@ async function fetchSourcifySource(address: string, chainIdNumber: number): Prom
       : mainFile.content;
 
     const name = mainFile?.name.replace(/\.sol$/, "") ?? "VerifiedContract";
-    return { source, name };
+    // Scope detection to the deployed contract only when the match is a
+    // single file: the filename (Deed.sol) names the deployed contract
+    // (Deed). For multi-file matches the filename is a dependency as often
+    // as the main contract, so no scoping — detectSource falls back to all
+    // contracts when the name matches nothing.
+    const contractName = solFiles.length === 1 ? name : null;
+    return { source, name, contractName };
   } catch {
     return null;
   }
@@ -450,7 +456,7 @@ export async function analyzeAddress(
   const sourcifyMatch = await fetchSourcifySource(address, chain.chainId);
   if (sourcifyMatch) {
     const label = customLabel || sourcifyMatch.name || `Verified (${address.slice(0, 6)}...)`;
-    const report = analyzeInput(sourcifyMatch.source, label);
+    const report = analyzeInput(sourcifyMatch.source, label, sourcifyMatch.contractName);
     // Also fetch the runtime bytecode so the Bytecode & CFG tab works for
     // verified contracts. Before this, a Sourcify hit returned a source-only
     // report and the tab showed 0 opcodes / N/A size. Bytecode FINDINGS are

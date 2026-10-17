@@ -39,6 +39,9 @@ type Flow = {
   preCallWrites: Set<string>;
   /** State vars written after the first external call (the stale-read surface). */
   postCallWrites: Set<string>;
+  /** Base expressions of genuine ether sends (recipients), for the
+   * caller-control check in unprotected-ether. */
+  sendTargets: string[];
 };
 
 const ASSIGN = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
@@ -65,7 +68,10 @@ function lineOf(node: AstNode | undefined, delta: number, fallback: number): num
 
 function sliceOf(source: string, node: AstNode | undefined): string {
   if (!node?.range) return "";
-  return source.slice(node.range[0], node.range[1]).replace(/\s+/g, " ").trim();
+  // @solidity-parser/parser ranges are INCLUSIVE-end: [start, end] where end
+  // is the index of the last character. slice() needs end + 1, or every
+  // sliced string loses its final character ("owner" -> "owne").
+  return source.slice(node.range[0], node.range[1] + 1).replace(/\s+/g, " ").trim();
 }
 
 function snippet(source: string, astLine: number, delta: number): string {
@@ -110,7 +116,70 @@ function namedValue(named: AstNode | undefined, key: string): boolean {
   return (named.names as string[]).includes(key);
 }
 
-function isAuthed(fn: FnModel): boolean {
+/**
+ * True when a modifier definition gates on the caller: its body compares
+ * msg.sender / _msgSender against something, or requires on it. A modifier
+ * that merely gates on state (onlyActive, onlyPaused) has no sender check
+ * and is NOT access control. Returns null when the modifier is not defined
+ * in this compilation (imported) — the caller falls back to the name list.
+ */
+/**
+ * True when a value recipient / selfdestruct beneficiary is under the
+ * caller's control: it is msg.sender, a function parameter, a complex
+ * expression mentioning either, or a state variable this function writes
+ * (so the caller can redirect it). A constant, a literal, or a state
+ * variable this function does not write is FIXED — anyone can trigger the
+ * send, but they cannot redirect the funds to themselves.
+ */
+function isCallerControlled(expr: string, fn: FnModel, contract: ContractModel): boolean {
+  const text = expr.trim();
+  if (!text) return true; // unknown -> conservative
+  if (/^0x[0-9a-fA-F]+$/.test(text)) return false; // address literal
+  if (/\bmsg\.sender\b/.test(text)) return true;
+  for (const p of fn.params) {
+    if (p.name && new RegExp(`\\b${p.name}\\b`).test(text)) return true;
+  }
+  const root = text.replace(/\[.*\]$/, "").trim();
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(root)) {
+    const v = contract.stateVars.find((s) => s.name === root);
+    if (v) {
+      // Fixed unless this function writes it (caller can redirect it).
+      return !v.constOrImmutable && new RegExp(`\\b${root}\\s*[-+*/%]?=`).test(fn.source);
+    }
+  }
+  return true; // complex expression -> conservative
+}
+
+function modifierGuardsSender(name: string, contract: ContractModel, model?: SourceModel): boolean | null {
+  const defs = [contract, ...(model?.contracts.filter((c) => contract.bases.includes(c.name)) ?? [])];
+  let found = false;
+  for (const c of defs) {
+    const def = c.modifiers.find((d) => d.name === name);
+    if (!def) continue;
+    found = true;
+    if (
+      /(msg\.sender|_msgSender\s*\(\s*\))/.test(def.source) &&
+      /(==|!=|require\s*\()/.test(def.source)
+    ) {
+      return true;
+    }
+  }
+  return found ? false : null;
+}
+
+function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel): boolean {
+  // In-file modifier bodies beat names: onlyRegistrar (if (msg.sender !=
+  // registrar) throw) IS access control; onlyActive (if (!active) throw)
+  // is a state gate and is NOT. Only when the modifier is imported and
+  // its body is invisible do we fall back to the name list.
+  if (contract) {
+    for (const m of fn.modifiers) {
+      const guarded = modifierGuardsSender(m, contract, model);
+      if (guarded === true) return true;
+      if (guarded === false) continue;
+      // null (imported) -> fall through to the name list below.
+    }
+  }
   if (fn.modifiers.some((m) => /onlyowner|onlyadmin|onlyrole|onlygovernor|onlyauth|requiresauth|authorized|onlyminter|onlyoperator|onlyguardian/i.test(m))) {
     return true;
   }
@@ -159,7 +228,7 @@ function make(
   return { id: `s${seq}`, ...partial };
 }
 
-export function detectSource(model: SourceModel, displaySource: string): Finding[] {
+export function detectSource(model: SourceModel, displaySource: string, onlyContract?: string | null): Finding[] {
   seq = 0;
   const findings: Finding[] = [];
   const seen = new Set<string>();
@@ -172,6 +241,33 @@ export function detectSource(model: SourceModel, displaySource: string): Finding
 
   const parsed = model.parsedSource;
   const delta = model.lineDelta;
+
+  // When the caller knows which contract is deployed at the address (e.g.
+  // Sourcify single-file match: Deed.sol -> contract Deed), scope
+  // contract-level findings to it AND its inherited bases (their code IS
+  // the deployed contract: TetherToken inherits Ownable, so Ownable's
+  // transferOwnership finding belongs to the USDT address). A sibling
+  // contract in the same file (the Registrar in Deed.sol) is NOT a base,
+  // so its bugs are not attributed to the Deed address. If the name
+  // matches no contract, fall back to all contracts (previous behavior).
+  // File-level findings (pragma, compiler, RTL) still apply to the file.
+  const scopedContracts = (() => {
+    if (!onlyContract) return model.contracts;
+    const target = model.contracts.find((c) => c.name === onlyContract);
+    if (!target) return model.contracts;
+    const keep = new Set<string>([target.name]);
+    const queue = [target];
+    while (queue.length) {
+      const cur = queue.pop()!;
+      for (const b of cur.bases) {
+        if (keep.has(b)) continue;
+        keep.add(b);
+        const base = model.contracts.find((c) => c.name === b);
+        if (base) queue.push(base);
+      }
+    }
+    return model.contracts.filter((c) => keep.has(c.name));
+  })();
 
   if (/[\u202A-\u202E\u2066-\u2069]/.test(displaySource)) {
     push(make({
@@ -231,7 +327,7 @@ credit += 2; // equals 1. The deposit was not rejected.`,
   }
 
   if (model.versionFloor !== null && model.versionFloor < 5_000) {
-    const defaults = model.contracts.flatMap((c) => c.functions.filter((f) => f.visibility === "default" && !f.isConstructor));
+    const defaults = scopedContracts.flatMap((c) => c.functions.filter((f) => f.visibility === "default" && !f.isConstructor));
     if (defaults.length) {
       push(make({
         severity: "high",
@@ -250,7 +346,7 @@ credit += 2; // equals 1. The deposit was not rejected.`,
     }
   }
 
-  for (const contract of model.contracts) {
+  for (const contract of scopedContracts) {
     if (contract.kind === "interface") continue;
     scanContract(contract, model, parsed, delta, push);
   }
@@ -331,7 +427,7 @@ function scanContract(
   for (const fn of contract.functions) {
     if (fn.mutability === "payable" || fn.isReceive) anyPayable = true;
     if (!fn.body) continue;
-    const authed = isAuthed(fn) || fn.isConstructor;
+    const authed = isAuthed(fn, contract, model) || fn.isConstructor;
     const flow = walkFn(fn, contract, model, stateNames, byName, direct, parsed, delta, push, authed);
     if (flow.sawCall && flowSends(flow)) anyValueSend = true;
     if (/(\.call\s*\{[^}]*value|\.transfer\s*\(|\.send\s*\()/.test(fn.source)) anyValueSend = true;
@@ -481,7 +577,7 @@ modifier nonReentrant() {
     }));
   }
 
-  const ownerDrain = contract.functions.some((fn) => isAuthed(fn) && /address\(this\)\.balance/.test(fn.source) && /\.call\{|\.transfer\(/.test(fn.source));
+  const ownerDrain = contract.functions.some((fn) => isAuthed(fn, contract, model) && /address\(this\)\.balance/.test(fn.source) && /\.call\{|\.transfer\(/.test(fn.source));
   if (ownerDrain) {
     push(make({
       severity: "low",
@@ -575,7 +671,7 @@ function walkFn(
   push: (f: Finding) => void,
   authed: boolean,
 ): Flow {
-  const flow: Flow = { seen: null, sawWrite: false, sawCall: false, callThenWrite: false, writeThenCall: false, preCallWrites: new Set(), postCallWrites: new Set(), sawEtherSend: false };
+  const flow: Flow = { seen: null, sawWrite: false, sawCall: false, callThenWrite: false, writeThenCall: false, preCallWrites: new Set(), postCallWrites: new Set(), sawEtherSend: false, sendTargets: [] };
   const consts = new Set(contract.stateVars.filter((v) => v.constOrImmutable).map((v) => v.name));
   const params = new Set(fn.params.map((p) => p.name).filter(Boolean));
 
@@ -596,6 +692,7 @@ function walkFn(
     flow.sawCall = true;
     if (call.kind === "transfer" || call.kind === "send" || (call.kind === "call" && call.sendsValue)) {
       flow.sawEtherSend = true;
+      flow.sendTargets.push(call.target);
     }
     if (flow.sawWrite && !flow.callThenWrite) flow.writeThenCall = true;
     if (!flow.seen) flow.seen = call;
@@ -901,6 +998,7 @@ keccak256(abi.encodePacked("a", "bc"));`,
       flow.preCallWrites = new Set([...before.preCallWrites, ...left.preCallWrites, ...right.preCallWrites]);
       flow.postCallWrites = new Set([...before.postCallWrites, ...left.postCallWrites, ...right.postCallWrites]);
       flow.sawEtherSend = left.sawEtherSend || right.sawEtherSend || before.sawEtherSend;
+      flow.sendTargets = [...before.sendTargets, ...left.sendTargets, ...right.sendTargets];
       return;
     }
     if (stmt.type === "ForStatement" || stmt.type === "WhileStatement" || stmt.type === "DoWhileStatement") {
@@ -963,7 +1061,12 @@ keccak256(abi.encodePacked("a", "bc"));`,
   // not a source regex: the regex matched token transfer(to, x) and
   // super.transfer, neither of which moves ether.
   const sends = flow.sawEtherSend;
-  if (sends && !authed && !/ecrecover\s*\(/.test(fn.source) && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && !debitsOwnCredit(fn) && fn.mutability !== "view" && fn.mutability !== "pure") {
+  // An ether send is only an open drain if the caller controls a
+  // recipient: a param, msg.sender, or storage this function writes.
+  // A send to a fixed recipient (owner, burn, a constant) cannot be
+  // redirected to the attacker, so it is not a drain.
+  const drainable = flow.sendTargets.some((t) => isCallerControlled(t, fn, contract));
+  if (sends && drainable && !authed && !/ecrecover\s*\(/.test(fn.source) && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && !debitsOwnCredit(fn) && fn.mutability !== "view" && fn.mutability !== "pure") {
     push(make({
       severity: "critical",
       swc: "SWC-105",
@@ -994,6 +1097,7 @@ function snapshot(flow: Flow): Flow {
     seen: flow.seen,
     preCallWrites: new Set(flow.preCallWrites),
     postCallWrites: new Set(flow.postCallWrites),
+    sendTargets: [...flow.sendTargets],
   };
 }
 
@@ -1006,6 +1110,7 @@ function restore(flow: Flow, snap: Flow) {
   flow.preCallWrites = new Set(snap.preCallWrites);
   flow.postCallWrites = new Set(snap.postCallWrites);
   flow.sawEtherSend = snap.sawEtherSend;
+  flow.sendTargets = [...snap.sendTargets];
 }
 
 function namedAmountZero(named: AstNode | undefined): boolean {
@@ -1077,17 +1182,28 @@ function scanSimple(
   }
 
   if (/\bselfdestruct\s*\(|\bsuicide\s*\(/.test(src)) {
+    // "Attacker-chosen address" is only true when the caller controls the
+    // beneficiary: a param, msg.sender, or storage this function writes.
+    // selfdestruct(burn) with burn a constant sends to a fixed address —
+    // anyone can trigger the destruction (griefing), but nobody profits.
+    const sdMatch = src.match(/\b(?:selfdestruct|suicide)\s*\(\s*([^)]*)\)/);
+    const sdArg = (sdMatch?.[1] ?? "").trim();
+    const sdControlled = sdArg ? isCallerControlled(sdArg, fn, contract) : true;
     push(make({
-      severity: authed ? "high" : "critical",
+      severity: sdControlled ? (authed ? "high" : "critical") : "low",
       swc: "SWC-106",
-      title: authed ? `${fn.name} can selfdestruct` : `${fn.name} selfdestructs without an access check`,
+      title: sdControlled
+        ? (authed ? `${fn.name} can selfdestruct` : `${fn.name} selfdestructs without an access check`)
+        : `${fn.name} can selfdestruct to a fixed address`,
       confidence: "high",
       detector: "selfdestruct",
-      summary: authed
-        ? "A privileged caller can destroy the contract and send away the balance. On chains that still honor deletion outside the creating transaction this is final; either way the balance moves."
-        : "selfdestruct is reachable without an owner check. The balance can be forced to an attacker-chosen address.",
+      summary: sdControlled
+        ? (authed
+          ? "A privileged caller can destroy the contract and send away the balance. On chains that still honor deletion outside the creating transaction this is final; either way the balance moves."
+          : "selfdestruct is reachable without an owner check. The balance can be forced to an attacker-chosen address.")
+        : "selfdestruct is reachable without an owner check, but the beneficiary is fixed (a constant or storage the caller cannot redirect), so the caller gains nothing. Anyone can still destroy the contract — griefing, not theft.",
       walkthrough: "1. selfdestruct sends the full balance to its argument and, where deletion still applies, removes the code.\n2. A public function with no msg.sender check is an open kill switch.\n3. Combined with CREATE2, the address can be redeployed with different code.",
-      exploitSolidity: authed ? "" : `interface IVictim { function ${fn.name}(address payable to) external; }`,
+      exploitSolidity: sdControlled && !authed ? `interface IVictim { function ${fn.name}(address payable to) external; }` : "",
       remediationSolidity: `function close(address payable to) external onlyOwner {\n    // Prefer a normal withdraw. selfdestruct is not an upgrade strategy after EIP-6780.\n    selfdestruct(to);\n}`,
       locationFn: fn.name,
       locationLine: fn.line,
@@ -1346,7 +1462,17 @@ function scanSimple(
   }
 
   const addrWrite = contract.stateVars.find((v) => v.typeName === "address" && new RegExp(`\\b${v.name}\\s*=\\s*${fn.params.find((p) => p.typeName === "address")?.name}\\b`).test(src));
-  if (addrWrite && !/address\s*\(\s*0\s*\)/.test(src) && !fn.isConstructor) {
+  // A zero guard for THIS parameter exempts the write: require(p != 0),
+  // require(p != address(0)), if (p == 0) throw/revert. The old check only
+  // saw address(0), so `if (newOwner == 0) throw` was still flagged.
+  const zeroParam = fn.params.find((p) => p.typeName === "address")?.name;
+  const hasZeroGuard = Boolean(
+    zeroParam &&
+      new RegExp(
+        `(require\\s*\\(\\s*${zeroParam}\\s*!=|if\\s*\\(\\s*${zeroParam}\\s*==\\s*(0\\b|address\\s*\\(\\s*0\\s*\\)))`,
+      ).test(src),
+  );
+  if (addrWrite && !hasZeroGuard && !/address\s*\(\s*0\s*\)/.test(src) && !fn.isConstructor) {
     push(make({
       severity: "medium",
       swc: null,
@@ -1363,7 +1489,11 @@ function scanSimple(
     }));
   }
 
-  if (writesOwner(src, contract) && !/emit\s+/.test(src) && !fn.isConstructor) {
+  // Pre-0.4.21 code invokes events without the `emit` keyword
+  // (OwnerChanged(newOwner);), so a bare /emit/ test false-positives on
+  // 0.4.x contracts. A call to a declared event name counts as an emit.
+  const emitsEvent = /emit\s+/.test(src) || contract.events.some((e) => new RegExp(`\\b${e.name}\\s*\\(`).test(src));
+  if (writesOwner(src, contract) && !emitsEvent && !fn.isConstructor) {
     push(make({
       severity: "info",
       swc: null,

@@ -50,7 +50,7 @@ function emptyInventory(kind: "source" | "bytecode", note: string): Inventory {
   };
 }
 
-export function analyzeInput(body: string, label: string): Report {
+export function analyzeInput(body: string, label: string, onlyContract?: string | null): Report {
   const text = body.replaceAll("\0", "").trim();
   if (looksLikeBytecode(text)) {
     const byte = analyzeBytecode(text);
@@ -70,7 +70,7 @@ export function analyzeInput(body: string, label: string): Report {
 
   const model = parseSource(text);
   const findings = calibrateFindings(
-    model.contracts.length ? detectSource(model, text) : regexFallback(text),
+    model.contracts.length ? detectSource(model, text, onlyContract) : regexFallback(text),
   );
   const names = model.contracts.map((c) => c.name);
   const notes = [
@@ -117,7 +117,7 @@ export function analyzeInput(body: string, label: string): Report {
     disassembly: "",
   };
 
-  const name = names[0] ?? (label || "Contract");
+  const name = (onlyContract && names.includes(onlyContract) ? onlyContract : names[0]) ?? (label || "Contract");
   return {
     label,
     inputKind: "source",

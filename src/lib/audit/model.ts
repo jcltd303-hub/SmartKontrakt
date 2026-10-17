@@ -76,7 +76,10 @@ function lineOf(node: AstNode | undefined, delta: number): number {
 
 function slice(source: string, node: AstNode | null | undefined): string {
   if (!node?.range) return "";
-  return source.slice(node.range[0], node.range[1]);
+  // @solidity-parser/parser ranges are INCLUSIVE-end: [start, end] where
+  // end is the index of the last character. slice() needs end + 1, or
+  // every sliced string loses its final character ("owner" -> "owne").
+  return source.slice(node.range[0], node.range[1] + 1);
 }
 
 function modNames(node: AstNode): string[] {
