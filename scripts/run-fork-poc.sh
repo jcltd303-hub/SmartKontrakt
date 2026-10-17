@@ -118,11 +118,23 @@ fi
 # --- Run the PoC --------------------------------------------------------------
 echo "Running forge test (target=$TARGET, file=$TEST_FILE, fork=anvil @ $ANVIL_URL)..."
 cd "$FOUNDRY_DIR"
-if POC_TARGET="$TARGET" POC_FORK_BLOCK="${BLOCK:-0}" POC_RPC_URL="$ANVIL_URL" \
-    forge test --fork-url "$ANVIL_URL" --match-path "$TEST_FILE" -vvv; then
-  echo "PASS: PoC test(s) in $TEST_FILE reproduced against the fork."
-else
+# forge exits 0 when NO tests match --match-path, so an `if forge ...; then
+# PASS` verdict is a false PASS when the test file is missing or has no
+# test functions. Capture output and fail loudly on zero matches.
+FORGE_LOG="$(mktemp -t smartkontrakt-forge.XXXXXX.log)"
+FORGE_STATUS=0
+POC_TARGET="$TARGET" POC_FORK_BLOCK="${BLOCK:-0}" POC_RPC_URL="$ANVIL_URL" \
+  forge test --fork-url "$ANVIL_URL" --match-path "$TEST_FILE" -vvv >"$FORGE_LOG" 2>&1 || FORGE_STATUS=$?
+cat "$FORGE_LOG"
+if grep -q "no tests match" "$FORGE_LOG"; then
+  rm -f "$FORGE_LOG"
+  echo "FAIL: no tests matched $TEST_FILE — the file is missing or has no test functions. 0 exploit tests ran." >&2
+  exit 1
+fi
+rm -f "$FORGE_LOG"
+if [[ $FORGE_STATUS -ne 0 ]]; then
   echo "FAIL: PoC test(s) in $TEST_FILE did not reproduce (or the harness errored)." >&2
   echo "Check the output above: a failing exploit assertion means the exploit did not reproduce on fork state." >&2
   exit 1
 fi
+echo "PASS: PoC test(s) in $TEST_FILE reproduced against the fork."
