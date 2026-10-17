@@ -1,6 +1,7 @@
 import type { Finding } from "./types";
 import { openRouterLimiter, withRetry } from "./rate-limit";
 import { selectPocFallbacks } from "./poc-fallbacks";
+import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte";
 
 export type AiSecurityReview = {
   threatModelReport: string;
@@ -142,6 +143,7 @@ export function buildAiReviewPrompt(
   contractName: string,
   body: string,
   findings: Finding[],
+  fourbyte?: FourbyteResults,
 ): { system: string; user: string } {
   const findingsSummary = findings
     .map(
@@ -180,6 +182,7 @@ ${body.slice(0, 12000)}
 
 Detected Static Analysis Findings:
 ${findingsSummary || "No static detectors triggered."}
+${fourbyte ? formatFourbyteResultsForPrompt(fourbyte) : ""}
 ${templateSection}
 Your tasks:
 1. Provide a rigorous, concise Executive Threat Model Report (economic flash loan attack vectors, oracle spot-price manipulation, ERC-4626 share inflation risks, and administrative rug vectors).
@@ -206,7 +209,8 @@ Format your response strictly as JSON with this schema:
 export async function generateAiSecurityReview(
   contractName: string,
   body: string,
-  findings: Finding[]
+  findings: Finding[],
+  fourbyte?: FourbyteResults,
 ): Promise<AiSecurityReview> {
   const { apiKey, model } = resolveOpenRouterConfig();
 
@@ -215,7 +219,7 @@ export async function generateAiSecurityReview(
   }
 
   try {
-    const { system, user } = buildAiReviewPrompt(contractName, body, findings);
+    const { system, user } = buildAiReviewPrompt(contractName, body, findings, fourbyte);
 
     const referer =
       process.env.APP_URL?.trim() ||

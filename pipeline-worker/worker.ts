@@ -115,6 +115,7 @@ const { secondPass } = await import("../src/lib/audit/persist.server.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
 const { getSql } = await import("../src/lib/db.ts");
+const { createDbFourbyteLookup, fourbyteResultsFromReport } = await import("../src/lib/audit/fourbyte.ts");
 // Deep Agent loop (pipeline-worker/deep-agent.ts) — same propose ->
 // fork-PoC -> reward -> deeper loop as the workbench, gated to flagged
 // addresses. Loaded after .env so OPENROUTER_API_KEY is visible.
@@ -251,6 +252,15 @@ setInterval(() => {
 async function runLoop(): Promise<void> {
   const ctx = runCtx;
   if (!ctx) return;
+  // 4byte resolution for this run (one lookup, reused per item). If the
+  // DB is unreachable the run already fails fast at startup, so a
+  // lookup-creation failure here just means no enrichment.
+  let fourbyte: Awaited<ReturnType<typeof createDbFourbyteLookup>> | undefined;
+  try {
+    fourbyte = createDbFourbyteLookup(await getSql());
+  } catch {
+    fourbyte = undefined;
+  }
   try {
     while (ctx.index < ctx.items.length) {
       if (stopRequested || pauseRequested) break;
@@ -277,11 +287,14 @@ async function runLoop(): Promise<void> {
       // failure here is a transient provider hiccup, not a dead address.
       let result: Awaited<ReturnType<typeof analyzeAddress>>;
       try {
-        result = await withRetry(() => analyzeAddress(item.address, item.chainId, item.label), {
-          retries: 2,
-          baseDelayMs: 2000,
-          retryOn: () => true,
-        });
+        result = await withRetry(
+          () => analyzeAddress(item.address, item.chainId, item.label, { fourbyte }),
+          {
+            retries: 2,
+            baseDelayMs: 2000,
+            retryOn: () => true,
+          },
+        );
       } catch (err) {
         // RPC outage: park the run as paused instead of failing the item.
         // The item stays at the current index, so resume retries it.
@@ -336,6 +349,7 @@ async function runLoop(): Promise<void> {
                 body: result.rawBody,
                 findings: result.report.findings,
                 inputKind: result.report.inputKind,
+                fourbyte: fourbyteResultsFromReport(result.report),
               },
               {
                 backendUrl:

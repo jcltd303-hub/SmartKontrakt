@@ -37,6 +37,7 @@ import { runDeepAgentRound } from "../src/lib/audit/deep-agent.server.ts";
 // and the helper only reads localStorage inside getBackendUrl(), which
 // this module never calls.
 import { runPocOnBackend } from "../src/lib/audit/foundry-backend.ts";
+import { fourbyteResultsFromReport, type FourbyteResults } from "../src/lib/audit/fourbyte.ts";
 
 export const WORKER_DEEP_AGENT_MAX_ROUNDS = 3;
 export const WORKER_DEEP_AGENT_DEFAULT_BACKEND_URL = "http://127.0.0.1:8787";
@@ -162,7 +163,7 @@ async function runPocWithBusyRetry(
  * Run the Deep Agent loop for one flagged address. Never throws.
  */
 export async function runWorkerDeepAgent(
-  input: { address: string; contractName: string; body: string; findings: Finding[]; inputKind: string },
+  input: { address: string; contractName: string; body: string; findings: Finding[]; inputKind: string; fourbyte?: FourbyteResults },
   opts: WorkerDeepAgentOptions,
 ): Promise<WorkerDeepAgentResult> {
   const base: Omit<WorkerDeepAgentResult, "note"> = {
@@ -195,6 +196,7 @@ export async function runWorkerDeepAgent(
           findingsForPrompt,
           priorResults,
           round,
+          input.fourbyte,
         );
         hypotheses = res.hypotheses;
         stopReason = res.stopReason;

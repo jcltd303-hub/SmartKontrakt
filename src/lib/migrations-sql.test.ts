@@ -8,6 +8,7 @@ test("embedded migrations include both archive migrations", () => {
     "0003_comprehensive_records_and_rag.sql",
     "0004_poc_results.sql",
     "0005_fourbyte.sql",
+    "0006_fourbyte_events.sql",
   ]);
 });
 
@@ -36,4 +37,10 @@ test("embedded 0005 creates fourbyte_signatures keyed by (selector, signature)",
   const sql = EMBEDDED_MIGRATIONS["0005_fourbyte.sql"];
   assert.match(sql, /create table if not exists fourbyte_signatures/i);
   assert.match(sql, /primary key \(selector, signature\)/i);
+});
+
+test("embedded 0006 creates fourbyte_event_signatures keyed by (topic, signature)", () => {
+  const sql = EMBEDDED_MIGRATIONS["0006_fourbyte_events.sql"];
+  assert.match(sql, /create table if not exists fourbyte_event_signatures/i);
+  assert.match(sql, /primary key \(topic, signature\)/i);
 });

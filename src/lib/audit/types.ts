@@ -40,6 +40,13 @@ export type VarSurface = {
   constOrImmutable: boolean;
 };
 
+export type TopicHit = {
+  /** '0x' + 64 hex — the keccak256 of the event signature. */
+  topic: string;
+  /** e.g. 'Transfer(address,address,uint256)'. Null when unresolved. */
+  signature: string | null;
+};
+
 export type Inventory = {
   inputKind: "source" | "bytecode";
   contractNames: string[];
@@ -52,6 +59,10 @@ export type Inventory = {
   inheritance: string[];
   selectors: SelectorHit[];
   reconstructed: string;
+  /** Resolved event topics (PUSH32 candidates matched against the
+   * fourbyte_event_signatures table). Absent on records analyzed before
+   * fourbyte enrichment existed. */
+  topics?: TopicHit[];
   opcodes: { name: string; count: number }[];
   signals: { name: string; count: number }[];
   bytecodeBytes: number | null;

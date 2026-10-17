@@ -1,26 +1,64 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { Finding, Report } from "./types";
 import type { DeepAgentPriorResult } from "./deep-agent.server";
+import type { FourbyteResults } from "./fourbyte";
+
+/**
+ * Clean the optional fourbyte payload (resolved 4byte names from the
+ * report). Caps keys + signatures per key so a hostile payload cannot
+ * bloat the prompt. Returns undefined when nothing usable was sent.
+ */
+function cleanFourbyte(input: unknown): FourbyteResults | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const { selectors, topics } = input as {
+    selectors?: unknown;
+    topics?: unknown;
+  };
+  const cleanMap = (v: unknown, maxKeys: number): Record<string, string[]> => {
+    const out: Record<string, string[]> = {};
+    if (!v || typeof v !== "object") return out;
+    for (const [k, sigs] of Object.entries(v as Record<string, unknown>)) {
+      if (Object.keys(out).length >= maxKeys) break;
+      if (typeof k !== "string" || !Array.isArray(sigs)) continue;
+      const cleanSigs = sigs
+        .filter((s): s is string => typeof s === "string")
+        .map((s) => s.slice(0, 500))
+        .slice(0, 3);
+      if (cleanSigs.length > 0) out[k.slice(0, 100)] = cleanSigs;
+    }
+    return out;
+  };
+  const cleaned = {
+    selectors: cleanMap(selectors, 50),
+    topics: cleanMap(topics, 30),
+  };
+  if (Object.keys(cleaned.selectors).length === 0 && Object.keys(cleaned.topics).length === 0) {
+    return undefined;
+  }
+  return cleaned;
+}
 
 export const requestAiReview = createServerFn({ method: "POST" })
   .validator((input: unknown) => {
     if (!input || typeof input !== "object") {
       throw new Error("Invalid request payload");
     }
-    const { contractName, body, findings } = input as {
+    const { contractName, body, findings, fourbyte } = input as {
       contractName?: string;
       body?: string;
       findings?: Finding[];
+      fourbyte?: unknown;
     };
     return {
       contractName: contractName || "TargetContract",
       body: typeof body === "string" ? body.slice(0, 30000) : "",
       findings: Array.isArray(findings) ? findings.slice(0, 20) : [],
+      fourbyte: cleanFourbyte(fourbyte),
     };
   })
   .handler(async ({ data }) => {
     const { generateAiSecurityReview } = await import("./ai-review.server");
-    return generateAiSecurityReview(data.contractName, data.body, data.findings);
+    return generateAiSecurityReview(data.contractName, data.body, data.findings, data.fourbyte);
   });
 
 /**
@@ -33,12 +71,13 @@ export const requestDeepAgentRound = createServerFn({ method: "POST" })
     if (!input || typeof input !== "object") {
       throw new Error("Invalid request payload");
     }
-    const { contractName, body, findings, priorResults, round } = input as {
+    const { contractName, body, findings, priorResults, round, fourbyte } = input as {
       contractName?: string;
       body?: string;
       findings?: Finding[];
       priorResults?: DeepAgentPriorResult[];
       round?: number;
+      fourbyte?: unknown;
     };
     const cleanPrior: DeepAgentPriorResult[] = Array.isArray(priorResults)
       ? priorResults.slice(0, 20).map((p) => ({
@@ -57,6 +96,7 @@ export const requestDeepAgentRound = createServerFn({ method: "POST" })
       findings: Array.isArray(findings) ? findings.slice(0, 20) : [],
       priorResults: cleanPrior,
       round: typeof round === "number" && round > 0 ? Math.floor(round) : 1,
+      fourbyte: cleanFourbyte(fourbyte),
     };
   })
   .handler(async ({ data }) => {
@@ -67,6 +107,7 @@ export const requestDeepAgentRound = createServerFn({ method: "POST" })
       data.findings,
       data.priorResults,
       data.round,
+      data.fourbyte,
     );
   });
 

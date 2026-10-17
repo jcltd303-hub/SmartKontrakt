@@ -16,6 +16,8 @@ import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit
 import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
 import { probeContractInterfaces, type CallProbeResult } from "@/lib/audit/simulator";
 import { requestAiReview, requestDeepAgentRound } from "@/lib/audit/ai.functions";
+import { resolveFourbyte } from "@/lib/audit/fourbyte.functions";
+import { applyFourbyteResults, extractTopicCandidates, fourbyteResultsFromReport } from "@/lib/audit/fourbyte";
 import { getBackendUrl, runPocOnBackend } from "@/lib/audit/foundry-backend";
 import type { PocResult } from "@/lib/audit/types";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
@@ -240,6 +242,25 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       const generated = analyzeInput(bodyToAnalyze, labelToAnalyze);
       setReport(generated);
 
+      // Pasted bytecode: resolve unknown selectors + event topics
+      // against the 4byte tables (same enrichment as the address fetch,
+      // fire-and-forget — the audit stands without it).
+      if (looksLikeBytecode(bodyToAnalyze)) {
+        resolveFourbyte({
+          data: {
+            selectors: generated.inventory.selectors
+              .filter((s) => !s.signature)
+              .map((s) => s.selector),
+            topics: extractTopicCandidates(generated.inventory.disassembly),
+          },
+        })
+          .then((fourbyte) => {
+            applyFourbyteResults(generated, fourbyte);
+            setReport({ ...generated });
+          })
+          .catch(() => undefined);
+      }
+
       // Expand top critical/high findings by default
       const initialExpanded: Record<string, boolean> = {};
       generated.findings.forEach((f, idx) => {
@@ -407,6 +428,23 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     setAddressFetchError(null);
     try {
       const res = await analyzeAddress(clean, singleAddressChain);
+      // Resolve unknown selectors + event topics against the 4byte
+      // tables (server-side DB lookup). Best-effort: the audit stands
+      // without it, and the enriched report is what AI / Deep Agent /
+      // save all see downstream.
+      try {
+        const fourbyte = await resolveFourbyte({
+          data: {
+            selectors: res.report.inventory.selectors
+              .filter((s) => !s.signature)
+              .map((s) => s.selector),
+            topics: extractTopicCandidates(res.report.inventory.disassembly),
+          },
+        });
+        applyFourbyteResults(res.report, fourbyte);
+      } catch {
+        // Enrichment failed — keep the un-enriched report.
+      }
       setSelectedSampleId("custom");
       setContractBody(res.rawBody);
       setContractLabel(res.report.label);
@@ -460,6 +498,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         contractName: report.label,
         body: contractBody,
         findings: report.findings,
+        fourbyte: fourbyteResultsFromReport(report),
       } });
       setAiReview(res);
       setActiveTab("ai");
@@ -572,6 +611,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           findings: [...report.findings, ...confirmedFindings],
           priorResults,
           round,
+          fourbyte: fourbyteResultsFromReport(report),
         } });
         if (res.hypotheses.length === 0) {
           setDeepAgentStatus(
@@ -1718,6 +1758,33 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                         <span className="text-[#e8a54b] font-bold">{sel.selector}</span>
                         <span className="text-[#a39886] truncate max-w-[200px]" title={sel.signature ?? ""}>
                           {sel.signature ?? "unknown()"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Event Signatures (4byte) */}
+              <div>
+                <h3 className="text-xs font-mono font-bold text-[#e8a54b] uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                  <Binary className="w-3.5 h-3.5" />
+                  32-Byte Event Signatures ({report?.inventory.topics?.length ?? 0})
+                </h3>
+                {(report?.inventory.topics?.length ?? 0) === 0 ? (
+                  <p className="text-xs text-[#746c60]">No event topics resolved.</p>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {report?.inventory.topics?.map((t, idx) => (
+                      <div
+                        key={idx}
+                        className="p-2.5 bg-[#26231c] border border-[#3a3428] rounded-lg flex items-center justify-between font-mono text-xs"
+                      >
+                        <span className="text-[#e8a54b] font-bold truncate max-w-[180px]" title={t.topic}>
+                          {t.topic}
+                        </span>
+                        <span className="text-[#a39886] truncate max-w-[200px]" title={t.signature ?? ""}>
+                          {t.signature ?? "unknown()"}
                         </span>
                       </div>
                     ))}

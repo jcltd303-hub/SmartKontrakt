@@ -2,6 +2,7 @@ import type { Report } from "./types";
 import { analyzeInput } from "./engine";
 import { analyzeBytecode } from "./bytecode";
 import { rpcLimiter, sourcifyLimiter, withRetry } from "./rate-limit";
+import { enrichReportFourbyte, type FourbyteLookup } from "./fourbyte";
 
 export type SupportedChain = {
   id: string;
@@ -444,7 +445,8 @@ async function fetchBytecodeRpc(address: string, rpcUrls: string[]): Promise<str
 export async function analyzeAddress(
   address: string,
   chainId = "ethereum",
-  customLabel?: string
+  customLabel?: string,
+  opts?: { fourbyte?: FourbyteLookup },
 ): Promise<{ report: Report; rawBody: string; inputKind: "source" | "bytecode" }> {
   if (!isValidEvmAddress(address)) {
     throw new Error(`Invalid EVM address format: ${address}`);
@@ -488,6 +490,10 @@ export async function analyzeAddress(
       bytecodeNote = "Runtime bytecode fetch failed (RPC) — Bytecode & CFG tab unavailable for this audit.";
     }
     if (bytecodeNote) report.inventory.notes = [...report.inventory.notes, bytecodeNote];
+    // Resolve unknown selectors + event topics against the 4byte tables
+    // (worker / server callers pass a DB lookup; the browser workbench
+    // enriches via the resolveFourbyte server fn instead).
+    if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
     return {
       report,
       rawBody: sourcifyMatch.source,
@@ -503,6 +509,8 @@ export async function analyzeAddress(
 
   const label = customLabel || `Bytecode (${address.slice(0, 6)}...${address.slice(-4)})`;
   const report = analyzeInput(bytecode, label);
+
+  if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
 
   return {
     report,

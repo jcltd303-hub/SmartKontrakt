@@ -6,6 +6,7 @@ import {
   resolveOpenRouterConfig,
 } from "./ai-review.server";
 import { POC_FALLBACK_CATALOG, selectPocFallbacks } from "./poc-fallbacks";
+import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte";
 
 /**
  * Deep Agent — DeepRL-style agentic exploit search.
@@ -64,6 +65,7 @@ export function buildDeepAgentPrompt(
   findings: Finding[],
   priorResults: DeepAgentPriorResult[],
   round: number,
+  fourbyte?: FourbyteResults,
 ): { system: string; user: string } {
   const findingsSummary = findings
     .map(
@@ -125,6 +127,7 @@ ${body.slice(0, 12000)}
 
 Static Analysis Findings (what the rule detectors already found):
 ${findingsSummary || "No static detectors triggered."}
+${fourbyte ? formatFourbyteResultsForPrompt(fourbyte) : ""}
 ${priorSection}
 ${templateSection}
 This is Deep Agent round ${round} of at most 3. Your task: find vulnerabilities the static detectors MISSED, or deeper variants of the flagged ones.
@@ -168,13 +171,14 @@ export async function runDeepAgentRound(
   findings: Finding[],
   priorResults: DeepAgentPriorResult[],
   round: number,
+  fourbyte?: FourbyteResults,
 ): Promise<DeepAgentRoundResult> {
   const { apiKey, model } = resolveOpenRouterConfig();
   if (!apiKey) {
     return { hypotheses: [], stopReason: "no_api_key" };
   }
 
-  const { system, user } = buildDeepAgentPrompt(contractName, body, findings, priorResults, round);
+  const { system, user } = buildDeepAgentPrompt(contractName, body, findings, priorResults, round, fourbyte);
   const referer =
     process.env.APP_URL?.trim() ||
     process.env.VERCEL_URL?.trim() ||
