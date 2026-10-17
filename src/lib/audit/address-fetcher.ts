@@ -1,5 +1,6 @@
 import type { Report } from "./types";
 import { analyzeInput } from "./engine";
+import { analyzeBytecode } from "./bytecode";
 import { rpcLimiter, sourcifyLimiter, withRetry } from "./rate-limit";
 
 export type SupportedChain = {
@@ -450,6 +451,31 @@ export async function analyzeAddress(
   if (sourcifyMatch) {
     const label = customLabel || sourcifyMatch.name || `Verified (${address.slice(0, 6)}...)`;
     const report = analyzeInput(sourcifyMatch.source, label);
+    // Also fetch the runtime bytecode so the Bytecode & CFG tab works for
+    // verified contracts. Before this, a Sourcify hit returned a source-only
+    // report and the tab showed 0 opcodes / N/A size. Bytecode FINDINGS are
+    // deliberately NOT merged (source findings already cover the logic) —
+    // only the inventory fields the tab renders. If the bytecode fetch
+    // fails (RPC outage), the source audit still stands.
+    try {
+      const bytecode = await fetchBytecodeRpc(address, chain.rpcUrls);
+      if (bytecode) {
+        const byte = analyzeBytecode(bytecode);
+        const inv = report.inventory;
+        inv.disassembly = byte.inventory.disassembly;
+        inv.opcodes = byte.inventory.opcodes;
+        if (inv.signals.length === 0) inv.signals = byte.inventory.signals;
+        inv.bytecodeBytes = byte.inventory.bytecodeBytes;
+        inv.basicBlocks = byte.inventory.basicBlocks;
+        inv.proxy = inv.proxy ?? byte.inventory.proxy;
+        inv.notes = [
+          ...inv.notes,
+          `Runtime bytecode also fetched (${byte.inventory.bytecodeBytes} bytes) — Bytecode & CFG tab reflects on-chain code.`,
+        ];
+      }
+    } catch {
+      // Bytecode unavailable — source audit still stands.
+    }
     return {
       report,
       rawBody: sourcifyMatch.source,
