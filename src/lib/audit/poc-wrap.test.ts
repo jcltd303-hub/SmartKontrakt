@@ -84,24 +84,24 @@ describe("wrapPocSnippet constructor shapes", () => {
     assert.ok(wrapped.testFile.includes("attacker.poc();"));
   });
 
-  it("returns null for a multi-param constructor", () => {
-    assert.equal(
-      wrapPocSnippet(`contract Hack {
+  it("fills a multi-param constructor (address, uint256) -> (target, 1 ether)", () => {
+    const wrapped = wrapPocSnippet(`contract Hack {
     constructor(address a, uint256 b) {}
     function attack() external {}
-}`),
-      null,
-    );
+}`);
+    assert.ok(wrapped);
+    assert.ok(wrapped.testFile.includes("Hack attacker = new Hack(target, 1 ether);"));
+    assert.equal(wrapped.note, "Wrapped with defaults: constructor (address, uint256) -> (target, 1 ether)");
   });
 
-  it("returns null for a non-address single-param constructor", () => {
-    assert.equal(
-      wrapPocSnippet(`contract Hack {
+  it("fills a non-address single-param constructor (uint256) -> (1 ether)", () => {
+    const wrapped = wrapPocSnippet(`contract Hack {
     constructor(uint256 amount) {}
     function attack() external {}
-}`),
-      null,
-    );
+}`);
+    assert.ok(wrapped);
+    assert.ok(wrapped.testFile.includes("Hack attacker = new Hack(1 ether);"));
+    assert.ok(wrapped.note?.includes("constructor (uint256) -> (1 ether)"));
   });
 });
 
@@ -127,13 +127,13 @@ describe("wrapPocSnippet null shapes", () => {
     assert.equal(wrapPocSnippet(``), null);
   });
 
-  it("returns null when the entry function takes params", () => {
-    assert.equal(
-      wrapPocSnippet(`contract Hack {
+  it("fills an entry with params: attack(uint256) -> attack(1 ether)", () => {
+    const wrapped = wrapPocSnippet(`contract Hack {
     function attack(uint256 amount) external {}
-}`),
-      null,
-    );
+}`);
+    assert.ok(wrapped);
+    assert.ok(wrapped.testFile.includes("attacker.attack(1 ether);"));
+    assert.equal(wrapped.note, "Wrapped with defaults: entry attack(uint256) -> attack(1 ether)");
   });
 });
 
@@ -154,5 +154,218 @@ contract Hack {
     // Original values preserved (not overwritten with the defaults).
     assert.ok(wrapped.testFile.includes("GPL-3.0"));
     assert.ok(wrapped.testFile.includes("pragma solidity ^0.8.19;"));
+  });
+});
+
+describe("wrapPocSnippet name-aware address filling (Round 2)", () => {
+  const DRAIN = `interface IVictim { function reclaimSurplusEth(address payable to) external; }
+contract Drain {
+    function go(address victim, address payable me) external {
+        IVictim(victim).reclaimSurplusEth(me);
+    }
+}`;
+
+  it("wraps Jer's Drain snippet to go(target, payable(address(attacker)))", () => {
+    const wrapped = wrapPocSnippet(DRAIN);
+    assert.ok(wrapped);
+    assert.equal(wrapped.attackContract, "Drain");
+    assert.equal(wrapped.entry, "go");
+    assert.ok(wrapped.testFile.includes("attacker.go(target, payable(address(attacker)));"));
+    assert.equal(
+      wrapped.note,
+      "Wrapped with defaults: entry go(address, address payable) -> go(target, payable(address(attacker)))",
+    );
+  });
+
+  it("maps victim/target-named params to target", () => {
+    for (const name of ["victim", "victimAddr", "target", "targetContract"]) {
+      const wrapped = wrapPocSnippet(`contract Hack {
+    function attack(address ${name}) external {}
+}`);
+      assert.ok(wrapped, name);
+      assert.ok(wrapped.testFile.includes("attacker.attack(target);"), name);
+    }
+  });
+
+  it("maps to/me/recipient/receiver/wallet/account/_to/_me-named params to the attacker", () => {
+    const cases: Array<[string, string]> = [
+      ["to", "attacker.attack(address(attacker));"],
+      ["me", "attacker.attack(address(attacker));"],
+      ["recipient", "attacker.attack(address(attacker));"],
+      ["receiver", "attacker.attack(address(attacker));"],
+      ["beneficiary", "attacker.attack(address(attacker));"],
+      ["wallet", "attacker.attack(address(attacker));"],
+      ["account", "attacker.attack(address(attacker));"],
+      ["send_to", "attacker.attack(address(attacker));"],
+      ["pay_to", "attacker.attack(address(attacker));"],
+      ["payable_me", "attacker.attack(address(attacker));"],
+    ];
+    for (const [name, expected] of cases) {
+      const wrapped = wrapPocSnippet(`contract Hack {
+    function attack(address ${name}) external {}
+}`);
+      assert.ok(wrapped, name);
+      assert.ok(wrapped.testFile.includes(expected), name);
+    }
+    // Payable recipient -> payable(address(attacker)).
+    const payableMe = wrapPocSnippet(`contract Hack {
+    function attack(address payable me) external {}
+}`);
+    assert.ok(payableMe);
+    assert.ok(payableMe.testFile.includes("attacker.attack(payable(address(attacker)));"));
+  });
+
+  it("positional fallback: first address -> target, later addresses -> attacker", () => {
+    const wrapped = wrapPocSnippet(`contract Hack {
+    function attack(address a, address b) external {}
+}`);
+    assert.ok(wrapped);
+    assert.ok(wrapped.testFile.includes("attacker.attack(target, address(attacker));"));
+  });
+
+  it("token-named param gets no victim hint (positional fallback applies)", () => {
+    const alone = wrapPocSnippet(`contract Hack {
+    function attack(address token) external {}
+}`);
+    assert.ok(alone);
+    // Single address, first in its list -> target via fallback.
+    assert.ok(alone.testFile.includes("attacker.attack(target);"));
+    const withTo = wrapPocSnippet(`contract Hack {
+    function attack(address token, address to) external {}
+}`);
+    assert.ok(withTo);
+    assert.ok(withTo.testFile.includes("attacker.attack(target, address(attacker));"));
+  });
+
+  it("payable victim param -> payable(target); payable positional first -> payable(target)", () => {
+    const victim = wrapPocSnippet(`contract Hack {
+    function attack(address payable victim) external {}
+}`);
+    assert.ok(victim);
+    assert.ok(victim.testFile.includes("attacker.attack(payable(target));"));
+    const positional = wrapPocSnippet(`contract Hack {
+    function attack(address payable a, address b) external {}
+}`);
+    assert.ok(positional);
+    assert.ok(positional.testFile.includes("attacker.attack(payable(target), address(attacker));"));
+  });
+
+  it("go is lowest entry priority (attack beats go; go alone is detected)", () => {
+    const both = wrapPocSnippet(`contract Hack {
+    function attack() external {}
+    function go() external {}
+}`);
+    assert.ok(both);
+    assert.equal(both.entry, "attack");
+    const onlyGo = wrapPocSnippet(`contract Hack {
+    function go() external {}
+}`);
+    assert.ok(onlyGo);
+    assert.equal(onlyGo.entry, "go");
+    assert.ok(onlyGo.testFile.includes("attacker.go();"));
+  });
+});
+
+describe("wrapPocSnippet param filling", () => {
+  it("fills ctor (address, bool, string) -> (target, false, \"\")", () => {
+    const wrapped = wrapPocSnippet(`contract Hack {
+    constructor(address v, bool flag, string memory label) {}
+    function attack() external {}
+}`);
+    assert.ok(wrapped);
+    assert.ok(wrapped.testFile.includes('Hack attacker = new Hack(target, false, "");'));
+    assert.equal(
+      wrapped.note,
+      "Wrapped with defaults: constructor (address, bool, string) -> (target, false, \"\")",
+    );
+  });
+
+  it("fills both ctor and entry params and names both in the note", () => {
+    const wrapped = wrapPocSnippet(`contract Hack {
+    constructor(address v, uint256 seed) {}
+    function attack(uint256 amount) external payable {}
+}`);
+    assert.ok(wrapped);
+    assert.ok(wrapped.testFile.includes("Hack attacker = new Hack(target, 1 ether);"));
+    assert.ok(wrapped.testFile.includes("attacker.attack{value: 1 ether}(1 ether);"));
+    assert.equal(
+      wrapped.note,
+      "Wrapped with defaults: constructor (address, uint256) -> (target, 1 ether); entry attack(uint256) -> attack(1 ether)",
+    );
+  });
+
+  it("fills fixed bytesN, dynamic arrays, int and bytes", () => {
+    const wrapped = wrapPocSnippet(`contract Hack {
+    constructor(bytes32 h, uint256[] ids, int128 delta, bytes data) {}
+    function attack() external {}
+}`);
+    assert.ok(wrapped);
+    assert.ok(
+      wrapped.testFile.includes(
+        "Hack attacker = new Hack(bytes32(0), new uint256[](0), 1 ether, \"\");",
+      ),
+    );
+    assert.ok(wrapped.note?.includes("bytes32(0)"));
+  });
+
+  it("returns null for struct, fixed-array, nested-array and mapping params", () => {
+    assert.equal(
+      wrapPocSnippet(`contract Hack {
+    struct S { uint256 x; }
+    constructor(S memory s) {}
+    function attack() external {}
+}`),
+      null,
+    );
+    assert.equal(
+      wrapPocSnippet(`contract Hack {
+    constructor(uint256[3] ids) {}
+    function attack() external {}
+}`),
+      null,
+    );
+    assert.equal(
+      wrapPocSnippet(`contract Hack {
+    constructor(uint256[][] grid) {}
+    function attack() external {}
+}`),
+      null,
+    );
+    assert.equal(
+      wrapPocSnippet(`contract Hack {
+    constructor(address v) {}
+    function attack(mapping(address => uint256) m) external {}
+}`),
+      null,
+    );
+  });
+
+  it("detects execute / drain / pwn entry names", () => {
+    for (const name of ["execute", "drain", "pwn"]) {
+      const wrapped = wrapPocSnippet(`contract Hack {
+    function ${name}() external {}
+}`);
+      assert.ok(wrapped, name);
+      assert.equal(wrapped.entry, name);
+      assert.ok(wrapped.testFile.includes(`attacker.${name}();`));
+    }
+  });
+
+  it("note is null for the plain 0-param shape, non-null when defaults are used", () => {
+    const plain = wrapPocSnippet(`contract Hack {
+    function attack() external {}
+}`);
+    assert.ok(plain);
+    assert.equal(plain.note, null);
+    const filled = wrapPocSnippet(`contract Hack {
+    function attack(uint256 amount) external {}
+}`);
+    assert.ok(filled);
+    assert.ok(filled.note);
+    const passthrough = wrapPocSnippet(`contract MyExploit is Test {
+    function test_poc() public { assertTrue(true); }
+}`);
+    assert.ok(passthrough);
+    assert.equal(passthrough.note, null);
   });
 });

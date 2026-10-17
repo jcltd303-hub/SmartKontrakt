@@ -630,7 +630,11 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       const fullLogs = status === "error" && poc.status === "passed"
         ? `${poc.logs ?? ""}\nNo test functions ran — this PoC snippet is an attack contract, not a runnable Foundry test.`
         : (poc.logs ?? "");
-      const truncated = fullLogs.length > POC_OUTPUT_CAP;
+      // When the wrapper filled default args, say so up front — the
+      // guessed args may be wrong, and a FAIL with defaults is
+      // informative. Truncation is computed on the combined text.
+      const displayLogs = wrapped?.note ? `${wrapped.note}\n${fullLogs}` : fullLogs;
+      const truncated = displayLogs.length > POC_OUTPUT_CAP;
       const result: PocRunResult = {
         id: runId,
         source: testCode,
@@ -640,7 +644,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         durationMs: poc.durationMs ?? 0,
         chainId: SUPPORTED_CHAINS.find((c) => c.id === singleAddressChain)?.chainId ?? 1,
         exitCode: null, // the backend response carries no exit code
-        output: truncated ? fullLogs.slice(0, POC_OUTPUT_CAP) : fullLogs,
+        output: truncated ? displayLogs.slice(0, POC_OUTPUT_CAP) : displayLogs,
         truncated,
       };
       setFindingPocRuns((prev) => ({

@@ -13,6 +13,39 @@
 // exploits (access-control, logic bugs, griefing, ...). Those still
 // need the fallback templates (foundry/poc-fallbacks) or a full AI PoC.
 //
+// Parameter filling: the wrapper NEVER returns null just because the
+// constructor or entry has parameters. Unknown-but-fillable params get
+// defaults (fail-closed ONLY for genuinely unwrappable shapes: no
+// contract defs, interfaces-only, PocWrapTest name collision, or a
+// param type outside the fill table):
+//   address params are filled NAME-AWARE (Round 2 — Round 1's blanket
+//   address -> target was wrong for Jer's Drain snippet, where the
+//   second address is the payout recipient, not the victim):
+//     name matches /(victim|target)/i            -> `target` (the fork target)
+//     name is exactly `to`/`me`, ends with `_to`/`_me`,
+//       or matches /(recipient|receiver|beneficiary|attacker|wallet|account)/i
+//                                                -> the attacker contract:
+//                                                   `address(attacker)`, or
+//                                                   `payable(address(attacker))`
+//                                                   when the type is `address payable`
+//     otherwise (no name hint, e.g. `token`)      -> positional fallback:
+//                                                   FIRST address param in the
+//                                                   list -> `target`; any LATER
+//                                                   address param -> attacker
+//   A payable address param gets `payable(...)` wrapping (`payable(target)`
+//   / `payable(address(attacker))`) — passing a plain address where
+//   `address payable` is expected is a compile error.
+//   uint / int of any size   -> `1 ether` (the value at stake)
+//   bool                     -> `false`
+//   string / bytes           -> `""`
+//   fixed bytesN             -> `bytesN(0)`
+//   dynamic arrays T[]       -> `new T[](0)` (element must itself be fillable)
+//   anything else (structs, mappings, function types, fixed/nested
+//   arrays, contract/enum types) -> return null (still fail-closed).
+// A FAIL with filled defaults is informative (the guessed args may be
+// wrong); an ERROR with no tests run is not. When defaults are used,
+// WrappedPoc.note names them so the UI can show what was guessed.
+//
 // Pure string builder. Zero imports. No Solidity parser — detection
 // runs on a length-preserving comment/string-stripped copy so indices
 // line up with the original snippet.
@@ -24,10 +57,12 @@ export type WrappedPoc = {
   attackContract: string;
   /** Entry function name called by the test. */
   entry: string;
+  /** Null when no defaults were used; otherwise names the filled params. */
+  note: string | null;
 };
 
 /** Entry-function names, first match in this order wins. */
-const ENTRY_NAMES = ["attack", "exploit", "poc", "hack", "run"] as const;
+const ENTRY_NAMES = ["attack", "exploit", "poc", "hack", "run", "execute", "drain", "pwn", "go"] as const;
 
 /**
  * Length-preserving strip: comment and string contents become spaces,
@@ -144,30 +179,106 @@ function splitTopLevelArgs(text: string): string[] {
   return out;
 }
 
+/** The Solidity type of one parameter string (e.g. "address payable", "uint256[]"), or null. */
+function paramType(param: string): string | null {
+  const tokens = param.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return null;
+  if (tokens[0] === "address" && tokens[1] === "payable") return "address payable";
+  return tokens[0];
+}
+
+/** Fill for a scalar (non-array) type, or null when outside the fill table. */
+function fillForScalar(type: string): string | null {
+  if (type === "address" || type === "address payable") return "target";
+  if (/^u?int(\d+)?$/.test(type)) return "1 ether";
+  if (type === "bool") return "false";
+  if (type === "string" || type === "bytes") return '""';
+  if (/^bytes\d+$/.test(type)) return `${type}(0)`;
+  return null;
+}
+
+/** Fill for any type in the fill table (scalars + dynamic arrays), or null. */
+function fillForType(type: string): string | null {
+  const scalar = fillForScalar(type);
+  if (scalar !== null) return scalar;
+  if (type.endsWith("[]")) {
+    const elem = type.slice(0, -2);
+    if (elem.includes("[") || elem.includes("]")) return null; // nested arrays
+    if (fillForScalar(elem) === null) return null; // struct/contract/enum element
+    return `new ${elem}[](0)`;
+  }
+  return null;
+}
+
 /**
- * Deploy argument for the attack contract constructor.
- * Returns "" for `new X()`, "target" for `new X(target)`, null for any
- * unsupported shape (fail closed).
+ * Fill one parameter list. Returns the filled arg list + the type list
+ * (for the note), or null when any param is unfillable (fail closed).
  */
-function constructorDeployArg(ctorParams: string | null): string | null {
-  if (ctorParams === null) return ""; // no constructor -> new X()
-  const trimmed = ctorParams.trim();
-  if (!trimmed) return ""; // constructor() -> new X()
+/** Parameter name (last token, unless it is a data-location keyword), or null when unnamed. */
+function paramName(param: string): string | null {
+  const tokens = param.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+  const last = tokens[tokens.length - 1];
+  if (last === "memory" || last === "calldata" || last === "storage" || last === "payable") return null;
+  return last;
+}
+
+/**
+ * Fill for an address param, honouring name hints. `isFirstAddress` =
+ * this is the first address param in its list (positional fallback).
+ * A payable param gets `payable(...)` wrapping — a plain address is
+ * not implicitly convertible to `address payable`.
+ */
+function fillForAddress(name: string | null, type: string, isFirstAddress: boolean): string {
+  const wrapPayable = (inner: string) => (type === "address payable" ? `payable(${inner})` : inner);
+  if (name !== null) {
+    if (/victim|target/i.test(name)) return wrapPayable("target");
+    if (
+      /^to$/i.test(name) ||
+      /^me$/i.test(name) ||
+      /_to$/i.test(name) ||
+      /_me$/i.test(name) ||
+      /recipient|receiver|beneficiary|attacker|wallet|account/i.test(name)
+    ) {
+      return wrapPayable("address(attacker)");
+    }
+  }
+  // No name hint: positional fallback.
+  return isFirstAddress ? wrapPayable("target") : wrapPayable("address(attacker)");
+}
+
+function fillParamList(paramList: string): { args: string; types: string } | null {
+  const trimmed = paramList.trim();
+  if (!trimmed) return { args: "", types: "" };
   const params = splitTopLevelArgs(trimmed)
     .map((p) => p.trim())
     .filter(Boolean);
-  if (params.length !== 1) return null;
-  const tokens = params[0].split(/\s+/);
-  const isAddress =
-    tokens[0] === "address" && (tokens.length === 2 || (tokens.length === 3 && tokens[1] === "payable"));
-  if (!isAddress) return null;
-  return "target";
+  const fills: string[] = [];
+  const types: string[] = [];
+  let addressCount = 0;
+  for (const p of params) {
+    const type = paramType(p);
+    if (type === null) return null;
+    let fill: string | null;
+    if (type === "address" || type === "address payable") {
+      fill = fillForAddress(paramName(p), type, addressCount === 0);
+      addressCount++;
+    } else {
+      fill = fillForType(type);
+    }
+    if (fill === null) return null;
+    fills.push(fill);
+    types.push(type);
+  }
+  return { args: fills.join(", "), types: types.join(", ") };
 }
 
 /**
  * Wrap a PoC snippet into a runnable Foundry test file.
- * Returns null for unsupported shapes (fail closed — the caller falls
- * back to running the raw snippet, which errors with a clear note).
+ * Returns null only for genuinely unwrappable shapes (fail closed —
+ * the caller falls back to running the raw snippet, which errors with
+ * a clear note): no contract defs, interfaces-only, PocWrapTest name
+ * collision, or a param type outside the fill table.
  */
 export function wrapPocSnippet(snippet: string): WrappedPoc | null {
   if (!snippet || !snippet.trim()) return null;
@@ -177,7 +288,7 @@ export function wrapPocSnippet(snippet: string): WrappedPoc | null {
   const isTest = /\bcontract\s+\w+\s+is\s+[^{]*\bTest\b/.test(stripped);
   const hasTestFn = /function\s+test_\w*\s*\(/.test(stripped);
   if (isTest && hasTestFn) {
-    return { testFile: snippet, attackContract: "<existing>", entry: "<existing>" };
+    return { testFile: snippet, attackContract: "<existing>", entry: "<existing>", note: null };
   }
   const contracts = findContracts(stripped);
   if (contracts.length === 0) return null;
@@ -199,13 +310,19 @@ export function wrapPocSnippet(snippet: string): WrappedPoc | null {
     if (attack) break;
   }
   if (!attack || !entry) return null;
-  // Entry must take 0 params.
-  if (entry.params.trim() !== "") return null;
-  const deployArg = constructorDeployArg(findConstructorParams(attack.body));
-  if (deployArg === null) return null;
+  // Fill constructor + entry params from the fill table (never null
+  // just for having params — a FAIL with guessed args is informative).
+  const ctorFilled = fillParamList(findConstructorParams(attack.body) ?? "");
+  if (ctorFilled === null) return null;
+  const entryFilled = fillParamList(entry.params);
+  if (entryFilled === null) return null;
+  const noteParts: string[] = [];
+  if (ctorFilled.types) noteParts.push(`constructor (${ctorFilled.types}) -> (${ctorFilled.args})`);
+  if (entryFilled.types) noteParts.push(`entry ${entry.name}(${entryFilled.types}) -> ${entry.name}(${entryFilled.args})`);
+  const note = noteParts.length ? `Wrapped with defaults: ${noteParts.join("; ")}` : null;
   const payable = /\bpayable\b/.test(entry.headerAfterParams);
-  const call = `attacker.${entry.name}${payable ? "{value: 1 ether}" : ""}();`;
-  const deploy = deployArg === "" ? `new ${attack.name}()` : `new ${attack.name}(target)`;
+  const call = `attacker.${entry.name}${payable ? "{value: 1 ether}" : ""}(${entryFilled.args});`;
+  const deploy = `new ${attack.name}(${ctorFilled.args})`;
   const prefix: string[] = [];
   if (!/SPDX-License-Identifier/.test(snippet)) prefix.push("// SPDX-License-Identifier: MIT");
   if (!/pragma\s+solidity/.test(snippet)) prefix.push("pragma solidity ^0.8.0;");
@@ -228,5 +345,5 @@ export function wrapPocSnippet(snippet: string): WrappedPoc | null {
     "}",
     "",
   ].join("\n");
-  return { testFile: header + snippet + testContract, attackContract: attack.name, entry: entry.name };
+  return { testFile: header + snippet + testContract, attackContract: attack.name, entry: entry.name, note };
 }
