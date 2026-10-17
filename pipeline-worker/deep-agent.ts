@@ -184,6 +184,8 @@ export async function runWorkerDeepAgent(
   const priorResults: DeepAgentPriorResult[] = [];
   let stopped: string | null = null;
   let totalLlmMs = 0;
+  let repairsAttempted = 0;
+  let repairsSucceeded = 0;
 
   try {
     for (let round = 1; round <= opts.maxRounds; round += 1) {
@@ -222,11 +224,16 @@ export async function runWorkerDeepAgent(
         // wasted. Infra failures (RPC/timeout) are not compile errors
         // and never trigger a repair call.
         if (poc.status === "error" && isPocCompileError(poc.logs ?? "")) {
+          repairsAttempted += 1;
           try {
-            const repaired = await repairPocCode(input.contractName, testCode, poc.logs ?? "");
+            const repaired = await repairPocCode(input.contractName, testCode, poc.logs ?? "", input.body);
             totalLlmMs += repaired.llmMs;
             testCode = repaired.fixedCode;
             poc = await runPocWithBusyRetry(opts.backendUrl, input.address, testCode);
+            // A re-run that reaches a verdict (pass OR fail) means the
+            // repair fixed the compile error — even a refuted hypothesis
+            // is a successful repair. A second error is not.
+            if (poc.status === "passed" || poc.status === "failed") repairsSucceeded += 1;
           } catch (repairErr) {
             base.errors += 1;
             stopped = `PoC repair failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)}`;
@@ -265,6 +272,6 @@ export async function runWorkerDeepAgent(
     stopped = `unexpected: ${err instanceof Error ? err.message : String(err)}`;
   }
 
-  const note = `Deep Agent: ${base.rounds} round(s), ${base.confirmed.length} confirmed on fork, ${base.refuted} refuted${base.errors > 0 ? `, ${base.errors} error(s)` : ""}, LLM ${(totalLlmMs / 1000).toFixed(1)}s${stopped ? ` — ${stopped}` : ""}`;
+  const note = `Deep Agent: ${base.rounds} round(s), ${base.confirmed.length} confirmed on fork, ${base.refuted} refuted${base.errors > 0 ? `, ${base.errors} error(s)` : ""}, LLM ${(totalLlmMs / 1000).toFixed(1)}s${repairsAttempted > 0 ? `, repair ${repairsSucceeded}/${repairsAttempted}` : ""}${stopped ? ` — ${stopped}` : ""}`;
   return { ...base, ran: true, note };
 }

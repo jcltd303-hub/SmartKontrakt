@@ -289,15 +289,19 @@ export async function runDeepAgentRound(
 
 /**
  * Repair ONE PoC that failed to compile: a single LLM call that fixes
- * only the failure, changing as little as possible. The caller re-runs
- * the fixed PoC once; there is no second repair. Throws on LLM failure
- * or on a fixed PoC that is not a PoC test — the caller treats that as
- * an error, same as the original compile failure.
+ * only the failure, changing as little as possible. `body` is the
+ * target's source (truncated) — without it the model cannot look up the
+ * real interface when the failure is a missing/wrong function, and
+ * "don't fabricate" is unenforceable. The caller re-runs the fixed PoC
+ * once; there is no second repair. Throws on LLM failure or on a fixed
+ * PoC that is not a PoC test — the caller treats that as an error,
+ * same as the original compile failure.
  */
 export async function repairPocCode(
   contractName: string,
   originalCode: string,
   errorLogs: string,
+  body = "",
 ): Promise<{ fixedCode: string; llmMs: number }> {
   const { apiKey, model } = resolveOpenRouterConfig();
   if (!apiKey) {
@@ -310,6 +314,12 @@ export async function repairPocCode(
     "https://smart-kontrakt.vercel.app";
 
   const user = `Contract: ${contractName}
+
+Target contract source / body (truncated to 12,000 chars — use it to look up the REAL interface when the failure is a missing or wrong function; never guess a signature that is not in here):
+
+\`\`\`solidity
+${body.slice(0, 12000)}
+\`\`\`
 
 The Foundry PoC below FAILED TO COMPILE / RUN with this output:
 

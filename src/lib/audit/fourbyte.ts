@@ -119,7 +119,10 @@ export async function enrichReportFourbyte(
 export function fourbyteResultsFromReport(report: Report): FourbyteResults {
   const selectors: Record<string, string[]> = {};
   for (const s of report.inventory.selectors) {
-    if (s.signature) selectors[s.selector.toLowerCase()] = [s.signature];
+    // Keep ALL collision signatures, not just the first — the prompt
+    // (#5) shows every known overload so the model picks the right one.
+    if (s.signatures && s.signatures.length > 0) selectors[s.selector.toLowerCase()] = s.signatures;
+    else if (s.signature) selectors[s.selector.toLowerCase()] = [s.signature];
   }
   const topics: Record<string, string[]> = {};
   for (const t of report.inventory.topics ?? []) {
@@ -134,13 +137,20 @@ export function formatFourbyteResultsForPrompt(results: FourbyteResults, maxSele
   const topEntries = Object.entries(results.topics).slice(0, maxTopics);
   if (selEntries.length === 0 && topEntries.length === 0) return "";
   const lines = ["\nKNOWN FUNCTIONS + EVENTS (4byte.directory — resolved from the target's bytecode; these exist on the target, prefer them over invented interfaces):"];
+  // A selector can collide (several signatures share 4 bytes). The model
+  // sees every known overload, not just the first — picking the wrong
+  // overload is a classic fabricated-interface failure.
+  const showSigs = (sigs: string[]) => {
+    const shown = sigs.slice(0, 3).join(" | ");
+    return sigs.length > 3 ? `${shown} (+${sigs.length - 3} more)` : shown;
+  };
   if (selEntries.length > 0) {
     lines.push("Functions:");
-    for (const [sel, sigs] of selEntries) lines.push(`- ${sigs[0]} — ${sel}`);
+    for (const [sel, sigs] of selEntries) lines.push(`- ${showSigs(sigs)} — ${sel}`);
   }
   if (topEntries.length > 0) {
     lines.push("Events:");
-    for (const [topic, sigs] of topEntries) lines.push(`- ${sigs[0]} — ${topic}`);
+    for (const [topic, sigs] of topEntries) lines.push(`- ${showSigs(sigs)} — ${topic}`);
   }
   return lines.join("\n");
 }

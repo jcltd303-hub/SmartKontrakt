@@ -121,10 +121,11 @@ export const requestPocRepair = createServerFn({ method: "POST" })
     if (!input || typeof input !== "object") {
       throw new Error("Invalid request payload");
     }
-    const { contractName, originalCode, errorLogs } = input as {
+    const { contractName, originalCode, errorLogs, body } = input as {
       contractName?: string;
       originalCode?: string;
       errorLogs?: string;
+      body?: string;
     };
     if (typeof originalCode !== "string" || originalCode.trim().length === 0) {
       throw new Error("Repair requires the original PoC code");
@@ -133,11 +134,12 @@ export const requestPocRepair = createServerFn({ method: "POST" })
       contractName: contractName || "TargetContract",
       originalCode: originalCode.slice(0, 30000),
       errorLogs: typeof errorLogs === "string" ? errorLogs.slice(0, 8000) : "",
+      body: typeof body === "string" ? body.slice(0, 30000) : "",
     };
   })
   .handler(async ({ data }) => {
     const { repairPocCode } = await import("./deep-agent.server");
-    return repairPocCode(data.contractName, data.originalCode, data.errorLogs);
+    return repairPocCode(data.contractName, data.originalCode, data.errorLogs, data.body);
   });
 
 /**

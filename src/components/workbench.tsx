@@ -505,6 +505,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           contractName: report?.label ?? "TargetContract",
           originalCode: testCode,
           errorLogs: poc.logs ?? "",
+          body: contractBody,
         } });
         testCode = repaired.fixedCode;
         poc = await runPocOnBackend(getBackendUrl(), { address, testCode });
@@ -670,6 +671,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 contractName: report.label,
                 originalCode: testCode,
                 errorLogs: poc.logs ?? "",
+                body: contractBody,
               } });
               testCode = repaired.fixedCode;
               poc = await runPocOnBackend(getBackendUrl(), { address: addr, testCode });
