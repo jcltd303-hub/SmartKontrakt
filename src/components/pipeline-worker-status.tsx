@@ -32,6 +32,13 @@ type WorkerStatus = {
   aiSecondPass: boolean;
   delayMs: number;
   pending: number;
+  /** Absent on workers older than the Deep Agent wiring. */
+  deepAgent?: boolean;
+  deepAgentMaxItems?: number;
+  deepAgentMinSeverity?: string;
+  deepAgentRuns?: number;
+  deepAgentConfirmed?: number;
+  deepAgentBackendDown?: boolean;
   db?: { host: string; port: string; user: string; database: string } | null;
   dbScans?: number | null;
   dbError?: string | null;
@@ -48,6 +55,9 @@ export function PipelineWorkerStatus() {
   const [chainId, setChainId] = useState("ethereum");
   const [aiSecondPass, setAiSecondPass] = useState(false);
   const [delayMs, setDelayMs] = useState(600);
+  const [deepAgent, setDeepAgent] = useState(false);
+  const [deepAgentMaxItems, setDeepAgentMaxItems] = useState(250);
+  const [deepAgentMinSeverity, setDeepAgentMinSeverity] = useState("high");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -178,6 +188,11 @@ export function PipelineWorkerStatus() {
             <span>
               Pending flush: <span className="text-[#f4efe6]">{status.pending}</span>
             </span>
+            {status.deepAgent && (
+              <span>
+                Deep Agent: <span className="text-[#f4efe6]">{status.deepAgentRuns ?? 0} runs, {status.deepAgentConfirmed ?? 0} confirmed</span>
+              </span>
+            )}
           </div>
           <div className="h-2 bg-[#12110e] border border-[#3a3428] rounded overflow-hidden">
             <div
@@ -207,6 +222,12 @@ export function PipelineWorkerStatus() {
             <p className="text-[11px] text-red-400 flex items-start gap-1">
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
               <span>DB: {status.dbError}</span>
+            </p>
+          )}
+          {status.deepAgentBackendDown && (
+            <p className="text-[11px] text-amber-300 flex items-start gap-1">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>Deep Agent backend down — agent stopped for the rest of this run, static pipeline continues.</span>
             </p>
           )}
           {status.lastError && (
@@ -253,11 +274,44 @@ export function PipelineWorkerStatus() {
           />
           AI 2nd pass
         </label>
+        <label className="flex items-center gap-1.5 text-[11px] text-[#a39886]" title="Agentic exploit search on flagged addresses (propose → fork-PoC → reward → deeper). Needs OPENROUTER_API_KEY in pipeline-worker/.env.">
+          <input
+            type="checkbox"
+            checked={deepAgent}
+            onChange={(e) => setDeepAgent(e.target.checked)}
+            disabled={state !== "idle"}
+          />
+          Deep Agent
+        </label>
+        {deepAgent && (
+          <>
+            <input
+              type="number"
+              min={0}
+              title="Max flagged addresses the Deep Agent runs on this run (0 = unlimited)"
+              value={deepAgentMaxItems}
+              onChange={(e) => setDeepAgentMaxItems(Math.max(0, Number(e.target.value) || 0))}
+              disabled={state !== "idle"}
+              className="w-20 bg-[#12110e] border border-[#3a3428] rounded px-2 py-1 text-xs text-[#f4efe6] focus:outline-none focus:border-[#e8a54b] disabled:opacity-50"
+            />
+            <select
+              title="Deep Agent gate: runs only on addresses with a finding at or above this severity"
+              value={deepAgentMinSeverity}
+              onChange={(e) => setDeepAgentMinSeverity(e.target.value)}
+              disabled={state !== "idle"}
+              className="bg-[#12110e] border border-[#3a3428] rounded px-2 py-1 text-xs text-[#f4efe6] focus:outline-none focus:border-[#e8a54b] disabled:opacity-50"
+            >
+              <option value="critical">Deep Agent: critical+</option>
+              <option value="high">Deep Agent: high+</option>
+              <option value="medium">Deep Agent: medium+</option>
+            </select>
+          </>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-2">
         <button
-          onClick={() => post("/start", { addressesFile: addressesFile.trim(), chainId: chainId.trim() || "ethereum", aiSecondPass, delayMs })}
+          onClick={() => post("/start", { addressesFile: addressesFile.trim(), chainId: chainId.trim() || "ethereum", aiSecondPass, delayMs, deepAgent, deepAgentMaxItems, deepAgentMinSeverity })}
           disabled={busy || state !== "idle" || !addressesFile.trim()}
           className="text-xs px-3 py-1.5 rounded bg-[#e8a54b] text-[#12110e] font-bold flex items-center gap-1.5 hover:bg-[#f0b25e] disabled:opacity-50"
         >
