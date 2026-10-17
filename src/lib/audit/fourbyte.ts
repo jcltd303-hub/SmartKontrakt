@@ -13,7 +13,7 @@
  * they use the resolveFourbyte server fn (fourbyte.functions.ts),
  * which runs the DB lookup server-side and returns plain maps.
  */
-import type { Report, TopicHit } from "./types";
+import type { Report } from "./types";
 import type { Sql } from "../sql-client";
 
 /** One batched DB lookup for selectors and topics. Keys are '0x'-prefixed hex. */
@@ -63,33 +63,10 @@ export function createDbFourbyteLookup(sql: Sql): FourbyteLookup {
 }
 
 /**
- * PUSH32 immediates in the disassembly — candidate event topics. A
- * PUSH32 can be a topic hash, a constant, a slot, or an address, so
- * this only proposes candidates; resolution keeps the ones that match
- * a known event signature and drops the rest. Note the stored
- * disassembly is capped (420 instructions), so topics in later code
- * are not seen here — the dispatcher selectors are up front, topics
- * are best-effort.
- */
-export function extractTopicCandidates(disassembly: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  const re = /PUSH32\s+0x([0-9a-fA-F]{64})/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(disassembly)) !== null && out.length < MAX_KEYS) {
-    const topic = `0x${m[1]!.toLowerCase()}`;
-    if (seen.has(topic)) continue;
-    seen.add(topic);
-    out.push(topic);
-  }
-  return out;
-}
-
-/**
  * Merge lookup results into a report: fill unknown selector signatures
- * (first signature wins — the table keeps all collisions) and attach
- * resolved event topics. Pure + synchronous, so the browser can apply
- * server-fn results with it.
+ * (first signature wins for display; `signatures` keeps all collisions)
+ * and fill unresolved event topics. Pure + synchronous, so the browser
+ * can apply server-fn results with it.
  */
 export function applyFourbyteResults(report: Report, results: FourbyteResults): { resolvedSelectors: number; resolvedTopics: number } {
   let resolvedSelectors = 0;
@@ -100,17 +77,18 @@ export function applyFourbyteResults(report: Report, results: FourbyteResults): 
     const sigs = results.selectors[s.selector.toLowerCase()];
     if (sigs && sigs.length > 0) {
       s.signature = sigs[0]!;
+      s.signatures = sigs;
       resolvedSelectors++;
     }
   }
-  const topics: TopicHit[] = [];
-  for (const [topic, sigs] of Object.entries(results.topics)) {
-    if (sigs.length > 0) {
-      topics.push({ topic, signature: sigs[0]! });
+  for (const t of inv.topics ?? []) {
+    if (t.signature) continue;
+    const sigs = results.topics[t.topic.toLowerCase()];
+    if (sigs && sigs.length > 0) {
+      t.signature = sigs[0]!;
       resolvedTopics++;
     }
   }
-  if (topics.length > 0) inv.topics = topics;
   return { resolvedSelectors, resolvedTopics };
 }
 
@@ -126,8 +104,8 @@ export async function enrichReportFourbyte(
   try {
     const inv = report.inventory;
     const unknown = inv.selectors.filter((s) => !s.signature).map((s) => s.selector);
-    const candidates = extractTopicCandidates(inv.disassembly);
-    const [sel, top] = await Promise.all([lookup.selectors(unknown), lookup.topics(candidates)]);
+    const unresolvedTopics = (inv.topics ?? []).filter((t) => !t.signature).map((t) => t.topic);
+    const [sel, top] = await Promise.all([lookup.selectors(unknown), lookup.topics(unresolvedTopics)]);
     return applyFourbyteResults(report, {
       selectors: Object.fromEntries(sel),
       topics: Object.fromEntries(top),

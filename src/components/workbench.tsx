@@ -17,7 +17,7 @@ import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-r
 import { probeContractInterfaces, type CallProbeResult } from "@/lib/audit/simulator";
 import { requestAiReview, requestDeepAgentRound } from "@/lib/audit/ai.functions";
 import { resolveFourbyte } from "@/lib/audit/fourbyte.functions";
-import { applyFourbyteResults, extractTopicCandidates, fourbyteResultsFromReport } from "@/lib/audit/fourbyte";
+import { applyFourbyteResults, fourbyteResultsFromReport } from "@/lib/audit/fourbyte";
 import { getBackendUrl, runPocOnBackend } from "@/lib/audit/foundry-backend";
 import type { PocResult } from "@/lib/audit/types";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
@@ -251,7 +251,9 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
             selectors: generated.inventory.selectors
               .filter((s) => !s.signature)
               .map((s) => s.selector),
-            topics: extractTopicCandidates(generated.inventory.disassembly),
+            topics: (generated.inventory.topics ?? [])
+              .filter((t) => !t.signature)
+              .map((t) => t.topic),
           },
         })
           .then((fourbyte) => {
@@ -438,7 +440,9 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
             selectors: res.report.inventory.selectors
               .filter((s) => !s.signature)
               .map((s) => s.selector),
-            topics: extractTopicCandidates(res.report.inventory.disassembly),
+            topics: (res.report.inventory.topics ?? [])
+              .filter((t) => !t.signature)
+              .map((t) => t.topic),
           },
         });
         applyFourbyteResults(res.report, fourbyte);
@@ -1753,29 +1757,45 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                     {report?.inventory.selectors.map((sel, idx) => (
                       <div
                         key={idx}
-                        className="p-2.5 bg-[#26231c] border border-[#3a3428] rounded-lg flex items-center justify-between font-mono text-xs"
+                        className="p-2.5 bg-[#26231c] border border-[#3a3428] rounded-lg font-mono text-xs"
                       >
-                        <span className="text-[#e8a54b] font-bold">{sel.selector}</span>
-                        <span className="text-[#a39886] truncate max-w-[200px]" title={sel.signature ?? ""}>
-                          {sel.signature ?? "unknown()"}
-                        </span>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[#e8a54b] font-bold">{sel.selector}</span>
+                          <span className="text-[#a39886] truncate max-w-[200px]" title={sel.signature ?? ""}>
+                            {sel.signature ?? "unknown()"}
+                          </span>
+                        </div>
+                        {sel.signatures && sel.signatures.length > 1 && (
+                          <details className="mt-1">
+                            <summary className="cursor-pointer text-[11px] text-[#e8a54b]">
+                              +{sel.signatures.length - 1} more {sel.signatures.length - 1 === 1 ? "signature" : "signatures"}
+                            </summary>
+                            <div className="mt-1 flex flex-col gap-0.5 text-[11px] text-[#a39886]">
+                              {sel.signatures.slice(1).map((s) => (
+                                <span key={s} title={s}>{s}</span>
+                              ))}
+                            </div>
+                          </details>
+                        )}
                       </div>
                     ))}
                   </div>
                 )}
               </div>
 
-              {/* Event Signatures (4byte) */}
+              {/* Event Signatures (4byte) — only resolved topics shown;
+                  analyzeBytecode also records unresolved PUSH32 candidates,
+                  which enrichment fills when the table knows them. */}
               <div>
                 <h3 className="text-xs font-mono font-bold text-[#e8a54b] uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
                   <Binary className="w-3.5 h-3.5" />
-                  32-Byte Event Signatures ({report?.inventory.topics?.length ?? 0})
+                  32-Byte Event Signatures ({(report?.inventory.topics ?? []).filter((t) => t.signature).length})
                 </h3>
-                {(report?.inventory.topics?.length ?? 0) === 0 ? (
+                {(report?.inventory.topics ?? []).filter((t) => t.signature).length === 0 ? (
                   <p className="text-xs text-[#746c60]">No event topics resolved.</p>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {report?.inventory.topics?.map((t, idx) => (
+                    {(report?.inventory.topics ?? []).filter((t) => t.signature).map((t, idx) => (
                       <div
                         key={idx}
                         className="p-2.5 bg-[#26231c] border border-[#3a3428] rounded-lg flex items-center justify-between font-mono text-xs"

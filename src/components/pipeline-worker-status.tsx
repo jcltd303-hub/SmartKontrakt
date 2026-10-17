@@ -94,6 +94,22 @@ export function PipelineWorkerStatus() {
     };
   }, [workerUrl]);
 
+  useEffect(() => {
+    // When a run is active, show ITS config in the form, not the form
+    // defaults — the form previously said AI-off / 600 while the run
+    // was actually ai-on / 200. Inputs are disabled while non-idle,
+    // so syncing cannot clobber typing. When the run ends, the values
+    // stay as the last run's config (sensible defaults for the next run).
+    if (!status || status.state === "idle") return;
+    setAddressesFile(status.addressesFile ?? "");
+    setChainId(status.chainId ?? "ethereum");
+    setDelayMs(status.delayMs ?? 600);
+    setAiSecondPass(status.aiSecondPass ?? false);
+    setDeepAgent(status.deepAgent ?? false);
+    setDeepAgentMaxItems(status.deepAgentMaxItems ?? 250);
+    setDeepAgentMinSeverity(status.deepAgentMinSeverity ?? "high");
+  }, [status]);
+
   const saveWorkerUrl = (v: string) => {
     setWorkerUrl(v);
     try {

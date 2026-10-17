@@ -1,6 +1,6 @@
 import { disassemble, formatDisassembly, type Instruction } from "./disassemble";
 import { lookupSelector } from "./selectors";
-import type { Finding, Inventory, SelectorHit } from "./types";
+import type { Finding, Inventory, SelectorHit, TopicHit } from "./types";
 
 const IMPL_SLOT = "360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
 const ADMIN_SLOT = "b53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";
@@ -88,6 +88,27 @@ function basicBlocks(ins: Instruction[]): number {
     else if (terminals.has(cur.name) && i < ins.length - 1 && ins[i + 1]?.name !== "JUMPDEST") blocks += 1;
   }
   return blocks;
+}
+
+/**
+ * PUSH32 immediates — candidate event topics. A PUSH32 can be a topic
+ * hash, a constant, a slot, or an address; resolution (fourbyte.ts)
+ * keeps only the ones matching a known event signature. Taken from the
+ * full instruction stream, NOT the capped stored disassembly, so topics
+ * in later code are seen. Signatures start null; enrichment fills them.
+ */
+function topicsOf(ins: Instruction[]): TopicHit[] {
+  const seen = new Set<string>();
+  const out: TopicHit[] = [];
+  for (const cur of ins) {
+    if (!cur || cur.name !== "PUSH32" || !cur.imm || cur.imm.length !== 64) continue;
+    const topic = `0x${cur.imm.toLowerCase()}`;
+    if (seen.has(topic)) continue;
+    seen.add(topic);
+    out.push({ topic, signature: null });
+    if (out.length >= 500) break;
+  }
+  return out;
 }
 
 function selectorsOf(ins: Instruction[]): SelectorHit[] {
@@ -535,6 +556,7 @@ require(keccak256(initCode) == expected, "init code");`,
     inheritance: [],
     selectors: sels,
     reconstructed: reconstruct(sels),
+    topics: topicsOf(ins),
     opcodes,
     signals,
     bytecodeBytes: code.length,

@@ -49,6 +49,10 @@ export type DeepAgentRoundResult = {
   hypotheses: DeepAgentHypothesis[];
   /** Set when the search should stop (no more hypotheses, no API key, ...). */
   stopReason: string | null;
+  /** Wall-clock ms for the LLM call + response parse. The 60s-timeout
+   * saga showed this is the number that decides whether the prompt
+   * fits the model's latency — the worker logs it per address. */
+  llmMs: number;
 };
 
 /** Max hypotheses the server accepts from one round — the prompt asks for 2. */
@@ -175,8 +179,9 @@ export async function runDeepAgentRound(
 ): Promise<DeepAgentRoundResult> {
   const { apiKey, model } = resolveOpenRouterConfig();
   if (!apiKey) {
-    return { hypotheses: [], stopReason: "no_api_key" };
+    return { hypotheses: [], stopReason: "no_api_key", llmMs: 0 };
   }
+  const started = Date.now();
 
   const { system, user } = buildDeepAgentPrompt(contractName, body, findings, priorResults, round, fourbyte);
   const referer =
@@ -278,5 +283,6 @@ export async function runDeepAgentRound(
         : hypotheses.length === 0
           ? "no_new_hypotheses"
           : null,
+    llmMs: Date.now() - started,
   };
 }

@@ -21,6 +21,8 @@ export type Finding = {
 export type SelectorHit = {
   selector: string;
   signature: string | null;
+  /** All known signatures for this selector (collisions), first == signature. */
+  signatures?: string[];
 };
 
 export type FnSurface = {
@@ -60,8 +62,9 @@ export type Inventory = {
   selectors: SelectorHit[];
   reconstructed: string;
   /** Resolved event topics (PUSH32 candidates matched against the
-   * fourbyte_event_signatures table). Absent on records analyzed before
-   * fourbyte enrichment existed. */
+   * fourbyte_event_signatures table). analyzeBytecode fills every
+   * PUSH32 candidate with signature null; enrichment fills the known
+   * ones. Absent on records analyzed before fourbyte enrichment existed. */
   topics?: TopicHit[];
   opcodes: { name: string; count: number }[];
   signals: { name: string; count: number }[];

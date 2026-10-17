@@ -183,6 +183,7 @@ export async function runWorkerDeepAgent(
   const findingsForPrompt: Finding[] = [...input.findings];
   const priorResults: DeepAgentPriorResult[] = [];
   let stopped: string | null = null;
+  let totalLlmMs = 0;
 
   try {
     for (let round = 1; round <= opts.maxRounds; round += 1) {
@@ -200,6 +201,7 @@ export async function runWorkerDeepAgent(
         );
         hypotheses = res.hypotheses;
         stopReason = res.stopReason;
+        totalLlmMs += res.llmMs ?? 0;
       } catch (err) {
         base.errors += 1;
         stopped = `LLM round failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -244,6 +246,6 @@ export async function runWorkerDeepAgent(
     stopped = `unexpected: ${err instanceof Error ? err.message : String(err)}`;
   }
 
-  const note = `Deep Agent: ${base.rounds} round(s), ${base.confirmed.length} confirmed on fork, ${base.refuted} refuted${base.errors > 0 ? `, ${base.errors} error(s)` : ""}${stopped ? ` — ${stopped}` : ""}`;
+  const note = `Deep Agent: ${base.rounds} round(s), ${base.confirmed.length} confirmed on fork, ${base.refuted} refuted${base.errors > 0 ? `, ${base.errors} error(s)` : ""}, LLM ${(totalLlmMs / 1000).toFixed(1)}s${stopped ? ` — ${stopped}` : ""}`;
   return { ...base, ran: true, note };
 }

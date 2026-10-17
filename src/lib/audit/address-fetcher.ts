@@ -478,6 +478,11 @@ export async function analyzeAddress(
         inv.bytecodeBytes = byte.inventory.bytecodeBytes;
         inv.basicBlocks = byte.inventory.basicBlocks;
         inv.proxy = inv.proxy ?? byte.inventory.proxy;
+        // Source analysis has no selectors/topics (engine sets []), so
+        // the bytecode's are ground truth — without this, verified
+        // contracts get no fourbyte enrichment at all.
+        if (inv.selectors.length === 0) inv.selectors = byte.inventory.selectors;
+        if (!inv.topics || inv.topics.length === 0) inv.topics = byte.inventory.topics;
         inv.notes = [
           ...inv.notes,
           `Runtime bytecode also fetched (${byte.inventory.bytecodeBytes} bytes) — Bytecode & CFG tab reflects on-chain code.`,
