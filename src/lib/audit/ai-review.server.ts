@@ -1,5 +1,6 @@
 import type { Finding } from "./types";
 import { openRouterLimiter, withRetry } from "./rate-limit";
+import { selectPocFallbacks } from "./poc-fallbacks";
 
 export type AiSecurityReview = {
   threatModelReport: string;
@@ -73,7 +74,15 @@ function buildFallbackReview(contractName: string, findings: Finding[], _codeOrB
   const critList = findings.filter((f) => f.severity === "critical" || f.severity === "high");
   const topIssue = critList[0]?.title ?? "Potential Reentrancy / State Desynchronization";
 
-  const foundryTestCode = `// SPDX-License-Identifier: MIT
+  // No-AI path: return the best-matching fallback-library template as the
+  // starting-point PoC, not a hollow sanity check. The template's TODOs
+  // must be adapted to the target's real ABI before running — it fails
+  // loudly (require with a message) until then, which is the honest
+  // signal. A passing sanity check that proves nothing is worse.
+  const [startingTemplate] = selectPocFallbacks(findings, 1);
+  const foundryTestCode = startingTemplate
+    ? startingTemplate.source
+    : `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
@@ -115,10 +124,82 @@ contract PoC is Test {
    - **First Deposit / Vault Inflation**: Ensure minimum shares or virtual offsets exist on liquidity deposits.
 
 3. **Governance & Centralization**:
-   - Verify whether owner privileges include immediate withdrawals, pause flags, or proxy logic modifications without timelocks.`,
+   - Verify whether owner privileges include immediate withdrawals, pause flags, or proxy logic modifications without timelocks.${startingTemplate ? `
+
+**PoC**: AI review unavailable — attached test is the fallback-library starting template (\`${startingTemplate.file}\`) for the lead finding. Adapt its TODOs to the target's real ABI before running; it fails loudly until adapted.` : ""}`,
     foundryTestCode,
     economicRiskSummary: `Identified ${critList.length} high/critical vulnerabilities. Top risk: ${topIssue}. Review economic price feeds and reentrancy vectors.`,
     source: "template",
+  };
+}
+
+/**
+ * Build the OpenRouter prompt for an AI review. Exported for testing —
+ * the prompt must carry the matching fallback-library template(s) as the
+ * starting point for the generated PoC.
+ */
+export function buildAiReviewPrompt(
+  contractName: string,
+  body: string,
+  findings: Finding[],
+): { system: string; user: string } {
+  const findingsSummary = findings
+    .map(
+      (f, i) =>
+        `Finding #${i + 1} [${f.severity.toUpperCase()}]: ${f.title} (Detector: ${f.detector}, SWC-${f.swc ?? "N/A"})\n` +
+        `Location: ${f.locationFn ?? "contract"} (line ${f.locationLine ?? "N/A"})\n` +
+        `Summary: ${f.summary}`,
+    )
+    .join("\n\n");
+
+  // Starting-point templates, matched to this audit's findings. The model
+  // ADAPTS these — it does not invent a harness from scratch.
+  const startingTemplates = selectPocFallbacks(findings, 3);
+  const templateSection =
+    startingTemplates.length > 0
+      ? `
+
+STARTING-POINT PoC TEMPLATES — adapt, do not reinvent:
+The library below contains proven, fork-ready Foundry PoC templates matched to this audit's findings. START FROM the template(s) for the primary vulnerability: keep its setUp()/fork shape, its \`contract PoC is Test\` name, and its observable-state assertions (balances, owner, shares — never a silent low-level-call success). Adapt ONLY the TODO-marked constants / interfaces to the target's real ABI (function names, token addresses, amounts, proofs, slots). Do NOT invent a new harness, a new attacker pattern, or a new setUp. If a template's TODO cannot be adapted to the target (e.g. the function does not exist), say so in the threat model and use the next template — never fabricate an interface the target does not have.
+
+${startingTemplates
+  .map(
+    (t, i) =>
+      `--- Template ${i + 1}: ${t.file} ---\n\`\`\`solidity\n${t.source}\n\`\`\``,
+  )
+  .join("\n\n")}
+`
+      : "";
+
+  const userPrompt = `Contract Name: ${contractName}
+
+Contract Source / Decompiled Sample (truncated to first 12,000 chars):
+\`\`\`solidity
+${body.slice(0, 12000)}
+\`\`\`
+
+Detected Static Analysis Findings:
+${findingsSummary || "No static detectors triggered."}
+${templateSection}
+Your tasks:
+1. Provide a rigorous, concise Executive Threat Model Report (economic flash loan attack vectors, oracle spot-price manipulation, ERC-4626 share inflation risks, and administrative rug vectors).
+2. Generate a complete, compilation-ready Foundry test suite contract in Solidity (\`test/Exploit.t.sol\`) that tests and confirms the primary vulnerability. START FROM the starting-point template(s) above: keep the template's setUp()/fork shape, its \`contract PoC is Test\` name, and its observable-state assertions, adapting ONLY the TODO-marked constants / interfaces to the target's real ABI. The test MUST:
+   - declare \`contract PoC is Test\` and \`import "forge-std/Test.sol";\`
+   - in setUp(): fork live chain state with \`vm.createSelectFork(vm.envString("POC_RPC_URL"))\` (pin a block with \`vm.envUint("POC_FORK_BLOCK")\` when it is nonzero) and attach to the live target via \`vm.envAddress("POC_TARGET")\` — never hardcode a target address
+   - fund an attacker with \`vm.deal\`, execute the attack against the forked live contract, and assert a balance/profit change
+3. Provide a 2-sentence economic risk summary.
+
+Format your response strictly as JSON with this schema:
+{
+  "threatModelReport": "Markdown string containing the threat model",
+  "foundryTestCode": "Solidity code string for the Foundry test suite",
+  "economicRiskSummary": "Brief 2-sentence summary of the main economic/game-theoretic exposure"
+}`;
+
+  return {
+    system:
+      "You are a Principal EVM Security Auditor and White-Hat Exploit Researcher. Analyze the smart contract code / bytecode and detected vulnerabilities. Respond strictly as JSON matching the requested schema.",
+    user: userPrompt,
   };
 }
 
@@ -134,39 +215,7 @@ export async function generateAiSecurityReview(
   }
 
   try {
-    const findingsSummary = findings
-      .map(
-        (f, i) =>
-          `Finding #${i + 1} [${f.severity.toUpperCase()}]: ${f.title} (Detector: ${f.detector}, SWC-${f.swc ?? "N/A"})\n` +
-          `Location: ${f.locationFn ?? "contract"} (line ${f.locationLine ?? "N/A"})\n` +
-          `Summary: ${f.summary}`
-      )
-      .join("\n\n");
-
-    const userPrompt = `Contract Name: ${contractName}
-
-Contract Source / Decompiled Sample (truncated to first 12,000 chars):
-\`\`\`solidity
-${body.slice(0, 12000)}
-\`\`\`
-
-Detected Static Analysis Findings:
-${findingsSummary || "No static detectors triggered."}
-
-Your tasks:
-1. Provide a rigorous, concise Executive Threat Model Report (economic flash loan attack vectors, oracle spot-price manipulation, ERC-4626 share inflation risks, and administrative rug vectors).
-2. Generate a complete, compilation-ready Foundry test suite contract in Solidity (\`test/Exploit.t.sol\`) that tests and confirms the primary vulnerability. The test MUST:
-   - declare \`contract PoC is Test\` and \`import "forge-std/Test.sol";\`
-   - in setUp(): fork live chain state with \`vm.createSelectFork(vm.envString("POC_RPC_URL"))\` (pin a block with \`vm.envUint("POC_FORK_BLOCK")\` when it is nonzero) and attach to the live target via \`vm.envAddress("POC_TARGET")\` — never hardcode a target address
-   - fund an attacker with \`vm.deal\`, execute the attack against the forked live contract, and assert a balance/profit change
-3. Provide a 2-sentence economic risk summary.
-
-Format your response strictly as JSON with this schema:
-{
-  "threatModelReport": "Markdown string containing the threat model",
-  "foundryTestCode": "Solidity code string for the Foundry test suite",
-  "economicRiskSummary": "Brief 2-sentence summary of the main economic/game-theoretic exposure"
-}`;
+    const { system, user } = buildAiReviewPrompt(contractName, body, findings);
 
     const referer =
       process.env.APP_URL?.trim() ||
@@ -186,12 +235,8 @@ Format your response strictly as JSON with this schema:
         body: JSON.stringify({
           model,
           messages: [
-            {
-              role: "system",
-              content:
-                "You are a Principal EVM Security Auditor and White-Hat Exploit Researcher. Analyze the smart contract code / bytecode and detected vulnerabilities. Respond strictly as JSON matching the requested schema.",
-            },
-            { role: "user", content: userPrompt },
+            { role: "system", content: system },
+            { role: "user", content: user },
           ],
           response_format: { type: "json_object" },
           temperature: 0.7,
