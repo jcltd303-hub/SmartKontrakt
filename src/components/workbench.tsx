@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { SAMPLES, type Sample } from "@/lib/audit/samples";
 import { analyzeInput } from "@/lib/audit/engine";
-import { looksLikeBytecode } from "@/lib/audit/bytecode";
+import { looksLikeBytecode, fullDisassembly } from "@/lib/audit/bytecode";
 import type { Finding, Report, Severity } from "@/lib/audit/types";
 import type { ScanSummary } from "@/lib/audit/persist.server";
 import { BatchPipeline } from "./batch-pipeline";
@@ -658,6 +658,19 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       .filter((l) => Boolean(l.trim()))
       .filter((l) => !disasmFilter || l.toLowerCase().includes(disasmFilter.toLowerCase().trim()));
   }, [report, disasmFilter]);
+
+  // Full disassembly for the CFG: the stored inventory.disassembly is capped
+  // at 420 instructions, which truncates the CFG for most contracts. When
+  // the raw input is bytecode, recompute the full stream here (in memory,
+  // never persisted) and feed the CFG that; otherwise fall back to the
+  // stored text and the viewer shows its truncation badge.
+  const cfgDisassembly = useMemo(() => {
+    if (looksLikeBytecode(contractBody.trim())) {
+      const full = fullDisassembly(contractBody);
+      if (full) return full;
+    }
+    return report?.inventory.disassembly ?? "";
+  }, [contractBody, report]);
 
   return (
     <div className="min-h-screen bg-[#12110e] text-[#f4efe6] flex flex-col font-sans selection:bg-[#e8a54b]/30 selection:text-[#f4efe6]">
@@ -1701,7 +1714,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 </div>
 
                 {bytecodeSubView === "cfg" ? (
-                  <CfgViewer disassembly={report?.inventory.disassembly ?? ""} />
+                  <CfgViewer disassembly={cfgDisassembly} />
                 ) : (
                   <div className="max-h-96 overflow-y-auto bg-[#12110e] border border-[#3a3428] rounded-lg p-3 font-mono text-xs text-[#a39886] leading-relaxed">
                     {disasmLines.length === 0 ? (
