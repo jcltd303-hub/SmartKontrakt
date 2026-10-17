@@ -56,7 +56,7 @@ describe("wrapPocSnippet Reenter shape", () => {
     assert.ok(wrapped.testFile.includes("Reenter attacker = new Reenter(target);"));
     assert.ok(wrapped.testFile.includes("attacker.attack{value: 1 ether}();"));
     assert.ok(wrapped.testFile.includes('assertTrue(address(attacker).balance > attackerBefore || target.balance < targetBefore, "no value moved")'));
-    assert.ok(wrapped.testFile.includes("contract PocWrapTest is Test"));
+    assert.ok(wrapped.testFile.includes("contract PoC is Test"));
   });
 });
 
@@ -367,5 +367,32 @@ describe("wrapPocSnippet param filling", () => {
 }`);
     assert.ok(passthrough);
     assert.equal(passthrough.note, null);
+  });
+});
+
+describe("wrapPocSnippet test-contract name (Round 3)", () => {
+  it("names the generated test contract PoC (backend runs --match-contract PoC)", () => {
+    const wrapped = wrapPocSnippet(`contract Hack {
+    function attack() external {}
+}`);
+    assert.ok(wrapped);
+    assert.ok(wrapped.testFile.includes("contract PoC is Test"));
+  });
+
+  it("generated output contains no PocWrapTest string", () => {
+    const wrapped = wrapPocSnippet(`contract Hack {
+    function attack(uint256 amount) external {}
+}`);
+    assert.ok(wrapped);
+    assert.ok(!wrapped.testFile.includes("PocWrapTest"));
+  });
+
+  it("returns null when the snippet already defines a contract named PoC (collision)", () => {
+    assert.equal(
+      wrapPocSnippet(`contract PoC {
+    function attack() external {}
+}`),
+      null,
+    );
   });
 });

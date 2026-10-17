@@ -627,8 +627,15 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       const status = mapFindingPocStatus(poc);
       // Zero-tests-matched must never read as passed: when the backend
       // claimed "passed" but no test ran, the logs say so explicitly.
+      // The note depends on whether the snippet was wrapped: a wrapped
+      // run DID produce a runnable test, so "attack contract, not a
+      // runnable test" would be wrong — it means no test matched the
+      // backend's filter instead.
+      const zeroTestsNote = wrapped
+        ? "Wrapped test did not run — no tests matched the backend's filter."
+        : "No test functions ran — this PoC snippet is an attack contract, not a runnable Foundry test.";
       const fullLogs = status === "error" && poc.status === "passed"
-        ? `${poc.logs ?? ""}\nNo test functions ran — this PoC snippet is an attack contract, not a runnable Foundry test.`
+        ? `${poc.logs ?? ""}\n${zeroTestsNote}`
         : (poc.logs ?? "");
       // When the wrapper filled default args, say so up front — the
       // guessed args may be wrong, and a FAIL with defaults is

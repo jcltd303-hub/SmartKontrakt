@@ -5,7 +5,11 @@
 // Run button can actually execute it through the :8787 backend.
 //
 // The snippet is kept VERBATIM — the wrapper only prepends a missing
-// SPDX / pragma / forge-std import and appends a PocWrapTest contract.
+// SPDX / pragma / forge-std import and appends a `PoC` contract. The
+// appended contract is named `PoC` because the :8787 backend runs
+// `forge test --match-contract PoC` (termux-backend/server.mjs) —
+// any other name (e.g. PocWrapTest) matches nothing and forge
+// reports "no tests match the provided pattern".
 //
 // Semantics: a PASS means the wrapped exploit moved value on the fork
 // (attacker balance up OR target balance down). That is a real
@@ -16,7 +20,7 @@
 // Parameter filling: the wrapper NEVER returns null just because the
 // constructor or entry has parameters. Unknown-but-fillable params get
 // defaults (fail-closed ONLY for genuinely unwrappable shapes: no
-// contract defs, interfaces-only, PocWrapTest name collision, or a
+// contract defs, interfaces-only, `PoC` name collision, or a
 // param type outside the fill table):
 //   address params are filled NAME-AWARE (Round 2 — Round 1's blanket
 //   address -> target was wrong for Jer's Drain snippet, where the
@@ -277,7 +281,7 @@ function fillParamList(paramList: string): { args: string; types: string } | nul
  * Wrap a PoC snippet into a runnable Foundry test file.
  * Returns null only for genuinely unwrappable shapes (fail closed —
  * the caller falls back to running the raw snippet, which errors with
- * a clear note): no contract defs, interfaces-only, PocWrapTest name
+ * a clear note): no contract defs, interfaces-only, `PoC` name
  * collision, or a param type outside the fill table.
  */
 export function wrapPocSnippet(snippet: string): WrappedPoc | null {
@@ -293,7 +297,7 @@ export function wrapPocSnippet(snippet: string): WrappedPoc | null {
   const contracts = findContracts(stripped);
   if (contracts.length === 0) return null;
   // The appended test contract would collide with this name.
-  if (contracts.some((c) => c.name === "PocWrapTest")) return null;
+  if (contracts.some((c) => c.name === "PoC")) return null;
   // Attack contract = first contract (source order) with the
   // highest-priority entry function.
   let attack: ContractInfo | null = null;
@@ -330,7 +334,7 @@ export function wrapPocSnippet(snippet: string): WrappedPoc | null {
   const header = prefix.length ? prefix.join("\n") + "\n" : "";
   const testContract = [
     "",
-    "contract PocWrapTest is Test {",
+    "contract PoC is Test {",
     "    function test_poc() public {",
     '        vm.createSelectFork(vm.envString("POC_RPC_URL"));',
     '        address target = vm.envAddress("POC_TARGET");',
