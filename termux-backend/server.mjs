@@ -34,7 +34,17 @@ const LOG_CAP = 50 * 1024; // chars kept from forge output (tail — the summary
 const COLLECT_CAP = 256 * 1024; // chars collected in memory, hard bound
 const MAX_TEST_CODE = 200 * 1024; // chars
 const MAX_BODY = 1024 * 1024; // bytes
-const DEFAULT_RPC = "https://eth.llamarpc.com";
+// RPC provider rotation order — same as the workbench/worker
+// (address-fetcher.ts): PublicNode, drpc, 1rpc.io first; Cloudflare and
+// llamrpc last. eth.llamarpc.com is currently dead (HTTP 525) but stays
+// in the list in case it comes back.
+const RPC_PROVIDERS = [
+  "https://ethereum.publicnode.com",
+  "https://eth.drpc.org",
+  "https://1rpc.io/eth",
+  "https://cloudflare-eth.com",
+  "https://eth.llamarpc.com",
+];
 // Repo layout: termux-backend/ and foundry/ are siblings at the repo root.
 const SCAFFOLD_DIR =
   process.env.FOUNDRY_DIR ??
@@ -108,6 +118,32 @@ function tailCap(text) {
   return "[…output truncated, showing last 50KB]\n" + text.slice(-LOG_CAP);
 }
 
+/** Candidate RPCs: the caller's pinned URL first, then the provider list (deduped). */
+function candidateRpcs(preferred) {
+  const out = [];
+  for (const u of [preferred, ...RPC_PROVIDERS]) {
+    if (u && !out.includes(u)) out.push(u);
+  }
+  return out;
+}
+
+/** Strong signals of an RPC/transport/fork-setup failure in forge output. */
+const RPC_ERROR_RE =
+  /HTTP error|failed to (fetch|get).*chain|failed to fetch|error sending request|connection (refused|reset|aborted|timed? ?out)|connect timed? ?out|request timed? ?out|operation timed? ?out|rate ?limit|too many requests|\b429\b|\b502\b|\b503\b|\b504\b|\b525\b|failed to (instantiate|create|setup).*fork|fork.*(instantiation|creation) failed|Failed to get (chain|block)|eth_chainId|JSON-RPC.*error/i;
+
+/**
+ * Should a failed forge run be retried on the next RPC provider?
+ * Never retry when tests actually ran (a verdict exists), or on a compile
+ * error (another RPC won't fix the code). Retry only when forge died
+ * before/without running tests AND the output smells like a transport or
+ * fork-setup failure.
+ */
+function shouldRetryRpc(output) {
+  if (/Ran \d+ test/.test(output)) return false;
+  if (/error\[|Compiler run failed/i.test(output)) return false;
+  return RPC_ERROR_RE.test(output);
+}
+
 function validateRun(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return "body must be a JSON object";
   if (typeof body.address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(body.address)) {
@@ -169,50 +205,89 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl }) {
     await fs.mkdir(path.join(tmp, "test"), { recursive: true });
     await fs.writeFile(path.join(tmp, "test", "PoC.t.sol"), testCode, "utf8");
 
-    const args = ["test", "--fork-url", rpcUrl];
-    if (blockNumber !== undefined) args.push("--fork-block-number", String(blockNumber));
-    // Generated tests declare `contract PoC` (see foundry/test/PoC.t.sol template).
-    args.push("--match-contract", "PoC", "-vvv");
+    // Rotate RPC providers on transport/fork-setup failure. A test verdict
+    // (tests ran, pass or fail) is final — only a pre-test RPC failure
+    // retries on the next provider. Timeouts and missing forge binaries
+    // never retry (another provider won't fix those).
+    let lastOutput = "";
+    let lastRpc = null;
+    const candidates = candidateRpcs(rpcUrl);
+    for (const candidate of candidates) {
+      lastRpc = candidate;
+      const args = ["test", "--fork-url", candidate];
+      if (blockNumber !== undefined) args.push("--fork-block-number", String(blockNumber));
+      // Generated tests declare `contract PoC` (see foundry/test/PoC.t.sol template).
+      args.push("--match-contract", "PoC", "-vvv");
 
-    // Scrubbed child env: a test's vm.envOr must never see the parent's secrets.
-    const childEnv = {
-      PATH: process.env.PATH ?? "",
-      HOME: process.env.HOME ?? "",
-      TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
-      ETH_RPC_URL: rpcUrl, // resolves the [rpc_endpoints] mainnet alias in foundry.toml
-      POC_TARGET: address,
-      POC_FORK_BLOCK: String(blockNumber ?? 0),
-      POC_RPC_URL: rpcUrl,
-    };
-    const result = await runWithTimeout("forge", args, {
-      cwd: tmp,
-      timeoutMs: FORGE_TIMEOUT_MS,
-      env: childEnv,
-    });
-    const durationMs = Date.now() - started;
-    if (result.spawnError) {
-      return {
-        ok: false,
-        passed: false,
-        logs: tailCap(result.output),
-        durationMs,
-        error: "forge failed to start — is Foundry installed? Run scripts/termux-setup.sh in Termux.",
+      // Scrubbed child env: a test's vm.envOr must never see the parent's secrets.
+      const childEnv = {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? "",
+        TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
+        ETH_RPC_URL: candidate, // resolves the [rpc_endpoints] mainnet alias in foundry.toml
+        POC_TARGET: address,
+        POC_FORK_BLOCK: String(blockNumber ?? 0),
+        POC_RPC_URL: candidate,
       };
+      const result = await runWithTimeout("forge", args, {
+        cwd: tmp,
+        timeoutMs: FORGE_TIMEOUT_MS,
+        env: childEnv,
+      });
+      const durationMs = Date.now() - started;
+      if (result.spawnError) {
+        return {
+          ok: false,
+          passed: false,
+          logs: tailCap(result.output),
+          durationMs,
+          rpcUrl: candidate,
+          error: "forge failed to start — is Foundry installed? Run scripts/termux-setup.sh in Termux.",
+        };
+      }
+      if (result.timedOut) {
+        return {
+          ok: false,
+          passed: false,
+          logs: tailCap(result.output),
+          durationMs,
+          rpcUrl: candidate,
+          error: "forge test timed out after 120s",
+        };
+      }
+      if (result.code === 0) {
+        return {
+          ok: true, // forge ran to completion; passed says whether the PoC reproduced
+          passed: true,
+          logs: tailCap(result.output),
+          durationMs,
+          rpcUrl: candidate,
+        };
+      }
+      lastOutput = result.output;
+      if (!shouldRetryRpc(result.output)) {
+        // Tests ran and failed (a real verdict), or a compile error.
+        return {
+          ok: true,
+          passed: false,
+          logs: tailCap(result.output),
+          durationMs,
+          rpcUrl: candidate,
+        };
+      }
+      // RPC-looking failure — fall through to the next provider.
+      console.log(
+        `[${new Date().toISOString()}] /run-poc RPC ${candidate} failed (transport/fork) — rotating to next provider`,
+      );
     }
-    if (result.timedOut) {
-      return {
-        ok: false,
-        passed: false,
-        logs: tailCap(result.output),
-        durationMs,
-        error: "forge test timed out after 120s",
-      };
-    }
+    // Every provider failed with RPC-looking errors.
     return {
-      ok: true, // forge ran to completion; passed says whether the PoC reproduced
-      passed: result.code === 0,
-      logs: tailCap(result.output),
-      durationMs,
+      ok: false,
+      passed: false,
+      logs: tailCap(lastOutput),
+      durationMs: Date.now() - started,
+      rpcUrl: lastRpc,
+      error: `All RPC providers failed (tried ${candidates.length}) — last: ${lastRpc}`,
     };
   } finally {
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -276,7 +351,9 @@ const server = http.createServer((req, res) => {
         return;
       }
       busy = true;
-      const rpcUrl = body.rpcUrl ?? process.env.ETH_RPC_URL ?? DEFAULT_RPC;
+      // No pinned RPC → candidateRpcs starts with the provider list
+      // (PublicNode first). A pinned RPC is tried first, then rotates.
+      const rpcUrl = body.rpcUrl ?? process.env.ETH_RPC_URL;
       try {
         const result = await runForgeTest({
           address: body.address,
@@ -285,7 +362,7 @@ const server = http.createServer((req, res) => {
           rpcUrl,
         });
         console.log(
-          `[${new Date().toISOString()}] /run-poc address=${body.address} passed=${result.passed} ok=${result.ok} durationMs=${result.durationMs}${result.error ? ` error=${result.error}` : ""}`,
+          `[${new Date().toISOString()}] /run-poc address=${body.address} passed=${result.passed} ok=${result.ok} durationMs=${result.durationMs} rpc=${result.rpcUrl ?? "-"}${result.error ? ` error=${result.error}` : ""}`,
         );
         sendJson(res, result.ok ? 200 : 500, result);
       } catch (err) {
@@ -307,3 +384,7 @@ server.listen(PORT, HOST, () => {
   console.log(`SmartKontrakt Foundry backend listening on http://${HOST}:${PORT} (loopback only)`);
   console.log(`Scaffold: ${SCAFFOLD_DIR}`);
 });
+
+// Exported for unit tests (the rotation helpers); importing this module
+// still starts the server, so tests must close it when done.
+export { candidateRpcs, shouldRetryRpc, server };

@@ -47,4 +47,6 @@ fi
 echo "Starting SmartKontrakt Foundry backend on http://127.0.0.1:8787 ..."
 echo "Tip: run 'termux-wake-lock' in another session so Android doesn't kill the server mid-run."
 echo "RPC: set ETH_RPC_URL to your own node, or the public default is used."
-ETH_RPC_URL="${ETH_RPC_URL:-https://eth.llamarpc.com}" node termux-backend/server.mjs
+# PublicNode first — eth.llamarpc.com is dead (HTTP 525). The backend
+# rotates providers on failure anyway, but start on a working one.
+ETH_RPC_URL="${ETH_RPC_URL:-https://ethereum.publicnode.com}" node termux-backend/server.mjs
