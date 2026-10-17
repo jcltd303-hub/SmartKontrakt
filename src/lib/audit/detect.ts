@@ -31,6 +31,10 @@ type Flow = {
   sawCall: boolean;
   callThenWrite: boolean;
   writeThenCall: boolean;
+  /** True when the walker saw a genuine ether send: transfer/send (1-arg),
+   * or call{value}. Token transfer(to, x) / super.transfer / SafeMath do
+   * NOT set this — the old fn.source regex matched all three. */
+  sawEtherSend: boolean;
   /** State vars written before the first external call (checks-effects order). */
   preCallWrites: Set<string>;
   /** State vars written after the first external call (the stale-read surface). */
@@ -39,6 +43,13 @@ type Flow = {
 
 const ASSIGN = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]);
 const LOW_LEVEL = new Set(["call", "delegatecall", "staticcall", "callcode", "send", "transfer"]);
+/**
+ * Pure-arithmetic library methods (SafeMath). `balances[x].sub(wad)` is
+ * arithmetic on a value, not a call to another contract — it must never
+ * count as an external call, or every SafeMath transfer looks like
+ * call-then-write reentrancy.
+ */
+const SAFE_MATH = new Set(["add", "sub", "mul", "div", "mod"]);
 const BUILTIN = new Set([
   "require", "assert", "revert", "keccak256", "sha256", "ripemd160", "ecrecover",
   "addmod", "mulmod", "gasleft", "blockhash", "encode", "encodePacked",
@@ -564,7 +575,7 @@ function walkFn(
   push: (f: Finding) => void,
   authed: boolean,
 ): Flow {
-  const flow: Flow = { seen: null, sawWrite: false, sawCall: false, callThenWrite: false, writeThenCall: false, preCallWrites: new Set(), postCallWrites: new Set() };
+  const flow: Flow = { seen: null, sawWrite: false, sawCall: false, callThenWrite: false, writeThenCall: false, preCallWrites: new Set(), postCallWrites: new Set(), sawEtherSend: false };
   const consts = new Set(contract.stateVars.filter((v) => v.constOrImmutable).map((v) => v.name));
   const params = new Set(fn.params.map((p) => p.name).filter(Boolean));
 
@@ -583,6 +594,9 @@ function walkFn(
 
   const noteCall = (call: ExtCall) => {
     flow.sawCall = true;
+    if (call.kind === "transfer" || call.kind === "send" || (call.kind === "call" && call.sendsValue)) {
+      flow.sawEtherSend = true;
+    }
     if (flow.sawWrite && !flow.callThenWrite) flow.writeThenCall = true;
     if (!flow.seen) flow.seen = call;
     if (!call.checked && (call.kind === "call" || call.kind === "send" || call.kind === "delegatecall" || call.kind === "staticcall" || call.kind === "callcode")) {
@@ -707,7 +721,7 @@ require(ok, "pay");`,
 
         const isLow = kind === "call" || kind === "delegatecall" || kind === "staticcall" || kind === "callcode" || kind === "send" || kind === "transfer" || kind === "selfdestruct" || kind === "erc20";
         const internal = !callee.base && member && byName.has(member);
-        if (!internal && (isLow || kind === "member") && member && !BUILTIN.has(member)) {
+        if (!internal && (isLow || kind === "member") && member && !BUILTIN.has(member) && !SAFE_MATH.has(member)) {
           // Skip obvious value-type methods and type conversions.
           if (member !== "push" && member !== "pop") {
             const checked = kind === "transfer" || kind === "selfdestruct" ? true : !asStatement;
@@ -886,6 +900,7 @@ keccak256(abi.encodePacked("a", "bc"));`,
       flow.writeThenCall = left.writeThenCall || right.writeThenCall || before.writeThenCall;
       flow.preCallWrites = new Set([...before.preCallWrites, ...left.preCallWrites, ...right.preCallWrites]);
       flow.postCallWrites = new Set([...before.postCallWrites, ...left.postCallWrites, ...right.postCallWrites]);
+      flow.sawEtherSend = left.sawEtherSend || right.sawEtherSend || before.sawEtherSend;
       return;
     }
     if (stmt.type === "ForStatement" || stmt.type === "WhileStatement" || stmt.type === "DoWhileStatement") {
@@ -944,7 +959,10 @@ keccak256(abi.encodePacked("a", "bc"));`,
   else if (fn.body) scanStmt(fn.body, flow);
 
   // Admin / ether paths that the walker doesn't phrase as a single finding.
-  const sends = /call\s*\{[^}]*value|\.transfer\s*\(|\.send\s*\(/.test(fn.source);
+  // Genuine ether sends come from the walker (transfer/send/call{value}),
+  // not a source regex: the regex matched token transfer(to, x) and
+  // super.transfer, neither of which moves ether.
+  const sends = flow.sawEtherSend;
   if (sends && !authed && !/ecrecover\s*\(/.test(fn.source) && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && !debitsOwnCredit(fn) && fn.mutability !== "view" && fn.mutability !== "pure") {
     push(make({
       severity: "critical",
@@ -987,6 +1005,7 @@ function restore(flow: Flow, snap: Flow) {
   flow.writeThenCall = snap.writeThenCall;
   flow.preCallWrites = new Set(snap.preCallWrites);
   flow.postCallWrites = new Set(snap.postCallWrites);
+  flow.sawEtherSend = snap.sawEtherSend;
 }
 
 function namedAmountZero(named: AstNode | undefined): boolean {
