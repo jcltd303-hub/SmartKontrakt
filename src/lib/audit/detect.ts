@@ -208,8 +208,65 @@ function hasGuard(fn: FnModel): boolean {
  * check is still flagged. This replaces the old usesCredit exemption,
  * which exempted any function that merely mentioned a balance mapping.
  */
-function debitsOwnCredit(fn: FnModel): boolean {
-  const src = fn.source;
+/**
+ * Source of fn plus every internal function it transitively calls (via
+ * the direct call graph). Payout bounds and debits often live in an
+ * internal helper (processClaim) rather than the entry function, so a
+ * check that only reads fn.source misses them.
+ */
+function transitiveSources(
+  fn: FnModel,
+  byName: Map<string, FnModel>,
+  direct: Map<string, { writes: Set<string>; external: boolean; callees: Set<string> }>,
+): string {
+  const seen = new Set<string>([fn.name]);
+  const queue = [fn.name];
+  const parts = [fn.source];
+  while (queue.length) {
+    const name = queue.shift()!;
+    for (const callee of direct.get(name)?.callees ?? []) {
+      if (seen.has(callee)) continue;
+      seen.add(callee);
+      queue.push(callee);
+      const calleeFn = byName.get(callee);
+      if (calleeFn) parts.push(calleeFn.source);
+    }
+  }
+  return parts.join("\n");
+}
+
+/**
+ * A payout is Merkle-bounded when (a) the payout path verifies a Merkle
+ * proof binding (recipient, amount), (b) the recipient is exactly
+ * msg.sender (not a caller-supplied address), and (c) a per-user
+ * accumulator caps repeat claims (claimed[x] + amt > allocation reverts,
+ * or a claimed[x] guard). Then the payout is the caller's own proven
+ * entitlement, not an open drain. All three must hold: a Merkle proof
+ * with no double-claim guard, or a Merkle proof paying a param address,
+ * is still drainable.
+ */
+function isMerkleBoundedPayout(
+  fn: FnModel,
+  sendTargets: string[],
+  transitiveSrc: string,
+): boolean {
+  if (!/MerkleProof\s*\.\s*verify\s*\(/.test(transitiveSrc)) return false;
+  const recipientIsSender = sendTargets.some((t) => {
+    const target = t.trim();
+    if (target === "msg.sender") return true;
+    const ident = target.replace(/[^A-Za-z0-9_$]/g, "");
+    if (!ident) return false;
+    return new RegExp(`\\b${ident}\\s*=\\s*msg\\.sender\\b`).test(fn.source);
+  });
+  if (!recipientIsSender) return false;
+  return (
+    /\w+\s*\[\s*[\w.]+\s*\]\s*\+\s*\w+\s*>/.test(transitiveSrc) ||
+    /require\s*\(\s*!\s*\w*claimed\w*\s*\[/.test(transitiveSrc)
+  );
+}
+
+function debitsOwnCredit(fn: FnModel, source?: string): boolean {
+  const src = source ?? fn.source;
   const credit = "(?:balances|_balances|balanceOf|deposits|credits)";
   // Debit: balanceOf[<account>] -= wad — entitled if account is msg.sender,
   // or if allowance[<account>][msg.sender] >= wad is required.
@@ -818,7 +875,23 @@ require(ok, "pay");`,
 
         const isLow = kind === "call" || kind === "delegatecall" || kind === "staticcall" || kind === "callcode" || kind === "send" || kind === "transfer" || kind === "selfdestruct" || kind === "erc20";
         const internal = !callee.base && member && byName.has(member);
-        if (!internal && (isLow || kind === "member") && member && !BUILTIN.has(member) && !SAFE_MATH.has(member)) {
+        // Library calls are compile-time inlined — no CALL opcode, no
+        // control transfer — but ONLY when the library fn itself cannot
+        // call out. A pure/view library fn (MerkleProof.verify) can only
+        // compute, so it is not an external call. A non-view library fn
+        // (SafeERC20.safeTransfer) may contain a real .call, so it stays
+        // an external call. An imported library is invisible here, so
+        // this covers in-file / flattened libraries.
+        const libraryFn =
+          baseName && member
+            ? model.contracts
+                .find((c) => c.kind === "library" && c.name === baseName)
+                ?.functions.find((f) => f.name === member)
+            : undefined;
+        const isPureLibraryCall =
+          libraryFn !== undefined &&
+          (libraryFn.mutability === "pure" || libraryFn.mutability === "view");
+        if (!internal && !isPureLibraryCall && (isLow || kind === "member") && member && !BUILTIN.has(member) && !SAFE_MATH.has(member)) {
           // Skip obvious value-type methods and type conversions.
           if (member !== "push" && member !== "pop") {
             const checked = kind === "transfer" || kind === "selfdestruct" ? true : !asStatement;
@@ -1066,7 +1139,10 @@ keccak256(abi.encodePacked("a", "bc"));`,
   // A send to a fixed recipient (owner, burn, a constant) cannot be
   // redirected to the attacker, so it is not a drain.
   const drainable = flow.sendTargets.some((t) => isCallerControlled(t, fn, contract));
-  if (sends && drainable && !authed && !/ecrecover\s*\(/.test(fn.source) && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && !debitsOwnCredit(fn) && fn.mutability !== "view" && fn.mutability !== "pure") {
+  // Bounds and debits may live in an internal helper (processClaim),
+  // not the entry function — check the transitive call path.
+  const allSources = transitiveSources(fn, byName, direct);
+  if (sends && drainable && !authed && !/ecrecover\s*\(/.test(fn.source) && !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private" && !debitsOwnCredit(fn, allSources) && !isMerkleBoundedPayout(fn, flow.sendTargets, allSources) && fn.mutability !== "view" && fn.mutability !== "pure") {
     push(make({
       severity: "critical",
       swc: "SWC-105",
@@ -1135,6 +1211,12 @@ function flagUnchecked(
 ) {
   if (model.versionFloor !== null && model.versionFloor < 8_000) return;
   const text = sliceOf(parsed, stmt);
+  // No write, no overflow: an unchecked block that only reads / indexes
+  // (e.g. OZ MerkleProof's `return hashes[totalHashes - 1]`) cannot wrap
+  // a stored balance. Only flag blocks that actually assign, accumulate,
+  // or inc/dec. Comparisons (==, !=, >=, <=) are not writes.
+  const noComparisons = text.replace(/==|!=|>=|<=/g, "");
+  if (!/[+\-*/%]?=|\+\+|--/.test(noComparisons)) return;
   const onlyInc = !/[^+]\+[^+]/.test(text) && !text.includes("-") && !text.includes("*") && !text.includes("/");
   push(make({
     severity: onlyInc ? "info" : "medium",
@@ -1306,13 +1388,19 @@ function scanSimple(
   }
 
   if (/getReserves\s*\(|\.slot0\s*\(|latestRoundData\s*\(|latestAnswer\s*\(/.test(src) && !/^(getReserves|slot0|latestRoundData|latestAnswer)$/.test(fn.name)) {
+    // A view/pure function only quotes — nothing in this contract
+    // settles on it. It becomes a risk only if another protocol treats
+    // the quote as an oracle, so that is info, not high.
+    const viewOnly = fn.mutability === "view" || fn.mutability === "pure";
     push(make({
-      severity: "high",
+      severity: viewOnly ? "info" : "high",
       swc: null,
-      title: `${fn.name} prices off a spot oracle`,
+      title: viewOnly ? `${fn.name} quotes off a spot oracle (view-only)` : `${fn.name} prices off a spot oracle`,
       confidence: "medium",
       detector: "oracle-spot",
-      summary: "A reserves read, a Uniswap v3 slot0, or a spot Chainlink-style answer is used directly. Spot reserves move inside a single transaction; a stale or unchecked oracle answer is the other half of this class.",
+      summary: viewOnly
+        ? "A reserves read, a Uniswap v3 slot0, or a spot Chainlink-style answer is used directly. This function is view-only: it quotes a price but nothing in this contract settles on it. It becomes a risk only if another protocol treats this quote as an oracle."
+        : "A reserves read, a Uniswap v3 slot0, or a spot Chainlink-style answer is used directly. Spot reserves move inside a single transaction; a stale or unchecked oracle answer is the other half of this class.",
       walkthrough: "1. Borrow via a flash loan, move the pool, and read the new price in the same call.\n2. Anything that mints, borrows, or liquidates on that number is wrong for one block — which is long enough.\n3. Use a TWAP, or Chainlink with a freshness and min/max answer check. Never use slot0 or getReserves as a price.",
       exploitSolidity: `// Inside a flash swap callback:\nuint256 fake = victim.quote(pair);\n// fake reflects the pool you just skewed. Borrow against it, then repay the swap.`,
       remediationSolidity: `(uint80 roundId, int256 answer,, uint256 updatedAt,) = feed.latestRoundData();\nrequire(answer > 0 && updatedAt >= block.timestamp - 1 hours, "stale");\nrequire(feed.getAnswer(roundId) == answer);`,
@@ -1391,13 +1479,35 @@ function scanSimple(
       snippet: snippet(parsed, fn.line + delta, delta),
     }));
   } else if (/block\.timestamp|\bnow\b/.test(src) && /(require|if)\s*\(/.test(src)) {
+    // Long-window computation: timestamp divided by >= 1 hour (e.g.
+    // (block.timestamp - last) / (60*60*24)) — a ~15s producer shift is
+    // immaterial over a days-scale window, so that is info, not low.
+    const tsIdx = src.indexOf("block.timestamp");
+    const afterTs = tsIdx >= 0 ? src.slice(tsIdx) : src;
+    const longWindow = (() => {
+      const paren = afterTs.match(/\/\s*\(\s*([\d\s*]+)\)/);
+      if (paren) {
+        const nums = paren[1].split("*").map((n) => parseInt(n.trim(), 10)).filter((n) => Number.isFinite(n));
+        if (nums.length > 0 && nums.reduce((a, b) => a * b, 1) >= 3600) return true;
+      }
+      const unit = afterTs.match(/\/\s*(\d+)\s*(days|hours|minutes)\b/);
+      if (unit) {
+        const mult = unit[2] === "days" ? 86400 : unit[2] === "hours" ? 3600 : 60;
+        if (parseInt(unit[1], 10) * mult >= 3600) return true;
+      }
+      const lit = afterTs.match(/\/\s*(\d+)\b/);
+      if (lit && parseInt(lit[1], 10) >= 3600) return true;
+      return false;
+    })();
     push(make({
-      severity: "low",
+      severity: longWindow ? "info" : "low",
       swc: "SWC-116",
-      title: `${fn.name} branches on block.timestamp`,
+      title: longWindow ? `${fn.name} uses block.timestamp in a long-window computation` : `${fn.name} branches on block.timestamp`,
       confidence: "medium",
       detector: "timestamp",
-      summary: "A timestamp check is fine for multi-hour windows. It is a soft gate around a single block: producers can shift it by roughly 15 seconds.",
+      summary: longWindow
+        ? "block.timestamp feeds a computation divided by >= 1 hour. A producer can shift it by roughly 15 seconds, which is immaterial over a window this long."
+        : "A timestamp check is fine for multi-hour windows. It is a soft gate around a single block: producers can shift it by roughly 15 seconds.",
       walkthrough: "1. Identify whether the window is a long vest or a one-block race.\n2. If funds move the moment the timestamp crosses a line, a producer can include or exclude the winning transaction.",
       exploitSolidity: "",
       remediationSolidity: "// Keep timestamp gates for coarse deadlines only.",
