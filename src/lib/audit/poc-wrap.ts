@@ -334,7 +334,7 @@ export function wrapPocSnippet(snippet: string): WrappedPoc | null {
   const header = prefix.length ? prefix.join("\n") + "\n" : "";
   const testContract = [
     "",
-    "contract PoC is Test, StdCheats {",
+    "contract PoC is Test {",
     "    function testPoc() public {",
     '        vm.createSelectFork(vm.envString("POC_RPC_URL"));',
     '        address target = vm.envAddress("POC_TARGET");',
