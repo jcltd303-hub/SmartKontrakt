@@ -329,3 +329,35 @@ export const disconnectDatabaseFn = createServerFn({ method: "POST" }).handler(a
   resetDatabasePool();
   return { ok: true, message: "Database connection pool refreshed." };
 });
+
+export const getRecentHighSeverityFindingsFn = createServerFn({ method: "GET" })
+  .validator((input?: { limit?: number; offset?: number; severityFilter?: "all" | "critical" | "high" }) => input)
+  .handler(async ({ data }) => {
+    const { getRecentHighSeverityFindings } = await import("./audit/persist.server");
+    return getRecentHighSeverityFindings(data);
+  });
+
+export const saveFindingPocResultFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => {
+    if (!input || typeof input !== "object") throw new Error("Invalid payload");
+    const val = input as {
+      findingId: string;
+      scanId: string;
+      status: string;
+      source: string;
+      output: string;
+      durationMs: number;
+      chainId?: string | null;
+      targetAddress?: string | null;
+      exitCode?: number | null;
+      truncated?: boolean;
+    };
+    if (!val.findingId || !val.scanId) throw new Error("Missing findingId or scanId");
+    return val;
+  })
+  .handler(async ({ data }) => {
+    const { saveFindingPocResult } = await import("./audit/persist.server");
+    await saveFindingPocResult(data);
+    return { ok: true };
+  });
+

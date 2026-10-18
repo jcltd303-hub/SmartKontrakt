@@ -1,12 +1,12 @@
-import type { Finding } from "./types";
-import { openRouterLimiter, withRetry } from "./rate-limit";
+import type { Finding } from "./types.ts";
+import { openRouterLimiter, withRetry } from "./rate-limit.ts";
 import {
   OPENROUTER_API_URL,
   extractJsonContent,
   resolveOpenRouterConfig,
-} from "./ai-review.server";
-import { POC_FALLBACK_CATALOG, selectPocFallbacks } from "./poc-fallbacks";
-import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte";
+} from "./ai-review.server.ts";
+import { POC_FALLBACK_CATALOG, selectPocFallbacks } from "./poc-fallbacks.ts";
+import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte.ts";
 
 /**
  * Deep Agent — DeepRL-style agentic exploit search.

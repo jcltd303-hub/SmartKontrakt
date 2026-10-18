@@ -16,6 +16,11 @@ export type Finding = {
   locationFn: string | null;
   locationLine: number | null;
   snippet: string;
+  pocStatus?: string | null;
+  pocOutput?: string | null;
+  pocDurationMs?: number | null;
+  pocRunAt?: string | null;
+  pocCode?: string | null;
 };
 
 export type SelectorHit = {

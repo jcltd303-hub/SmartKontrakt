@@ -12,7 +12,9 @@ import { AuditCertificate } from "./audit-certificate";
 import { LocalDbRecords } from "./local-db-records";
 import { RagKnowledgebase } from "./rag-knowledgebase";
 import { InteractiveAuditTab } from "./interactive-audit";
+import { RecentPocAudits } from "./recent-poc-audits";
 import { SupabaseDbModal } from "./supabase-db-modal";
+import { getScan } from "@/lib/scans.functions";
 import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit/address-fetcher";
 import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
 import { probeContractInterfaces, resolveContractDisplayName, type CallProbeResult } from "@/lib/audit/simulator";
@@ -130,7 +132,7 @@ function formatDate(iso: string): string {
 
 export function Workbench({ initialScans = [] }: WorkbenchProps) {
   // Mode state: Single audit vs Batch address pipeline vs Local DB Records vs RAG Knowledgebase
-  const [workbenchMode, setWorkbenchMode] = useState<"audit" | "pipeline" | "records" | "rag" | "interactive">("audit");
+  const [workbenchMode, setWorkbenchMode] = useState<"audit" | "pipeline" | "records" | "rag" | "interactive" | "poc-audits">("audit");
 
   // Single address input state
   const [singleAddress, setSingleAddress] = useState<string>("");
@@ -411,6 +413,15 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     }
     setWorkbenchMode("audit");
     setActiveTab("findings");
+  };
+
+  const handleLoadStoredScanById = async (scanId: string) => {
+    try {
+      const full = await getScan({ data: { id: scanId } });
+      if (full) handleLoadStoredScan(full);
+    } catch (err) {
+      console.warn("[kiln] Could not load scan by id:", err);
+    }
   };
 
   // Open RAG knowledgebase modal for a specific finding
@@ -1163,6 +1174,18 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 <Terminal className="w-3.5 h-3.5" />
                 <span>Interactive Audit & PoC</span>
               </button>
+              <button
+                onClick={() => setWorkbenchMode("poc-audits")}
+                className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
+                  workbenchMode === "poc-audits"
+                    ? "bg-[#e8a54b] text-[#12110e] font-bold shadow"
+                    : "text-[#a39886] hover:text-[#f4efe6]"
+                }`}
+                title="Automated PoC verification for recent Critical & High findings in DB"
+              >
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>PoC Audits</span>
+              </button>
             </div>
 
             <button
@@ -1255,6 +1278,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           <LocalDbRecords
             onLoadInWorkbench={handleLoadStoredScan}
             onNavigateToRag={() => setWorkbenchMode("rag")}
+            onNavigateToPocAudits={() => setWorkbenchMode("poc-audits")}
           />
         ) : workbenchMode === "rag" ? (
           <RagKnowledgebase
@@ -1267,6 +1291,8 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           />
         ) : workbenchMode === "interactive" ? (
           <InteractiveAuditTab />
+        ) : workbenchMode === "poc-audits" ? (
+          <RecentPocAudits onLoadScanInWorkbench={handleLoadStoredScanById} />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* ================= Left Column: Contract Editor & Input ================= */}

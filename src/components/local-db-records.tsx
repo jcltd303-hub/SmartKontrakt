@@ -36,9 +36,10 @@ import {
 interface LocalDbRecordsProps {
   onLoadInWorkbench: (scan: StoredScan) => void;
   onNavigateToRag: () => void;
+  onNavigateToPocAudits?: () => void;
 }
 
-export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRecordsProps) {
+export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateToPocAudits }: LocalDbRecordsProps) {
   const [records, setRecords] = useState<ScanSummary[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -275,6 +276,16 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag }: LocalDbRe
               <Download className="w-3.5 h-3.5 text-[#e8a54b]" />
               <span>Export Archive JSON</span>
             </button>
+            {onNavigateToPocAudits && (
+              <button
+                onClick={onNavigateToPocAudits}
+                className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#e8a54b] to-[#d97706] hover:brightness-110 text-[#12110e] text-xs font-bold font-mono tracking-wide flex items-center gap-1.5 shadow transition-all active:scale-95"
+                title="Audit all recent Critical/High findings with Foundry PoC"
+              >
+                <ShieldAlert className="w-3.5 h-3.5 fill-current" />
+                <span>PoC Audits ({criticalFindings + highFindings} Vulns)</span>
+              </button>
+            )}
           </div>
         </div>
 

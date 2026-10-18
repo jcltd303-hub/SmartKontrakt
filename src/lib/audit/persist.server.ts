@@ -94,6 +94,11 @@ type FindingRow = {
   location_fn: string | null;
   location_line: number | null;
   snippet: string;
+  poc_status?: string | null;
+  poc_output?: string | null;
+  poc_duration_ms?: number | null;
+  poc_run_at?: string | null;
+  poc_code?: string | null;
 };
 
 function summaryFrom(row: ScanRow): ScanSummary {
@@ -207,7 +212,8 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
   const payloads = await sql<{ body: string }>`select body from scan_payloads where scan_id = ${id}`;
   const findingRows = await sql<FindingRow>`
     select id, ord, severity, swc, title, confidence, detector, summary, walkthrough,
-           exploit_solidity, remediation_solidity, location_fn, location_line, snippet
+           exploit_solidity, remediation_solidity, location_fn, location_line, snippet,
+           poc_status, poc_output, poc_duration_ms, poc_run_at::text as poc_run_at, poc_code
     from findings
     where scan_id = ${id}
     order by ord asc
@@ -227,6 +233,11 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
     locationFn: f.location_fn,
     locationLine: f.location_line,
     snippet: f.snippet,
+    pocStatus: f.poc_status ?? null,
+    pocOutput: f.poc_output ?? null,
+    pocDurationMs: f.poc_duration_ms ?? null,
+    pocRunAt: f.poc_run_at ?? null,
+    pocCode: f.poc_code ?? null,
   }));
   const aiStatus = row.ai_status === "ok" || row.ai_status === "error" ? row.ai_status : "unavailable";
   // Item 3: the stored column is authoritative; the derivation covers rows
@@ -595,3 +606,174 @@ export async function runAndStore(input: { label: string; body: string }): Promi
     indexToRag: true,
   });
 }
+
+export type FindingWithScanInfo = Finding & {
+  scanId: string;
+  scanLabel: string;
+  contractName: string | null;
+  targetAddress: string | null;
+  chainId: string | null;
+  scanCreatedAt: string;
+};
+
+/**
+ * Fetch all recent Critical and High severity findings from the database,
+ * joined with their parent contract scan metadata (target address, label, chain).
+ */
+export async function getRecentHighSeverityFindings(opts?: {
+  limit?: number;
+  offset?: number;
+  severityFilter?: "all" | "critical" | "high";
+}): Promise<FindingWithScanInfo[]> {
+  const limit = Math.min(Math.max(Math.floor(opts?.limit ?? 50), 1), 200);
+  const offset = Math.max(Math.floor(opts?.offset ?? 0), 0);
+  const filter = opts?.severityFilter ?? "all";
+
+  try {
+    const sql = await getSql();
+    let rows;
+    if (filter === "critical") {
+      rows = await sql<FindingRow & {
+        scan_id: string;
+        scan_label: string;
+        contract_name: string | null;
+        target_address: string | null;
+        chain_id: string | null;
+        scan_created_at: string;
+      }>`
+        select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
+               f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
+               f.location_fn, f.location_line, f.snippet,
+               f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
+               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.created_at::text as scan_created_at
+        from findings f
+        join contract_scans s on f.scan_id = s.id
+        where f.severity = 'critical'
+          and length(trim(f.exploit_solidity)) > 0
+        order by s.created_at desc, f.ord asc
+        limit ${limit} offset ${offset}
+      `;
+    } else if (filter === "high") {
+      rows = await sql<FindingRow & {
+        scan_id: string;
+        scan_label: string;
+        contract_name: string | null;
+        target_address: string | null;
+        chain_id: string | null;
+        scan_created_at: string;
+      }>`
+        select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
+               f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
+               f.location_fn, f.location_line, f.snippet,
+               f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
+               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.created_at::text as scan_created_at
+        from findings f
+        join contract_scans s on f.scan_id = s.id
+        where f.severity = 'high'
+          and length(trim(f.exploit_solidity)) > 0
+        order by s.created_at desc, f.ord asc
+        limit ${limit} offset ${offset}
+      `;
+    } else {
+      rows = await sql<FindingRow & {
+        scan_id: string;
+        scan_label: string;
+        contract_name: string | null;
+        target_address: string | null;
+        chain_id: string | null;
+        scan_created_at: string;
+      }>`
+        select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
+               f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
+               f.location_fn, f.location_line, f.snippet,
+               f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
+               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.created_at::text as scan_created_at
+        from findings f
+        join contract_scans s on f.scan_id = s.id
+        where f.severity in ('critical', 'high')
+          and length(trim(f.exploit_solidity)) > 0
+        order by s.created_at desc, f.ord asc
+        limit ${limit} offset ${offset}
+      `;
+    }
+
+    return rows.map((f) => ({
+      id: f.id,
+      scanId: f.scan_id,
+      ord: f.ord,
+      severity: f.severity,
+      swc: f.swc,
+      title: f.title,
+      confidence: f.confidence,
+      detector: f.detector,
+      summary: f.summary,
+      walkthrough: f.walkthrough,
+      exploitSolidity: f.exploit_solidity,
+      remediationSolidity: f.remediation_solidity,
+      locationFn: f.location_fn,
+      locationLine: f.location_line,
+      snippet: f.snippet,
+      pocStatus: f.poc_status ?? null,
+      pocOutput: f.poc_output ?? null,
+      pocDurationMs: f.poc_duration_ms ?? null,
+      pocRunAt: f.poc_run_at ?? null,
+      pocCode: f.poc_code ?? null,
+      scanLabel: f.scan_label,
+      contractName: f.contract_name,
+      targetAddress: f.target_address,
+      chainId: f.chain_id,
+      scanCreatedAt: f.scan_created_at,
+    }));
+  } catch (err) {
+    console.warn("[kiln] getRecentHighSeverityFindings failed:", err);
+    return [];
+  }
+}
+
+/**
+ * Persist an executed PoC run verdict for a specific finding to the database.
+ * Updates the finding record and appends a run row to finding_poc_runs.
+ */
+export async function saveFindingPocResult(data: {
+  findingId: string;
+  scanId: string;
+  status: string;
+  source: string;
+  output: string;
+  durationMs: number;
+  chainId?: string | null;
+  targetAddress?: string | null;
+  exitCode?: number | null;
+  truncated?: boolean;
+}): Promise<void> {
+  const sql = await getSql();
+  const id = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `poc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  // 1. Update finding row with latest PoC outcome
+  await sql`
+    update findings
+    set poc_status = ${data.status},
+        poc_output = ${data.output.slice(0, 50000)},
+        poc_duration_ms = ${Math.round(data.durationMs)},
+        poc_run_at = now(),
+        poc_code = ${data.source.slice(0, 100000)}
+    where id = ${data.findingId}
+  `;
+
+  // 2. Insert into historical finding_poc_runs
+  try {
+    await sql`
+      insert into finding_poc_runs (
+        id, finding_id, scan_id, status, source, output, duration_ms, chain_id, target_address, exit_code, truncated, created_at
+      ) values (
+        ${id}, ${data.findingId}, ${data.scanId}, ${data.status}, ${data.source.slice(0, 100000)}, ${data.output.slice(0, 50000)},
+        ${Math.round(data.durationMs)}, ${data.chainId ?? null}, ${data.targetAddress ?? null}, ${data.exitCode ?? null}, ${Boolean(data.truncated)}, now()
+      )
+    `;
+  } catch (runErr) {
+    console.warn("[kiln] finding_poc_runs insert failed (non-fatal):", runErr);
+  }
+}
+
