@@ -11,6 +11,7 @@ import { FoundryLocalRun } from "./foundry-local-run";
 import { AuditCertificate } from "./audit-certificate";
 import { LocalDbRecords } from "./local-db-records";
 import { RagKnowledgebase } from "./rag-knowledgebase";
+import { InteractiveAuditTab } from "./interactive-audit";
 import { SupabaseDbModal } from "./supabase-db-modal";
 import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit/address-fetcher";
 import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
@@ -128,7 +129,7 @@ function formatDate(iso: string): string {
 
 export function Workbench({ initialScans = [] }: WorkbenchProps) {
   // Mode state: Single audit vs Batch address pipeline vs Local DB Records vs RAG Knowledgebase
-  const [workbenchMode, setWorkbenchMode] = useState<"audit" | "pipeline" | "records" | "rag">("audit");
+  const [workbenchMode, setWorkbenchMode] = useState<"audit" | "pipeline" | "records" | "rag" | "interactive">("audit");
 
   // Single address input state
   const [singleAddress, setSingleAddress] = useState<string>("");
@@ -1117,6 +1118,17 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 <BookOpen className="w-3.5 h-3.5" />
                 <span>RAG Knowledgebase</span>
               </button>
+              <button
+                onClick={() => setWorkbenchMode("interactive")}
+                className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
+                  workbenchMode === "interactive"
+                    ? "bg-[#e8a54b] text-[#12110e] font-bold shadow"
+                    : "text-[#a39886] hover:text-[#f4efe6]"
+                }`}
+              >
+                <Terminal className="w-3.5 h-3.5" />
+                <span>Interactive Audit & PoC</span>
+              </button>
             </div>
 
             <button
@@ -1219,6 +1231,8 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
               handleRunAnalysis(body, label);
             }}
           />
+        ) : workbenchMode === "interactive" ? (
+          <InteractiveAuditTab />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* ================= Left Column: Contract Editor & Input ================= */}
