@@ -9,7 +9,7 @@ import type { PocResult } from "./types";
  */
 export function isPocCompileError(logs: string): boolean {
   if (!logs) return false;
-  return /(compiler run failed|compilation failed|failed to compile|error\[\d+\])/i.test(logs);
+  return /(compiler run failed|compilation failed|failed to compile|error\[\d+\]|error\s*\(\d+\)|parsererror|declarationerror|typeerror)/i.test(logs);
 }
 
 /**

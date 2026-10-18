@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Terminal, Play, Wand2, CheckCircle2, AlertTriangle, RefreshCcw, FileCode, Cpu } from "lucide-react";
+import { Terminal, Play, Wand2, CheckCircle2, RefreshCcw, FileCode, Cpu } from "lucide-react";
 import { runPocOnBackend, getBackendUrl } from "@/lib/audit/foundry-backend";
 import { requestPocRepair } from "@/lib/audit/ai.functions";
 import type { PocResult } from "@/lib/audit/types";

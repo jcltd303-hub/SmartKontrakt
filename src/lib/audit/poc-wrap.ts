@@ -328,9 +328,9 @@ export function wrapPocSnippet(snippet: string): WrappedPoc | null {
   const call = `attacker.${entry.name}${payable ? "{value: 1 ether}" : ""}(${entryFilled.args});`;
   const deploy = `new ${attack.name}(${ctorFilled.args})`;
   const prefix: string[] = [];
-  if (!/SPDX-License-Identifier/.test(stripped)) prefix.push("// SPDX-License-Identifier: MIT");
-  if (!/pragma\s+solidity/.test(stripped)) prefix.push("pragma solidity ^0.8.24;");
-  if (!/forge-std\/Test\.sol/.test(stripped)) prefix.push('import "forge-std/Test.sol";');
+  if (!/SPDX-License-Identifier/.test(snippet)) prefix.push("// SPDX-License-Identifier: MIT");
+  if (!/pragma\s+solidity/.test(snippet)) prefix.push("pragma solidity ^0.8.0;");
+  if (!/forge-std\/Test\.sol/.test(snippet)) prefix.push('import "forge-std/Test.sol";');
   const header = prefix.length ? prefix.join("\n") + "\n" : "";
   const testContract = [
     "",

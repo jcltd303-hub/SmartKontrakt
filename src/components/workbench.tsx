@@ -23,6 +23,7 @@ import { getBackendUrl, isPocCompileError, runPocOnBackend } from "@/lib/audit/f
 import { getStoredSupabaseConfig } from "@/lib/supabase";
 import { savePocRun, type PocRunResult } from "../lib/poc-runs";
 import { wrapPocSnippet } from "../lib/audit/poc-wrap";
+import { selectPocFallbacks } from "@/lib/audit/poc-fallbacks";
 import type { PocResult } from "@/lib/audit/types";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
 import type {
@@ -583,11 +584,19 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     }
   };
   const handleRunFindingPoc = async (finding: Finding) => {
-    const source = finding.exploitSolidity ?? "";
-    // Wrap the attack-contract snippet into a runnable Foundry Test.
-    // When wrapping fails (null), fall back to the raw snippet — it
-    // errors with the zero-tests note below.
-    const wrapped = wrapPocSnippet(source);
+    let source = finding.exploitSolidity ?? "";
+    let wrapped = wrapPocSnippet(source);
+    if (!wrapped) {
+      const isTest = /\bcontract\s+\w+\s+is\s+[^{]*\bTest\b/.test(source);
+      const hasTestFn = /function\s+test_\w*\s*\(|function\s+testPoc\s*\(/.test(source);
+      if (!isTest || !hasTestFn) {
+        const fallbacks = selectPocFallbacks([finding], 1);
+        if (fallbacks.length > 0 && fallbacks[0]?.source) {
+          source = fallbacks[0].source;
+          wrapped = wrapPocSnippet(source);
+        }
+      }
+    }
     const testCode = wrapped ? wrapped.testFile : source;
     if (!source.trim() || findingPocRunLockRef.current) return;
     findingPocRunLockRef.current = true;
@@ -598,6 +607,31 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       [finding.id]: { running: true, result: null, save: "idle", saveError: null },
     }));
     try {
+      const isTestFinal = /\bcontract\s+\w+\s+is\s+[^{]*\bTest\b/.test(testCode);
+      const hasTestFnFinal = /function\s+test_\w*\s*\(|function\s+testPoc\s*\(/.test(testCode);
+      if (!wrapped && (!isTestFinal || !hasTestFnFinal)) {
+        setFindingPocRuns((prev) => ({
+          ...prev,
+          [finding.id]: {
+            running: false,
+            result: {
+              id: runId,
+              source,
+              status: "skipped",
+              startedAt,
+              finishedAt: new Date().toISOString(),
+              durationMs: 0,
+              chainId: SUPPORTED_CHAINS.find((c) => c.id === singleAddressChain)?.chainId ?? 1,
+              exitCode: null,
+              output: "This finding's PoC is a conceptual guideline or pseudocode, not an automated Solidity attack contract or test harness. Use the 'Interactive Audit & PoC' tab or 'AI Security Review' to construct and run an exploit against this target.",
+              truncated: false,
+            },
+            save: "idle",
+            saveError: null,
+          },
+        }));
+        return;
+      }
       const addr = singleAddress.trim();
       if (!addr || !isValidEvmAddress(addr)) {
         // No valid target — record an error row without calling the backend

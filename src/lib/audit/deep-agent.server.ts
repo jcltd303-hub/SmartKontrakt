@@ -297,6 +297,39 @@ export async function runDeepAgentRound(
  * PoC that is not a PoC test — the caller treats that as an error,
  * same as the original compile failure.
  */
+/**
+ * Removes duplicate function signatures within Solidity interfaces
+ * to avoid solc Error (1686): Function with same name and parameter types defined twice.
+ */
+export function deduplicateInterfaceFunctions(solidityCode: string): string {
+  return solidityCode.replace(
+    /\binterface\s+(\w+)\s*\{([^}]+)\}/g,
+    (interfaceMatch, interfaceName, interfaceBody) => {
+      const lines = interfaceBody.split("\n");
+      const seenSignatures = new Set<string>();
+      const filteredLines: string[] = [];
+
+      for (const line of lines) {
+        const fnMatch = line.match(/^\s*function\s+(\w+)\s*\(([^)]*)\)/);
+        if (fnMatch) {
+          const fnName = fnMatch[1];
+          const paramTypes = fnMatch[2]
+            .split(",")
+            .map((p) => p.trim().split(/\s+/)[0])
+            .join(",");
+          const sig = `${fnName}(${paramTypes})`;
+          if (seenSignatures.has(sig)) {
+            continue;
+          }
+          seenSignatures.add(sig);
+        }
+        filteredLines.push(line);
+      }
+      return `interface ${interfaceName} {${filteredLines.join("\n")}}`;
+    }
+  );
+}
+
 export async function repairPocCode(
   contractName: string,
   originalCode: string,
@@ -333,7 +366,7 @@ Original PoC:
 ${originalCode.slice(0, 30000)}
 \`\`\`
 
-Fix ONLY the failure shown. Change as little as possible: keep \`contract PoC is Test\`, the fork setUp() shape (vm.createSelectFork + vm.envAddress POC_TARGET), and the observable-state assertions. Do NOT invent a new harness, a new attack, or interfaces the target does not have — if the failure is a call to a function that does not exist, remove that call path rather than guessing a signature.
+Fix ONLY the failure shown. Change as little as possible: keep \`contract PoC is Test\`, the fork setUp() shape (vm.createSelectFork + vm.envAddress POC_TARGET), and the observable-state assertions. Do NOT invent a new harness, a new attack, or interfaces the target does not have — if the failure is a call to a function that does not exist, remove that call path rather than guessing a signature. If the failure reports duplicate definitions (e.g. Error 1686), remove duplicate declarations so each function in an interface is declared once.
 
 Respond strictly as JSON matching this schema:
 \`{"foundryTestCode": "complete fixed Solidity code string"}\``;
@@ -394,5 +427,5 @@ Respond strictly as JSON matching this schema:
   if (!fixedCode.includes("contract PoC")) {
     throw new Error("Repair did not return a PoC test");
   }
-  return { fixedCode, llmMs: Date.now() - started };
+  return { fixedCode: deduplicateInterfaceFunctions(fixedCode), llmMs: Date.now() - started };
 }
