@@ -7,5 +7,5 @@ if lsof -Pi :8080 -sTCP:LISTEN -t >/dev/null ; then
     exit 0
 fi
 
-# We use PORT=8080 to match the preview proxy requirements
+cd /app/applet
 PORT=8080 npm run dev -- --host 0.0.0.0 &
