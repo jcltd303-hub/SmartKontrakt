@@ -329,13 +329,13 @@ export function wrapPocSnippet(snippet: string): WrappedPoc | null {
   const deploy = `new ${attack.name}(${ctorFilled.args})`;
   const prefix: string[] = [];
   if (!/SPDX-License-Identifier/.test(snippet)) prefix.push("// SPDX-License-Identifier: MIT");
-  if (!/pragma\s+solidity/.test(snippet)) prefix.push("pragma solidity ^0.8.0;");
+  if (!/pragma\s+solidity/.test(snippet)) prefix.push("pragma solidity ^0.8.24;");
   if (!/forge-std\/Test\.sol/.test(snippet)) prefix.push('import "forge-std/Test.sol";');
   const header = prefix.length ? prefix.join("\n") + "\n" : "";
   const testContract = [
     "",
-    "contract PoC is Test {",
-    "    function test_poc() public {",
+    "contract PoC is Test, StdCheats {",
+    "    function testPoc() public {",
     '        vm.createSelectFork(vm.envString("POC_RPC_URL"));',
     '        address target = vm.envAddress("POC_TARGET");',
     `        ${attack.name} attacker = ${deploy};`,
