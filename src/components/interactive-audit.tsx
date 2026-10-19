@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { Terminal, Play, Wand2, CheckCircle2, RefreshCcw, FileCode, Cpu } from "lucide-react";
-import { runPocOnBackend, getBackendUrl } from "@/lib/audit/foundry-backend";
+import { useState, useMemo } from "react";
+import { Terminal, Play, Wand2, CheckCircle2, RefreshCcw, FileCode, Cpu, Globe, RotateCw, AlertTriangle, ShieldCheck } from "lucide-react";
+import { runPocOnBackend, runPocWithRpcRetries, getBackendUrl, isRpcOrForkFailure, type RpcRetryProgress } from "@/lib/audit/foundry-backend";
 import { requestPocRepair } from "@/lib/audit/ai.functions";
+import { SUPPORTED_CHAINS, getRpcsForChain } from "@/lib/audit/address-fetcher";
 import type { PocResult } from "@/lib/audit/types";
 
 export function InteractiveAuditTab() {
@@ -52,20 +53,63 @@ contract PoC is Test {
   );
 
   const [targetAddress, setTargetAddress] = useState<string>("0x000000000000000000000000000000000000dead");
+  const [selectedChainId, setSelectedChainId] = useState<string>("ethereum");
+  const [customRpcUrl, setCustomRpcUrl] = useState<string>("");
+  const [autoRetryAllRpcs, setAutoRetryAllRpcs] = useState<boolean>(true);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [isRepairing, setIsRepairing] = useState<boolean>(false);
   const [pocResult, setPocResult] = useState<PocResult | null>(null);
   const [repairNotice, setRepairNotice] = useState<string | null>(null);
+  const [retryProgress, setRetryProgress] = useState<RpcRetryProgress | null>(null);
 
-  const handleRunPoc = async () => {
+  // Active chain candidate RPC list
+  const activeChainRpcs = useMemo(() => {
+    return getRpcsForChain(selectedChainId);
+  }, [selectedChainId]);
+
+  const activeRpcUrl = useMemo(() => {
+    if (customRpcUrl.trim()) return customRpcUrl.trim();
+    return activeChainRpcs[0] || "https://ethereum.publicnode.com";
+  }, [customRpcUrl, activeChainRpcs]);
+
+  // Detected RPC or fork error in last result
+  const hasRpcError = useMemo(() => {
+    if (!pocResult) return false;
+    return isRpcOrForkFailure(pocResult.logs ?? "", pocResult.error) || (pocResult.logs ?? "").includes("invalid rpc url");
+  }, [pocResult]);
+
+  const handleRunPoc = async (forceRetryAll = false) => {
     setIsRunning(true);
     setRepairNotice(null);
+    setRetryProgress(null);
+
+    const shouldRetryAll = forceRetryAll || autoRetryAllRpcs;
+
     try {
-      const res = await runPocOnBackend(getBackendUrl(), {
-        address: targetAddress,
-        testCode: testCode,
-      });
-      setPocResult(res);
+      if (shouldRetryAll) {
+        // Collect candidate RPCs for the chain and global fallbacks
+        const rpcList = customRpcUrl.trim()
+          ? [customRpcUrl.trim(), ...activeChainRpcs]
+          : activeChainRpcs;
+
+        const res = await runPocWithRpcRetries(getBackendUrl(), {
+          address: targetAddress,
+          testCode: testCode,
+          preferredRpc: activeRpcUrl,
+          rpcList: rpcList,
+          onProgress: (prog) => {
+            setRetryProgress(prog);
+          },
+        });
+        setPocResult(res);
+      } else {
+        const res = await runPocOnBackend(getBackendUrl(), {
+          address: targetAddress,
+          testCode: testCode,
+          rpcUrl: activeRpcUrl,
+        });
+        setPocResult(res);
+      }
     } catch (err) {
       setPocResult({
         status: "backend_unreachable",
@@ -134,12 +178,77 @@ contract PoC is Test {
             <li>Check for reentrancy vectors in state mutations following external calls.</li>
             <li>Verify access controls on critical administrative functions.</li>
             <li>Inspect precision loss in arithmetic calculations (div-before-mul).</li>
+            <li>Audit SWC-112 delegatecalls: prevent callee control and storage collisions.</li>
           </ul>
         </div>
       </div>
 
       {/* Right Column: Foundry Test Harness & LLM Repair */}
       <div className="lg:col-span-6 flex flex-col gap-4">
+        {/* Network & RPC Selection Toolbar */}
+        <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl p-4 shadow-sm flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-[#f4efe6] font-semibold text-xs">
+              <Globe className="w-4 h-4 text-[#e8a54b]" />
+              <span>Network & RPC Configuration</span>
+            </div>
+            <span className="text-[10px] font-mono text-[#a39886]">{activeChainRpcs.length} RPCs available</span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] uppercase font-mono text-[#a39886] block mb-1">Target Chain</label>
+              <select
+                value={selectedChainId}
+                onChange={(e) => {
+                  setSelectedChainId(e.target.value);
+                  setCustomRpcUrl("");
+                }}
+                className="w-full bg-[#12110e] border border-[#3a3428] text-xs font-mono text-[#f4efe6] px-2 py-1.5 rounded focus:outline-none focus:border-[#e8a54b]"
+              >
+                {SUPPORTED_CHAINS.map((chain) => (
+                  <option key={chain.id} value={chain.id}>
+                    {chain.name} ({chain.chainId})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] uppercase font-mono text-[#a39886] block mb-1">Active / Custom RPC</label>
+              <input
+                type="text"
+                value={customRpcUrl}
+                onChange={(e) => setCustomRpcUrl(e.target.value)}
+                placeholder={activeChainRpcs[0] || "https://..."}
+                className="w-full bg-[#12110e] border border-[#3a3428] text-xs font-mono text-[#f4efe6] px-2 py-1.5 rounded focus:outline-none focus:border-[#e8a54b]"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-1 border-t border-[#3a3428]/50">
+            <label className="flex items-center gap-2 text-xs font-mono text-[#f4efe6] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={autoRetryAllRpcs}
+                onChange={(e) => setAutoRetryAllRpcs(e.target.checked)}
+                className="rounded border-[#3a3428] text-[#e8a54b] focus:ring-0 bg-[#12110e]"
+              />
+              <span>Retry using all RPCs in list when necessary</span>
+            </label>
+            <button
+              onClick={() => handleRunPoc(true)}
+              disabled={isRunning}
+              title="Force execution across all candidate RPCs"
+              className="text-[11px] font-mono text-[#e8a54b] hover:text-[#f0b25e] flex items-center gap-1 disabled:opacity-50"
+            >
+              <RotateCw className="w-3 h-3" />
+              <span>Retry All RPCs</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Foundry Test & PoC Harness */}
         <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl p-4 shadow-sm flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-[#f4efe6] font-semibold">
@@ -155,7 +264,7 @@ contract PoC is Test {
                 className="bg-[#12110e] border border-[#3a3428] text-xs font-mono text-[#f4efe6] px-2 py-1 rounded w-36"
               />
               <button
-                onClick={handleRunPoc}
+                onClick={() => handleRunPoc(false)}
                 disabled={isRunning}
                 className="px-3 py-1.5 bg-[#e8a54b] hover:bg-[#d6933c] text-[#12110e] font-bold text-xs rounded flex items-center gap-1.5 transition-colors disabled:opacity-50"
               >
@@ -165,7 +274,7 @@ contract PoC is Test {
             </div>
           </div>
           <p className="text-xs text-[#a39886]">
-            Write or adjust your Foundry test below. If execution fails to compile or run, use the LLM Fix button to automatically repair the test code.
+            Write or adjust your Foundry test below. If execution encounters an RPC or compilation error, use the RPC retry or LLM Fix button.
           </p>
           <textarea
             value={testCode}
@@ -182,27 +291,73 @@ contract PoC is Test {
               <Cpu className="w-4 h-4 text-[#e8a54b]" />
               <span>Execution Output & LLM Repair</span>
             </h4>
-            {pocResult && (pocResult.status === "error" || pocResult.status === "failed") && (
-              <button
-                onClick={handleFixPoc}
-                disabled={isRepairing}
-                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded flex items-center gap-1.5 shadow transition-colors disabled:opacity-50"
-              >
-                {isRepairing ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                <span>Fix PoC with LLM</span>
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {hasRpcError && (
+                <button
+                  onClick={() => handleRunPoc(true)}
+                  disabled={isRunning}
+                  className="px-2.5 py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded flex items-center gap-1.5 shadow transition-colors disabled:opacity-50"
+                >
+                  <RotateCw className="w-3.5 h-3.5" />
+                  <span>Retry All RPCs</span>
+                </button>
+              )}
+              {pocResult && (pocResult.status === "error" || pocResult.status === "failed") && (
+                <button
+                  onClick={handleFixPoc}
+                  disabled={isRepairing}
+                  className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded flex items-center gap-1.5 shadow transition-colors disabled:opacity-50"
+                >
+                  {isRepairing ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+                  <span>Fix PoC with LLM</span>
+                </button>
+              )}
+            </div>
           </div>
 
+          {/* RPC Rotation Status Notice */}
+          {retryProgress && (
+            <div className="p-2.5 rounded bg-blue-950/40 border border-blue-800/60 text-blue-300 text-xs flex items-center gap-2">
+              <RefreshCcw className="w-3.5 h-3.5 animate-spin text-blue-400 shrink-0" />
+              <span>
+                Attempt {retryProgress.attempt}/{retryProgress.total}: testing with RPC{" "}
+                <span className="font-mono font-bold text-white">{retryProgress.rpcUrl}</span>
+                {retryProgress.error ? ` — ${retryProgress.error}` : "..."}
+              </span>
+            </div>
+          )}
+
+          {hasRpcError && !isRunning && (
+            <div className="p-2.5 rounded bg-amber-950/40 border border-amber-800/60 text-amber-300 text-xs flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>
+                  RPC or fork setup issue detected (<span className="font-mono text-white">vm.createSelectFork / invalid rpc url</span>).
+                </span>
+              </div>
+              <button
+                onClick={() => handleRunPoc(true)}
+                className="px-2 py-1 bg-amber-500 hover:bg-amber-400 text-black font-bold text-[11px] rounded whitespace-nowrap"
+              >
+                Retry All {activeChainRpcs.length} RPCs
+              </button>
+            </div>
+          )}
+
           {repairNotice && (
-            <div className="p-2.5 rounded bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-xs">
-              {repairNotice}
+            <div className="p-2.5 rounded bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-xs flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>{repairNotice}</span>
             </div>
           )}
 
           <div className="bg-[#12110e] border border-[#3a3428] rounded-lg p-3 font-mono text-xs text-[#a39886] min-h-[120px] max-h-60 overflow-y-auto whitespace-pre-wrap">
             {isRunning ? (
-              <span className="text-[#e8a54b] animate-pulse">Running Foundry test on backend...</span>
+              <span className="text-[#e8a54b] animate-pulse">
+                {retryProgress
+                  ? `[Attempt ${retryProgress.attempt}/${retryProgress.total}] Running test against ${retryProgress.rpcUrl}...`
+                  : "Running Foundry test on backend..."}
+              </span>
             ) : pocResult ? (
               <div>
                 <div className="flex items-center gap-2 mb-2 pb-2 border-b border-[#3a3428]">

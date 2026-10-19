@@ -6,9 +6,13 @@ import {
   DEFAULT_BACKEND,
   checkFoundryBackend,
   runPocOnBackend,
+  runPocWithRpcRetries,
+  isRpcOrForkFailure,
   type BackendHealth,
+  type RpcRetryProgress,
 } from "@/lib/audit/foundry-backend";
 import type { PocResult } from "@/lib/audit/types";
+import { RotateCw } from "lucide-react";
 
 /**
  * FoundryLocalRun — run the AI-generated Foundry exploit test against a
@@ -42,6 +46,8 @@ export function FoundryLocalRun({ testCode, address, rpcUrl }: FoundryLocalRunPr
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<RunResult>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [retryAllRpcs, setRetryAllRpcs] = useState(true);
+  const [retryProgress, setRetryProgress] = useState<RpcRetryProgress | null>(null);
 
   useEffect(() => {
     try {
@@ -78,15 +84,33 @@ export function FoundryLocalRun({ testCode, address, rpcUrl }: FoundryLocalRunPr
     }
   };
 
-  const runPoc = async () => {
+  const runPoc = async (forceRetryAll = false) => {
     setRunning(true);
     setRunError(null);
     setResult(null);
-    const poc = await runPocOnBackend(backendUrl, { address, testCode, ...(rpcUrl ? { rpcUrl } : {}) });
-    if (poc.status === "backend_unreachable") {
-      setRunError(poc.logs);
+    setRetryProgress(null);
+
+    const shouldRetry = forceRetryAll || retryAllRpcs;
+
+    if (shouldRetry) {
+      const poc = await runPocWithRpcRetries(backendUrl, {
+        address,
+        testCode,
+        preferredRpc: rpcUrl,
+        onProgress: (p) => setRetryProgress(p),
+      });
+      if (poc.status === "backend_unreachable") {
+        setRunError(poc.logs);
+      } else {
+        setResult({ ...poc, passed: poc.status === "passed" });
+      }
     } else {
-      setResult({ ...poc, passed: poc.status === "passed" });
+      const poc = await runPocOnBackend(backendUrl, { address, testCode, ...(rpcUrl ? { rpcUrl } : {}) });
+      if (poc.status === "backend_unreachable") {
+        setRunError(poc.logs);
+      } else {
+        setResult({ ...poc, passed: poc.status === "passed" });
+      }
     }
     setRunning(false);
   };
@@ -145,8 +169,39 @@ export function FoundryLocalRun({ testCode, address, rpcUrl }: FoundryLocalRunPr
         </p>
       )}
 
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-1.5 text-[11px] font-mono text-[#a39886] cursor-pointer">
+          <input
+            type="checkbox"
+            checked={retryAllRpcs}
+            onChange={(e) => setRetryAllRpcs(e.target.checked)}
+            className="rounded border-[#3a3428] text-[#e8a54b] focus:ring-0 bg-[#12110e]"
+          />
+          <span>Retry using all RPCs in list when necessary</span>
+        </label>
+        {result && !result.passed && isRpcOrForkFailure(result.logs ?? "", result.error) && (
+          <button
+            onClick={() => runPoc(true)}
+            disabled={running}
+            className="text-[11px] font-mono text-amber-400 hover:text-amber-300 flex items-center gap-1 disabled:opacity-50"
+          >
+            <RotateCw className="w-3 h-3" />
+            <span>Retry All Candidate RPCs</span>
+          </button>
+        )}
+      </div>
+
+      {retryProgress && (
+        <div className="text-[11px] font-mono text-blue-300 bg-blue-950/30 border border-blue-900/50 rounded p-1.5 flex items-center gap-1.5">
+          <RotateCw className="w-3 h-3 animate-spin text-blue-400 shrink-0" />
+          <span>
+            [Attempt {retryProgress.attempt}/{retryProgress.total}] Testing with {retryProgress.rpcUrl}...
+          </span>
+        </div>
+      )}
+
       <button
-        onClick={runPoc}
+        onClick={() => runPoc(false)}
         disabled={running || !addressValid || !testCode.trim()}
         className="w-fit text-xs font-mono px-3 py-1.5 rounded bg-[#e8a54b] text-[#12110e] font-bold flex items-center gap-1.5 hover:bg-[#f0b25e] disabled:opacity-50"
       >

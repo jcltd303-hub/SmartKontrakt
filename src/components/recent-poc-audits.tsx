@@ -27,6 +27,7 @@ import type { FindingWithScanInfo } from "@/lib/audit/persist.server";
 import { wrapPocSnippet } from "@/lib/audit/poc-wrap";
 import {
   runPocOnBackend,
+  runPocWithRpcRetries,
   getBackendUrl,
   checkFoundryBackend,
   isPocCompileError,
@@ -150,10 +151,23 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
     try {
       setExecutingMap((prev) => ({
         ...prev,
-        [finding.id]: { running: true, repairing: false, notice: "Executing on Foundry fork..." },
+        [finding.id]: { running: true, repairing: false, notice: "Executing on Foundry fork (auto-retrying candidate RPCs)..." },
       }));
 
-      let poc = await runPocOnBackend(backendUrl, { address: targetAddress, testCode });
+      let poc = await runPocWithRpcRetries(backendUrl, {
+        address: targetAddress,
+        testCode,
+        onProgress: (p) => {
+          setExecutingMap((prev) => ({
+            ...prev,
+            [finding.id]: {
+              running: true,
+              repairing: false,
+              notice: `Testing with RPC ${p.attempt}/${p.total} (${p.rpcUrl.slice(0, 30)}...)...`,
+            },
+          }));
+        },
+      });
 
       // If compile error and autoRepair is enabled, call LLM repair
       if (autoRepair && poc.status === "error" && isPocCompileError(poc.logs ?? "")) {
@@ -177,7 +191,20 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
               ...prev,
               [finding.id]: { running: true, repairing: false, notice: "Re-executing repaired PoC on fork..." },
             }));
-            poc = await runPocOnBackend(backendUrl, { address: targetAddress, testCode });
+            poc = await runPocWithRpcRetries(backendUrl, {
+              address: targetAddress,
+              testCode,
+              onProgress: (p) => {
+                setExecutingMap((prev) => ({
+                  ...prev,
+                  [finding.id]: {
+                    running: true,
+                    repairing: false,
+                    notice: `Re-executing with RPC ${p.attempt}/${p.total}...`,
+                  },
+                }));
+              },
+            });
           }
         } catch (repairErr) {
           console.warn("[kiln] LLM repair failed:", repairErr);

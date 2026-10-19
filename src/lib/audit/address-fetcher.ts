@@ -34,38 +34,73 @@ export const SUPPORTED_CHAINS: SupportedChain[] = [
     id: "arbitrum",
     name: "Arbitrum One",
     chainId: 42161,
-    rpcUrls: ["https://arb1.arbitrum.io/rpc", "https://arbitrum.llamarpc.com"],
+    rpcUrls: [
+      "https://arb1.arbitrum.io/rpc",
+      "https://arbitrum.llamarpc.com",
+      "https://arbitrum-one.publicnode.com",
+      "https://1rpc.io/arb",
+    ],
     blockExplorer: "https://arbiscan.io",
   },
   {
     id: "base",
     name: "Base",
     chainId: 8453,
-    rpcUrls: ["https://mainnet.base.org", "https://base.llamarpc.com"],
+    rpcUrls: [
+      "https://mainnet.base.org",
+      "https://base.llamarpc.com",
+      "https://base.publicnode.com",
+      "https://1rpc.io/base",
+    ],
     blockExplorer: "https://basescan.org",
   },
   {
     id: "optimism",
     name: "Optimism",
     chainId: 10,
-    rpcUrls: ["https://mainnet.optimism.io"],
+    rpcUrls: [
+      "https://mainnet.optimism.io",
+      "https://optimism.publicnode.com",
+      "https://1rpc.io/op",
+    ],
     blockExplorer: "https://optimistic.etherscan.io",
   },
   {
     id: "polygon",
     name: "Polygon",
     chainId: 137,
-    rpcUrls: ["https://polygon-rpc.com"],
+    rpcUrls: [
+      "https://polygon-rpc.com",
+      "https://polygon-bor-rpc.publicnode.com",
+      "https://1rpc.io/matic",
+    ],
     blockExplorer: "https://polygonscan.com",
   },
   {
     id: "bsc",
     name: "BNB Smart Chain",
     chainId: 56,
-    rpcUrls: ["https://bsc-dataseed.binance.org"],
+    rpcUrls: [
+      "https://bsc-dataseed.binance.org",
+      "https://bsc.publicnode.com",
+      "https://1rpc.io/bnb",
+    ],
     blockExplorer: "https://bscscan.com",
   },
 ];
+
+export const ALL_RPC_URLS: string[] = Array.from(
+  new Set(SUPPORTED_CHAINS.flatMap((c) => c.rpcUrls))
+);
+
+export function getRpcsForChain(chainIdOrName?: string): string[] {
+  if (!chainIdOrName) return SUPPORTED_CHAINS[0].rpcUrls;
+  const needle = chainIdOrName.toLowerCase().trim();
+  const match = SUPPORTED_CHAINS.find(
+    (c) => c.id.toLowerCase() === needle || c.name.toLowerCase().includes(needle) || String(c.chainId) === needle
+  );
+  return match ? match.rpcUrls : SUPPORTED_CHAINS[0].rpcUrls;
+}
 
 export type BatchItemStatus = "pending" | "fetching" | "analyzing" | "completed" | "failed" | "skipped";
 

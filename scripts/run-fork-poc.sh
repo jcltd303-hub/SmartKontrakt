@@ -88,7 +88,7 @@ unset _rpc _seen _have
 
 # Does this log smell like an RPC/transport failure (worth rotating for)?
 is_rpc_error() {
-  grep -qiE "HTTP error|failed to (fetch|get).*chain|failed to fetch|error sending request|connection (refused|reset|aborted|timed? ?out)|timed? ?out|rate ?limit|too many requests|\b429\b|\b502\b|\b503\b|\b504\b|\b525\b|failed to (instantiate|create).*fork|fork.*failed|provider.*(error|failed)|eth_chainId" "$1" 2>/dev/null
+  grep -qiE "invalid rpc url|vm\.createSelectFork|vm\.createFork|createSelectFork|createFork|HTTP error|failed to (fetch|get).*chain|failed to fetch|error sending request|connection (refused|reset|aborted|timed? ?out)|timed? ?out|rate ?limit|too many requests|\b429\b|\b502\b|\b503\b|\b504\b|\b525\b|failed to (instantiate|create).*fork|fork.*failed|provider.*(error|failed)|eth_chainId" "$1" 2>/dev/null
 }
 
 stop_anvil() {
@@ -178,10 +178,10 @@ for RPC_URL in "${RPC_CANDIDATES[@]}"; do
     echo "PASS: PoC test(s) in $TEST_FILE reproduced against the fork. (RPC: $RPC_URL)"
     exit 0
   fi
-  # Forge failed. Rotate only if it died before running tests with an
-  # RPC-looking error — a test verdict (tests ran, pass or fail) is final,
-  # and so is a compile error.
-  if ! grep -q "Ran [0-9]* test" "$FORGE_LOG" && ! grep -qiE "error\[|Compiler run failed" "$FORGE_LOG" && is_rpc_error "$FORGE_LOG"; then
+  # Rotate if it failed with an RPC-looking error (and not a compiler error).
+  # Even if Forge printed "Ran 1 test", a setUp() fork/RPC failure is an infra error,
+  # so rotating to the next RPC provider is necessary.
+  if ! grep -qiE "error\[|Compiler run failed" "$FORGE_LOG" && is_rpc_error "$FORGE_LOG"; then
     echo "forge failed on $RPC_URL (RPC error) — rotating to next provider..." >&2
     continue
   fi

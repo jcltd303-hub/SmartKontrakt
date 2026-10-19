@@ -44,6 +44,16 @@ const RPC_PROVIDERS = [
   "https://1rpc.io/eth",
   "https://cloudflare-eth.com",
   "https://eth.llamarpc.com",
+  "https://arb1.arbitrum.io/rpc",
+  "https://arbitrum.llamarpc.com",
+  "https://arbitrum-one.publicnode.com",
+  "https://1rpc.io/arb",
+  "https://mainnet.base.org",
+  "https://base.llamarpc.com",
+  "https://base.publicnode.com",
+  "https://mainnet.optimism.io",
+  "https://polygon-rpc.com",
+  "https://bsc-dataseed.binance.org",
 ];
 // Repo layout: termux-backend/ and foundry/ are siblings at the repo root.
 const SCAFFOLD_DIR =
@@ -118,30 +128,50 @@ function tailCap(text) {
   return "[…output truncated, showing last 50KB]\n" + text.slice(-LOG_CAP);
 }
 
-/** Candidate RPCs: the caller's pinned URL first, then the provider list (deduped). */
-function candidateRpcs(preferred) {
+/** Candidate RPCs: the caller's pinned URL first, then user list, then the provider list (deduped). */
+function candidateRpcs(preferred, userList) {
   const out = [];
-  for (const u of [preferred, ...RPC_PROVIDERS]) {
-    if (u && !out.includes(u)) out.push(u);
+  const list = [preferred, ...(Array.isArray(userList) ? userList : []), ...RPC_PROVIDERS];
+  for (const u of list) {
+    if (typeof u === "string") {
+      const trimmed = u.trim();
+      if (trimmed.length > 0 && !out.includes(trimmed)) {
+        out.push(trimmed);
+      }
+    }
+  }
+  if (out.length === 0) {
+    out.push("https://ethereum.publicnode.com");
   }
   return out;
 }
 
 /** Strong signals of an RPC/transport/fork-setup failure in forge output. */
 const RPC_ERROR_RE =
-  /HTTP error|failed to (fetch|get).*chain|failed to fetch|error sending request|connection (refused|reset|aborted|timed? ?out)|connect timed? ?out|request timed? ?out|operation timed? ?out|rate ?limit|too many requests|\b429\b|\b502\b|\b503\b|\b504\b|\b525\b|failed to (instantiate|create|setup).*fork|fork.*(instantiation|creation) failed|Failed to get (chain|block)|eth_chainId|JSON-RPC.*error/i;
+  /invalid rpc url|vm\.createSelectFork|vm\.createFork|createSelectFork|createFork|HTTP error|failed to (fetch|get).*chain|failed to fetch|error sending request|connection (refused|reset|aborted|timed? ?out)|connect timed? ?out|request timed? ?out|operation timed? ?out|rate ?limit|too many requests|\b429\b|\b502\b|\b503\b|\b504\b|\b525\b|failed to (instantiate|create|setup).*fork|fork.*(instantiation|creation) failed|Failed to get (chain|block)|eth_chainId|JSON-RPC.*error|could not resolve host|DNS.*lookup failed|transport error/i;
 
 /**
  * Should a failed forge run be retried on the next RPC provider?
- * Never retry when tests actually ran (a verdict exists), or on a compile
- * error (another RPC won't fix the code). Retry only when forge died
- * before/without running tests AND the output smells like a transport or
- * fork-setup failure.
+ * Never retry on a compile error (another RPC won't fix Solidity syntax).
+ * Retry when forge failed due to an RPC, transport, or fork-setup failure
+ * (even if Forge reported a failing test during setUp()), so all candidate
+ * providers in the list are tested before giving up.
  */
 function shouldRetryRpc(output) {
-  if (/Ran \d+ test/.test(output)) return false;
-  if (/error\[|Compiler run failed/i.test(output)) return false;
-  return RPC_ERROR_RE.test(output);
+  if (!output) return false;
+  // Compile errors should not be retried with a different RPC
+  if (/Compiler run failed|compilation failed|failed to compile|error\[\d+\]|ParserError|DeclarationError|TypeError/i.test(output)) {
+    return false;
+  }
+  // Strong RPC/fork setup failure: always retry on next provider!
+  if (RPC_ERROR_RE.test(output)) {
+    return true;
+  }
+  // If tests ran to completion without any RPC failure, verdict is final
+  if (/Ran \d+ test/i.test(output)) {
+    return false;
+  }
+  return false;
 }
 
 function validateRun(body) {
@@ -168,10 +198,13 @@ function validateRun(body) {
       return "rpcUrl is not a valid URL";
     }
   }
+  if (body.rpcUrls !== undefined) {
+    if (!Array.isArray(body.rpcUrls)) return "rpcUrls must be an array of strings";
+  }
   return null;
 }
 
-async function runForgeTest({ address, testCode, blockNumber, rpcUrl }) {
+async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls }) {
   const started = Date.now();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "sk-poc-"));
   try {
@@ -203,7 +236,6 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl }) {
       }
     }
     await fs.mkdir(path.join(tmp, "test"), { recursive: true });
-    await fs.writeFile(path.join(tmp, "test", "PoC.t.sol"), testCode, "utf8");
 
     // Rotate RPC providers on transport/fork-setup failure. A test verdict
     // (tests ran, pass or fail) is final — only a pre-test RPC failure
@@ -211,13 +243,30 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl }) {
     // never retry (another provider won't fix those).
     let lastOutput = "";
     let lastRpc = null;
-    const candidates = candidateRpcs(rpcUrl);
+    const candidates = candidateRpcs(rpcUrl, rpcUrls);
     for (const candidate of candidates) {
       lastRpc = candidate;
       const args = ["test", "--fork-url", candidate];
       if (blockNumber !== undefined) args.push("--fork-block-number", String(blockNumber));
-      // Generated tests declare `contract PoC` (see foundry/test/PoC.t.sol template).
-      args.push("--match-contract", "PoC", "-vvv");
+      
+      // Auto-detect test contract name (e.g. PoC, CrowdsaleExploitTest, etc.)
+      const contractMatch = testCode.match(/contract\s+([A-Za-z0-9_]+)\s+is\s+[^{]*\bTest\b/);
+      if (contractMatch && contractMatch[1]) {
+        args.push("--match-contract", contractMatch[1]);
+      } else {
+        args.push("--match-contract", "PoC");
+      }
+      args.push("-vvv");
+
+      // Auto-substitute candidate RPC into createSelectFork / createFork if empty string
+      let candidateTestCode = testCode;
+      if (/vm\.(createSelectFork|createFork)\(\s*["']\s*["']\s*([,\)])/.test(candidateTestCode)) {
+        candidateTestCode = candidateTestCode.replace(
+          /vm\.(createSelectFork|createFork)\(\s*["']\s*["']\s*([,\)])/g,
+          `vm.$1("${candidate}"$2`
+        );
+      }
+      await fs.writeFile(path.join(tmp, "test", "PoC.t.sol"), candidateTestCode, "utf8");
 
       // Scrubbed child env: a test's vm.envOr must never see the parent's secrets.
       const childEnv = {
@@ -228,6 +277,13 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl }) {
         POC_TARGET: address,
         POC_FORK_BLOCK: String(blockNumber ?? 0),
         POC_RPC_URL: candidate,
+        RPC_URL: candidate,
+        MAINNET_RPC_URL: candidate,
+        ARBITRUM_RPC_URL: candidate,
+        BASE_RPC_URL: candidate,
+        OPTIMISM_RPC_URL: candidate,
+        POLYGON_RPC_URL: candidate,
+        BSC_RPC_URL: candidate,
       };
       const result = await runWithTimeout("forge", args, {
         cwd: tmp,
@@ -360,6 +416,7 @@ const server = http.createServer((req, res) => {
           testCode: body.testCode,
           blockNumber: body.blockNumber,
           rpcUrl,
+          rpcUrls: body.rpcUrls,
         });
         console.log(
           `[${new Date().toISOString()}] /run-poc address=${body.address} passed=${result.passed} ok=${result.ok} durationMs=${result.durationMs} rpc=${result.rpcUrl ?? "-"}${result.error ? ` error=${result.error}` : ""}`,

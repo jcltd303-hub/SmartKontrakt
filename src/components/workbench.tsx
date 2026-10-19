@@ -21,7 +21,7 @@ import { probeContractInterfaces, resolveContractDisplayName, type CallProbeResu
 import { requestAiReview, requestDeepAgentRound, requestPocRepair } from "@/lib/audit/ai.functions";
 import { resolveFourbyte } from "@/lib/audit/fourbyte.functions";
 import { applyFourbyteResults, fourbyteResultsFromReport } from "@/lib/audit/fourbyte";
-import { getBackendUrl, isPocCompileError, runPocOnBackend } from "@/lib/audit/foundry-backend";
+import { getBackendUrl, isPocCompileError, runPocOnBackend, runPocWithRpcRetries } from "@/lib/audit/foundry-backend";
 import { getStoredSupabaseConfig } from "@/lib/supabase";
 import { savePocRun, type PocRunResult } from "../lib/poc-runs";
 import { wrapPocSnippet } from "../lib/audit/poc-wrap";
@@ -528,7 +528,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
   // Repair failure is NOT a new verdict — the caller keeps the original
   // compile-error result, so a failed repair never hides the real error.
   const runSinglePocWithRepair = async (address: string, testCode: string) => {
-    let poc = await runPocOnBackend(getBackendUrl(), { address, testCode });
+    let poc = await runPocWithRpcRetries(getBackendUrl(), { address, testCode });
     if (poc.status === "error" && isPocCompileError(poc.logs ?? "")) {
       try {
         const repaired = await requestPocRepair({ data: {
@@ -538,7 +538,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           body: contractBody,
         } });
         testCode = repaired.fixedCode;
-        poc = await runPocOnBackend(getBackendUrl(), { address, testCode });
+        poc = await runPocWithRpcRetries(getBackendUrl(), { address, testCode });
       } catch (repairErr) {
         console.warn("[Kiln] PoC repair failed:", repairErr);
       }
@@ -663,7 +663,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         }));
         return;
       }
-      const poc = await runPocOnBackend(getBackendUrl(), { address: addr, testCode });
+      const poc = await runPocWithRpcRetries(getBackendUrl(), { address: addr, testCode });
       // Release the run lock as soon as the backend call returns — the
       // save attempt below must not block other runs (it can take up to
       // the 30s save timeout on a failing endpoint). The finally still
@@ -862,7 +862,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         for (const h of res.hypotheses) {
           setDeepAgentStatus(`Round ${round}: running PoC for "${h.title}"…`);
           let testCode = h.foundryTestCode;
-          let poc = await runPocOnBackend(getBackendUrl(), { address: addr, testCode });
+          let poc = await runPocWithRpcRetries(getBackendUrl(), { address: addr, testCode });
           // Repair loop (same as the worker): a PoC that fails to
           // COMPILE gets ONE LLM repair + one re-run.
           if (poc.status === "error" && isPocCompileError(poc.logs ?? "")) {
@@ -875,7 +875,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 body: contractBody,
               } });
               testCode = repaired.fixedCode;
-              poc = await runPocOnBackend(getBackendUrl(), { address: addr, testCode });
+              poc = await runPocWithRpcRetries(getBackendUrl(), { address: addr, testCode });
             } catch (repairErr) {
               setDeepAgentError(
                 `PoC repair failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)} — stopping the search.`,
