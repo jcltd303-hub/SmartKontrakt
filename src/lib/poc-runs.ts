@@ -31,7 +31,7 @@
 // anon keys only) without importing it, so this module stays usable
 // from any client context.
 
-export type PocRunStatus = "passed" | "failed" | "error" | "timed_out";
+export type PocRunStatus = "passed" | "failed" | "error" | "timed_out" | "skipped";
 
 export type PocRunResult = {
   /** UUID identifying this run. Stable across save retries. */

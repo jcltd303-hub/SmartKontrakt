@@ -315,7 +315,7 @@ export function deduplicateInterfaceFunctions(solidityCode: string): string {
           const fnName = fnMatch[1];
           const paramTypes = fnMatch[2]
             .split(",")
-            .map((p) => p.trim().split(/\s+/)[0])
+            .map((p: string) => p.trim().split(/\s+/)[0])
             .join(",");
           const sig = `${fnName}(${paramTypes})`;
           if (seenSignatures.has(sig)) {
