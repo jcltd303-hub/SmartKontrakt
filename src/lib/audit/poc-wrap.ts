@@ -66,7 +66,20 @@ export type WrappedPoc = {
 };
 
 /** Entry-function names, first match in this order wins. */
-const ENTRY_NAMES = ["attack", "exploit", "poc", "hack", "run", "execute", "drain", "pwn", "go"] as const;
+const ENTRY_NAMES = [
+  "attack",
+  "exploit",
+  "executeAttack",
+  "execute",
+  "seizeAndDrain",
+  "seize",
+  "poc",
+  "hack",
+  "run",
+  "drain",
+  "pwn",
+  "go",
+] as const;
 
 /**
  * Length-preserving strip: comment and string contents become spaces,
@@ -312,6 +325,20 @@ export function wrapPocSnippet(snippet: string): WrappedPoc | null {
       }
     }
     if (attack) break;
+  }
+  if (!attack || !entry) {
+    const prefixes = ["attack", "exploit", "execute", "drain", "seize", "pwn", "take"];
+    for (const prefix of prefixes) {
+      for (const c of contracts) {
+        const fn = findFunctions(c.body).find((f) => f.name.toLowerCase().startsWith(prefix));
+        if (fn) {
+          attack = c;
+          entry = fn;
+          break;
+        }
+      }
+      if (attack) break;
+    }
   }
   if (!attack || !entry) return null;
   // Fill constructor + entry params from the fill table (never null
