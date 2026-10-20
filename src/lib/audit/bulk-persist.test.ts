@@ -18,6 +18,8 @@ async function database() {
     "0006_fourbyte_events.sql",
     "0007_unparsed.sql",
     "0008_finding_poc_runs.sql",
+    "0009_rag_fts.sql",
+    "0010_indexes.sql",
   ]) {
     await pg.exec(await readFile(new URL(`../../../migrations/${f}`, import.meta.url), "utf8"));
   }

@@ -73,24 +73,34 @@ function normalizeParams(params: string): string {
 
 type Container = {
   kind: "contract" | "interface" | "library";
+  name: string;
   /** Offset of the `{` that opens the container body. */
   open: number;
   /** Offset of the matching `}`. */
   close: number;
 };
 
+/**
+ * A PoC legitimately defines attacker/helper contracts that may reuse a
+ * function NAME from the target (e.g. an attacker's own `withdraw`). Only a
+ * container that is NOT one of these has its target-matching functions treated
+ * as an unintended rewrite of the target and removed.
+ */
+const ATTACKER_CONTAINER = /(attack|exploit|malicious|hacker|adversary|helper|reentran)/i;
+
 /** Top-level `contract|interface|library` definitions and their body ranges. */
 function findContainers(stripped: string): Container[] {
   const out: Container[] = [];
-  const re = /\b(contract|interface|library)\s+[A-Za-z_]\w*/g;
+  const re = /\b(contract|interface|library)\s+([A-Za-z_]\w*)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(stripped)) !== null) {
     const kind = m[1] as Container["kind"];
+    const name = m[2];
     const brace = stripped.indexOf("{", m.index);
     if (brace === -1) continue;
     const close = matchBrace(stripped, brace);
     if (close === -1) continue;
-    out.push({ kind, open: brace, close });
+    out.push({ kind, name, open: brace, close });
     re.lastIndex = close;
   }
   return out;
@@ -212,8 +222,10 @@ export function sanitizePocDraft(draft: string, target: PocTarget): SanitizeResu
     const seen = new Set<string>();
     for (const fn of fns) {
       const sig = normalizeSignature(fn.signature);
-      // (a) The PoC must not re-implement the target's own functions.
-      if (container.kind === "contract" && targetSigs.has(sig)) {
+      // (a) The PoC must not re-implement the target's own functions — unless
+      // the container is clearly an attacker/helper harness, whose same-named
+      // functions are legitimate.
+      if (container.kind === "contract" && targetSigs.has(sig) && !ATTACKER_CONTAINER.test(container.name)) {
         removals.push([fn.start, fn.end]);
         continue;
       }
