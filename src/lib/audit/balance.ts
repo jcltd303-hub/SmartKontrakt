@@ -36,7 +36,7 @@ const CHAIN_ID_BY_NAME: Record<string, number> = {
 };
 
 /** Chain id from a numeric or named chain reference. */
-export function normalizeChainId(chain?: number | string): number {
+export function normalizeChainId(chain?: number | string | null): number {
   if (chain === undefined || chain === null || chain === "") return 1;
   if (typeof chain === "number") return chain;
   const byName = CHAIN_ID_BY_NAME[chain.toLowerCase()];
@@ -46,7 +46,7 @@ export function normalizeChainId(chain?: number | string): number {
 }
 
 /** Native coin symbol for a chain (defaults to ETH). */
-export function nativeSymbol(chain?: number | string): string {
+export function nativeSymbol(chain?: number | string | null): string {
   return NATIVE_SYMBOL[normalizeChainId(chain)] ?? "ETH";
 }
 
@@ -84,7 +84,7 @@ export function weiFromHex(hex: unknown): bigint | null {
 export async function fetchNativeBalance(
   address: string,
   rpcUrls: string[],
-  chain?: number | string,
+  chain?: number | string | null,
 ): Promise<NativeBalance | null> {
   if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return null;
   for (const rpcUrl of rpcUrls) {
