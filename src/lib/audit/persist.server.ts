@@ -72,6 +72,8 @@ type ScanRow = {
   info_count: number;
   balance_wei?: string | null;
   value_usd?: number | null;
+  abi_json?: string | null;
+  abi_source?: string | null;
   summary: string;
   inventory_json: string;
   ai_narrative: string | null;
