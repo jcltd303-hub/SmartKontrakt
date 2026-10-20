@@ -1,4 +1,19 @@
+import type { AddressValue } from "./value.ts";
+
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
+
+/**
+ * One ABI entry, as returned by Sourcify/Etherscan or rebuilt heuristically.
+ * Defined here (not in abi.ts) so the ABI can live on the persisted Inventory
+ * without a circular type import.
+ */
+export type AbiItem = {
+  type?: string;
+  name?: string;
+  inputs?: Array<{ name?: string; type?: string; components?: AbiItem[] }>;
+  outputs?: Array<{ name?: string; type?: string; components?: AbiItem[] }>;
+  stateMutability?: string;
+};
 
 export type Confidence = "high" | "medium" | "low";
 
@@ -93,13 +108,13 @@ export type Inventory = {
    */
   valueUsd?: number | null;
   /** Full valuation (holdings, prices, sources, completeness). */
-  value?: unknown | null;
+  value?: AddressValue | null;
   /**
    * The target's ABI when one was gathered (Sourcify / Etherscan / inferred
    * from selectors + events), stored so a later PoC run in ANY context can
    * tailor its template to the real surface without re-fetching.
    */
-  abi?: unknown | null;
+  abi?: AbiItem[] | null;
   /** Where the ABI came from: "sourcify" | "etherscan" | "heuristic" | "input". */
   abiSource?: string | null;
 };

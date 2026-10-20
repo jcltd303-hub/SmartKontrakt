@@ -19,15 +19,10 @@
  */
 import { rpcLimiter } from "./rate-limit.ts";
 import { normalizeChainId } from "./balance.ts";
-import type { Inventory } from "./types.ts";
 
-export type AbiItem = {
-  type?: string;
-  name?: string;
-  inputs?: Array<{ name?: string; type?: string; components?: AbiItem[] }>;
-  outputs?: Array<{ name?: string; type?: string; components?: AbiItem[] }>;
-  stateMutability?: string;
-};
+import type { AbiItem, Inventory } from "./types.ts";
+
+export type { AbiItem };
 
 export type GatheredAbi = { abi: AbiItem[]; source: "sourcify" | "etherscan" | "heuristic" };
 
