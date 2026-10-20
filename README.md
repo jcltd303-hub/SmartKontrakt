@@ -91,6 +91,10 @@ The PoC pipeline follows **SmartPoC** (Chen et al., *SmartPoC: Generating Execut
 
 The headless pipeline worker runs the full pipeline per flagged address. Settings mirror the paper: temperature 0.3, retry budget B = 5, Foundry fork tests.
 
+## Fallback PoC library
+
+`foundry/poc-fallbacks/` holds one working Foundry harness per scenario, organised by the [SmartBugs Curated](https://github.com/smartbugs/smartbugs-curated) DASP taxonomy. A finding starts from the harness for its detector, or — when the detector has none — the harness for its SmartBugs category. `npm run check:fallbacks` compiles every harness with Foundry; see `docs/smartbugs-alignment.md`.
+
 ## Optional Supabase summary sync
 
 The pipeline's Supabase settings take a project URL, a publishable/legacy anon key, and an existing table name (default `kiln_batch_audits`). Secret and service-role keys cannot be used by the browser writer. The table must provide the summary columns sent by `toSupabaseBatchRow` in `src/lib/supabase.ts`, with `id` as a primary/unique key. Configure grants and RLS for your intended read, insert, and update access. A REST connection test does not create tables or prove write authorization.

@@ -18,7 +18,9 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
     "check:detectors": "node --experimental-strip-types src/lib/audit/selfcheck.ts",
-    "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/preview-path-prefix.test.ts src/lib/audit/*.test.ts src/lib/audit/smartpoc/*.test.ts src/lib/supabase.test.ts src/lib/supabase-db.test.ts src/lib/poc-runs.test.ts src/lib/audit/poc-wrap.test.ts && npm run check:detectors",
+    "generate:fallbacks": "node scripts/generate-poc-fallbacks-ts.mjs",
+    "check:fallbacks": "node scripts/compile-poc-fallbacks.mjs",
+    "test": "node --experimental-strip-types --test scripts/ && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/preview-path-prefix.test.ts src/lib/audit/*.test.ts src/lib/audit/smartpoc/*.test.ts src/lib/supabase.test.ts src/lib/supabase-db.test.ts src/lib/poc-runs.test.ts src/lib/audit/poc-wrap.test.ts && npm run check:detectors",
     "benchmark:batch": "node --experimental-strip-types scripts/benchmark-batch.ts",
     "lint": "eslint .",
     "format": "prettier --write ."
