@@ -174,7 +174,10 @@ export function interfaceFromAbi(abi: AbiItem[], name = "ITarget"): string {
     const mut = item.stateMutability ?? "nonpayable";
     const outputs = (item.outputs ?? []).map((o) => solidityType(o)).filter((x): x is string => Boolean(x));
     const returns = outputs.length > 0 ? ` returns (${outputs.join(", ")})` : "";
-    lines.push(`    function ${item.name}(${(inputs as string[]).join(", ")}) external ${mut === "view" || mut === "pure" ? mut : mut === "payable" ? "payable" : ""}${returns};`.replace(/\s+returns/, " returns"));
+    const mutWord = mut === "view" || mut === "pure" ? mut : mut === "payable" ? "payable" : "";
+    lines.push(
+      `    function ${item.name}(${(inputs as string[]).join(", ")}) external${mutWord ? ` ${mutWord}` : ""}${returns};`,
+    );
     emitted += 1;
     if (emitted >= 80) break;
   }
