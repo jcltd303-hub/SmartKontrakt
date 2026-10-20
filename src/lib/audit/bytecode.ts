@@ -214,8 +214,11 @@ export function analyzeBytecode(raw: string): BytecodeReport {
   const sels = selectorsOf(ins);
   const formatted = formatDisassembly(ins, 420);
   const hex = [...(meta.body.length ? meta.body : code)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  const findings: Finding[] = [];
   const gasStats = estimateGasAndDetectDos(ins);
+  // Declared here, before the first push (the gas-DoS finding below). It used
+  // to be declared further down, which TypeScript rejected as
+  // use-before-declaration.
+  const findings: Finding[] = [];
   if (gasStats.unboundedStorageWarning) {
     findings.push(
       finding({
