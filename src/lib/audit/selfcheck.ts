@@ -1,5 +1,7 @@
-import { analyzeInput } from "./engine";
-import { SAMPLES } from "./samples";
+// Explicit `.ts` extensions: this file is run directly by Node's type-stripping
+// test runner (`npm run check:detectors`), which requires ESM-visible extensions.
+import { analyzeInput } from "./engine.ts";
+import { SAMPLES } from "./samples.ts";
 
 function must(label: string, detectors: string[], forbidden: string[] = []) {
   const sample = SAMPLES.find((s) => s.label === label);
