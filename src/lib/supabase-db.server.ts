@@ -22,7 +22,7 @@ const CONFIG_FILE = ".supabase-db-config.json";
 export const DEFAULT_SUPABASE_DB_CONFIG: SupabaseDbConfig = {
   projectName: "SmartKontrakt",
   projectRef: "aadhpvhpjzkkeydzxxhk",
-  password: "hX*+JxfrR4Q&3BB",
+  password: "",
   region: "us-west-2",
   host: "aws-1-us-west-2.pooler.supabase.com",
   port: 6543,
@@ -58,8 +58,6 @@ export function loadSupabaseDbConfig(): SupabaseDbConfig {
       return {
         ...DEFAULT_SUPABASE_DB_CONFIG,
         ...parsed,
-        // Always ensure password is preserved if empty in saved file
-        password: parsed.password || DEFAULT_SUPABASE_DB_CONFIG.password,
       };
     }
   } catch (err) {
@@ -91,8 +89,9 @@ export function buildSupabasePostgresUrl(cfg: SupabaseDbConfig): string {
     return cfg.customUrl.trim();
   }
 
-  // Note: Password 'hX*+JxfrR4Q&3BB' contains characters + and & which must be percent-encoded for URI safety
-  const encPw = encodeURIComponent(cfg.password || DEFAULT_SUPABASE_DB_CONFIG.password);
+  // Credentials must be supplied explicitly, never recovered from source defaults.
+  if (!cfg.password) return "";
+  const encPw = encodeURIComponent(cfg.password);
 
   // If explicit host and user are provided (e.g. Supabase pooler host)
   if (cfg.host?.trim() && cfg.user?.trim()) {

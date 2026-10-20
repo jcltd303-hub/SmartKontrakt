@@ -261,9 +261,9 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls })
 
       // Auto-substitute candidate RPC into createSelectFork / createFork if empty string
       let candidateTestCode = testCode;
-      if (/vm\.(createSelectFork|createFork)\(\s*["']\s*["']\s*([,\)])/.test(candidateTestCode)) {
+      if (/vm\.(createSelectFork|createFork)\(\s*["']\s*["']\s*([,)])/.test(candidateTestCode)) {
         candidateTestCode = candidateTestCode.replace(
-          /vm\.(createSelectFork|createFork)\(\s*["']\s*["']\s*([,\)])/g,
+          /vm\.(createSelectFork|createFork)\(\s*["']\s*["']\s*([,)])/g,
           `vm.$1("${candidate}"$2`
         );
       }
