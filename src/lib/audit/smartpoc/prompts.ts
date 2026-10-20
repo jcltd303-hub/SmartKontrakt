@@ -18,7 +18,15 @@ const FOUNDRY_RULES = [
 export function buildPocGenerationPrompt(args: {
   contractName: string;
   buildMetadata: string;
-  finding: { title: string; severity: string; detector: string; summary: string; locationFn?: string | null };
+  finding: {
+    title: string;
+    severity: string;
+    detector: string;
+    summary: string;
+    locationFn?: string | null;
+    /** SmartBugs-Curated (DASP) category of the finding, when known. */
+    smartbugs?: string | null;
+  };
   bugContext: string;
   startingTemplate?: { file: string; source: string } | null;
   fourbyteSection?: string;
@@ -30,7 +38,7 @@ export function buildPocGenerationPrompt(args: {
 ${args.buildMetadata}
 
 ## Static finding
-[${args.finding.severity.toUpperCase()}] ${args.finding.title} (detector: ${args.finding.detector})
+[${args.finding.severity.toUpperCase()}] ${args.finding.title} (detector: ${args.finding.detector}${args.finding.smartbugs ? `, SmartBugs: ${args.finding.smartbugs}` : ""})
 Location: ${args.finding.locationFn ?? "contract"}
 ${args.finding.summary}
 ${args.fourbyteSection ?? ""}

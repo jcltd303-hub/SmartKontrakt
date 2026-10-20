@@ -1,6 +1,7 @@
 import type { Finding } from "./types.ts";
 import { openRouterLimiter, withRetry } from "./rate-limit.ts";
 import { selectPocFallbacks } from "./poc-fallbacks.ts";
+import { smartbugsCategoryForDetector } from "./smartbugs.ts";
 import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte.ts";
 
 export type AiSecurityReview = {
@@ -195,7 +196,7 @@ export function buildAiReviewPrompt(
   const findingsSummary = findings
     .map(
       (f, i) =>
-        `Finding #${i + 1} [${f.severity.toUpperCase()}]: ${f.title} (Detector: ${f.detector}, SWC-${f.swc ?? "N/A"})\n` +
+        `Finding #${i + 1} [${f.severity.toUpperCase()}]: ${f.title} (Detector: ${f.detector}, SWC-${f.swc ?? "N/A"}, SmartBugs: ${smartbugsCategoryForDetector(f.detector)})\n` +
         `Location: ${f.locationFn ?? "contract"} (line ${f.locationLine ?? "N/A"})\n` +
         `Summary: ${f.summary}`,
     )

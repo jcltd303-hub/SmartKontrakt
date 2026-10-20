@@ -27,6 +27,7 @@ import {
   type OpenRouterPurpose,
 } from "../ai-review.server.ts";
 import { selectPocFallbacks } from "../poc-fallbacks.ts";
+import { smartbugsCategoryForDetector } from "../smartbugs.ts";
 import { extractBugContext, type BceFinding } from "./bce.ts";
 import { sanitizePocDraft, functionSignaturesFromInventory, type PocTarget } from "./sanitize.ts";
 import {
@@ -266,6 +267,10 @@ export async function runGreEngine(input: GreInput, execute: GreExecute): Promis
       locationFn: null,
     };
 
+  // selectPocFallbacks falls back to the finding's SmartBugs-Curated (DASP)
+  // category when the detector has no harness of its own, so this always yields
+  // a working template rather than an empty prompt.
+  const smartbugs = smartbugsCategoryForDetector(primary.detector);
   const template = selectPocFallbacks([{ detector: primary.detector, severity: primary.severity }], 1)[0];
 
   const generation = buildPocGenerationPrompt({
@@ -273,7 +278,7 @@ export async function runGreEngine(input: GreInput, execute: GreExecute): Promis
     buildMetadata: `${input.compilerVersion ?? "unknown"} | contract ${input.contractName}`,
     finding: {
       title: primary.title, severity: primary.severity, detector: primary.detector,
-      summary: primary.summary, locationFn: primary.locationFn ?? null,
+      summary: primary.summary, locationFn: primary.locationFn ?? null, smartbugs,
     },
     bugContext,
     startingTemplate: template ? { file: template.file, source: template.source } : null,

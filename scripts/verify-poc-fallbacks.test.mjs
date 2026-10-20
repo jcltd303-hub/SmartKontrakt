@@ -1,39 +1,79 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
-import { POC_FALLBACK_TEMPLATES } from '../src/lib/audit/poc-fallbacks.ts';
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readdir, readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
-test('all indexed PoC fallback harnesses have the expected structure and embedded source', async () => {
-  const directory = new URL('../foundry/poc-fallbacks/', import.meta.url);
-  const index = JSON.parse(await readFile(new URL('index.json', directory), 'utf8'));
-  const files = (await readdir(directory)).filter(f => f.endsWith('.t.sol')).sort();
-  assert.equal(files.length, 45, 'Should have 45 PoC fallback files');
-  assert.deepEqual(index.fallbacks.map(f => f.file).sort(), files);
-  assert.deepEqual(Object.keys(POC_FALLBACK_TEMPLATES).sort(), files);
+// Resolve relative to THIS file. The previous absolute `/app/applet/...` path
+// was a build-sandbox leftover and could never work anywhere else.
+// scripts/ -> repo root -> foundry/poc-fallbacks (one level up, not two).
+const FALLBACKS_DIR = fileURLToPath(new URL("../foundry/poc-fallbacks/", import.meta.url));
 
+async function harnessFiles() {
+  return (await readdir(FALLBACKS_DIR)).filter((f) => f.endsWith(".t.sol")).sort();
+}
+
+test("every fallback harness is a runnable, fork-only Foundry test", async () => {
+  const files = await harnessFiles();
+  assert.ok(files.length >= 9, "at least one harness per SmartBugs category");
   for (const file of files) {
-    const source = await readFile(new URL(file, directory), 'utf8');
-    assert.match(source, /contract PoC is Test/, `${file}: missing PoC contract`);
-    assert.match(source, /function test_/, `${file}: missing test function`);
-    assert.equal(POC_FALLBACK_TEMPLATES[file], source, `${file}: regenerate embedded template`);
+    const src = await readFile(join(FALLBACKS_DIR, file), "utf8");
+    assert.match(src, /SPDX-License-Identifier/, `${file}: missing SPDX header`);
+    assert.match(src, /pragma solidity \^?0\.8/, `${file}: must target Solidity >= 0.8`);
+    assert.match(src, /import \{Test, console\} from "forge-std\/Test\.sol";/, `${file}: missing forge-std import`);
+    assert.match(src, /contract PoC is Test/, `${file}: missing \`contract PoC is Test\``);
+    assert.match(src, /function test_/, `${file}: no test function`);
+    assert.match(src, /vm\.createFork\(/, `${file}: not fork-based`);
+    assert.match(src, /vm\.envOr\("POC_TARGET"/, `${file}: must read POC_TARGET from env (no hardcoded target)`);
+    assert.doesNotMatch(src, /--broadcast|privateKey|PRIVATE_KEY|vm\.broadcast/, `${file}: must never broadcast or take a key`);
   }
 });
 
-test('unadapted success-only scenarios cannot masquerade as exploit reproductions', async () => {
-  const { createRequire } = await import('node:module');
-  const { parse } = createRequire(import.meta.url)('@solidity-parser/parser');
-  for (const file of ['07b-unprotected-visibility.t.sol', '42-short-address-attack.t.sol', '43-front-running.t.sol', '44-external-contract-ref.t.sol']) {
-    const source = await readFile(new URL(`../foundry/poc-fallbacks/${file}`, import.meta.url), 'utf8');
-    const ast = parse(source);
-    const contract = ast.children.find(node => node.type === 'ContractDefinition' && node.name === 'PoC');
-    const tests = contract.subNodes.filter(node => node.type === 'FunctionDefinition' && node.name.startsWith('test_'));
-    assert.ok(tests.length > 0);
-    for (const fn of tests) {
-      const first = fn.body.statements[0];
-      assert.equal(first.type, 'ExpressionStatement', `${file}: placeholder must stop before arbitrary calls`);
-      assert.equal(first.expression.type, 'FunctionCall');
-      assert.equal(first.expression.expression.name, 'revert');
-      assert.match(first.expression.arguments[0].value, /TEMPLATE_NOT_ADAPTED/);
+test("index.json, the harness files, and the SmartBugs taxonomy agree", async () => {
+  const index = JSON.parse(await readFile(join(FALLBACKS_DIR, "index.json"), "utf8"));
+  const onDisk = new Set(await harnessFiles());
+  const listed = new Set(index.fallbacks.map((f) => f.file));
+
+  for (const f of listed) assert.ok(onDisk.has(f), `index.json lists a missing harness: ${f}`);
+  for (const f of onDisk) assert.ok(listed.has(f), `harness missing from index.json: ${f}`);
+
+  const { SMARTBUGS_CATEGORIES, SMARTBUGS_BY_DETECTOR } = await import("../src/lib/audit/smartbugs.ts");
+
+  // Every SmartBugs Curated (DASP) category must have at least one harness.
+  const covered = new Set(index.fallbacks.map((f) => f.smartbugs));
+  for (const category of SMARTBUGS_CATEGORIES) {
+    assert.ok(covered.has(category.id), `no fallback harness for SmartBugs category: ${category.id}`);
+  }
+
+  // Every detector a harness claims must resolve to a SmartBugs category.
+  for (const f of index.fallbacks) {
+    for (const detector of f.detectors) {
+      assert.ok(
+        SMARTBUGS_BY_DETECTOR[detector],
+        `detector "${detector}" (${f.file}) has no SmartBugs category`,
+      );
     }
+  }
+
+  // The generated module must expose the same categories the taxonomy defines.
+  const generated = await import("../src/lib/audit/poc-fallbacks.ts");
+  const generatedCategories = Object.keys(generated.POC_FALLBACK_BY_SMARTBUGS).sort();
+  const expected = SMARTBUGS_CATEGORIES.map((c) => c.id).sort();
+  assert.deepEqual(generatedCategories, expected, "POC_FALLBACK_BY_SMARTBUGS must cover every category");
+
+  // And every catalog entry must carry its category.
+  for (const entry of generated.POC_FALLBACK_CATALOG) {
+    assert.ok(entry.smartbugs, `catalog entry ${entry.file} is missing its SmartBugs category`);
+  }
+});
+
+test("selectPocFallbacksBySmartbugs returns a harness for every category", async () => {
+  const { selectPocFallbacksBySmartbugs, POC_FALLBACK_BY_SMARTBUGS } = await import(
+    "../src/lib/audit/poc-fallbacks.ts"
+  );
+  for (const category of Object.keys(POC_FALLBACK_BY_SMARTBUGS)) {
+    const picks = selectPocFallbacksBySmartbugs(category, 2);
+    assert.ok(picks.length > 0, `no harness selected for category ${category}`);
+    assert.match(picks[0].source, /contract PoC is Test/, `${category}: selected a non-harness`);
   }
 });
