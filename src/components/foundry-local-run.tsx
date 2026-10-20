@@ -1,3 +1,4 @@
+import { requestPocRepair } from "@/lib/audit/ai.functions";
 import { useEffect, useState } from "react";
 import { Play, Loader2, CheckCircle2, XCircle, Server, AlertTriangle } from "lucide-react";
 import {
@@ -11,6 +12,9 @@ import {
   type BackendHealth,
   type RpcRetryProgress,
 } from "@/lib/audit/foundry-backend";
+import { saveSmartPocResult } from "@/lib/audit/smart-poc-save";
+import { getStoredSupabaseConfig } from "@/lib/supabase";
+import { SUPPORTED_CHAINS } from "@/lib/audit/address-fetcher";
 import type { PocResult } from "@/lib/audit/types";
 import { RotateCw } from "lucide-react";
 
@@ -33,18 +37,22 @@ interface FoundryLocalRunProps {
   address: string;
   /** Upstream RPC the backend forks from. Defaults to the backend's ETH_RPC_URL / public endpoint. */
   rpcUrl?: string;
+  chainId?: string;
+  contractName?: string;
+  contractBody?: string;
 }
 
 type Health = BackendHealth;
 type RunResult = (PocResult & { passed: boolean }) | null;
 
-export function FoundryLocalRun({ testCode, address, rpcUrl }: FoundryLocalRunProps) {
+export function FoundryLocalRun({ testCode, address, rpcUrl, chainId = "ethereum", contractName = "Contract", contractBody = "" }: FoundryLocalRunProps) {
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND);
   const [health, setHealth] = useState<Health>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<RunResult>(null);
+  const [saveNotice, setSaveNotice] = useState("");
   const [runError, setRunError] = useState<string | null>(null);
   const [retryAllRpcs, setRetryAllRpcs] = useState(true);
   const [retryProgress, setRetryProgress] = useState<RpcRetryProgress | null>(null);
@@ -86,32 +94,46 @@ export function FoundryLocalRun({ testCode, address, rpcUrl }: FoundryLocalRunPr
 
   const runPoc = async (forceRetryAll = false) => {
     setRunning(true);
+    setSaveNotice("");
+    let completed: PocResult | null = null;
     setRunError(null);
     setResult(null);
     setRetryProgress(null);
 
     const shouldRetry = forceRetryAll || retryAllRpcs;
+    const repair = async (source: string, logs: string) => {
+      const response = await requestPocRepair({ data: { contractName, originalCode: source, errorLogs: logs, body: contractBody } });
+      return response.fixedCode;
+    };
 
     if (shouldRetry) {
       const poc = await runPocWithRpcRetries(backendUrl, {
         address,
+        chainId,
         testCode,
         preferredRpc: rpcUrl,
+        repair,
         onProgress: (p) => setRetryProgress(p),
       });
+      completed = poc;
       if (poc.status === "backend_unreachable") {
         setRunError(poc.logs);
       } else {
         setResult({ ...poc, passed: poc.status === "passed" });
       }
     } else {
-      const poc = await runPocOnBackend(backendUrl, { address, testCode, ...(rpcUrl ? { rpcUrl } : {}) });
+      const poc = await runPocOnBackend(backendUrl, { address, testCode, chainId, repair, ...(rpcUrl ? { rpcUrl } : {}) });
+      completed = poc;
       if (poc.status === "backend_unreachable") {
         setRunError(poc.logs);
       } else {
         setResult({ ...poc, passed: poc.status === "passed" });
       }
     }
+    try {
+      if (completed) setSaveNotice(await saveSmartPocResult(completed, completed.executedSource ?? testCode,
+        SUPPORTED_CHAINS.find(c => c.id === chainId)?.chainId ?? Number(chainId), getStoredSupabaseConfig()));
+    } catch (saveError) { setSaveNotice(`Save failed: ${String(saveError)}`); }
     setRunning(false);
   };
 
@@ -119,8 +141,9 @@ export function FoundryLocalRun({ testCode, address, rpcUrl }: FoundryLocalRunPr
     <div className="mt-2 p-3 bg-[#12110e] rounded-lg border border-[#3a3428] flex flex-col gap-2">
       <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-[#e8a54b]">
         <Server className="w-3.5 h-3.5" />
-        <span>Run this PoC on your local backend (Termux + Foundry, fork-only)</span>
+        <span>SmartPoC · Foundry fork execution</span>
       </div>
+      {saveNotice && <p className="text-xs" role="status">Persistence: {saveNotice}</p>}
       <p className="text-[11px] font-mono text-[#a39886] leading-relaxed">
         Executes the test against a fork of live chain state on your phone. Nothing is broadcast,
         nothing is spent, no private key is involved. The backend runs one PoC at a time.
@@ -264,3 +287,4 @@ WIRING (in src/components/workbench.tsx — do NOT edit that file here):
 3. Done — no props drilling, no server changes, no new deps (lucide-react
    is already used by the workbench).
 */
+

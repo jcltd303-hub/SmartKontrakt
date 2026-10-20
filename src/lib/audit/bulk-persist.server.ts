@@ -62,6 +62,8 @@ export async function writeAuditBatch(sql: Sql, records: ComprehensiveRecordInpu
     walkthrough: f.walkthrough, exploit_solidity: f.exploitSolidity,
     remediation_solidity: f.remediationSolidity, location_fn: f.locationFn,
     location_line: f.locationLine, snippet: f.snippet,
+    poc_status: f.pocStatus ?? null, poc_output: f.pocOutput ?? null,
+    poc_duration_ms: f.pocDurationMs ?? null, poc_run_at: f.pocRunAt ?? null, poc_code: f.pocCode ?? null,
   })));
   const chunks = records.flatMap((r) => r.indexToRag === false ? [] : buildReportRagChunks({
     scanId: r.id!, report: r.report, targetAddress: r.targetAddress, chainId: r.chainId,
@@ -98,15 +100,24 @@ export async function writeAuditBatch(sql: Sql, records: ComprehensiveRecordInpu
       select scan_id, body from jsonb_to_recordset($1::jsonb) as r(scan_id text, body text)
       on conflict (scan_id) do update set body=excluded.body`,
     [JSON.stringify(records.map((r) => ({ scan_id: r.id, body: r.body })))]);
-    await tx.query("delete from findings where scan_id = any($1::text[])", [ids]);
+    await tx.query("delete from findings where scan_id = any($1::text[]) and not (id = any($2::text[]))", [ids, findings.map(f => f.id)]);
     await tx.query(`insert into findings (
       id, scan_id, ord, severity, swc, title, confidence, detector, summary, walkthrough,
-      exploit_solidity, remediation_solidity, location_fn, location_line, snippet
+      exploit_solidity, remediation_solidity, location_fn, location_line, snippet,
+      poc_status, poc_output, poc_duration_ms, poc_run_at, poc_code
     ) select * from jsonb_to_recordset($1::jsonb) as r(
       id text, scan_id text, ord integer, severity text, swc text, title text, confidence text,
       detector text, summary text, walkthrough text, exploit_solidity text,
-      remediation_solidity text, location_fn text, location_line integer, snippet text
-    )`, [JSON.stringify(findings)]);
+      remediation_solidity text, location_fn text, location_line integer, snippet text,
+      poc_status text, poc_output text, poc_duration_ms integer, poc_run_at timestamptz, poc_code text
+    ) on conflict (id) do update set
+      ord=excluded.ord, severity=excluded.severity, swc=excluded.swc, title=excluded.title,
+      confidence=excluded.confidence, detector=excluded.detector, summary=excluded.summary,
+      walkthrough=excluded.walkthrough, exploit_solidity=excluded.exploit_solidity,
+      remediation_solidity=excluded.remediation_solidity, location_fn=excluded.location_fn,
+      location_line=excluded.location_line, snippet=excluded.snippet,
+      poc_status=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_status, findings.poc_status) else excluded.poc_status end, poc_output=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_output, findings.poc_output) else excluded.poc_output end,
+      poc_duration_ms=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_duration_ms, findings.poc_duration_ms) else excluded.poc_duration_ms end, poc_run_at=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_run_at, findings.poc_run_at) else excluded.poc_run_at end, poc_code=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_code, findings.poc_code) else excluded.poc_code end`, [JSON.stringify(findings)]);
     await replaceRagChunks(tx, ids, chunks);
   });
   return { savedCount: ids.length, ids };
@@ -123,3 +134,4 @@ export async function replaceRagChunks(sql: Sql, ids: string[], chunks: ReturnTy
     vector_data text, metadata_json text
   )`, [JSON.stringify(chunks)]);
 }
+

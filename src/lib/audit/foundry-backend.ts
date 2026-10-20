@@ -1,4 +1,6 @@
 import type { PocResult } from "./types";
+import { sha3_256 } from "js-sha3";
+import { wrapPocSnippet } from "./poc-wrap.ts";
 
 /**
  * Forge compile-error detector for PoC logs. Compile failures are the
@@ -91,7 +93,7 @@ export const FALLBACK_RPC_LIST: string[] = [
  * Never rejects for backend-level failures — they map to PocResult statuses
  * ("error", "backend_unreachable", "skipped") so callers can persist them.
  */
-export async function runPocOnBackend(
+async function requestPocOnBackend(
   url: string,
   input: {
     address: string;
@@ -183,7 +185,7 @@ export type RpcRetryProgress = {
  * If an RPC provider fails with transport/fork/invalid rpc url errors,
  * the run automatically falls back to the next RPC in the list.
  */
-export async function runPocWithRpcRetries(
+async function executeWithRpcRetries(
   backendUrl: string,
   input: {
     address: string;
@@ -191,6 +193,9 @@ export async function runPocWithRpcRetries(
     preferredRpc?: string;
     rpcList?: string[];
     blockNumber?: number;
+    chainId?: number | string;
+    retry?: boolean;
+    repair?: (source: string, logs: string) => Promise<string>;
     onProgress?: (progress: RpcRetryProgress) => void;
   },
 ): Promise<PocResult & { triedRpcs: string[]; finalRpc?: string }> {
@@ -203,7 +208,7 @@ export async function runPocWithRpcRetries(
       if (r && r.trim()) candidateSet.add(r.trim());
     }
   }
-  for (const f of FALLBACK_RPC_LIST) {
+  for (const f of (input.retry === false ? [] : rpcCandidates(input.chainId))) {
     candidateSet.add(f);
   }
   const candidates = Array.from(candidateSet);
@@ -226,11 +231,11 @@ export async function runPocWithRpcRetries(
       status: "trying",
     });
 
-    const res = await runPocOnBackend(backendUrl, {
+    const res = await requestPocOnBackend(backendUrl, {
       address: input.address,
       testCode: input.testCode,
       rpcUrl: rpc,
-      rpcUrls: candidates,
+      rpcUrls: [rpc],
       blockNumber: input.blockNumber,
     });
     lastResult = res;
@@ -299,3 +304,84 @@ export async function runPocWithRpcRetries(
     finalRpc: triedRpcs[triedRpcs.length - 1],
   };
 }
+
+
+
+const CHAIN_RPCS: Record<number, string[]> = {
+  1: FALLBACK_RPC_LIST.slice(0, 5),
+  42161: FALLBACK_RPC_LIST.slice(5, 9),
+  8453: [...FALLBACK_RPC_LIST.slice(9, 12), "https://1rpc.io/base"],
+  10: ["https://mainnet.optimism.io", "https://optimism.publicnode.com", "https://1rpc.io/op"],
+  137: ["https://polygon-rpc.com", "https://polygon-bor-rpc.publicnode.com", "https://1rpc.io/matic"],
+  56: ["https://bsc-dataseed.binance.org", "https://bsc.publicnode.com", "https://1rpc.io/bnb"],
+};
+function rpcCandidates(chain?: number | string): string[] {
+  const names: Record<string, number> = { ethereum: 1, arbitrum: 42161, base: 8453, optimism: 10, polygon: 137, bsc: 56 };
+  const id = names[String(chain)] ?? Number(chain ?? 1);
+  return CHAIN_RPCS[id] ?? [];
+}
+
+export function needsSmartPoc(finding: {
+  exploitSolidity?: string; pocCode?: string | null; pocStatus?: string | null; pocRunAt?: string | null; pocOutput?: string | null;
+}): boolean {
+  return Boolean(finding.exploitSolidity?.trim()) && !(
+    ["passed", "failed"].includes(finding.pocStatus ?? "") && finding.pocRunAt &&
+    finding.pocOutput?.includes("[SmartPoC | Foundry]") && /tests=[1-9]\d*/.test(finding.pocOutput) &&
+    (finding.pocOutput.includes(`Finding input SHA3-256: ${pocInputDigest(finding.exploitSolidity ?? "")}`) || finding.pocCode === finding.exploitSolidity || finding.pocCode === wrapPocSnippet(finding.exploitSolidity ?? "")?.testFile)
+  );
+}
+
+/** Shared execution entry point for UI and workers. Evidence describes actual
+ * Foundry responses; infrastructure failures and zero tests are never verdicts. */
+export async function runSmartPoc(
+  backendUrl: string,
+  input: Parameters<typeof executeWithRpcRetries>[1],
+): Promise<Awaited<ReturnType<typeof executeWithRpcRetries>>> {
+  const startedAt = new Date().toISOString();
+  const bytes = new TextEncoder().encode(input.testCode);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const sourceHash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+  const result = await executeWithRpcRetries(backendUrl, input);
+  if (result.status === "failed" && isPocCompileError(result.logs)) result.status = "error";
+  if (result.status === "error" && isPocCompileError(result.logs) && input.repair) {
+    try {
+      const fixedCode = await input.repair(input.testCode, result.logs);
+      const repaired = await runSmartPoc(backendUrl, { ...input, testCode: fixedCode, repair: undefined });
+      repaired.logs = `[SmartPoC] One compile repair attempted.\n${repaired.logs}`;
+      return repaired;
+    } catch (repairError) { result.logs += `\nSmartPoC repair failed: ${String(repairError)}`; }
+  }
+  result.executedSource = input.testCode;
+  const summary = result.logs.match(/(\d+) passed;\s*(\d+) failed/i);
+  const testCount = summary ? Number(summary[1]) + Number(summary[2]) : (result.logs.match(/\[(?:PASS|FAIL[^\]]*)\]/g) ?? []).length;
+  if (["passed", "failed"].includes(result.status) && testCount === 0) {
+    result.status = "error";
+    result.error = "No executed Foundry tests were evidenced in the backend output.";
+  }
+  result.evidence = { engine: "foundry", startedAt, finishedAt: result.runAt,
+    target: input.address, chainId: String(input.chainId ?? 1), sourceHash,
+    backendUrl, rpcUrls: result.triedRpcs, testCount };
+  result.logs = `[SmartPoC | Foundry] target=${input.address} chain=${input.chainId ?? 1} tests=${testCount}\nSHA-256: ${sourceHash}\nStarted: ${startedAt}\nFinished: ${result.runAt}\nRPC attempts: ${result.triedRpcs.join(", ")}\n${result.logs}${result.error ? "\n" + result.error : ""}`;
+  return result;
+}
+
+// Compatibility name: every existing retry caller now uses SmartPoC evidence.
+export const runPocWithRpcRetries = runSmartPoc;
+
+export async function runPocOnBackend(url: string, input: Parameters<typeof requestPocOnBackend>[1] & { chainId?: string | number; repair?: (source: string, logs: string) => Promise<string> }): Promise<PocResult> {
+  return runSmartPoc(url, { ...input, preferredRpc: input.rpcUrl ?? rpcCandidates(input.chainId)[0], rpcList: input.rpcUrls, retry: false });
+}
+
+export async function runMissingSmartPocs<T extends { severity: string; exploitSolidity?: string; pocCode?: string | null; pocStatus?: string | null; pocRunAt?: string | null }>(
+  findings: T[], execute: (finding: T) => Promise<{ status: string } | undefined>,
+  cancelled: () => boolean = () => false,
+): Promise<void> {
+  for (const finding of findings) {
+    if (cancelled()) break;
+    if (!["critical", "high"].includes(finding.severity) || !needsSmartPoc(finding)) continue;
+    const result = await execute(finding);
+    if (result?.status === "backend_unreachable") break;
+  }
+}
+
+export const pocInputDigest = (source: string): string => sha3_256(source);

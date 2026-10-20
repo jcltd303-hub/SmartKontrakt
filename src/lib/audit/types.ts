@@ -115,6 +115,8 @@ export type AstNode = {
 export type PocStatus = "passed" | "failed" | "error" | "backend_unreachable" | "skipped";
 
 export type PocResult = {
+  executedSource?: string;
+  evidence?: { engine: "foundry"; startedAt: string; finishedAt: string; target: string; chainId: string; sourceHash: string; backendUrl: string; rpcUrls: string[]; testCount: number };
   status: PocStatus;
   /** Forge output (tail-capped) or a short explanation for non-run statuses. */
   logs: string;
@@ -124,3 +126,4 @@ export type PocResult = {
   /** Backend-side error message, when status is "error". */
   error?: string;
 };
+

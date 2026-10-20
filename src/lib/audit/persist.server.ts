@@ -455,14 +455,15 @@ export async function saveComprehensiveRecord(input: {
   `;
 
   // Clear existing findings and replace with clean ordered findings
-  await sql`delete from findings where scan_id = ${id}`;
+  await sql.query("delete from findings where scan_id = $1 and not (id = any($2::text[]))", [id, report.findings.map((_, i) => `${id}:${i}`)]);
   for (let i = 0; i < report.findings.length; i += 1) {
     const f = report.findings[i];
     if (!f) continue;
     await sql`
       insert into findings (
         id, scan_id, ord, severity, swc, title, confidence, detector, summary,
-        walkthrough, exploit_solidity, remediation_solidity, location_fn, location_line, snippet
+        walkthrough, exploit_solidity, remediation_solidity, location_fn, location_line, snippet,
+        poc_status, poc_output, poc_duration_ms, poc_run_at, poc_code
       ) values (
         ${`${id}:${i}`},
         ${id},
@@ -478,8 +479,17 @@ export async function saveComprehensiveRecord(input: {
         ${f.remediationSolidity},
         ${f.locationFn},
         ${f.locationLine},
-        ${f.snippet}
-      )
+        ${f.snippet},
+        ${f.pocStatus ?? null}, ${f.pocOutput ?? null}, ${f.pocDurationMs ?? null},
+        ${f.pocRunAt ?? null}, ${f.pocCode ?? null}
+      ) on conflict (id) do update set
+        ord=excluded.ord, severity=excluded.severity, swc=excluded.swc, title=excluded.title,
+        confidence=excluded.confidence, detector=excluded.detector, summary=excluded.summary,
+        walkthrough=excluded.walkthrough, exploit_solidity=excluded.exploit_solidity,
+        remediation_solidity=excluded.remediation_solidity, location_fn=excluded.location_fn,
+        location_line=excluded.location_line, snippet=excluded.snippet,
+        poc_status=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_status, findings.poc_status) else excluded.poc_status end, poc_output=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_output, findings.poc_output) else excluded.poc_output end,
+        poc_duration_ms=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_duration_ms, findings.poc_duration_ms) else excluded.poc_duration_ms end, poc_run_at=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_run_at, findings.poc_run_at) else excluded.poc_run_at end, poc_code=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_code, findings.poc_code) else excluded.poc_code end
     `;
   }
 
@@ -776,4 +786,5 @@ export async function saveFindingPocResult(data: {
     console.warn("[kiln] finding_poc_runs insert failed (non-fatal):", runErr);
   }
 }
+
 

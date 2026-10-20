@@ -1,8 +1,10 @@
 import { useState, useMemo } from "react";
 import { Terminal, Play, Wand2, CheckCircle2, RefreshCcw, FileCode, Cpu, Globe, RotateCw, AlertTriangle, ShieldCheck } from "lucide-react";
-import { runPocOnBackend, runPocWithRpcRetries, getBackendUrl, isRpcOrForkFailure, type RpcRetryProgress } from "@/lib/audit/foundry-backend";
+import { runPocOnBackend, runPocWithRpcRetries, getBackendUrl, isPocCompileError, isRpcOrForkFailure, type RpcRetryProgress } from "@/lib/audit/foundry-backend";
 import { requestPocRepair } from "@/lib/audit/ai.functions";
 import { SUPPORTED_CHAINS, getRpcsForChain } from "@/lib/audit/address-fetcher";
+import { saveSmartPocResult } from "@/lib/audit/smart-poc-save";
+import { getStoredSupabaseConfig } from "@/lib/supabase";
 import type { PocResult } from "@/lib/audit/types";
 
 export function InteractiveAuditTab() {
@@ -56,6 +58,7 @@ contract PoC is Test {
   const [selectedChainId, setSelectedChainId] = useState<string>("ethereum");
   const [customRpcUrl, setCustomRpcUrl] = useState<string>("");
   const [autoRetryAllRpcs, setAutoRetryAllRpcs] = useState<boolean>(true);
+  const [saveNotice, setSaveNotice] = useState("");
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [isRepairing, setIsRepairing] = useState<boolean>(false);
   const [pocResult, setPocResult] = useState<PocResult | null>(null);
@@ -80,20 +83,24 @@ contract PoC is Test {
 
   const handleRunPoc = async (forceRetryAll = false) => {
     setIsRunning(true);
+    setSaveNotice("");
     setRepairNotice(null);
     setRetryProgress(null);
 
     const shouldRetryAll = forceRetryAll || autoRetryAllRpcs;
 
     try {
+      let res: PocResult;
+      let executedCode = testCode;
       if (shouldRetryAll) {
         // Collect candidate RPCs for the chain and global fallbacks
         const rpcList = customRpcUrl.trim()
           ? [customRpcUrl.trim(), ...activeChainRpcs]
           : activeChainRpcs;
 
-        const res = await runPocWithRpcRetries(getBackendUrl(), {
+        res = await runPocWithRpcRetries(getBackendUrl(), {
           address: targetAddress,
+          chainId: selectedChainId,
           testCode: testCode,
           preferredRpc: activeRpcUrl,
           rpcList: rpcList,
@@ -101,15 +108,30 @@ contract PoC is Test {
             setRetryProgress(prog);
           },
         });
-        setPocResult(res);
+
       } else {
-        const res = await runPocOnBackend(getBackendUrl(), {
+        res = await runPocOnBackend(getBackendUrl(), {
           address: targetAddress,
+          chainId: selectedChainId,
           testCode: testCode,
           rpcUrl: activeRpcUrl,
         });
-        setPocResult(res);
+
       }
+      if (res.status === "error" && isPocCompileError(res.logs)) {
+        try {
+          const repaired = await requestPocRepair({ data: { contractName: "Interactive contract", originalCode: executedCode, errorLogs: res.logs, body: solidityCode } });
+          executedCode = repaired.fixedCode;
+          setTestCode(executedCode);
+          res = await runPocWithRpcRetries(getBackendUrl(), { address: targetAddress, testCode: executedCode,
+            chainId: selectedChainId, preferredRpc: activeRpcUrl, retry: shouldRetryAll });
+        } catch (repairError) { setRepairNotice(`Automatic repair failed: ${String(repairError)}`); }
+      }
+      setPocResult(res);
+      try {
+        const chainId = SUPPORTED_CHAINS.find(c => c.id === selectedChainId)?.chainId ?? 1;
+        setSaveNotice(await saveSmartPocResult(res, executedCode, chainId, getStoredSupabaseConfig()));
+      } catch (saveError) { setSaveNotice(`Save failed: ${String(saveError)}`); }
     } catch (err) {
       setPocResult({
         status: "backend_unreachable",
@@ -374,7 +396,7 @@ contract PoC is Test {
                   </span>
                   <span className="text-[#a39886]">{pocResult.durationMs}ms</span>
                 </div>
-                <div className="text-[#f4efe6]">{pocResult.logs || "(No output logs)"}</div>
+                <div className="text-[#f4efe6]">{saveNotice ? `Persistence: ${saveNotice}\n` : ""}{pocResult.logs || "(No output logs)"}</div>
               </div>
             ) : (
               <span className="text-[#655d4e]">Run the PoC above to see compilation and execution logs here.</span>
@@ -385,3 +407,4 @@ contract PoC is Test {
     </div>
   );
 }
+

@@ -1,3 +1,4 @@
+import { SUPPORTED_CHAINS } from "@/lib/audit/address-fetcher";
 import { useState, useEffect, useRef } from "react";
 import {
   ShieldAlert,
@@ -139,7 +140,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
     }));
 
     const startedAt = new Date().toISOString();
-    const targetAddress = finding.targetAddress || "0x000000000000000000000000000000000000dead";
+    const targetAddress = finding.targetAddress || "";
     
     // Prepare test code: wrap if it's an attack contract snippet
     let testCode = finding.exploitSolidity;
@@ -156,6 +157,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
 
       let poc = await runPocWithRpcRetries(backendUrl, {
         address: targetAddress,
+        chainId: finding.chainId ?? "ethereum",
         testCode,
         onProgress: (p) => {
           setExecutingMap((prev) => ({
@@ -193,6 +195,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
             }));
             poc = await runPocWithRpcRetries(backendUrl, {
               address: targetAddress,
+        chainId: finding.chainId ?? "ethereum",
               testCode,
               onProgress: (p) => {
                 setExecutingMap((prev) => ({
@@ -245,7 +248,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
             startedAt,
             finishedAt,
             durationMs,
-            chainId: Number.parseInt(finding.chainId ?? "1", 10) || 1,
+            chainId: SUPPORTED_CHAINS.find(c => c.id === finding.chainId || String(c.chainId) === finding.chainId)?.chainId ?? 1,
             exitCode: null,
             output: displayLogs.slice(0, 100000),
             truncated: displayLogs.length > 100000,
@@ -865,3 +868,4 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
     </div>
   );
 }
+

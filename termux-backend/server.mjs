@@ -131,7 +131,8 @@ function tailCap(text) {
 /** Candidate RPCs: the caller's pinned URL first, then user list, then the provider list (deduped). */
 function candidateRpcs(preferred, userList) {
   const out = [];
-  const list = [preferred, ...(Array.isArray(userList) ? userList : []), ...RPC_PROVIDERS];
+  const supplied = [preferred, ...(Array.isArray(userList) ? userList : [])].filter(Boolean);
+  const list = supplied.length ? supplied : RPC_PROVIDERS;
   for (const u of list) {
     if (typeof u === "string") {
       const trimmed = u.trim();
@@ -445,3 +446,4 @@ server.listen(PORT, HOST, () => {
 // Exported for unit tests (the rotation helpers); importing this module
 // still starts the server, so tests must close it when done.
 export { candidateRpcs, shouldRetryRpc, server };
+

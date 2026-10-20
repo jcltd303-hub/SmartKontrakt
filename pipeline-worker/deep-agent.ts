@@ -36,7 +36,7 @@ import { repairPocCode, runDeepAgentRound } from "../src/lib/audit/deep-agent.se
 // never touches localStorage here: the backend URL is passed explicitly,
 // and the helper only reads localStorage inside getBackendUrl(), which
 // this module never calls.
-import { isPocCompileError, runPocOnBackend } from "../src/lib/audit/foundry-backend.ts";
+import { isPocCompileError, runPocWithRpcRetries } from "../src/lib/audit/foundry-backend.ts";
 import { fourbyteResultsFromReport, type FourbyteResults } from "../src/lib/audit/fourbyte.ts";
 
 export const WORKER_DEEP_AGENT_MAX_ROUNDS = 3;
@@ -112,6 +112,8 @@ function confirmedFinding(h: DeepAgentHypothesis, round: number, index: number, 
       poc.logs.slice(0, 3000),
     ].join("\n"),
     exploitSolidity: h.foundryTestCode,
+    pocStatus: poc.status, pocOutput: poc.logs, pocCode: h.foundryTestCode,
+    pocDurationMs: poc.durationMs, pocRunAt: poc.runAt,
     remediationSolidity: "",
     locationFn: null,
     locationLine: null,
@@ -145,10 +147,11 @@ async function runPocWithBusyRetry(
   backendUrl: string,
   address: string,
   testCode: string,
+  chainId = "ethereum",
 ): Promise<PocResult> {
   let last: PocResult | null = null;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const poc = await runPocOnBackend(backendUrl, { address, testCode });
+    const poc = await runPocWithRpcRetries(backendUrl, { address, testCode, chainId });
     last = poc;
     if (poc.status === "error" && /409|busy/i.test(`${poc.error ?? ""} ${poc.logs ?? ""}`)) {
       await sleep(30_000);
@@ -163,7 +166,7 @@ async function runPocWithBusyRetry(
  * Run the Deep Agent loop for one flagged address. Never throws.
  */
 export async function runWorkerDeepAgent(
-  input: { address: string; contractName: string; body: string; findings: Finding[]; inputKind: string; fourbyte?: FourbyteResults },
+  input: { address: string; contractName: string; body: string; findings: Finding[]; inputKind: string; chainId?: string; fourbyte?: FourbyteResults },
   opts: WorkerDeepAgentOptions,
 ): Promise<WorkerDeepAgentResult> {
   const base: Omit<WorkerDeepAgentResult, "note"> = {
@@ -217,7 +220,7 @@ export async function runWorkerDeepAgent(
       for (let i = 0; i < hypotheses.length; i += 1) {
         const h = hypotheses[i]!;
         let testCode = h.foundryTestCode;
-        let poc = await runPocWithBusyRetry(opts.backendUrl, input.address, testCode);
+        let poc = await runPocWithBusyRetry(opts.backendUrl, input.address, testCode, input.chainId);
         // Repair loop: a PoC that fails to COMPILE gets ONE LLM repair
         // + one re-run. A compile failure is a fixable PoC, not a
         // refuted hypothesis — without this, every near-miss PoC is
@@ -229,7 +232,7 @@ export async function runWorkerDeepAgent(
             const repaired = await repairPocCode(input.contractName, testCode, poc.logs ?? "", input.body);
             totalLlmMs += repaired.llmMs;
             testCode = repaired.fixedCode;
-            poc = await runPocWithBusyRetry(opts.backendUrl, input.address, testCode);
+            poc = await runPocWithBusyRetry(opts.backendUrl, input.address, testCode, input.chainId);
             // A re-run that reaches a verdict (pass OR fail) means the
             // repair fixed the compile error — even a refuted hypothesis
             // is a successful repair. A second error is not.
@@ -275,3 +278,4 @@ export async function runWorkerDeepAgent(
   const note = `Deep Agent: ${base.rounds} round(s), ${base.confirmed.length} confirmed on fork, ${base.refuted} refuted${base.errors > 0 ? `, ${base.errors} error(s)` : ""}, LLM ${(totalLlmMs / 1000).toFixed(1)}s${repairsAttempted > 0 ? `, repair ${repairsSucceeded}/${repairsAttempted}` : ""}${stopped ? ` — ${stopped}` : ""}`;
   return { ...base, ran: true, note };
 }
+

@@ -17,6 +17,7 @@ async function database() {
     "0005_fourbyte.sql",
     "0006_fourbyte_events.sql",
     "0007_unparsed.sql",
+    "0008_finding_poc_runs.sql",
   ]) {
     await pg.exec(await readFile(new URL(`../../../migrations/${f}`, import.meta.url), "utf8"));
   }
@@ -60,4 +61,22 @@ test("a late findings error rolls back headers, payloads and all previous rows",
     assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from contract_scans")).rows[0].n, 0);
     assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from scan_payloads")).rows[0].n, 0);
   } finally { await pg.close(); }
+});
+
+
+
+test("bulk saves preserve SmartPoC evidence and its run history on replay", async () => {
+  const {pg,sql} = await database();
+  try {
+    const item = record("proof");
+    Object.assign(item.report.findings[0], {pocStatus:"passed",pocOutput:"[SmartPoC | Foundry] tests=1",pocCode:"executed",pocDurationMs:3,pocRunAt:"2026-10-20T00:00:00Z"});
+    await writeAuditBatch(sql,[item]);
+    assert.equal((await pg.query<{poc_status:string}>("select poc_status from findings where id='proof:0'")).rows[0].poc_status,"passed");
+    await pg.exec("insert into finding_poc_runs(id,finding_id,scan_id,status,source,output) values('run','proof:0','proof','passed','executed','logs')");
+    delete item.report.findings[0].pocStatus;
+    delete item.report.findings[0].pocOutput;
+    await writeAuditBatch(sql,[item]);
+    assert.equal((await pg.query<{poc_status:string}>("select poc_status from findings where id='proof:0'")).rows[0].poc_status,"passed");
+    assert.equal((await pg.query<{n:number}>("select count(*)::int as n from finding_poc_runs")).rows[0].n,1);
+  } finally {await pg.close();}
 });

@@ -14,14 +14,14 @@ import { RagKnowledgebase } from "./rag-knowledgebase";
 import { InteractiveAuditTab } from "./interactive-audit";
 import { RecentPocAudits } from "./recent-poc-audits";
 import { SupabaseDbModal } from "./supabase-db-modal";
-import { getScan } from "@/lib/scans.functions";
+import { getScan, saveFindingPocResultFn } from "@/lib/scans.functions";
 import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit/address-fetcher";
 import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
 import { probeContractInterfaces, resolveContractDisplayName, type CallProbeResult } from "@/lib/audit/simulator";
 import { requestAiReview, requestDeepAgentRound, requestPocRepair } from "@/lib/audit/ai.functions";
 import { resolveFourbyte } from "@/lib/audit/fourbyte.functions";
 import { applyFourbyteResults, fourbyteResultsFromReport } from "@/lib/audit/fourbyte";
-import { getBackendUrl, isPocCompileError, runPocOnBackend, runPocWithRpcRetries } from "@/lib/audit/foundry-backend";
+import { getBackendUrl, isPocCompileError, runPocOnBackend, runPocWithRpcRetries, runMissingSmartPocs, pocInputDigest } from "@/lib/audit/foundry-backend";
 import { getStoredSupabaseConfig } from "@/lib/supabase";
 import { savePocRun, type PocRunResult } from "../lib/poc-runs";
 import { wrapPocSnippet } from "../lib/audit/poc-wrap";
@@ -253,6 +253,8 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
   // Run audit analysis on user demand or sample switch
   const handleRunAnalysis = (bodyToAnalyze = contractBody, labelToAnalyze = contractLabel) => {
     if (!bodyToAnalyze.trim()) return;
+    smartPocEpoch.current++;
+    setSmartPocLoad(null);
     // Fresh analysis = fresh scan: drop the previous PoC result / saved id.
     setPocResult(null);
     setPocRunning(false);
@@ -389,9 +391,15 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     }
   };
 
+  const [smartPocLoad, setSmartPocLoad] = useState<StoredScan | null>(null);
+  const smartPocEpoch = useRef(0);
+
   // Load a stored scan from Local DB Records
   const handleLoadStoredScan = (scan: StoredScan) => {
+    smartPocEpoch.current++;
+    setSmartPocLoad(scan);
     setSelectedSampleId("custom");
+    setFindingPocRuns({});
     setContractBody(scan.body);
     setContractLabel(scan.label);
     setReport(scan.report);
@@ -451,6 +459,8 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
 
   // Handle single address fetch from public RPC & Sourcify
   const handleFetchSingleAddress = async () => {
+    smartPocEpoch.current++;
+    setSmartPocLoad(null);
     const clean = singleAddress.trim();
     if (!isValidEvmAddress(clean)) {
       setAddressFetchError("Invalid EVM address format (expected 0x + 40 hex characters)");
@@ -506,6 +516,8 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     setSelectedSampleId("custom");
     setContractBody(rawBody);
     setContractLabel(label);
+    smartPocEpoch.current++;
+    setSmartPocLoad(null);
     setReport(pipelineReport);
     setWorkbenchMode("audit");
     setActiveTab("findings");
@@ -527,8 +539,8 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
   // final PoC result + the final test code (repaired when repair ran).
   // Repair failure is NOT a new verdict — the caller keeps the original
   // compile-error result, so a failed repair never hides the real error.
-  const runSinglePocWithRepair = async (address: string, testCode: string) => {
-    let poc = await runPocWithRpcRetries(getBackendUrl(), { address, testCode });
+  const runSinglePocWithRepair = async (address: string, testCode: string, chainId = singleAddressChain) => {
+    let poc = await runPocWithRpcRetries(getBackendUrl(), { address, testCode, chainId });
     if (poc.status === "error" && isPocCompileError(poc.logs ?? "")) {
       try {
         const repaired = await requestPocRepair({ data: {
@@ -538,7 +550,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
           body: contractBody,
         } });
         testCode = repaired.fixedCode;
-        poc = await runPocWithRpcRetries(getBackendUrl(), { address, testCode });
+        poc = await runPocWithRpcRetries(getBackendUrl(), { address, testCode, chainId });
       } catch (repairErr) {
         console.warn("[Kiln] PoC repair failed:", repairErr);
       }
@@ -568,12 +580,20 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     if (poc.status === "failed") return "failed";
     return "error"; // "error" | "skipped" | "backend_unreachable" are all infra, not a verdict
   };
+  const findingSaveContext = useRef<Record<string, { scanId: string; targetAddress: string; chainId: string }>>({});
   const attemptFindingPocSave = async (result: PocRunResult, findingId: string) => {
     setFindingPocRuns((prev) => ({
       ...prev,
       [findingId]: { ...prev[findingId]!, running: false, save: "saving", saveError: null },
     }));
     try {
+      const context = findingSaveContext.current[result.id];
+      if (context) {
+        await saveFindingPocResultFn({ data: { ...context, findingId, status: result.status,
+          source: result.source, output: result.output, durationMs: result.durationMs, truncated: result.truncated } });
+        setFindingPocRuns(prev => ({ ...prev, [findingId]: { ...prev[findingId]!, save: "saved", saveError: null } }));
+        return;
+      }
       const cfg = getStoredSupabaseConfig();
       if (!cfg.enabled) {
         setFindingPocRuns((prev) => ({
@@ -594,7 +614,9 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       }));
     }
   };
-  const handleRunFindingPoc = async (finding: Finding) => {
+  const findingPocTaskRef = useRef<Promise<void>>(Promise.resolve());
+  const handleRunFindingPoc = async (finding: Finding, context?: { scanId: string; address: string; chainId: string; epoch?: number }) => {
+    const executionEpoch = context?.epoch ?? smartPocEpoch.current;
     let source = finding.exploitSolidity ?? "";
     let wrapped = wrapPocSnippet(source);
     if (!wrapped) {
@@ -608,8 +630,13 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         }
       }
     }
-    const testCode = wrapped ? wrapped.testFile : source;
-    if (!source.trim() || findingPocRunLockRef.current) return;
+    let testCode = wrapped ? wrapped.testFile : source;
+    if (!source.trim()) return;
+    const previous = findingPocTaskRef.current;
+    let release!: () => void;
+    findingPocTaskRef.current = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    if (executionEpoch !== smartPocEpoch.current) { release(); return; }
     findingPocRunLockRef.current = true;
     const startedAt = new Date().toISOString();
     const runId = newRunId();
@@ -643,7 +670,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         }));
         return;
       }
-      const addr = singleAddress.trim();
+      const addr = (context?.address ?? singleAddress).trim();
       if (!addr || !isValidEvmAddress(addr)) {
         // No valid target — record an error row without calling the backend
         // (runPocOnBackend would return "skipped"). Not a real run, so no
@@ -663,7 +690,10 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         }));
         return;
       }
-      const poc = await runPocWithRpcRetries(getBackendUrl(), { address: addr, testCode });
+      const execution = await runSinglePocWithRepair(addr, testCode, context?.chainId ?? singleAddressChain);
+      const poc = execution.poc;
+      testCode = execution.testCode;
+      if (executionEpoch !== smartPocEpoch.current) return poc;
       // Release the run lock as soon as the backend call returns — the
       // save attempt below must not block other runs (it can take up to
       // the 30s save timeout on a failing endpoint). The finally still
@@ -686,7 +716,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       // When the wrapper filled default args, say so up front — the
       // guessed args may be wrong, and a FAIL with defaults is
       // informative. Truncation is computed on the combined text.
-      const displayLogs = wrapped?.note ? `${wrapped.note}\n${fullLogs}` : fullLogs;
+      const displayLogs = `Finding input SHA3-256: ${pocInputDigest(finding.exploitSolidity ?? "")}\n${wrapped?.note ? wrapped.note + "\n" : ""}${fullLogs}`;
       const truncated = displayLogs.length > POC_OUTPUT_CAP;
       const result: PocRunResult = {
         id: runId,
@@ -704,11 +734,34 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         ...prev,
         [finding.id]: { running: false, result, save: "idle", saveError: null },
       }));
+      const scanId = context?.scanId ?? savedScanId;
+      if (scanId) findingSaveContext.current[result.id] = { scanId, targetAddress: addr, chainId: context?.chainId ?? singleAddressChain };
+      setReport(prev => prev ? { ...prev, findings: prev.findings.map(f => f.id === finding.id ? {
+        ...f, pocStatus: status, pocOutput: displayLogs, pocDurationMs: result.durationMs,
+        pocRunAt: finishedAt, pocCode: testCode,
+      } : f) } : prev);
       await attemptFindingPocSave(result, finding.id);
+      return poc;
     } finally {
       findingPocRunLockRef.current = false;
+      release();
     }
   };
+  // Loading a saved audit schedules missing Critical/High proofs sequentially.
+  // A new load or unmount stops this queue; no unbounded render-triggered runs.
+  useEffect(() => {
+    if (!smartPocLoad?.targetAddress || !isValidEvmAddress(smartPocLoad.targetAddress)) return;
+    const scan = smartPocLoad;
+    const epoch = smartPocEpoch.current;
+    let cancelled = false;
+    void runMissingSmartPocs(scan.report.findings, finding => handleRunFindingPoc(finding, {
+      scanId: scan.id, address: scan.targetAddress!, chainId: scan.chainId ?? "ethereum", epoch,
+    }), () => cancelled || epoch !== smartPocEpoch.current).catch(err => {
+      console.error("[SmartPoC] Saved audit queue failed:", err);
+    });
+    return () => { cancelled = true; };
+  }, [smartPocLoad]);
+
   // Retry Save calls persistence ONLY — it re-saves the stored result and
   // never reruns the PoC.
   const handleRetryFindingPocSave = async (findingId: string) => {
@@ -862,7 +915,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         for (const h of res.hypotheses) {
           setDeepAgentStatus(`Round ${round}: running PoC for "${h.title}"…`);
           let testCode = h.foundryTestCode;
-          let poc = await runPocWithRpcRetries(getBackendUrl(), { address: addr, testCode });
+          let poc = await runPocWithRpcRetries(getBackendUrl(), { address: addr, testCode, chainId: singleAddressChain });
           // Repair loop (same as the worker): a PoC that fails to
           // COMPILE gets ONE LLM repair + one re-run.
           if (poc.status === "error" && isPocCompileError(poc.logs ?? "")) {
@@ -875,7 +928,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 body: contractBody,
               } });
               testCode = repaired.fixedCode;
-              poc = await runPocWithRpcRetries(getBackendUrl(), { address: addr, testCode });
+              poc = await runPocWithRpcRetries(getBackendUrl(), { address: addr, testCode, chainId: singleAddressChain });
             } catch (repairErr) {
               setDeepAgentError(
                 `PoC repair failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)} — stopping the search.`,
@@ -2376,13 +2429,16 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                       contractName={report?.label ?? "Contract"}
                     />
                     <FoundryLocalRun
+                      contractName={report?.label ?? "Contract"}
+                      contractBody={contractBody}
+                      chainId={singleAddressChain}
                       testCode={aiReview.foundryTestCode}
                       address={singleAddress}
                     />
                     {(pocRunning || pocResult) && (
                       <div className="mt-2 p-3 bg-[#12110e] rounded-lg border border-[#3a3428] flex flex-col gap-2">
                         <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-[#e8a54b]">
-                          <span>Auto PoC run{ pocRunning ? " — running on local backend…" : pocSaved ? " — saved to Supabase" : ""}</span>
+                          <span>SmartPoC · Foundry execution{ pocRunning ? " — running on local backend…" : pocSaved ? " — saved to Supabase" : ""}</span>
                         </div>
                         {pocResult && (
                           <>
@@ -2793,3 +2849,4 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
 </div>
   );
 }
+

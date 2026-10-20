@@ -343,7 +343,7 @@ async function runLoop(): Promise<void> {
         if (isDeepAgentFlagged(result.report, status.deepAgentMinSeverity as "critical" | "high" | "medium")) {
           try {
             const da = await runWorkerDeepAgent(
-              {
+              { chainId: item.chainId,
                 address: item.address,
                 contractName: result.report.label,
                 body: result.rawBody,
@@ -756,3 +756,4 @@ server.listen(PORT, HOST, () => {
     `[worker] OPENROUTER_API_KEY ${process.env.OPENROUTER_API_KEY ? "set" : "not set (AI second pass stays off unless requested)"}`,
   );
 });
+
