@@ -35,6 +35,26 @@ const CHAIN_ID_BY_NAME: Record<string, number> = {
   ethereum: 1, arbitrum: 42161, base: 8453, optimism: 10, polygon: 137, bsc: 56,
 };
 
+/**
+ * Well-known public JSON-RPC endpoints per chain — a fallback for callers that
+ * have none of their own. The pipeline passes its own curated list; this only
+ * keeps standalone callers (and tests) working.
+ */
+export const PUBLIC_RPC_BY_CHAIN: Record<number, string[]> = {
+  1: ["https://eth.llamarpc.com", "https://rpc.ankr.com/eth", "https://cloudflare-eth.com"],
+  10: ["https://mainnet.optimism.io", "https://optimism.publicnode.com"],
+  56: ["https://bsc-dataseed.binance.org", "https://bsc.publicnode.com"],
+  100: ["https://rpc.gnosischain.com"],
+  137: ["https://polygon-rpc.com", "https://polygon-bor-rpc.publicnode.com"],
+  8453: ["https://mainnet.base.org", "https://base.publicnode.com"],
+  42161: ["https://arb1.arbitrum.io/rpc", "https://arbitrum.publicnode.com"],
+};
+
+/** RPC endpoints for a chain, for callers with none. */
+export function rpcUrlsForChain(chain?: number | string | null): string[] {
+  return PUBLIC_RPC_BY_CHAIN[normalizeChainId(chain)] ?? [];
+}
+
 /** Chain id from a numeric or named chain reference. */
 export function normalizeChainId(chain?: number | string | null): number {
   if (chain === undefined || chain === null || chain === "") return 1;

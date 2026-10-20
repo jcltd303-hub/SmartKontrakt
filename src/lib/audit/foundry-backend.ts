@@ -1,7 +1,8 @@
 import type { PocResult } from "./types";
 import { sha3_256 } from "js-sha3";
 import { wrapPocSnippet } from "./poc-wrap.ts";
-import { fetchNativeBalance, isZeroBalance, nativeSymbol } from "./balance.ts";
+import { nativeSymbol } from "./balance.ts";
+import { fetchAddressValue, isZeroValue, describeValue } from "./value.ts";
 
 /**
  * Forge compile-error detector for PoC logs. Compile failures are the
@@ -199,11 +200,11 @@ async function executeWithRpcRetries(
     repair?: (source: string, logs: string) => Promise<string>;
     onProgress?: (progress: RpcRetryProgress) => void;
     /**
-     * Pre-run guard (default on): read the target's native balance and skip the
-     * run when it is a CONFIRMED zero — nothing at stake to exploit. Set false
-     * to force the run (e.g. a token contract holding ERC-20 value but no ETH).
+     * Pre-run guard (default on): value the target (native + ERC-20s, in USD) and
+     * skip the run when the total is a CONFIRMED zero — nothing at stake. An
+     * incomplete valuation never skips. Set false to force the run.
      */
-    skipZeroBalance?: boolean;
+    skipZeroValue?: boolean;
   },
 ): Promise<PocResult & { triedRpcs: string[]; finalRpc?: string }> {
   const candidateSet = new Set<string>();
@@ -346,21 +347,22 @@ export async function runSmartPoc(
 ): Promise<Awaited<ReturnType<typeof executeWithRpcRetries>>> {
   const startedAt = new Date().toISOString();
 
-  // Quick pre-run balance check: a fork PoC against a target holding no native
-  // value has nothing at stake, so skip it rather than spend a backend run.
-  // Only a CONFIRMED zero skips — an RPC outage returns null and the run
-  // proceeds. See skipZeroBalance to force a run.
-  if (input.skipZeroBalance !== false) {
+  // Quick pre-run value check: value the target (native + ERC-20s, USD) at the
+  // latest block and skip when there is nothing at stake. Only a CONFIRMED zero
+  // skips — an incomplete valuation (provider down, chain we cannot read) runs.
+  // See skipZeroValue to force a run.
+  if (input.skipZeroValue !== false) {
     const rpcs = input.rpcList && input.rpcList.length ? input.rpcList : rpcCandidates(input.chainId);
-    const balance = await fetchNativeBalance(input.address, rpcs, input.chainId).catch(() => null);
-    if (isZeroBalance(balance)) {
+    const value = await fetchAddressValue(input.address, input.chainId, { rpcUrls: rpcs }).catch(() => null);
+    if (isZeroValue(value) && value) {
       return {
         status: "skipped",
-        logs: `[SmartPoC] Skipped — target ${input.address} holds 0 ${nativeSymbol(input.chainId)} at the latest block, so there is nothing at stake to exploit. Pass skipZeroBalance: false to run anyway.`,
+        logs: `[SmartPoC] Skipped — target ${input.address} holds no value (0 ${nativeSymbol(input.chainId)}, no priced token holdings) at the latest block, so there is nothing at stake to exploit. Pass skipZeroValue: false to run anyway.`,
         durationMs: 0,
         runAt: new Date().toISOString(),
         executedSource: input.testCode,
         triedRpcs: [],
+        valueUsd: value.totalUsd,
       };
     }
   }

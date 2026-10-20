@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { SUPPORTED_CHAINS, type BatchItem } from "@/lib/audit/address-fetcher";
 import { balanceLabel, nativeSymbol } from "@/lib/audit/balance";
+import { formatUsd } from "@/lib/audit/value";
 import { Download, Search, ExternalLink, Copy, Check, CheckCircle2, XCircle, Loader2, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 
 type Setter<T> = Dispatch<SetStateAction<T>>;
@@ -113,6 +114,7 @@ export function PipelineQueueTable({
                   <th className="p-2.5">Label</th>
                   <th className="p-2.5">Status</th>
                   <th className="p-2.5 text-center">Balance</th>
+                  <th className="p-2.5 text-center">Value</th>
                   <th className="p-2.5 text-center">Risk</th>
                   <th className="p-2.5 text-center">Crit</th>
                   <th className="p-2.5 text-center">High</th>
@@ -203,6 +205,19 @@ export function PipelineQueueTable({
                                 title="Native coin balance of the target at analysis time"
                               >
                                 {bal ?? "—"}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                        <td className="p-2.5 text-center font-mono text-[11px]">
+                          {(() => {
+                            const v = item.valueUsd ?? null;
+                            return (
+                              <span
+                                className={v === null ? "text-[#746c60]" : v > 0 ? "text-[#e8c07d]" : "text-red-400"}
+                                title="Total USD value of the target (native + ERC-20) at analysis time"
+                              >
+                                {v === null ? "—" : formatUsd(v)}
                               </span>
                             );
                           })()}

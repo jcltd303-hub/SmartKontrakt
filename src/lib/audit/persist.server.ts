@@ -24,6 +24,8 @@ export type ScanSummary = {
   /** Native-coin balance (wei, decimal string) at analysis time. Null = not read
    *  (distinct from "0", a confirmed empty balance). */
   balanceWei?: string | null;
+  /** Total USD value at analysis time (native + ERC-20). Null = not valued. */
+  valueUsd?: number | null;
   certHash?: string | null;
   isRagIndexed?: boolean;
   sourceOrigin?: string;
@@ -69,6 +71,7 @@ type ScanRow = {
   low_count: number;
   info_count: number;
   balance_wei?: string | null;
+  value_usd?: number | null;
   summary: string;
   inventory_json: string;
   ai_narrative: string | null;
@@ -138,6 +141,7 @@ function summaryFrom(row: ScanRow): ScanSummary {
     lowCount: row.low_count,
     infoCount: row.info_count,
     balanceWei: row.balance_wei ?? null,
+    valueUsd: row.value_usd === null || row.value_usd === undefined ? null : Number(row.value_usd),
     certHash: row.cert_hash ?? null,
     isRagIndexed: Boolean(row.is_rag_indexed),
     sourceOrigin: row.source_origin ?? "workbench",
@@ -161,7 +165,7 @@ export async function listScanSummaries(opts?: { limit?: number; offset?: number
       select id, label, input_kind, contract_name, target_address, chain_id,
              proxy_info_json, probes_json, cert_hash, source_origin, is_rag_indexed,
              risk_score, critical_count, high_count, medium_count, low_count, info_count,
-             balance_wei, unparsed, created_at::text as created_at
+             balance_wei, value_usd, unparsed, created_at::text as created_at
       from contract_scans
       order by created_at desc
       limit ${limit} offset ${offset}
@@ -204,7 +208,8 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
            compiler_version, proxy_info_json, probes_json, ai_review_json,
            triage_states_json, cert_hash, source_origin, is_rag_indexed,
            risk_score, critical_count, high_count, medium_count, low_count, info_count,
-           balance_wei, summary, inventory_json, ai_narrative, ai_status, unparsed,
+           balance_wei, value_usd, abi_json, abi_source,
+           summary, inventory_json, ai_narrative, ai_status, unparsed,
            poc_status, poc_logs, poc_duration_ms, poc_run_at::text as poc_run_at,
            created_at::text as created_at
     from contract_scans
@@ -224,6 +229,11 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
   const inventory = JSON.parse(row.inventory_json) as Inventory;
   // Backfill from the dedicated column when the stored inventory predates it.
   if (inventory.balanceWei == null && row.balance_wei != null) inventory.balanceWei = row.balance_wei;
+  if (inventory.valueUsd == null && row.value_usd != null) inventory.valueUsd = Number(row.value_usd);
+  // The stored ABI is authoritative when the inventory does not carry one.
+  if (inventory.abi == null && row.abi_json) {
+    try { inventory.abi = JSON.parse(row.abi_json); inventory.abiSource = row.abi_source ?? null; } catch { /* ignore */ }
+  }
   const findings: Finding[] = findingRows.map((f) => ({
     id: f.id,
     severity: f.severity,

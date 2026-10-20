@@ -86,6 +86,22 @@ export type Inventory = {
   balanceWei?: string | null;
   /** Native symbol for the chain (ETH / POL / BNB), for display. */
   balanceSymbol?: string | null;
+  /**
+   * Total USD value of the target at analysis time (native + ERC-20 holdings),
+   * from the value layer. Null when not valued; the record's `value_usd` column
+   * mirrors this for sorting.
+   */
+  valueUsd?: number | null;
+  /** Full valuation (holdings, prices, sources, completeness). */
+  value?: unknown | null;
+  /**
+   * The target's ABI when one was gathered (Sourcify / Etherscan / inferred
+   * from selectors + events), stored so a later PoC run in ANY context can
+   * tailor its template to the real surface without re-fetching.
+   */
+  abi?: unknown | null;
+  /** Where the ABI came from: "sourcify" | "etherscan" | "heuristic" | "input". */
+  abiSource?: string | null;
 };
 
 export type Report = {
@@ -133,5 +149,7 @@ export type PocResult = {
   runAt: string;
   /** Backend-side error message, when status is "error". */
   error?: string;
+  /** Total USD value of the target at the pre-run check (migration 0012). */
+  valueUsd?: number | null;
 };
 

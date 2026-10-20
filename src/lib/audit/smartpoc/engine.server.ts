@@ -28,6 +28,7 @@ import {
 } from "../ai-review.server.ts";
 import { selectPocFallbacks } from "../poc-fallbacks.ts";
 import { smartbugsCategoryForDetector } from "../smartbugs.ts";
+import { tailorTemplateToAbi, interfaceFromAbi, type AbiItem } from "../abi.ts";
 import { extractBugContext, type BceFinding } from "./bce.ts";
 import { sanitizePocDraft, functionSignaturesFromInventory, type PocTarget } from "./sanitize.ts";
 import {
@@ -63,6 +64,10 @@ export type GreInput = {
   publicAbis?: string[];
   fourbyteSection?: string;
   retryBudget?: number;
+  /** The target's gathered ABI, so the starting template is tailored to it. */
+  abi?: AbiItem[] | null;
+  /** Where that ABI came from (sourcify / etherscan / heuristic). */
+  abiSource?: string | null;
 };
 
 export type GreResult = {
@@ -281,7 +286,18 @@ export async function runGreEngine(input: GreInput, execute: GreExecute): Promis
       summary: primary.summary, locationFn: primary.locationFn ?? null, smartbugs,
     },
     bugContext,
-    startingTemplate: template ? { file: template.file, source: template.source } : null,
+    // Tailor the template's target surface to the real ABI when we have one, so
+    // the harness starts from the contract's actual signatures, not a guess.
+    targetAbiSection: input.abi && input.abi.length > 0 ? interfaceFromAbi(input.abi, "ITarget") : null,
+    startingTemplate: template
+      ? {
+          file: template.file,
+          source:
+            input.abi && input.abi.length > 0
+              ? tailorTemplateToAbi(template.source, input.abi, { source: input.abiSource ?? undefined })
+              : template.source,
+        }
+      : null,
     fourbyteSection: input.fourbyteSection,
   });
 

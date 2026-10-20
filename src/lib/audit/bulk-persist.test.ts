@@ -21,6 +21,7 @@ async function database() {
     "0009_rag_fts.sql",
     "0010_indexes.sql",
     "0011_balance.sql",
+    "0012_value_at_risk.sql",
   ]) {
     await pg.exec(await readFile(new URL(`../../../migrations/${f}`, import.meta.url), "utf8"));
   }

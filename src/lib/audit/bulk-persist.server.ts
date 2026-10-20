@@ -67,6 +67,11 @@ export async function writeAuditBatch(
       unparsed: r.report.unparsed ?? false,
       // Native balance at analysis time (migration 0011); null when not read.
       balance_wei: r.report.inventory.balanceWei ?? null,
+      // Value-at-risk + gathered ABI (migration 0012); null when not computed.
+      value_usd: r.report.inventory.valueUsd ?? null,
+      value_json: r.report.inventory.value ? JSON.stringify(r.report.inventory.value) : null,
+      abi_json: r.report.inventory.abi ? JSON.stringify(r.report.inventory.abi) : null,
+      abi_source: r.report.inventory.abiSource ?? null,
       // Fork-PoC verdict on the scan row (migration 0004). Null when the
       // caller has none; the on-conflict update coalesces so a later batch
       // without a PoC never clears one already stored.
@@ -97,7 +102,8 @@ export async function writeAuditBatch(
         proxy_info_json, probes_json, ai_review_json, triage_states_json, cert_hash,
         source_origin, is_rag_indexed, risk_score, critical_count, high_count, medium_count,
         low_count, info_count, summary, inventory_json, ai_narrative, ai_status, unparsed,
-        balance_wei, poc_status, poc_logs, poc_duration_ms, poc_run_at
+        balance_wei, value_usd, value_json, abi_json, abi_source,
+        poc_status, poc_logs, poc_duration_ms, poc_run_at
       ) select * from jsonb_to_recordset($1::jsonb) as r(
         id text, label text, input_kind text, contract_name text, target_address text,
         chain_id text, compiler_version text, proxy_info_json text, probes_json text,
@@ -105,7 +111,7 @@ export async function writeAuditBatch(
         is_rag_indexed boolean, risk_score integer, critical_count integer, high_count integer,
         medium_count integer, low_count integer, info_count integer, summary text,
         inventory_json text, ai_narrative text, ai_status text, unparsed boolean,
-        balance_wei text,
+        balance_wei text, value_usd numeric, value_json text, abi_json text, abi_source text,
         poc_status text, poc_logs text, poc_duration_ms integer, poc_run_at timestamptz
       ) on conflict (id) do update set
         label=excluded.label, input_kind=excluded.input_kind, contract_name=excluded.contract_name,
@@ -120,6 +126,10 @@ export async function writeAuditBatch(
         inventory_json=excluded.inventory_json, ai_narrative=excluded.ai_narrative,
         ai_status=excluded.ai_status, unparsed=excluded.unparsed,
         balance_wei=coalesce(excluded.balance_wei, contract_scans.balance_wei),
+        value_usd=coalesce(excluded.value_usd, contract_scans.value_usd),
+        value_json=coalesce(excluded.value_json, contract_scans.value_json),
+        abi_json=coalesce(excluded.abi_json, contract_scans.abi_json),
+        abi_source=coalesce(excluded.abi_source, contract_scans.abi_source),
         poc_status=coalesce(excluded.poc_status, contract_scans.poc_status),
         poc_logs=coalesce(excluded.poc_logs, contract_scans.poc_logs),
         poc_duration_ms=coalesce(excluded.poc_duration_ms, contract_scans.poc_duration_ms),

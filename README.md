@@ -95,7 +95,36 @@ The headless pipeline worker runs the full pipeline per flagged address. Setting
 
 Every address audit reads the target's native balance (`eth_getBalance`) at analysis time and stores it as `contract_scans.balance_wei` — a decimal wei string, since balances exceed 2^53. `NULL` means "not read" (no RPC answered) and is deliberately distinct from `'0'` (a confirmed empty balance). The balance renders prominently in the workbench scorecard, the Records table, the Recent PoC audits list, and the batch pipeline.
 
-Before any fork PoC run the target's balance is re-read: a **confirmed zero balance skips the run** (nothing at stake), returning status `skipped` with the reason in the logs. An RPC outage does *not* skip — unknown is not zero. Pass `skipZeroBalance: false` to force a run, e.g. for a token contract that holds ERC-20 value but no native coin.
+Before any fork PoC run the target is valued (see *Value at risk* below): a **confirmed zero total skips the run** (nothing at stake), returning status `skipped` with the reason in the logs. An incomplete valuation does *not* skip — unknown is not zero. Pass `skipZeroValue: false` to force a run. The balance shown alongside it is the native coin only, read at the latest block.
+
+## Value at risk
+
+Every address audit is valued in USD at analysis time — native coin plus ERC-20
+holdings — and stored as `contract_scans.value_usd` (with the full breakdown in
+`value_json`). The sources are keyless: public JSON-RPC for the native balance,
+[Blockscout](https://www.blockscout.com/) for token balances and per-chain native
+prices, and [DefiLlama](https://defillama.com/) for any token Blockscout leaves
+unpriced. Set `ETHERSCAN_API_KEY` to prefer Etherscan's ABI endpoint when it is
+available.
+
+The Records tab sorts and filters by value (funded / zero / not valued) and shows
+a running **value at risk** total for the current selection; the batch pipeline
+queue carries a value column too.
+
+`complete` is the flag that matters: a valuation is only complete when every
+provider answered and every holding was priced. An incomplete valuation is
+*unknown*, never zero, so it can never trigger a skip.
+
+## Target ABI, gathered once
+
+`src/lib/audit/abi.ts` gathers the target's ABI — Sourcify `metadata.json`
+first, then Etherscan (with a key), then a heuristic ABI rebuilt from what the
+analyzer already parsed (functions with their selectors, and event topics).
+It is stored with the scan (`abi_json` / `abi_source`) so a PoC run in **any**
+context reuses it instead of re-fetching. At PoC time the chosen fallback
+template is tailored additively: the real `ITarget` interface is prepended to
+the template, and the generation prompt is given the same surface, so the model
+starts from the contract's actual signatures rather than an invented one.
 
 ## Fallback PoC library
 

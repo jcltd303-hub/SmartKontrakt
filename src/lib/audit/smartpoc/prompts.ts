@@ -29,6 +29,8 @@ export function buildPocGenerationPrompt(args: {
   };
   bugContext: string;
   startingTemplate?: { file: string; source: string } | null;
+  /** Solidity interface rendered from the target's gathered ABI. */
+  targetAbiSection?: string | null;
   fourbyteSection?: string;
 }): Prompt {
   const template = args.startingTemplate
@@ -37,7 +39,7 @@ export function buildPocGenerationPrompt(args: {
   const user = `## Project information & build metadata
 ${args.buildMetadata}
 
-## Static finding
+${args.targetAbiSection ? `## Target surface (gathered from the on-chain ABI)\nUse THESE real signatures — do not invent an interface.\n\`\`\`solidity\n${args.targetAbiSection}\n\`\`\`\n` : ""}## Static finding
 [${args.finding.severity.toUpperCase()}] ${args.finding.title} (detector: ${args.finding.detector}${args.finding.smartbugs ? `, SmartBugs: ${args.finding.smartbugs}` : ""})
 Location: ${args.finding.locationFn ?? "contract"}
 ${args.finding.summary}
