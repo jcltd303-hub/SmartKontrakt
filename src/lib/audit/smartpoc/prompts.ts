@@ -133,7 +133,7 @@ state: ${JSON.stringify(args.differential.state)}
 Insert IDENTICAL action + state-query operations immediately BEFORE and immediately AFTER the PoC's critical attacker action (the trigger). Log both the state values and each executed step using EXACTLY this marker so they can be parsed:
   console.log("SMARTPOC_STATE|pre|<label>", <value>);
   console.log("SMARTPOC_STATE|post|<label>", <value>);
-Do not change the trigger itself or the target's code. Keep `contract PoC is Test`. Output the complete instrumented test in a single \`\`\`solidity code block.`;
+Do not change the trigger itself or the target's code. Keep \`contract PoC is Test\`. Output the complete instrumented test in a single \`\`\`solidity code block.`;
   return {
     system:
       "Please insert identical action and state-query operations from the differential description before and after the PoC's critical attacker action, compare the results, and log both the state values and each executed step. Respond with the complete test in a single ```solidity code block.",
