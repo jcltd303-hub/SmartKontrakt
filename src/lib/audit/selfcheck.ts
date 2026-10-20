@@ -22,9 +22,13 @@ function must(label: string, detectors: string[], forbidden: string[] = []) {
   console.log(label, "ok", report.findings.length, "score", report.riskScore);
 }
 
+// `read-only-reentrancy` is intentionally NOT expected here: the detector fires
+// only when the stale public value is consumed IN-window (a read of the variable
+// between the external call and its write). RelicVault.withdraw reads `balances`
+// before the call and only writes it after, so there is no in-contract consumer
+// — the sample's own blurb is "reentrancy, delegatecall, tx.origin".
 must("RelicVault", [
   "reentrancy",
-  "read-only-reentrancy",
   "delegatecall",
   "tx-origin",
   "old-compiler",
