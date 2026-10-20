@@ -13,8 +13,37 @@ export type AiSecurityReview = {
 /** OpenRouter chat-completions endpoint (OpenAI-compatible). */
 export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-/** Default model — overridable with OPENROUTER_MODEL without a code change. */
-export const DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free";
+/**
+ * Best current OpenRouter **free-tier** models, by purpose. Verified 2026-10-21.
+ *
+ * The free tier is a shared, per-account daily quota (50 requests/day, or 1000
+ * after a one-time $10 top-up) and the endpoints are 4-bit quantised, so the
+ * model is chosen per task rather than globally:
+ *
+ *   review — long-context reasoning and prose (threat model, second pass).
+ *            Nemotron 3 Ultra: 550B/55B MoE, 1M-token context, strongest free
+ *            reasoning.
+ *   code   — Foundry PoC synthesis and repair. Inkling-Small: best published
+ *            free coding score (80.2% SWE-bench Verified) at 276B/12B active,
+ *            1M-token context.
+ *   json   — structured output + tool calling (Deep Agent hypotheses, DV
+ *            action/state extraction and verdicts). Qwen3.8-27B: 262K context,
+ *            structured outputs and tool calling, strong coding.
+ *
+ * `OPENROUTER_MODEL` overrides every purpose; `OPENROUTER_MODEL_<PURPOSE>`
+ * overrides one (e.g. OPENROUTER_MODEL_CODE). Free-tier ids churn — re-check
+ * https://openrouter.ai/collections/free-models before relying on one.
+ */
+export const OPENROUTER_MODELS = {
+  review: "nvidia/nemotron-3-ultra-550b-a55b:free",
+  code: "thinkingmachines/inkling-small:free",
+  json: "qwen/qwen3.8-27b:free",
+} as const;
+
+export type OpenRouterPurpose = keyof typeof OPENROUTER_MODELS;
+
+/** Default model — matches the default purpose ("review"); overridable via env. */
+export const DEFAULT_OPENROUTER_MODEL = OPENROUTER_MODELS.review;
 
 export type OpenRouterConfig = {
   apiKey: string | undefined;
@@ -24,16 +53,34 @@ export type OpenRouterConfig = {
 const PLACEHOLDER_KEYS = new Set(["", "MY_OPENROUTER_API_KEY", "YOUR_OPENROUTER_API_KEY"]);
 
 /**
+ * The model id for a purpose: `OPENROUTER_MODEL` (global) wins, then
+ * `OPENROUTER_MODEL_<PURPOSE>`, then the per-purpose free-tier default.
+ */
+export function resolveOpenRouterModel(
+  purpose: OpenRouterPurpose,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const global = env.OPENROUTER_MODEL?.trim();
+  if (global) return global;
+  const perPurpose = env[`OPENROUTER_MODEL_${purpose.toUpperCase()}`]?.trim();
+  return perPurpose || OPENROUTER_MODELS[purpose];
+}
+
+/**
  * Resolve OpenRouter config from the environment.
  * Returns apiKey undefined when no real key is configured, so callers
  * can fall back to the template review instead of calling the API.
+ *
+ * `purpose` selects the per-task free-tier default (see OPENROUTER_MODELS);
+ * it defaults to "review" so existing callers keep the reasoning model.
  */
 export function resolveOpenRouterConfig(
   env: NodeJS.ProcessEnv = process.env,
+  purpose: OpenRouterPurpose = "review",
 ): OpenRouterConfig {
   const rawKey = env.OPENROUTER_API_KEY?.trim();
   const apiKey = rawKey && !PLACEHOLDER_KEYS.has(rawKey) ? rawKey : undefined;
-  const model = env.OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
+  const model = resolveOpenRouterModel(purpose, env);
   return { apiKey, model };
 }
 

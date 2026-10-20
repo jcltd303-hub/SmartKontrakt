@@ -31,18 +31,28 @@ import type {
   DeepAgentHypothesis,
   DeepAgentPriorResult,
 } from "../src/lib/audit/deep-agent.server.ts";
-import { repairPocCode, runDeepAgentRound } from "../src/lib/audit/deep-agent.server.ts";
+import { runDeepAgentRound } from "../src/lib/audit/deep-agent.server.ts";
 // runPocOnBackend is the shared helper also used by the workbench. It
 // never touches localStorage here: the backend URL is passed explicitly,
 // and the helper only reads localStorage inside getBackendUrl(), which
 // this module never calls.
-import { isPocCompileError, runPocWithRpcRetries } from "../src/lib/audit/foundry-backend.ts";
+import { runPocWithRpcRetries } from "../src/lib/audit/foundry-backend.ts";
 import { fourbyteResultsFromReport, type FourbyteResults } from "../src/lib/audit/fourbyte.ts";
+// SmartPoC pipeline (arXiv:2511.12993): the GRE-Engine (generate-repair-execute)
+// and Action-State Differential Verification replace the old single-repair step.
+import {
+  runGreRepairLoop,
+  runDifferentialVerification,
+  type PocExecution,
+} from "../src/lib/audit/smartpoc/engine.server.ts";
+import { pocTargetFromSource } from "../src/lib/audit/smartpoc/bce.ts";
 
 export const WORKER_DEEP_AGENT_MAX_ROUNDS = 3;
 export const WORKER_DEEP_AGENT_DEFAULT_BACKEND_URL = "http://127.0.0.1:8787";
 export const WORKER_DEEP_AGENT_DEFAULT_MAX_ITEMS = 250;
 export const WORKER_DEEP_AGENT_DEFAULT_MIN_SEVERITY: Severity = "high";
+/** SmartPoC GRE-Engine retry budget (paper §4.2: B = 5). */
+export const WORKER_DEEP_AGENT_RETRY_BUDGET = 5;
 
 const SEV_RANK: Record<Severity, number> = {
   critical: 4,
@@ -70,6 +80,13 @@ export type WorkerDeepAgentOptions = {
   maxRounds: number;
   /** Gate: flagged = >= 1 finding at or above this severity. */
   minSeverity: Severity;
+  /** GRE-Engine retry budget (default WORKER_DEEP_AGENT_RETRY_BUDGET). */
+  retryBudget?: number;
+  /**
+   * Run SmartPoC Differential Verification on a passing PoC before it becomes
+   * a finding (default true). Costs 3 extra LLM calls per confirmed PoC.
+   */
+  verify?: boolean;
 };
 
 /** Per-address Deep Agent outcome. `ran` is false when the loop was skipped. */
@@ -138,12 +155,25 @@ export function applyConfirmedFindings(report: Report, confirmed: Finding[], not
   if (note) report.inventory.notes.push(note);
 }
 
-/**
- * Run one PoC, retrying when the backend is busy (409 — someone tapped
- * Run PoC in the workbench at the same time). A verdict (passed/failed),
- * an infra error, or an unreachable backend returns immediately.
- */
-async function runPocWithBusyRetry(
+/** Adapter: run a PoC on the backend and normalize it to a `PocExecution`. */
+async function runPocAsExecution(
+  backendUrl: string,
+  address: string,
+  testCode: string,
+  chainId = "ethereum",
+): Promise<PocExecution> {
+  const r = await runPocOnce(backendUrl, address, testCode, chainId);
+  return {
+    status: r.status,
+    logs: r.logs ?? "",
+    durationMs: r.durationMs ?? 0,
+    runAt: r.runAt ?? new Date().toISOString(),
+    error: r.error,
+  };
+}
+
+/** One PoC run, retrying only while the backend reports busy (409). */
+async function runPocOnce(
   backendUrl: string,
   address: string,
   testCode: string,
@@ -189,6 +219,10 @@ export async function runWorkerDeepAgent(
   let totalLlmMs = 0;
   let repairsAttempted = 0;
   let repairsSucceeded = 0;
+  // SmartPoC sanitizer target (contract name + function signatures) derived
+  // from the source, so the GRE-Engine can align the pragma and strip any
+  // re-declaration of the target's own functions.
+  const target = pocTargetFromSource(input.body, input.contractName);
 
   try {
     for (let round = 1; round <= opts.maxRounds; round += 1) {
@@ -219,36 +253,60 @@ export async function runWorkerDeepAgent(
       let stopRound = false;
       for (let i = 0; i < hypotheses.length; i += 1) {
         const h = hypotheses[i]!;
-        let testCode = h.foundryTestCode;
-        let poc = await runPocWithBusyRetry(opts.backendUrl, input.address, testCode, input.chainId);
-        // Repair loop: a PoC that fails to COMPILE gets ONE LLM repair
-        // + one re-run. A compile failure is a fixable PoC, not a
-        // refuted hypothesis — without this, every near-miss PoC is
-        // wasted. Infra failures (RPC/timeout) are not compile errors
-        // and never trigger a repair call.
-        if (poc.status === "error" && isPocCompileError(poc.logs ?? "")) {
-          repairsAttempted += 1;
-          try {
-            const repaired = await repairPocCode(input.contractName, testCode, poc.logs ?? "", input.body);
-            totalLlmMs += repaired.llmMs;
-            testCode = repaired.fixedCode;
-            poc = await runPocWithBusyRetry(opts.backendUrl, input.address, testCode, input.chainId);
-            // A re-run that reaches a verdict (pass OR fail) means the
-            // repair fixed the compile error — even a refuted hypothesis
-            // is a successful repair. A second error is not.
-            if (poc.status === "passed" || poc.status === "failed") repairsSucceeded += 1;
-          } catch (repairErr) {
-            base.errors += 1;
-            stopped = `PoC repair failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)}`;
-            stopRound = true;
-            break;
-          }
-        }
+        // SmartPoC GRE-Engine (§3.3): sanitize the draft (pragma/import align,
+        // strip any re-declaration of the target's own functions), execute it,
+        // and repair with compiler/runtime feedback up to the retry budget.
+        // This replaces the previous single-repair step.
+        repairsAttempted += 1;
+        const gre = await runGreRepairLoop(
+          { draft: h.foundryTestCode, target },
+          (code) => runPocAsExecution(opts.backendUrl, input.address, code, input.chainId),
+          opts.retryBudget ?? WORKER_DEEP_AGENT_RETRY_BUDGET,
+        );
+        const testCode = gre.code;
+        const poc: PocResult = gre.execution ?? {
+          status: "error",
+          logs: gre.stopReason ?? "no execution",
+          durationMs: 0,
+          runAt: new Date().toISOString(),
+        };
+        if (gre.ok) repairsSucceeded += 1;
+
         if (poc.status === "passed") {
-          const finding = confirmedFinding({ ...h, foundryTestCode: testCode }, round, i, poc);
-          base.confirmed.push(finding);
-          findingsForPrompt.push(finding);
-          priorResults.push({ title: h.title, detector: h.detector, outcome: "confirmed", pocLogs: poc.logs.slice(0, 1500) });
+          // SmartPoC Differential Verification (§3.4): confirm the finding with
+          // an action-state oracle before it is promoted to a finding. The DV
+          // verdict is the oracle; a NOTVALIDATED result is a refutation.
+          let validated = true;
+          let dvNote = "";
+          if (opts.verify !== false) {
+            try {
+              const dv = await runDifferentialVerification(
+                {
+                  finding: {
+                    title: h.title, severity: h.severity, detector: h.detector,
+                    summary: h.hypothesis, locationFn: null,
+                  },
+                  poc: testCode,
+                  publicAbis: [],
+                },
+                (code) => runPocAsExecution(opts.backendUrl, input.address, code, input.chainId),
+              );
+              validated = dv.validated;
+              dvNote = `\nSmartPoC DV: ${dv.validated ? "VALIDATED" : "NOTVALIDATED"} — ${dv.reason}`;
+            } catch (dvErr) {
+              dvNote = `\nSmartPoC DV error: ${dvErr instanceof Error ? dvErr.message : String(dvErr)}`;
+            }
+          }
+          if (validated) {
+            const finding = confirmedFinding({ ...h, foundryTestCode: testCode }, round, i, poc);
+            finding.walkthrough += dvNote;
+            base.confirmed.push(finding);
+            findingsForPrompt.push(finding);
+            priorResults.push({ title: h.title, detector: h.detector, outcome: "confirmed", pocLogs: poc.logs.slice(0, 1500) });
+          } else {
+            base.refuted += 1;
+            priorResults.push({ title: h.title, detector: h.detector, outcome: "refuted", pocLogs: `${poc.logs.slice(0, 1200)}${dvNote}` });
+          }
         } else if (poc.status === "failed") {
           base.refuted += 1;
           priorResults.push({ title: h.title, detector: h.detector, outcome: "refuted", pocLogs: poc.logs.slice(0, 1500) });

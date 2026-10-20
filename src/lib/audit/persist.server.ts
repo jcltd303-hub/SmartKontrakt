@@ -428,7 +428,8 @@ export async function secondPass(report: Report, body: string): Promise<{ text: 
   // Second pass goes through OpenRouter, same as the AI review panel —
   // the old xAI/Grok path (XAI_API_KEY, api.x.ai, grok-4.5) was never
   // migrated and silently returned "unavailable" on every audit.
-  const { apiKey, model } = resolveOpenRouterConfig();
+  // Prose reasoning over findings + a source excerpt → the "review" model.
+  const { apiKey, model } = resolveOpenRouterConfig(process.env, "review");
   if (!apiKey) return { text: null, status: "unavailable" };
   const listed = report.findings
     .slice(0, 12)

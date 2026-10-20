@@ -64,13 +64,32 @@ The application has **no sign-in**. Every read and write is unauthenticated, so 
 
 Local development can use PGLite without a database connection. On Vercel, archive writes fail clearly when no Postgres URL is present rather than acknowledging writes into a temporary in-memory database.
 
-## AI review via OpenRouter
+## AI via OpenRouter (free tier)
 
-AI threat-model reviews run server-side through OpenRouter (`POST https://openrouter.ai/api/v1/chat/completions`, OpenAI-compatible). No vendor SDK is used — just `fetch` with a bearer key.
+All model calls run server-side through OpenRouter (`POST https://openrouter.ai/api/v1/chat/completions`, OpenAI-compatible). No vendor SDK is used — just `fetch` with a bearer key.
+
+Models are chosen **per purpose** from OpenRouter's free tier (verified 2026-10-21):
+
+| Purpose | Default model | Used by |
+| --- | --- | --- |
+| `review` | `nvidia/nemotron-3-ultra-550b-a55b:free` | threat model, pipeline second pass |
+| `code` | `thinkingmachines/inkling-small:free` | Foundry PoC synthesis + repair (GRE-Engine) |
+| `json` | `qwen/qwen3.8-27b:free` | Deep Agent hypotheses, SmartPoC DV extraction/verdict |
 
 - Set `OPENROUTER_API_KEY` in the Vercel project's production + preview environments (server-only, never a browser variable).
-- Optional: set `OPENROUTER_MODEL` to pick the model (default `nvidia/nemotron-3-super-120b-a12b:free`). Any OpenRouter model id works.
+- Override one purpose with `OPENROUTER_MODEL_REVIEW` / `_CODE` / `_JSON`, or all of them with `OPENROUTER_MODEL`. Any OpenRouter model id works.
+- The free endpoints share a per-account daily quota (50/day, or 1000/day after a one-time $10 top-up) and run 4-bit quantised; ids churn, so re-check the free-models collection before relying on one.
 - Without a key, reviews fall back to the deterministic template review (`source: "template"`) — the audit still completes.
+
+## SmartPoC-aligned PoC validation
+
+The PoC pipeline follows **SmartPoC** (Chen et al., *SmartPoC: Generating Executable and Validated PoCs for Smart Contract Bug Reports*, arXiv:2511.12993) end to end:
+
+1. **Bug-Context Extraction (BCE)** — `src/lib/audit/smartpoc/bce.ts`. From the finding it slices the contract to the bug-relevant functions, expanding along semantic links (inverse pairs like deposit/withdraw, state-coupled functions) and structural links (modifiers, wrapper → underscore internal), plus the call graph ±1 hop and the constructors/initializers. The Deep Agent prompt uses this slice instead of the whole file.
+2. **Generate-Repair-Execute Engine (GRE-Engine)** — `src/lib/audit/smartpoc/engine.server.ts`. Generate → **pre-execution sanitizer** (`sanitize.ts`: align `pragma`/`abicoder` to the target compiler, enforce the `forge-std` import, and strip any re-declaration of the target's own functions that would mask the bug) → execute → **post-execution debugger** (feed compiler/runtime diagnostics back, up to the retry budget `B = 5`).
+3. **Action-State Differential Verification (DV)** — same file. Extract an action + observable state from the public ABIs, instrument the PoC with pre/post-trigger state queries (`SMARTPOC_STATE` markers), execute, and let the model issue a strict `VALIDATED` / `NOTVALIDATED` verdict. Only validated PoCs become findings.
+
+The headless pipeline worker runs the full pipeline per flagged address. Settings mirror the paper: temperature 0.3, retry budget B = 5, Foundry fork tests.
 
 ## Optional Supabase summary sync
 
