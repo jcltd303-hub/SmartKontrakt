@@ -117,6 +117,7 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "default-visibility": "access_control",
   delegatecall: "access_control",
   "bytecode-delegatecall": "access_control",
+  "bytecode-callcode": "access_control",
   "bytecode-proxy": "access_control",
   "assembly-sstore": "access_control",
   "assembly-param-sstore": "access_control",
