@@ -78,6 +78,14 @@ export type Inventory = {
   proxy: string | null;
   notes: string[];
   disassembly: string;
+  /**
+   * Native-coin balance (wei, decimal string) of the target at analysis time,
+   * read over public JSON-RPC. Null/absent when not read (no RPC answer).
+   * Distinct from zero: `"0"` is a confirmed empty balance.
+   */
+  balanceWei?: string | null;
+  /** Native symbol for the chain (ETH / POL / BNB), for display. */
+  balanceSymbol?: string | null;
 };
 
 export type Report = {

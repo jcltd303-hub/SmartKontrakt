@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import { SUPPORTED_CHAINS, type BatchItem } from "@/lib/audit/address-fetcher";
+import { balanceLabel, nativeSymbol } from "@/lib/audit/balance";
 import { Download, Search, ExternalLink, Copy, Check, CheckCircle2, XCircle, Loader2, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 
 type Setter<T> = Dispatch<SetStateAction<T>>;
@@ -111,6 +112,7 @@ export function PipelineQueueTable({
                   <th className="p-2.5">Address</th>
                   <th className="p-2.5">Label</th>
                   <th className="p-2.5">Status</th>
+                  <th className="p-2.5 text-center">Balance</th>
                   <th className="p-2.5 text-center">Risk</th>
                   <th className="p-2.5 text-center">Crit</th>
                   <th className="p-2.5 text-center">High</th>
@@ -191,6 +193,19 @@ export function PipelineQueueTable({
                               Failed
                             </span>
                           )}
+                        </td>
+                        <td className="p-2.5 text-center font-mono text-[11px]">
+                          {(() => {
+                            const bal = balanceLabel(item.balanceWei, nativeSymbol(item.chainId));
+                            return (
+                              <span
+                                className={bal === null ? "text-[#746c60]" : bal.startsWith("0 ") ? "text-red-400" : "text-[#e8c07d]"}
+                                title="Native coin balance of the target at analysis time"
+                              >
+                                {bal ?? "—"}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="p-2.5 text-center font-bold">
                           {typeof item.riskScore === "number" ? (

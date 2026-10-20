@@ -339,6 +339,14 @@ export async function runGreEngine(input: GreInput, execute: GreExecute): Promis
         stopReason: "backend_unreachable",
       };
     }
+    if (execution.status === "skipped") {
+      // Pre-run balance guard: nothing at stake. Repairing would be pointless.
+      return {
+        ok: false, code: sanitized, attempts: attempt, execution, bugContext,
+        bugContextFunctions, notes, llmMs: Date.now() - started,
+        stopReason: "skipped_zero_balance",
+      };
+    }
 
     // ── Post-execution debugger: feed diagnostics to the next iteration ──────
     previousCode = sanitized;
@@ -389,6 +397,10 @@ export async function runGreRepairLoop(
     }
     if (execution.status === "backend_unreachable") {
       return { ok: false, code, attempts: attempt, execution, notes, stopReason: "backend_unreachable" };
+    }
+    if (execution.status === "skipped") {
+      // Pre-run balance guard: nothing at stake, so do not spend a repair on it.
+      return { ok: false, code, attempts: attempt, execution, notes, stopReason: "skipped_zero_balance" };
     }
     if (attempt === attempts) break;
     if (!apiKey) {

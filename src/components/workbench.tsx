@@ -6,6 +6,7 @@ import { RagKnowledgebase } from "@/components/rag-knowledgebase";
 import { RecentPocAudits } from "@/components/recent-poc-audits";
 import { SupabaseDbModal } from "@/components/supabase-db-modal";
 import type { ScanSummary } from "@/lib/audit/persist.server";
+import { balanceLabel } from "@/lib/audit/balance";
 import { resolveContractDisplayName } from "@/lib/audit/simulator";
 import {
   Activity,
@@ -235,6 +236,19 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                           >
                             {risk.label}
                           </span>
+                          {/* Native balance at analysis time — prominent, and the
+                              same value the pre-run PoC guard checks for zero. */}
+                          {(() => {
+                            const bal = balanceLabel(report.inventory.balanceWei, report.inventory.balanceSymbol ?? "ETH");
+                            return (
+                              <span
+                                className={`text-[10px] px-2 py-0.5 rounded font-mono font-bold bg-[#26231c] border border-[#3a3428] ${bal === null ? "text-[#a39886]" : bal.startsWith("0 ") ? "text-red-400" : "text-[#e8c07d]"}`}
+                                title="Native coin balance of the target at analysis time"
+                              >
+                                {bal ?? "balance n/a"}
+                              </span>
+                            );
+                          })()}
                         </div>
                         <p className="text-xs text-[#a39886] mt-0.5 max-w-md line-clamp-1">
                           {report.inventory.kindNote || "Analysis completed"}

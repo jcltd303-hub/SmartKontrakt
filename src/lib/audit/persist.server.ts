@@ -21,6 +21,9 @@ export type ScanSummary = {
   mediumCount: number;
   lowCount: number;
   infoCount: number;
+  /** Native-coin balance (wei, decimal string) at analysis time. Null = not read
+   *  (distinct from "0", a confirmed empty balance). */
+  balanceWei?: string | null;
   certHash?: string | null;
   isRagIndexed?: boolean;
   sourceOrigin?: string;
@@ -65,6 +68,7 @@ type ScanRow = {
   medium_count: number;
   low_count: number;
   info_count: number;
+  balance_wei?: string | null;
   summary: string;
   inventory_json: string;
   ai_narrative: string | null;
@@ -133,6 +137,7 @@ function summaryFrom(row: ScanRow): ScanSummary {
     mediumCount: row.medium_count,
     lowCount: row.low_count,
     infoCount: row.info_count,
+    balanceWei: row.balance_wei ?? null,
     certHash: row.cert_hash ?? null,
     isRagIndexed: Boolean(row.is_rag_indexed),
     sourceOrigin: row.source_origin ?? "workbench",
@@ -156,7 +161,7 @@ export async function listScanSummaries(opts?: { limit?: number; offset?: number
       select id, label, input_kind, contract_name, target_address, chain_id,
              proxy_info_json, probes_json, cert_hash, source_origin, is_rag_indexed,
              risk_score, critical_count, high_count, medium_count, low_count, info_count,
-             unparsed, created_at::text as created_at
+             balance_wei, unparsed, created_at::text as created_at
       from contract_scans
       order by created_at desc
       limit ${limit} offset ${offset}
@@ -199,7 +204,7 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
            compiler_version, proxy_info_json, probes_json, ai_review_json,
            triage_states_json, cert_hash, source_origin, is_rag_indexed,
            risk_score, critical_count, high_count, medium_count, low_count, info_count,
-           summary, inventory_json, ai_narrative, ai_status, unparsed,
+           balance_wei, summary, inventory_json, ai_narrative, ai_status, unparsed,
            poc_status, poc_logs, poc_duration_ms, poc_run_at::text as poc_run_at,
            created_at::text as created_at
     from contract_scans
@@ -217,6 +222,8 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
     order by ord asc
   `;
   const inventory = JSON.parse(row.inventory_json) as Inventory;
+  // Backfill from the dedicated column when the stored inventory predates it.
+  if (inventory.balanceWei == null && row.balance_wei != null) inventory.balanceWei = row.balance_wei;
   const findings: Finding[] = findingRows.map((f) => ({
     id: f.id,
     severity: f.severity,
@@ -499,6 +506,8 @@ export type FindingWithScanInfo = Finding & {
   contractName: string | null;
   targetAddress: string | null;
   chainId: string | null;
+  /** Native balance (wei) of the scan's target at analysis time. */
+  balanceWei?: string | null;
   scanCreatedAt: string;
 };
 
@@ -525,13 +534,14 @@ export async function getRecentHighSeverityFindings(opts?: {
         contract_name: string | null;
         target_address: string | null;
         chain_id: string | null;
+        balance_wei: string | null;
         scan_created_at: string;
       }>`
         select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
                f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
-               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.created_at::text as scan_created_at
+               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
         join contract_scans s on f.scan_id = s.id
         where f.severity = 'critical'
@@ -546,13 +556,14 @@ export async function getRecentHighSeverityFindings(opts?: {
         contract_name: string | null;
         target_address: string | null;
         chain_id: string | null;
+        balance_wei: string | null;
         scan_created_at: string;
       }>`
         select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
                f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
-               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.created_at::text as scan_created_at
+               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
         join contract_scans s on f.scan_id = s.id
         where f.severity = 'high'
@@ -567,13 +578,14 @@ export async function getRecentHighSeverityFindings(opts?: {
         contract_name: string | null;
         target_address: string | null;
         chain_id: string | null;
+        balance_wei: string | null;
         scan_created_at: string;
       }>`
         select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
                f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
-               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.created_at::text as scan_created_at
+               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
         join contract_scans s on f.scan_id = s.id
         where f.severity in ('critical', 'high')
@@ -608,6 +620,7 @@ export async function getRecentHighSeverityFindings(opts?: {
       contractName: f.contract_name,
       targetAddress: f.target_address,
       chainId: f.chain_id,
+      balanceWei: f.balance_wei ?? null,
       scanCreatedAt: f.scan_created_at,
     }));
   } catch (err) {

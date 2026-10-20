@@ -474,6 +474,7 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
           supabaseSynced: !remoteWriter, summary: result.report.summary,
           bytecodeSize: result.report.inventory.bytecodeBytes ?? result.rawBody.length / 2,
           riskScore: result.report.riskScore, findingsCount: result.report.findings.length,
+          balanceWei: result.report.inventory.balanceWei ?? null,
           criticalCount: counts.critical, highCount: counts.high, completedAt: new Date().toISOString(),
         };
         reportCacheRef.current.set(`${item.chainId}:${item.address.toLowerCase()}`, {
@@ -556,6 +557,7 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
                 ...existing,
                 status: "completed",
                 riskScore: scan.riskScore,
+                balanceWei: scan.balanceWei ?? null,
                 findingsCount: scan.criticalCount + scan.highCount + scan.mediumCount + scan.lowCount + scan.infoCount,
                 criticalCount: scan.criticalCount,
                 highCount: scan.highCount,
@@ -572,6 +574,7 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
                 chainId: scan.chainId || "ethereum",
                 status: "completed",
                 riskScore: scan.riskScore,
+                balanceWei: scan.balanceWei ?? null,
                 findingsCount: scan.criticalCount + scan.highCount + scan.mediumCount + scan.lowCount + scan.infoCount,
                 criticalCount: scan.criticalCount,
                 highCount: scan.highCount,

@@ -20,6 +20,7 @@ async function database() {
     "0008_finding_poc_runs.sql",
     "0009_rag_fts.sql",
     "0010_indexes.sql",
+    "0011_balance.sql",
   ]) {
     await pg.exec(await readFile(new URL(`../../../migrations/${f}`, import.meta.url), "utf8"));
   }

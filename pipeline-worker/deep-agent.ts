@@ -219,6 +219,8 @@ export async function runWorkerDeepAgent(
   let totalLlmMs = 0;
   let repairsAttempted = 0;
   let repairsSucceeded = 0;
+  // PoCs the pre-run balance guard skipped (target holds 0 native value).
+  let balanceSkips = 0;
   // SmartPoC sanitizer target (contract name + function signatures) derived
   // from the source, so the GRE-Engine can align the pragma and strip any
   // re-declaration of the target's own functions.
@@ -310,6 +312,11 @@ export async function runWorkerDeepAgent(
         } else if (poc.status === "failed") {
           base.refuted += 1;
           priorResults.push({ title: h.title, detector: h.detector, outcome: "refuted", pocLogs: poc.logs.slice(0, 1500) });
+        } else if (poc.status === "skipped") {
+          // Pre-run balance guard: the target holds 0 native value, so there is
+          // nothing at stake to exploit. Not a verdict and not an error — skip
+          // this hypothesis and keep going.
+          balanceSkips += 1;
         } else if (poc.status === "backend_unreachable") {
           base.errors += 1;
           base.backendDown = true;
@@ -317,7 +324,7 @@ export async function runWorkerDeepAgent(
           stopRound = true;
           break;
         } else {
-          // error / skipped: infra, not a verdict — stop the loop.
+          // error: infra, not a verdict — stop the loop.
           base.errors += 1;
           stopped = `PoC run failed (${poc.status})`;
           stopRound = true;
@@ -333,7 +340,7 @@ export async function runWorkerDeepAgent(
     stopped = `unexpected: ${err instanceof Error ? err.message : String(err)}`;
   }
 
-  const note = `Deep Agent: ${base.rounds} round(s), ${base.confirmed.length} confirmed on fork, ${base.refuted} refuted${base.errors > 0 ? `, ${base.errors} error(s)` : ""}, LLM ${(totalLlmMs / 1000).toFixed(1)}s${repairsAttempted > 0 ? `, repair ${repairsSucceeded}/${repairsAttempted}` : ""}${stopped ? ` — ${stopped}` : ""}`;
+  const note = `Deep Agent: ${base.rounds} round(s), ${base.confirmed.length} confirmed on fork, ${base.refuted} refuted${balanceSkips > 0 ? `, ${balanceSkips} skipped (0 balance)` : ""}${base.errors > 0 ? `, ${base.errors} error(s)` : ""}, LLM ${(totalLlmMs / 1000).toFixed(1)}s${repairsAttempted > 0 ? `, repair ${repairsSucceeded}/${repairsAttempted}` : ""}${stopped ? ` — ${stopped}` : ""}`;
   return { ...base, ran: true, note };
 }
 

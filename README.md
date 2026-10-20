@@ -91,6 +91,12 @@ The PoC pipeline follows **SmartPoC** (Chen et al., *SmartPoC: Generating Execut
 
 The headless pipeline worker runs the full pipeline per flagged address. Settings mirror the paper: temperature 0.3, retry budget B = 5, Foundry fork tests.
 
+## Balance guard and the balance column
+
+Every address audit reads the target's native balance (`eth_getBalance`) at analysis time and stores it as `contract_scans.balance_wei` — a decimal wei string, since balances exceed 2^53. `NULL` means "not read" (no RPC answered) and is deliberately distinct from `'0'` (a confirmed empty balance). The balance renders prominently in the workbench scorecard, the Records table, the Recent PoC audits list, and the batch pipeline.
+
+Before any fork PoC run the target's balance is re-read: a **confirmed zero balance skips the run** (nothing at stake), returning status `skipped` with the reason in the logs. An RPC outage does *not* skip — unknown is not zero. Pass `skipZeroBalance: false` to force a run, e.g. for a token contract that holds ERC-20 value but no native coin.
+
 ## Fallback PoC library
 
 `foundry/poc-fallbacks/` holds one working Foundry harness per scenario, organised by the [SmartBugs Curated](https://github.com/smartbugs/smartbugs-curated) DASP taxonomy. A finding starts from the harness for its detector, or — when the detector has none — the harness for its SmartBugs category. `npm run check:fallbacks` compiles every harness with Foundry; see `docs/smartbugs-alignment.md`.

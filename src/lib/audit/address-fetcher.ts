@@ -2,6 +2,7 @@ import type { Report } from "./types.ts";
 import { analyzeInput } from "./engine.ts";
 import { analyzeBytecode } from "./bytecode.ts";
 import { rpcLimiter, sourcifyLimiter, withRetry } from "./rate-limit.ts";
+import { fetchNativeBalance } from "./balance.ts";
 import { enrichReportFourbyte, type FourbyteLookup } from "./fourbyte.ts";
 
 export type SupportedChain = {
@@ -115,6 +116,8 @@ export type BatchItem = {
   error?: string;
   bytecodeSize?: number;
   riskScore?: number;
+  /** Native balance (wei, decimal string) at analysis time (migration 0011). */
+  balanceWei?: string | null;
   findingsCount?: number;
   criticalCount?: number;
   highCount?: number;
@@ -489,6 +492,23 @@ export async function analyzeAddress(
 
   const chain = SUPPORTED_CHAINS.find((c) => c.id === chainId) ?? SUPPORTED_CHAINS[0]!;
 
+  // Native balance at analysis time, read once and attached to the inventory so
+  // it persists with the record and renders in the UI. Best-effort: an RPC
+  // outage leaves it unset (NOT zero) and is noted, never fatal.
+  const attachBalance = async (r: Report): Promise<void> => {
+    try {
+      const bal = await fetchNativeBalance(address, chain.rpcUrls, chain.chainId);
+      if (bal) {
+        r.inventory.balanceWei = bal.wei.toString();
+        r.inventory.balanceSymbol = bal.symbol;
+      } else {
+        r.inventory.notes = [...r.inventory.notes, "Native balance unavailable — no RPC answered eth_getBalance."];
+      }
+    } catch {
+      // leave unset
+    }
+  };
+
   // 1. Try Sourcify verified source
   const sourcifyMatch = await fetchSourcifySource(address, chain.chainId);
   if (sourcifyMatch) {
@@ -543,6 +563,7 @@ export async function analyzeAddress(
     // (worker / server callers pass a DB lookup; the browser workbench
     // enriches via the resolveFourbyte server fn instead).
     if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
+    await attachBalance(report);
     return {
       report,
       rawBody: sourcifyMatch.source,
@@ -560,6 +581,7 @@ export async function analyzeAddress(
   const report = analyzeInput(bytecode, label);
 
   if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
+  await attachBalance(report);
 
   return {
     report,

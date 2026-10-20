@@ -9,6 +9,7 @@ import {
 } from "@/lib/scans.functions";
 import type { ScanSummary, StoredScan } from "@/lib/audit/persist.server";
 import { SUPPORTED_CHAINS } from "@/lib/audit/address-fetcher";
+import { balanceLabel, nativeSymbol } from "@/lib/audit/balance";
 import { SupabaseDbModal } from "./supabase-db-modal";
 import {
   Database,
@@ -428,6 +429,18 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
                         <div className="flex items-center gap-1.5 text-[11px] text-[#e8a54b]">
                           <span>{chainObj?.name ?? r.chainId ?? "Ethereum"}</span>
                         </div>
+                        {/* Native balance at analysis time (migration 0011). */}
+                        {(() => {
+                          const bal = balanceLabel(r.balanceWei, nativeSymbol(r.chainId));
+                          return (
+                            <div
+                              className={`text-[10px] font-mono mt-0.5 ${bal === null ? "text-[#746c60]" : bal.startsWith("0 ") ? "text-red-400" : "text-[#e8c07d]"}`}
+                              title="Native coin balance of the target at analysis time"
+                            >
+                              {bal ?? "balance n/a"}
+                            </div>
+                          );
+                        })()}
                         {r.targetAddress ? (
                           <div className="flex items-center gap-1 text-[10px] text-[#a39886] mt-0.5">
                             <span className="truncate max-w-[110px]">{r.targetAddress}</span>
