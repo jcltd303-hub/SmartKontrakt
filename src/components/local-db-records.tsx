@@ -433,7 +433,6 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
           <span className="text-[10px] text-[#746c60]">filtered by value</span>
         )}
       </div>
-      </div>
 
       {/* Records Table / List */}
       <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl overflow-hidden shadow-sm">
