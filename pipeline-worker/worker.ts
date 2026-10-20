@@ -193,6 +193,9 @@ let runPromise: Promise<void> | null = null;
 let pauseRequested = false;
 let stopRequested = false;
 const pending: ComprehensiveRecordInput[] = [];
+// Running total of the serialized size of `pending`. Maintained incrementally
+// so the pre-push size check does not re-serialize the whole batch per item.
+let pendingBytes = 0;
 let pendingSince: number | null = null;
 let shuttingDown = false;
 
@@ -220,6 +223,8 @@ function flush(): Promise<void> {
 async function doFlush(): Promise<void> {
   if (pending.length === 0) return;
   const batch = pending.splice(0, pending.length);
+  const batchBytes = pendingBytes;
+  pendingBytes = 0;
   pendingSince = null;
   try {
     const sql = await getSql();
@@ -233,6 +238,7 @@ async function doFlush(): Promise<void> {
   } catch (err) {
     // Re-queue at the front so the next flush retries the same records.
     pending.unshift(...batch);
+    pendingBytes += batchBytes;
     pendingSince = Date.now();
     status.lastError = `flush failed: ${err instanceof Error ? err.message : String(err)}`;
     throw err;
@@ -399,9 +405,11 @@ async function runLoop(): Promise<void> {
       // Byte-aware batching: writeAuditBatch caps at 50 records / 1.5MB.
       // Flush BEFORE pushing so a flush failure leaves this item un-advanced
       // (it is re-analyzed on resume — wasteful but never lost).
+      const recordBytes = serializedBytes(record);
       if (pending.length >= FLUSH_MAX_RECORDS) await flush();
-      else if (pending.length > 0 && serializedBytes([...pending, record]) > FLUSH_MAX_BYTES) await flush();
+      else if (pending.length > 0 && pendingBytes + recordBytes > FLUSH_MAX_BYTES) await flush();
       pending.push(record);
+      pendingBytes += recordBytes;
       if (pendingSince === null) pendingSince = Date.now();
 
       item.status = "completed";
@@ -549,9 +557,14 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   let skipped = 0;
   try {
     const sql = await getSql();
+    // Ask only about the addresses in THIS run, not every saved row: the result
+    // is then bounded by the run size instead of growing with the archive, and
+    // it uses the (chain_id, lower(target_address)) index (migration 0010).
+    const wanted = [...new Set(items.map((i) => i.address))];
     const rows = await sql<{ chain_id: string; addr: string }>`
       select chain_id, lower(target_address) as addr
-      from contract_scans where target_address is not null
+      from contract_scans
+      where lower(target_address) = any(${wanted}::text[])
     `;
     const done = new Set(rows.map((r) => `${r.chain_id}:${r.addr}`));
     for (const item of items) {

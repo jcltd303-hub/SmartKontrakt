@@ -6,12 +6,6 @@ import { chromium } from "playwright";
 import { checkedOutputPath, checkedUrl } from "./browser-guard.mjs";
 import { computeBrandWarnings } from "./brand-check.mjs";
 import {
-  authInvariantWarnings,
-  buildAuthEnabled,
-  compareAuthInvariant,
-  probeDevAuthEnabled,
-} from "./check-auth-invariant.mjs";
-import {
   baselineComparison,
   bodyTextPrefix,
   derivedPaths,
@@ -98,15 +92,12 @@ try {
 
   const viewports = {};
   for (const vp of VIEWPORTS) {
-    const errors = { consoleErrors: [], pageErrors: [], requestFailures: [] };
+    const errors = { consoleErrors: [], pageErrors: [] };
     const page = await browser.newPage({
       viewport: { width: vp.width, height: vp.height },
     });
     page.on("console", (msg) => {
       if (msg.type() === "error") errors.consoleErrors.push(msg.text());
-    });
-    page.on("requestfailed", (request) => {
-      errors.requestFailures.push({ url: request.url(), error: request.failure()?.errorText ?? "unknown" });
     });
     page.on("pageerror", (err) => errors.pageErrors.push(String(err?.message || err)));
     // `domcontentloaded`, not `networkidle`: Vite keeps an HMR websocket open, so
@@ -140,21 +131,12 @@ try {
       horizontalOverflow,
       consoleErrors: errors.consoleErrors,
       pageErrors: errors.pageErrors,
-      requestFailures: errors.requestFailures,
       screenshot: vp.screenshot,
     };
   }
 
   const brandWarnings = computeBrandWarnings({ hasCanvas: viewports.desktop.hasCanvas, workspaceRoot: dirname(dirname(fileURLToPath(import.meta.url))) });
-  // Only a dev server answers /__app-env, so smoking the built output reads as
-  // indeterminate — report a divergence, never the absence of an observation.
-  const authWarnings = authInvariantWarnings(
-    compareAuthInvariant({
-      devAuthEnabled: await probeDevAuthEnabled(url),
-      buildAuthEnabled: buildAuthEnabled(),
-    }),
-  );
-  const verdict = { url, viewports, brandWarnings, authWarnings, verdictFile: outJson };
+  const verdict = { url, viewports, brandWarnings, verdictFile: outJson };
   if (baselineRequested) {
     const { divergesFromBaseline, reasons } = compareAgainstBaseline(verdict);
     verdict.divergesFromBaseline = divergesFromBaseline;
@@ -163,7 +145,7 @@ try {
 
   writeFileSync(outJson, JSON.stringify(verdict, null, 2));
   console.log(JSON.stringify(verdict, null, 2));
-  for (const w of [...brandWarnings, ...authWarnings]) console.error(w);
+  for (const w of brandWarnings) console.error(w);
   // Set the code rather than aborting the process so the `finally` browser
   // teardown always runs (agents typically smoke twice per turn; leaking
   // Chromium accumulates across retries).

@@ -2,6 +2,7 @@ import type { Finding, Report, Severity } from "./types.ts";
 import type { ProxyAnalysis } from "./proxy-resolver.ts";
 import type { CallProbeResult } from "./simulator.ts";
 import { resolveContractDisplayName } from "./simulator.ts";
+import { tokenize } from "./tokenize.ts";
 import type { AiSecurityReview } from "./ai-review.server.ts";
 
 
@@ -33,14 +34,6 @@ export type RagIndexInput = {
   probes?: CallProbeResult[] | null;
   aiReview?: AiSecurityReview | null;
 };
-
-function tokenize(text: string): string[] {
-  const clean = text.toLowerCase().replace(/[^a-z0-9_#$]/g, " ");
-  const stopWords = new Set(["the", "and", "or", "to", "in", "a", "of", "for", "with", "on", "at", "by", "from", "is", "this", "that", "it"]);
-  return clean
-    .split(/\s+/)
-    .filter((w) => w.length > 2 && !stopWords.has(w));
-}
 
 export function buildReportRagChunks(params: RagIndexInput): Omit<RagDbRow, "created_at">[] {
   const { scanId, report, targetAddress, chainId, proxyInfo, probes, aiReview } = params;

@@ -1,5 +1,5 @@
-import { buildReportRagChunks, type RagIndexInput, type RagDbRow } from "./rag-chunks";
-import { replaceRagChunks } from "./bulk-persist.server";
+import type { RagDbRow } from "./rag-chunks";
+import { tokenize } from "./tokenize";
 import { getSql } from "@/lib/db";
 import type { Severity } from "./types";
 
@@ -234,18 +234,9 @@ function _convertToShares(uint256 assets, Math.Rounding rounding) internal view 
 ];
 
 /**
- * Tokenize string into meaningful search terms, removing common stop words
- */
-function tokenize(text: string): string[] {
-  const clean = text.toLowerCase().replace(/[^a-z0-9_#$]/g, " ");
-  const stopWords = new Set(["the", "and", "or", "to", "in", "a", "of", "for", "with", "on", "at", "by", "from", "is", "this", "that", "it"]);
-  return clean
-    .split(/\s+/)
-    .filter((w) => w.length > 2 && !stopWords.has(w));
-}
-
-/**
- * Compute semantic match relevance score between a query and a RAG chunk (0 - 100)
+ * Compute a lexical match relevance score between a query and a chunk (0 - 100).
+ * Used only by the in-memory fallback when the database is unreachable; the
+ * primary path ranks with Postgres full-text search.
  */
 function scoreChunk(query: string, chunk: RagChunk): { score: number; highlight: string } {
   const queryTokens = tokenize(query);
@@ -319,40 +310,32 @@ function scoreChunk(query: string, chunk: RagChunk): { score: number; highlight:
 }
 
 /**
- * Ingest an audit report and its comprehensive metadata into RAG knowledgebase chunks
- */
-export async function indexReportToRag(params: RagIndexInput): Promise<{ chunksCreated: number }> {
-  const result = await indexBatchReportsToRag([params]);
-  return { chunksCreated: result.totalChunksCreated };
-}
-
-export async function indexBatchReportsToRag(items: RagIndexInput[]): Promise<{ totalChunksCreated: number }> {
-  if (!items.length) return { totalChunksCreated: 0 };
-  const sql = await getSql();
-  const chunks = items.flatMap(buildReportRagChunks);
-  await sql.transaction(async (tx) => {
-    await replaceRagChunks(tx, items.map((i) => i.scanId), chunks);
-    await tx.query("update contract_scans set is_rag_indexed = true where id = any($1::text[])", [items.map((i) => i.scanId)]);
-  });
-  return { totalChunksCreated: chunks.length };
-}
-
-/**
- * Ensure canonical knowledge advisories exist in the local database
+ * Ensure canonical knowledge advisories exist in the local database.
+ *
+ * Seeded at most once per process (`ensureCanonicalRagSeeded`) rather than on
+ * every read: the six rows are `on conflict do nothing`, so a repeated seed is
+ * pure write churn against a read path.
  */
 export async function seedCanonicalRagKnowledge(): Promise<void> {
   const sql = await getSql();
   for (const item of CANONICAL_KNOWLEDGE_ADVISORIES) {
+    // Seed the full-text vector too, so a seeded advisory is searchable through
+    // the same FTS path as report chunks (migration 0009).
+    const searchText = [
+      item.title, item.content, item.keywords.join(", "),
+      item.detector, item.swc, item.contractName,
+    ].filter(Boolean).join(" ");
     try {
       await sql`
         insert into rag_knowledge_chunks (
           id, scan_id, category, title, content, severity, swc, detector,
-          contract_name, target_address, chain_id, keywords, vector_data, metadata_json
+          contract_name, target_address, chain_id, keywords, vector_data, metadata_json,
+          search_vector
         ) values (
           ${item.id}, ${null}, ${item.category}, ${item.title}, ${item.content},
           ${item.severity}, ${item.swc}, ${item.detector}, ${item.contractName},
           ${item.targetAddress}, ${item.chainId}, ${item.keywords.join(", ")}, ${null},
-          ${JSON.stringify(item.metadata)}
+          ${JSON.stringify(item.metadata)}, to_tsvector('english'::regconfig, ${searchText})
         )
         on conflict (id) do nothing
       `;
@@ -363,7 +346,58 @@ export async function seedCanonicalRagKnowledge(): Promise<void> {
 }
 
 /**
- * Search the RAG knowledgebase with semantic keyword & token matching
+ * Seed the canonical advisories at most once per process. Safe to call on every
+ * read: after the first success it is a no-op, and a failure is retried next
+ * call. (Previously every query re-ran the six upserts.)
+ */
+let canonicalSeeded = false;
+async function ensureCanonicalRagSeeded(): Promise<void> {
+  if (canonicalSeeded) return;
+  try {
+    await seedCanonicalRagKnowledge();
+    canonicalSeeded = true;
+  } catch {
+    // leave the flag false so the next call retries
+  }
+}
+
+/** A short snippet around the first matching token, for the result list. */
+function highlightFor(query: string, content: string): string {
+  const fallback = content.slice(0, 160) + (content.length > 160 ? "..." : "");
+  const lower = content.toLowerCase();
+  let idx = -1;
+  for (const token of tokenize(query)) {
+    const at = lower.indexOf(token);
+    if (at !== -1 && (idx === -1 || at < idx)) idx = at;
+  }
+  if (idx === -1) idx = lower.indexOf(query.trim().toLowerCase());
+  if (idx === -1) return fallback;
+  const start = Math.max(0, idx - 50);
+  const end = Math.min(content.length, idx + 140);
+  return (start > 0 ? "..." : "") + content.slice(start, end).trim() + (end < content.length ? "..." : "");
+}
+
+const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"] as const;
+
+/** Severities at or above `min`; null when no filter should apply. */
+function severitiesAtLeast(min: string | undefined): string[] | null {
+  if (!min) return null;
+  const idx = SEVERITY_ORDER.indexOf(min as (typeof SEVERITY_ORDER)[number]);
+  if (idx === -1) return null;
+  return [...SEVERITY_ORDER.slice(idx)];
+}
+
+type RagRowWithRank = RagDbRow & { rank?: number };
+
+/**
+ * Search the knowledge base.
+ *
+ * With a query, Postgres full-text search (`websearch_to_tsquery` + `ts_rank_cd`,
+ * backed by the GIN index from migration 0009) ranks every chunk — there is no
+ * "newest 150 rows" window, so older chunks stay reachable. When a query matches
+ * nothing through FTS (a rare token, a stopword-only query), a substring `ilike`
+ * pass catches it. With no query, the newest chunks are returned. Category and
+ * minimum-severity filters are applied in SQL.
  */
 export async function queryRagKnowledgebase(params: {
   query: string;
@@ -372,56 +406,73 @@ export async function queryRagKnowledgebase(params: {
   limit?: number;
 }): Promise<RagChunk[]> {
   const sql = await getSql();
-  await seedCanonicalRagKnowledge();
+  await ensureCanonicalRagSeeded();
+
+  const limit = Math.min(Math.max(Math.floor(params.limit ?? 25), 1), 100);
+  const category = params.category && params.category !== "all" ? params.category : null;
+  const severities = severitiesAtLeast(params.minSeverity);
+  const query = params.query.trim();
 
   try {
-    let rows: RagDbRow[] = [];
-    if (params.category && params.category !== "all") {
-      rows = await sql<RagDbRow>`
-        select id, scan_id, category, title, content, severity, swc, detector,
-               contract_name, target_address, chain_id, keywords, vector_data, metadata_json,
-               created_at::text as created_at
-        from rag_knowledge_chunks
-        where category = ${params.category}
-        order by created_at desc
-        limit 150
-      `;
-    } else {
-      rows = await sql<RagDbRow>`
-        select id, scan_id, category, title, content, severity, swc, detector,
-               contract_name, target_address, chain_id, keywords, vector_data, metadata_json,
-               created_at::text as created_at
-        from rag_knowledge_chunks
-        order by created_at desc
-        limit 150
-      `;
-    }
-
-    const chunks = rows.map(rowToChunk);
-    const query = params.query.trim();
-
     if (!query) {
-      return chunks.slice(0, params.limit ?? 25).map((c) => ({
+      const rows = await sql<RagDbRow>`
+        select id, scan_id, category, title, content, severity, swc, detector,
+               contract_name, target_address, chain_id, keywords, vector_data, metadata_json,
+               created_at::text as created_at
+        from rag_knowledge_chunks
+        where (${category}::text is null or category = ${category})
+          and (${severities}::text[] is null or severity = any(${severities}))
+        order by created_at desc
+        limit ${limit}
+      `;
+      return rows.map(rowToChunk).map((c) => ({
         ...c,
         relevanceScore: 100,
         highlightSnippet: c.content.slice(0, 160) + "...",
       }));
     }
 
-    // Score and rank all chunks
-    const scored = chunks
-      .map((c) => {
-        const { score, highlight } = scoreChunk(query, c);
+    const ranked = await sql<RagRowWithRank>`
+      select id, scan_id, category, title, content, severity, swc, detector,
+             contract_name, target_address, chain_id, keywords, vector_data, metadata_json,
+             created_at::text as created_at,
+             ts_rank_cd(search_vector, websearch_to_tsquery('english', ${query})) as rank
+      from rag_knowledge_chunks
+      where search_vector @@ websearch_to_tsquery('english', ${query})
+        and (${category}::text is null or category = ${category})
+        and (${severities}::text[] is null or severity = any(${severities}))
+      order by rank desc, created_at desc
+      limit ${limit}
+    `;
+    if (ranked.length) {
+      return ranked.map((r) => {
+        const chunk = rowToChunk(r);
         return {
-          ...c,
-          relevanceScore: score,
-          highlightSnippet: highlight,
+          ...chunk,
+          relevanceScore: Math.min(100, Math.max(1, Math.round((r.rank ?? 0) * 100))),
+          highlightSnippet: highlightFor(query, chunk.content),
         };
-      })
-      .filter((c) => (c.relevanceScore ?? 0) > 15)
-      .sort((a, b) => (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0));
+      });
+    }
 
-    return scored.slice(0, params.limit ?? 25);
+    // FTS found nothing (uncommon token / stopwords only): fall back to a
+    // literal substring match so a plain-word search still returns results.
+    const like = `%${query.replace(/[%_\\]/g, "")}%`;
+    const fallback = await sql<RagDbRow>`
+      select id, scan_id, category, title, content, severity, swc, detector,
+             contract_name, target_address, chain_id, keywords, vector_data, metadata_json,
+             created_at::text as created_at
+      from rag_knowledge_chunks
+      where (title ilike ${like} or content ilike ${like} or keywords ilike ${like})
+        and (${category}::text is null or category = ${category})
+        and (${severities}::text[] is null or severity = any(${severities}))
+      order by created_at desc
+      limit ${limit}
+    `;
+    return fallback.map((r) => {
+      const chunk = rowToChunk(r);
+      return { ...chunk, relevanceScore: 60, highlightSnippet: highlightFor(query, chunk.content) };
+    });
   } catch (err) {
     console.warn("[kiln-rag] Query failed, returning in-memory canonical seed:", err);
     // Fallback to in-memory canonical advisories
@@ -444,7 +495,7 @@ export async function queryRagKnowledgebase(params: {
  */
 export async function listRagKnowledgeChunks(limit: number = 80): Promise<RagChunk[]> {
   const sql = await getSql();
-  await seedCanonicalRagKnowledge();
+  await ensureCanonicalRagSeeded();
   try {
     const rows = await sql<RagDbRow>`
       select id, scan_id, category, title, content, severity, swc, detector,

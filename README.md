@@ -1,6 +1,6 @@
 # SmartKontrakt / Kiln
 
-EVM contract audit workbench with a batch address pipeline, comprehensive audit archive, optional Supabase summary sync, and a local RAG knowledge base.
+EVM contract audit workbench with a batch address pipeline, comprehensive audit archive, optional Supabase summary sync, and a local full-text knowledge base.
 
 ## Large runs
 
@@ -8,7 +8,7 @@ EVM contract audit workbench with a batch address pipeline, comprehensive audit 
 - Full inspection reports use a cache capped at 50 entries and 16 MB of serialized data. Cache keys include the chain.
 - The archive writer accepts at most 50 records and 1.4 MB of serialized input per request. Its pending buffer includes in-flight records and stops producers at 100 records or 8 MB.
 - A single archive write is active at a time. Transient failures retry three times with exponential backoff. Persistent failures retain the batch, show the error, and stop the producer at capacity. Use **Flush Buffer** to retry.
-- Stable scan IDs make retries safe after a lost response. Each transaction bulk-upserts headers and payloads and replaces findings and RAG chunks. Replaying a batch does not append duplicate chunks.
+- Stable scan IDs make retries safe after a lost response. Each transaction bulk-upserts headers and payloads and replaces findings and knowledge-base chunks. Replaying a batch does not append duplicate chunks.
 - Supabase summary sync uses its own bounded writer: one REST request per batch, minimal responses, finite retries, and surfaced errors. Pending summary acknowledgments are checkpointed and replayed after reload, even when the main archive already saved the report. Corrected saved connection settings apply to retries.
 - IndexedDB stores all address summaries and updates only changed positions during processing. On reload, interrupted or unacknowledged results return to pending with the same scan ID. Keep the browser open until pending writes drain; full report bodies are not persisted in the browser checkpoint.
 - Switching between pipeline and workbench views keeps the pipeline mounted. Pausing stops after the current address and drains both writers.
@@ -18,16 +18,25 @@ EVM contract audit workbench with a batch address pipeline, comprehensive audit 
 Requires Node.js 22.16+ or 24 and npm.
 
 ```sh
-npm ci
+npm install
 npm run dev
 npm test
 npm run typecheck
+npm run lint
 npm run build
 ```
 
+> No `package-lock.json` is committed yet, so use `npm install` (not `npm ci`).
+> Commit a lockfile (`npm install` once, then commit the generated file) and CI
+> can switch to `npm ci` for reproducible installs. `.github/workflows/ci.yml`
+> runs typecheck, lint and test on every push and pull request.
+
+`npm test` runs the script unit tests, the `src/lib` unit tests, and the detector
+self-check (`npm run check:detectors`).
+
 `npm run benchmark:batch -- --database` runs 50,000 synthetic address dossiers against a fresh in-memory Postgres instance. It makes no RPC calls and never touches a remote database. Without `--database`, it measures the queue and writer against an in-memory sink.
 
-Measured locally on 2026-10-15 with two findings and three RAG chunks per dossier:
+Measured locally on 2026-10-15 with two findings and three knowledge-base chunks per dossier:
 
 | Measurement | Result |
 | --- | ---: |
@@ -51,17 +60,36 @@ The Vite/Nitro build emits `.vercel/output` with the Vercel preset. Use the GitH
 - Build-time migrations (`scripts/migrate-vercel.mjs`, run by `npm run db:migrate`) prefer `DATABASE_URL`, then `POSTGRES_URL_NON_POOLING` (direct, best for DDL), then the pooler URLs. Migrations apply on every deploy and are recorded in `_migrations`, so they run once and are safe to re-run.
 - `DATABASE_URL` remains as an optional explicit override. Do not put database credentials in browser variables or commit them.
 
-The application has no account/tenant isolation, so deploy it only with access appropriate to your audit data.
+The application has **no sign-in**. Every read and write is unauthenticated, so deploy it only with access appropriate to your audit data. To lock down a public deployment, set `KILN_ADMIN_TOKEN` — mutating server functions (save, delete, AI calls, database-config changes) then require that value in the `x-kiln-admin-token` header. The browser attaches it automatically once `localStorage.setItem("kiln_admin_token", "<the token>")` is set; an operator can also inject the header at a reverse proxy. With the variable unset the app is open, as before. See `.env.example`.
 
 Local development can use PGLite without a database connection. On Vercel, archive writes fail clearly when no Postgres URL is present rather than acknowledging writes into a temporary in-memory database.
 
-## AI review via OpenRouter
+## AI via OpenRouter (free tier)
 
-AI threat-model reviews run server-side through OpenRouter (`POST https://openrouter.ai/api/v1/chat/completions`, OpenAI-compatible). No vendor SDK is used — just `fetch` with a bearer key.
+All model calls run server-side through OpenRouter (`POST https://openrouter.ai/api/v1/chat/completions`, OpenAI-compatible). No vendor SDK is used — just `fetch` with a bearer key.
+
+Models are chosen **per purpose** from OpenRouter's free tier (verified 2026-10-21):
+
+| Purpose | Default model | Used by |
+| --- | --- | --- |
+| `review` | `nvidia/nemotron-3-ultra-550b-a55b:free` | threat model, pipeline second pass |
+| `code` | `thinkingmachines/inkling-small:free` | Foundry PoC synthesis + repair (GRE-Engine) |
+| `json` | `qwen/qwen3.8-27b:free` | Deep Agent hypotheses, SmartPoC DV extraction/verdict |
 
 - Set `OPENROUTER_API_KEY` in the Vercel project's production + preview environments (server-only, never a browser variable).
-- Optional: set `OPENROUTER_MODEL` to pick the model (default `nvidia/nemotron-3-super-120b-a12b:free`). Any OpenRouter model id works.
+- Override one purpose with `OPENROUTER_MODEL_REVIEW` / `_CODE` / `_JSON`, or all of them with `OPENROUTER_MODEL`. Any OpenRouter model id works.
+- The free endpoints share a per-account daily quota (50/day, or 1000/day after a one-time $10 top-up) and run 4-bit quantised; ids churn, so re-check the free-models collection before relying on one.
 - Without a key, reviews fall back to the deterministic template review (`source: "template"`) — the audit still completes.
+
+## SmartPoC-aligned PoC validation
+
+The PoC pipeline follows **SmartPoC** (Chen et al., *SmartPoC: Generating Executable and Validated PoCs for Smart Contract Bug Reports*, arXiv:2511.12993) end to end:
+
+1. **Bug-Context Extraction (BCE)** — `src/lib/audit/smartpoc/bce.ts`. From the finding it slices the contract to the bug-relevant functions, expanding along semantic links (inverse pairs like deposit/withdraw, state-coupled functions) and structural links (modifiers, wrapper → underscore internal), plus the call graph ±1 hop and the constructors/initializers. The Deep Agent prompt uses this slice instead of the whole file.
+2. **Generate-Repair-Execute Engine (GRE-Engine)** — `src/lib/audit/smartpoc/engine.server.ts`. Generate → **pre-execution sanitizer** (`sanitize.ts`: align `pragma`/`abicoder` to the target compiler, enforce the `forge-std` import, and strip any re-declaration of the target's own functions that would mask the bug) → execute → **post-execution debugger** (feed compiler/runtime diagnostics back, up to the retry budget `B = 5`).
+3. **Action-State Differential Verification (DV)** — same file. Extract an action + observable state from the public ABIs, instrument the PoC with pre/post-trigger state queries (`SMARTPOC_STATE` markers), execute, and let the model issue a strict `VALIDATED` / `NOTVALIDATED` verdict. Only validated PoCs become findings.
+
+The headless pipeline worker runs the full pipeline per flagged address. Settings mirror the paper: temperature 0.3, retry budget B = 5, Foundry fork tests.
 
 ## Optional Supabase summary sync
 

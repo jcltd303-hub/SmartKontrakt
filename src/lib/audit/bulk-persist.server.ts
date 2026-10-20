@@ -7,7 +7,7 @@ import { resolveContractDisplayName } from "./simulator.ts";
 export const MAX_BATCH_RECORDS = 50;
 export const MAX_BATCH_BYTES = 1_500_000;
 
-export function validateAuditBatch(records: unknown): ComprehensiveRecordInput[] {
+export function validateAuditBatch(records: unknown, maxBytes: number = MAX_BATCH_BYTES): ComprehensiveRecordInput[] {
   if (!Array.isArray(records) || records.length > MAX_BATCH_RECORDS) {
     throw new Error(`Batch must contain at most ${MAX_BATCH_RECORDS} audit records`);
   }
@@ -21,13 +21,24 @@ export function validateAuditBatch(records: unknown): ComprehensiveRecordInput[]
     if (ids.has(record.id)) throw new Error("Duplicate audit id in batch");
     ids.add(record.id);
   }
-  if (serializedBytes(records) > MAX_BATCH_BYTES) throw new Error("Batch exceeds the payload byte limit");
+  if (Number.isFinite(maxBytes) && serializedBytes(records) > maxBytes) {
+    throw new Error("Batch exceeds the payload byte limit");
+  }
   return records as ComprehensiveRecordInput[];
 }
 
-/** Six bulk statements in one transaction; a retry replaces the same dossier and RAG rows. */
-export async function writeAuditBatch(sql: Sql, records: ComprehensiveRecordInput[]): Promise<{ savedCount: number; ids: string[] }> {
-  validateAuditBatch(records);
+/**
+ * Six bulk statements in one transaction; a retry replaces the same dossier and
+ * RAG rows. `opts.maxBytes` overrides the batch payload cap — the single-record
+ * save path passes `Infinity`, since one dossier is bounded by its own
+ * construction, not by the batch limit.
+ */
+export async function writeAuditBatch(
+  sql: Sql,
+  records: ComprehensiveRecordInput[],
+  opts?: { maxBytes?: number },
+): Promise<{ savedCount: number; ids: string[] }> {
+  validateAuditBatch(records, opts?.maxBytes);
   if (!records.length) return { savedCount: 0, ids: [] };
   const ids = records.map((r) => r.id!);
   const scans = records.map((r) => {
@@ -54,6 +65,13 @@ export async function writeAuditBatch(sql: Sql, records: ComprehensiveRecordInpu
       ai_status: r.report.aiStatus,
       // Item 3: explicit unparsed state (migration 0007).
       unparsed: r.report.unparsed ?? false,
+      // Fork-PoC verdict on the scan row (migration 0004). Null when the
+      // caller has none; the on-conflict update coalesces so a later batch
+      // without a PoC never clears one already stored.
+      poc_status: r.pocResult?.status ?? null,
+      poc_logs: r.pocResult?.logs ?? null,
+      poc_duration_ms: r.pocResult?.durationMs ?? null,
+      poc_run_at: r.pocResult?.runAt ?? null,
     };
   });
   const findings = records.flatMap((r) => r.report.findings.map((f, ord) => ({
@@ -76,14 +94,16 @@ export async function writeAuditBatch(sql: Sql, records: ComprehensiveRecordInpu
         id, label, input_kind, contract_name, target_address, chain_id, compiler_version,
         proxy_info_json, probes_json, ai_review_json, triage_states_json, cert_hash,
         source_origin, is_rag_indexed, risk_score, critical_count, high_count, medium_count,
-        low_count, info_count, summary, inventory_json, ai_narrative, ai_status, unparsed
+        low_count, info_count, summary, inventory_json, ai_narrative, ai_status, unparsed,
+        poc_status, poc_logs, poc_duration_ms, poc_run_at
       ) select * from jsonb_to_recordset($1::jsonb) as r(
         id text, label text, input_kind text, contract_name text, target_address text,
         chain_id text, compiler_version text, proxy_info_json text, probes_json text,
         ai_review_json text, triage_states_json text, cert_hash text, source_origin text,
         is_rag_indexed boolean, risk_score integer, critical_count integer, high_count integer,
         medium_count integer, low_count integer, info_count integer, summary text,
-        inventory_json text, ai_narrative text, ai_status text, unparsed boolean
+        inventory_json text, ai_narrative text, ai_status text, unparsed boolean,
+        poc_status text, poc_logs text, poc_duration_ms integer, poc_run_at timestamptz
       ) on conflict (id) do update set
         label=excluded.label, input_kind=excluded.input_kind, contract_name=excluded.contract_name,
         target_address=excluded.target_address, chain_id=excluded.chain_id,
@@ -95,7 +115,11 @@ export async function writeAuditBatch(sql: Sql, records: ComprehensiveRecordInpu
         high_count=excluded.high_count, medium_count=excluded.medium_count,
         low_count=excluded.low_count, info_count=excluded.info_count, summary=excluded.summary,
         inventory_json=excluded.inventory_json, ai_narrative=excluded.ai_narrative,
-        ai_status=excluded.ai_status, unparsed=excluded.unparsed`, [JSON.stringify(scans)]);
+        ai_status=excluded.ai_status, unparsed=excluded.unparsed,
+        poc_status=coalesce(excluded.poc_status, contract_scans.poc_status),
+        poc_logs=coalesce(excluded.poc_logs, contract_scans.poc_logs),
+        poc_duration_ms=coalesce(excluded.poc_duration_ms, contract_scans.poc_duration_ms),
+        poc_run_at=coalesce(excluded.poc_run_at, contract_scans.poc_run_at)`, [JSON.stringify(scans)]);
     await tx.query(`insert into scan_payloads (scan_id, body)
       select scan_id, body from jsonb_to_recordset($1::jsonb) as r(scan_id text, body text)
       on conflict (scan_id) do update set body=excluded.body`,
@@ -125,10 +149,19 @@ export async function writeAuditBatch(sql: Sql, records: ComprehensiveRecordInpu
 
 export async function replaceRagChunks(sql: Sql, ids: string[], chunks: ReturnType<typeof buildReportRagChunks>): Promise<void> {
   await sql.query("delete from rag_knowledge_chunks where scan_id = any($1::text[])", [ids]);
+  // `search_vector` is derived in SQL from the text columns so full-text search
+  // (migration 0009) stays in sync without a trigger or a second round trip.
   await sql.query(`insert into rag_knowledge_chunks (
     id, scan_id, category, title, content, severity, swc, detector, contract_name,
-    target_address, chain_id, keywords, vector_data, metadata_json
-  ) select * from jsonb_to_recordset($1::jsonb) as r(
+    target_address, chain_id, keywords, vector_data, metadata_json, search_vector
+  ) select
+    r.id, r.scan_id, r.category, r.title, r.content, r.severity, r.swc, r.detector,
+    r.contract_name, r.target_address, r.chain_id, r.keywords, r.vector_data, r.metadata_json,
+    to_tsvector('english'::regconfig,
+      coalesce(r.title, '') || ' ' || coalesce(r.content, '') || ' ' ||
+      coalesce(r.keywords, '') || ' ' || coalesce(r.detector, '') || ' ' ||
+      coalesce(r.swc, '') || ' ' || coalesce(r.contract_name, ''))
+  from jsonb_to_recordset($1::jsonb) as r(
     id text, scan_id text, category text, title text, content text, severity text, swc text,
     detector text, contract_name text, target_address text, chain_id text, keywords text,
     vector_data text, metadata_json text

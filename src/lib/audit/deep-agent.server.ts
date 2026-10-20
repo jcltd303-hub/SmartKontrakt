@@ -7,6 +7,7 @@ import {
 } from "./ai-review.server.ts";
 import { POC_FALLBACK_CATALOG, selectPocFallbacks } from "./poc-fallbacks.ts";
 import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte.ts";
+import { extractBugContext } from "./smartpoc/bce.ts";
 
 /**
  * Deep Agent — DeepRL-style agentic exploit search.
@@ -177,13 +178,34 @@ export async function runDeepAgentRound(
   round: number,
   fourbyte?: FourbyteResults,
 ): Promise<DeepAgentRoundResult> {
-  const { apiKey, model } = resolveOpenRouterConfig();
+  // Structured output (JSON hypotheses + tool-calling shape) → the "json" model.
+  const { apiKey, model } = resolveOpenRouterConfig(process.env, "json");
   if (!apiKey) {
     return { hypotheses: [], stopReason: "no_api_key", llmMs: 0 };
   }
   const started = Date.now();
 
-  const { system, user } = buildDeepAgentPrompt(contractName, body, findings, priorResults, round, fourbyte);
+  // SmartPoC Bug-Context Extraction (§3.2): hand the model a bug-relevant
+  // function slice instead of the whole file, to cut noise and long-context
+  // degradation. Falls back to the raw body if extraction yields nothing.
+  let context = body;
+  try {
+    const ctx = await extractBugContext({
+      body,
+      findings: findings.map((f) => ({
+        title: f.title,
+        detector: f.detector,
+        severity: f.severity,
+        summary: f.summary,
+        locationFn: f.locationFn,
+      })),
+    });
+    if (ctx.context) context = ctx.context;
+  } catch {
+    // keep the raw body
+  }
+
+  const { system, user } = buildDeepAgentPrompt(contractName, context, findings, priorResults, round, fourbyte);
   const referer =
     process.env.APP_URL?.trim() ||
     process.env.VERCEL_URL?.trim() ||
@@ -336,7 +358,8 @@ export async function repairPocCode(
   errorLogs: string,
   body = "",
 ): Promise<{ fixedCode: string; llmMs: number }> {
-  const { apiKey, model } = resolveOpenRouterConfig();
+  // Foundry/Solidity code repair → the "code" model.
+  const { apiKey, model } = resolveOpenRouterConfig(process.env, "code");
   if (!apiKey) {
     throw new Error("OPENROUTER_API_KEY is not set");
   }

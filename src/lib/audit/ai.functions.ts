@@ -57,6 +57,8 @@ export const requestAiReview = createServerFn({ method: "POST" })
     };
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("../admin-guard.server");
+    assertAdminToken();
     const { generateAiSecurityReview } = await import("./ai-review.server");
     return generateAiSecurityReview(data.contractName, data.body, data.findings, data.fourbyte);
   });
@@ -100,6 +102,8 @@ export const requestDeepAgentRound = createServerFn({ method: "POST" })
     };
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("../admin-guard.server");
+    assertAdminToken();
     const { runDeepAgentRound } = await import("./deep-agent.server");
     return runDeepAgentRound(
       data.contractName,
@@ -138,6 +142,8 @@ export const requestPocRepair = createServerFn({ method: "POST" })
     };
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("../admin-guard.server");
+    assertAdminToken();
     const { repairPocCode } = await import("./deep-agent.server");
     return repairPocCode(data.contractName, data.originalCode, data.errorLogs, data.body);
   });
@@ -160,6 +166,8 @@ export const runSecondPassFn = createServerFn({ method: "POST" })
     return { report, body };
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("../admin-guard.server");
+    assertAdminToken();
     const { secondPass } = await import("./persist.server");
     return secondPass(data.report, data.body);
   });

@@ -4,10 +4,8 @@ import { analyzeInput } from "./engine";
 import type { Finding, Inventory, PocResult, Report, Severity } from "./types";
 import type { ProxyAnalysis } from "./proxy-resolver";
 import type { CallProbeResult } from "./simulator";
-import { resolveContractDisplayName } from "./simulator";
 import type { AiSecurityReview } from "./ai-review.server";
 import { OPENROUTER_API_URL, resolveOpenRouterConfig, stripThinkBlocks } from "./ai-review.server";
-import { indexReportToRag } from "./rag.server";
 import { openRouterLimiter, withRetry } from "./rate-limit";
 
 export type ScanSummary = {
@@ -328,15 +326,10 @@ export async function deleteScan(id: string): Promise<void> {
   await sql`delete from contract_scans where id = ${id}`;
 }
 
-function tally(findings: Finding[]) {
-  const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
-  for (const f of findings) counts[f.severity] += 1;
-  return counts;
-}
-
 /**
  * Saves a comprehensive audit report with complete dossier into local DB
- * and triggers automatic local RAG knowledgebase chunk indexing.
+ * (transactionally, via the bulk writer) and indexes it into the local
+ * knowledge base.
  */
 export async function saveComprehensiveRecord(input: {
   id?: string;
@@ -355,13 +348,8 @@ export async function saveComprehensiveRecord(input: {
   indexToRag?: boolean;
   pocResult?: PocResult | null;
 }): Promise<StoredScan> {
-  const sql = await getSql();
   const id = input.id && input.id.trim() ? input.id : crypto.randomUUID();
   const report = input.report;
-  const counts = tally(report.findings);
-  // Item 1: unified display name — on-chain name() probe first, then the
-  // analyzed/main contract — NOT the first contract in the file.
-  const contractName = resolveContractDisplayName(input.probes, report);
 
   // Automatic OpenRouter second pass: every saved audit gets an AI narrative
   // unless the report already carries one (e.g. re-saving a loaded scan).
@@ -372,144 +360,31 @@ export async function saveComprehensiveRecord(input: {
     report.aiStatus = pass.status;
   }
 
-  const proxyJson = input.proxyInfo ? JSON.stringify(input.proxyInfo) : null;
-  const probesJson = input.probes ? JSON.stringify(input.probes) : null;
-  const aiReviewJson = input.aiReview ? JSON.stringify(input.aiReview) : null;
-  const triageJson = input.triageStates ? JSON.stringify(input.triageStates) : null;
-  const sourceOrigin = input.sourceOrigin ?? "workbench";
-
-  // Upsert main record into contract_scans
-  await sql`
-    insert into contract_scans (
-      id, label, input_kind, contract_name, target_address, chain_id,
-      compiler_version, proxy_info_json, probes_json, ai_review_json,
-      triage_states_json, cert_hash, source_origin, is_rag_indexed,
-      risk_score, critical_count, high_count, medium_count, low_count, info_count,
-      summary, inventory_json, ai_narrative, ai_status,
-      poc_status, poc_logs, poc_duration_ms, poc_run_at, unparsed
-    ) values (
-      ${id},
-      ${input.label},
-      ${report.inputKind},
-      ${contractName},
-      ${input.targetAddress ?? null},
-      ${input.chainId ?? "ethereum"},
-      ${input.compilerVersion ?? report.inventory.compiler ?? null},
-      ${proxyJson},
-      ${probesJson},
-      ${aiReviewJson},
-      ${triageJson},
-      ${input.certHash ?? null},
-      ${sourceOrigin},
-      ${Boolean(input.indexToRag !== false)},
-      ${report.riskScore},
-      ${counts.critical},
-      ${counts.high},
-      ${counts.medium},
-      ${counts.low},
-      ${counts.info},
-      ${report.summary},
-      ${JSON.stringify(report.inventory)},
-      ${report.aiNarrative ?? input.aiReview?.threatModelReport ?? null},
-      ${report.aiStatus},
-      ${input.pocResult?.status ?? null},
-      ${input.pocResult?.logs ?? null},
-      ${input.pocResult?.durationMs ?? null},
-      ${input.pocResult?.runAt ?? null},
-      ${report.unparsed ?? false}
-    )
-    on conflict (id) do update set
-      label = excluded.label,
-      contract_name = excluded.contract_name,
-      target_address = excluded.target_address,
-      chain_id = excluded.chain_id,
-      compiler_version = excluded.compiler_version,
-      proxy_info_json = excluded.proxy_info_json,
-      probes_json = excluded.probes_json,
-      ai_review_json = excluded.ai_review_json,
-      triage_states_json = excluded.triage_states_json,
-      cert_hash = excluded.cert_hash,
-      source_origin = excluded.source_origin,
-      is_rag_indexed = excluded.is_rag_indexed,
-      risk_score = excluded.risk_score,
-      critical_count = excluded.critical_count,
-      high_count = excluded.high_count,
-      medium_count = excluded.medium_count,
-      low_count = excluded.low_count,
-      info_count = excluded.info_count,
-      summary = excluded.summary,
-      inventory_json = excluded.inventory_json,
-      ai_narrative = excluded.ai_narrative,
-      ai_status = excluded.ai_status,
-      poc_status = excluded.poc_status,
-      poc_logs = excluded.poc_logs,
-      poc_duration_ms = excluded.poc_duration_ms,
-      poc_run_at = excluded.poc_run_at,
-      unparsed = excluded.unparsed
-  `;
-
-  // Payload upsert
-  await sql`
-    insert into scan_payloads (scan_id, body) values (${id}, ${input.body})
-    on conflict (scan_id) do update set body = excluded.body
-  `;
-
-  // Clear existing findings and replace with clean ordered findings
-  await sql.query("delete from findings where scan_id = $1 and not (id = any($2::text[]))", [id, report.findings.map((_, i) => `${id}:${i}`)]);
-  for (let i = 0; i < report.findings.length; i += 1) {
-    const f = report.findings[i];
-    if (!f) continue;
-    await sql`
-      insert into findings (
-        id, scan_id, ord, severity, swc, title, confidence, detector, summary,
-        walkthrough, exploit_solidity, remediation_solidity, location_fn, location_line, snippet,
-        poc_status, poc_output, poc_duration_ms, poc_run_at, poc_code
-      ) values (
-        ${`${id}:${i}`},
-        ${id},
-        ${i},
-        ${f.severity},
-        ${f.swc},
-        ${f.title},
-        ${f.confidence},
-        ${f.detector},
-        ${f.summary},
-        ${f.walkthrough},
-        ${f.exploitSolidity},
-        ${f.remediationSolidity},
-        ${f.locationFn},
-        ${f.locationLine},
-        ${f.snippet},
-        ${f.pocStatus ?? null}, ${f.pocOutput ?? null}, ${f.pocDurationMs ?? null},
-        ${f.pocRunAt ?? null}, ${f.pocCode ?? null}
-      ) on conflict (id) do update set
-        ord=excluded.ord, severity=excluded.severity, swc=excluded.swc, title=excluded.title,
-        confidence=excluded.confidence, detector=excluded.detector, summary=excluded.summary,
-        walkthrough=excluded.walkthrough, exploit_solidity=excluded.exploit_solidity,
-        remediation_solidity=excluded.remediation_solidity, location_fn=excluded.location_fn,
-        location_line=excluded.location_line, snippet=excluded.snippet,
-        poc_status=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_status, findings.poc_status) else excluded.poc_status end, poc_output=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_output, findings.poc_output) else excluded.poc_output end,
-        poc_duration_ms=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_duration_ms, findings.poc_duration_ms) else excluded.poc_duration_ms end, poc_run_at=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_run_at, findings.poc_run_at) else excluded.poc_run_at end, poc_code=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_code, findings.poc_code) else excluded.poc_code end
-    `;
-  }
-
-  // Automatic Indexing to RAG Knowledgebase
-  if (input.indexToRag !== false) {
-    try {
-      await indexReportToRag({
-        scanId: id,
-        report,
-        rawBody: input.body,
-        targetAddress: input.targetAddress,
-        chainId: input.chainId,
-        proxyInfo: input.proxyInfo,
-        probes: input.probes,
-        aiReview: input.aiReview,
-      });
-    } catch (ragErr) {
-      console.warn("[kiln] RAG knowledgebase auto-index warning:", ragErr);
-    }
-  }
+  // One dossier through the SAME transactional bulk writer the pipeline uses:
+  // a single BEGIN/COMMIT with set-based inserts, instead of the old sequence
+  // of per-statement writes and a per-finding INSERT loop. A failure rolls the
+  // whole save back rather than leaving a scan row with half its findings.
+  // `maxBytes: Infinity` because a single dossier is bounded by its own
+  // construction, not by the 50-record / 1.5 MB batch cap.
+  const record: ComprehensiveRecordInput = {
+    id,
+    label: input.label,
+    report,
+    body: input.body,
+    targetAddress: input.targetAddress ?? null,
+    chainId: input.chainId ?? "ethereum",
+    compilerVersion: input.compilerVersion ?? report.inventory.compiler ?? null,
+    proxyInfo: input.proxyInfo ?? null,
+    probes: input.probes ?? null,
+    aiReview: input.aiReview ?? null,
+    triageStates: input.triageStates ?? null,
+    certHash: input.certHash ?? null,
+    sourceOrigin: input.sourceOrigin ?? "workbench",
+    indexToRag: input.indexToRag !== false,
+    pocResult: input.pocResult ?? null,
+  };
+  const sql = await getSql();
+  await writeAuditBatch(sql, [record], { maxBytes: Infinity });
 
   const stored = await loadScan(id);
   if (!stored) throw new Error("The comprehensive audit record was written but could not be read back.");
@@ -553,7 +428,8 @@ export async function secondPass(report: Report, body: string): Promise<{ text: 
   // Second pass goes through OpenRouter, same as the AI review panel —
   // the old xAI/Grok path (XAI_API_KEY, api.x.ai, grok-4.5) was never
   // migrated and silently returned "unavailable" on every audit.
-  const { apiKey, model } = resolveOpenRouterConfig();
+  // Prose reasoning over findings + a source excerpt → the "review" model.
+  const { apiKey, model } = resolveOpenRouterConfig(process.env, "review");
   if (!apiKey) return { text: null, status: "unavailable" };
   const listed = report.findings
     .slice(0, 12)

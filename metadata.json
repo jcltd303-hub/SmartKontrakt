@@ -2,5 +2,5 @@
   "name": "Kiln — EVM Smart Contract & Bytecode Security Audit Workbench",
   "description": "Decompile Solidity and EVM runtime bytecode, inspect disassembly, detect vulnerabilities with SWC mappings, and generate exploit walkthroughs and remediations.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }
