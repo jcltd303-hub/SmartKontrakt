@@ -214,6 +214,7 @@ export function analyzeBytecode(raw: string): BytecodeReport {
   const sels = selectorsOf(ins);
   const formatted = formatDisassembly(ins, 420);
   const hex = [...(meta.body.length ? meta.body : code)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const findings: Finding[] = [];
   const gasStats = estimateGasAndDetectDos(ins);
   if (gasStats.unboundedStorageWarning) {
     findings.push(
@@ -254,7 +255,6 @@ export function analyzeBytecode(raw: string): BytecodeReport {
   if (hex.includes(ADMIN_SLOT)) notes.push("EIP-1967 admin slot present.");
   if (hex.includes(BEACON_SLOT)) notes.push("EIP-1967 beacon slot present.");
 
-  const findings: Finding[] = [];
   const self = counts.get("SELFDESTRUCT") ?? 0;
   const deleg = counts.get("DELEGATECALL") ?? 0;
   const callcode = counts.get("CALLCODE") ?? 0;

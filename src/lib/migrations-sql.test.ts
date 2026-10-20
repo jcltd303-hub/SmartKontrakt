@@ -2,15 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EMBEDDED_MIGRATIONS } from "./migrations-sql.ts";
 
-test("embedded migrations include both archive migrations", () => {
-  assert.deepEqual(Object.keys(EMBEDDED_MIGRATIONS).sort(), [
-    "0002_scans.sql",
-    "0003_comprehensive_records_and_rag.sql",
-    "0004_poc_results.sql",
-    "0005_fourbyte.sql",
-    "0006_fourbyte_events.sql",
-    "0007_unparsed.sql",
-  ]);
+test("embedded migrations match the files shipped for deployment", async () => {
+  const { readdir, readFile } = await import("node:fs/promises");
+  const directory = new URL("../../migrations/", import.meta.url);
+  const names = (await readdir(directory)).filter(name => /^\d+.*\.sql$/.test(name)).sort();
+  assert.deepEqual(Object.keys(EMBEDDED_MIGRATIONS).sort(), names);
+  for (const name of names) {
+    const disk = await readFile(new URL(name, directory), "utf8");
+    assert.equal(EMBEDDED_MIGRATIONS[name].trim(), disk.trim(), `${name}: embedded SQL is stale`);
+  }
 });
 
 test("embedded 0002 creates contract_scans, scan_payloads, and findings", () => {

@@ -1,3 +1,5 @@
+import { PocEvidenceBadge } from "@/components/poc-evidence-badge";
+import { classifyPocEvidence } from "@/lib/audit/poc-evidence";
 import { useState, useMemo } from "react";
 import { Terminal, Play, Wand2, CheckCircle2, RefreshCcw, FileCode, Cpu, Globe, RotateCw, AlertTriangle, ShieldCheck } from "lucide-react";
 import { runPocOnBackend, runPocWithRpcRetries, getBackendUrl, isPocCompileError, isRpcOrForkFailure, type RpcRetryProgress } from "@/lib/audit/foundry-backend";
@@ -298,6 +300,8 @@ contract PoC is Test {
           <p className="text-xs text-[#a39886]">
             Write or adjust your Foundry test below. If execution encounters an RPC or compilation error, use the RPC retry or LLM Fix button.
           </p>
+          <PocEvidenceBadge evidence={classifyPocEvidence({ code: testCode, result: pocResult,
+            target: targetAddress, chainId: selectedChainId })} />
           <textarea
             value={testCode}
             onChange={(e) => setTestCode(e.target.value)}
@@ -383,17 +387,8 @@ contract PoC is Test {
             ) : pocResult ? (
               <div>
                 <div className="flex items-center gap-2 mb-2 pb-2 border-b border-[#3a3428]">
-                  <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                      pocResult.status === "passed"
-                        ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
-                        : pocResult.status === "failed"
-                        ? "bg-amber-950 text-amber-400 border border-amber-800"
-                        : "bg-rose-950 text-rose-400 border border-rose-800"
-                    }`}
-                  >
-                    {pocResult.status}
-                  </span>
+                  <PocEvidenceBadge evidence={classifyPocEvidence({ code: testCode, result: pocResult,
+                    target: targetAddress, chainId: selectedChainId })} />
                   <span className="text-[#a39886]">{pocResult.durationMs}ms</span>
                 </div>
                 <div className="text-[#f4efe6]">{saveNotice ? `Persistence: ${saveNotice}\n` : ""}{pocResult.logs || "(No output logs)"}</div>

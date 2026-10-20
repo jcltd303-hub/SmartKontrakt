@@ -10,3 +10,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Local database connection settings can contain credentials.
+.supabase-db-config.json

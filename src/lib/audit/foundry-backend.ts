@@ -361,7 +361,7 @@ export async function runSmartPoc(
   result.evidence = { engine: "foundry", startedAt, finishedAt: result.runAt,
     target: input.address, chainId: String(input.chainId ?? 1), sourceHash,
     backendUrl, rpcUrls: result.triedRpcs, testCount };
-  result.logs = `[SmartPoC | Foundry] target=${input.address} chain=${input.chainId ?? 1} tests=${testCount}\nSHA-256: ${sourceHash}\nStarted: ${startedAt}\nFinished: ${result.runAt}\nRPC attempts: ${result.triedRpcs.join(", ")}\n${result.logs}${result.error ? "\n" + result.error : ""}`;
+  result.logs = `[SmartPoC | Foundry] target=${input.address} chain=${input.chainId ?? 1} tests=${testCount}\nSHA-256: ${sourceHash}\nExecuted source SHA3-256: ${sha3_256(input.testCode)}\nStarted: ${startedAt}\nFinished: ${result.runAt}\nRPC attempts: ${result.triedRpcs.join(", ")}\n${result.logs}${result.error ? "\n" + result.error : ""}`;
   return result;
 }
 

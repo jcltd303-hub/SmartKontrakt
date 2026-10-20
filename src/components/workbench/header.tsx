@@ -1,0 +1,228 @@
+import {
+  Award,
+  BookOpen,
+  CheckCircle2,
+  Code2,
+  Database,
+  Flame,
+  ListOrdered,
+  Loader2,
+  ShieldAlert,
+  Terminal,
+  Upload,
+  X,
+  Zap,
+} from "lucide-react";
+import type { WorkbenchController } from "./use-workbench-controller";
+
+type WorkbenchHeaderProps = Pick<
+  WorkbenchController,
+  | "setWorkbenchMode"
+  | "workbenchMode"
+  | "setIsSupabaseDbModalOpen"
+  | "dbInfo"
+  | "handleSaveToLocalDb"
+  | "isSavingDb"
+  | "fileInputRef"
+  | "setShowCertificate"
+  | "handleRunAnalysis"
+  | "dbSavedNotice"
+  | "setDbSavedNotice"
+>;
+
+export function WorkbenchHeader({
+  setWorkbenchMode,
+  workbenchMode,
+  setIsSupabaseDbModalOpen,
+  dbInfo,
+  handleSaveToLocalDb,
+  isSavingDb,
+  fileInputRef,
+  setShowCertificate,
+  handleRunAnalysis,
+  dbSavedNotice,
+  setDbSavedNotice,
+}: WorkbenchHeaderProps) {
+  return (
+    <header className="border-b border-[#3a3428] bg-[#1c1a16]/90 backdrop-blur sticky top-0 z-40 px-4 sm:px-6 py-3">
+      <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-3">
+        {/* Logo & Identity */}
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#e8a54b] to-[#e25b45] p-0.5 shadow-lg shadow-[#e8a54b]/10 flex items-center justify-center">
+            <div className="w-full h-full bg-[#12110e] rounded-[7px] flex items-center justify-center">
+              <Flame className="w-5 h-5 text-[#e8a54b]" />
+            </div>
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-lg tracking-wider text-[#f4efe6] font-mono">
+                KILN
+              </span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#3a2c14] text-[#e8a54b] border border-[#e8a54b]/30 font-mono font-medium">
+                v2.4 EVM
+              </span>
+            </div>
+            <p className="text-xs text-[#a39886]">
+              Smart Contract & Bytecode Security Audit Workbench
+            </p>
+          </div>
+        </div>
+
+        {/* Mode Switcher & Controls */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Primary Mode Switcher */}
+          <div className="flex w-full flex-wrap items-center bg-[#26231c] p-1 rounded-lg border border-[#3a3428] text-xs font-mono md:w-auto">
+            <button
+              onClick={() => setWorkbenchMode("audit")}
+              className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
+                workbenchMode === "audit"
+                  ? "bg-[#e8a54b] text-[#12110e] font-bold shadow"
+                  : "text-[#a39886] hover:text-[#f4efe6]"
+              }`}
+            >
+              <Code2 className="w-3.5 h-3.5" />
+              <span>Workbench</span>
+            </button>
+            <button
+              onClick={() => setWorkbenchMode("pipeline")}
+              className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
+                workbenchMode === "pipeline"
+                  ? "bg-[#e8a54b] text-[#12110e] font-bold shadow"
+                  : "text-[#a39886] hover:text-[#f4efe6]"
+              }`}
+            >
+              <ListOrdered className="w-3.5 h-3.5" />
+              <span>Address Pipeline</span>
+            </button>
+            <button
+              onClick={() => setWorkbenchMode("records")}
+              className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
+                workbenchMode === "records"
+                  ? "bg-[#e8a54b] text-[#12110e] font-bold shadow"
+                  : "text-[#a39886] hover:text-[#f4efe6]"
+              }`}
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span>Supabase Records</span>
+            </button>
+            <button
+              onClick={() => setWorkbenchMode("rag")}
+              className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
+                workbenchMode === "rag"
+                  ? "bg-[#e8a54b] text-[#12110e] font-bold shadow"
+                  : "text-[#a39886] hover:text-[#f4efe6]"
+              }`}
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>RAG Knowledgebase</span>
+            </button>
+            <button
+              onClick={() => setWorkbenchMode("interactive")}
+              className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
+                workbenchMode === "interactive"
+                  ? "bg-[#e8a54b] text-[#12110e] font-bold shadow"
+                  : "text-[#a39886] hover:text-[#f4efe6]"
+              }`}
+            >
+              <Terminal className="w-3.5 h-3.5" />
+              <span>Interactive Audit & PoC</span>
+            </button>
+            <button
+              onClick={() => setWorkbenchMode("poc-audits")}
+              className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
+                workbenchMode === "poc-audits"
+                  ? "bg-[#e8a54b] text-[#12110e] font-bold shadow"
+                  : "text-[#a39886] hover:text-[#f4efe6]"
+              }`}
+              title="Automated PoC verification for recent Critical & High findings in DB"
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>PoC Audits</span>
+            </button>
+          </div>
+
+          <button
+            onClick={() => setIsSupabaseDbModalOpen(true)}
+            className="px-2.5 py-1.5 rounded-lg border border-[#3a3428] bg-[#26231c] hover:bg-[#3a3428] text-xs font-mono text-[#e8a54b] flex items-center gap-1.5 transition-colors"
+            title="Configure Supabase Database (SmartKontrakt)"
+          >
+            <Database className="w-3.5 h-3.5" />
+            <span>Supabase Config</span>
+          </button>
+          {dbInfo && (
+            <span
+              className={`text-[11px] font-mono truncate ${dbInfo.error ? "text-red-400" : "text-[#a39886]"}`}
+              title={
+                dbInfo.error ??
+                `Database the app is reading: ${dbInfo.user}@${dbInfo.host}:${dbInfo.port}/${dbInfo.database}`
+              }
+            >
+              {dbInfo.error
+                ? "DB: not configured — set DATABASE_URL in Vercel"
+                : `DB: ${dbInfo.user}@${dbInfo.host}`}
+            </span>
+          )}
+
+          {workbenchMode === "audit" && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => handleSaveToLocalDb(true)}
+                disabled={isSavingDb}
+                className="px-3 py-1.5 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-xs font-medium text-[#f4efe6] flex items-center gap-1.5 transition-colors"
+                title="Save comprehensive audit dossier to Supabase PostgreSQL database and auto-index to RAG knowledgebase"
+              >
+                {isSavingDb ? (
+                  <Loader2 className="w-3.5 h-3.5 text-[#e8a54b] animate-spin" />
+                ) : (
+                  <Database className="w-3.5 h-3.5 text-[#e8a54b]" />
+                )}
+                <span>Save to Supabase DB</span>
+              </button>
+
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="px-3 py-1.5 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-xs font-medium text-[#f4efe6] flex items-center gap-1.5 transition-colors"
+                title="Upload .sol or .hex file"
+              >
+                <Upload className="w-3.5 h-3.5 text-[#e8a54b]" />
+                <span>Upload</span>
+              </button>
+
+              <button
+                onClick={() => setShowCertificate(true)}
+                className="px-3 py-1.5 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-xs font-medium text-[#f4efe6] flex items-center gap-1.5 transition-colors"
+                title="Open Official Audit Certificate & PDF"
+              >
+                <Award className="w-3.5 h-3.5 text-[#e8a54b]" />
+                <span>Certificate</span>
+              </button>
+
+              <button
+                onClick={() => handleRunAnalysis()}
+                className="px-4 py-1.5 rounded-lg bg-gradient-to-r from-[#e8a54b] to-[#d97706] hover:brightness-110 text-[#12110e] text-xs font-bold font-mono tracking-wide flex items-center gap-1.5 shadow-md shadow-[#e8a54b]/20 transition-all active:scale-95"
+              >
+                <Zap className="w-3.5 h-3.5 fill-current" />
+                <span>RUN AUDIT</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {dbSavedNotice && (
+        <div className="max-w-7xl mx-auto mt-2 px-3 py-1.5 bg-emerald-950/80 border border-emerald-800 text-emerald-300 text-xs font-mono rounded-lg flex items-center justify-between animate-fadeIn">
+          <span className="flex items-center gap-1.5">
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            {dbSavedNotice}
+          </span>
+          <button
+            onClick={() => setDbSavedNotice(null)}
+            className="text-[#746c60] hover:text-[#f4efe6]"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+    </header>
+  );
+}

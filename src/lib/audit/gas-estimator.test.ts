@@ -1,26 +1,34 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { disassemble } from './disassemble.ts';
 import { estimateGasAndDetectDos } from './gas-estimator.ts';
 
-test('detects unbounded loop with storage', () => {
-    // Jump loop with SLOAD inside
-    // JUMPDEST(0) ... SLOAD(1) ... PUSH1 0 JUMP(2)
-    const instructions = [
-        { pc: 0, name: 'JUMPDEST', imm: null },
-        { pc: 1, name: 'SLOAD', imm: null },
-        { pc: 2, name: 'PUSH1', imm: '00' },
-        { pc: 4, name: 'JUMP', imm: '00' },
-    ];
-    const estimate = estimateGasAndDetectDos(instructions);
-    assert.equal(estimate.unboundedStorageWarning, true);
+const estimate = (hex: string) =>
+  estimateGasAndDetectDos(disassemble(Uint8Array.from(Buffer.from(hex, 'hex'))));
+
+for (const [name, hex] of [
+  ['JUMP with PUSH1', '5b54600056'],
+  ['JUMPI with PUSH2', '5b54600161000057'],
+  ['JUMP with PUSH0', '5b545f56'],
+]) {
+  test(`detects a storage loop in disassembled ${name} bytecode`, () => {
+    assert.equal(estimate(hex).unboundedStorageWarning, true);
+  });
+}
+
+test('does not flag straight-line storage access', () => {
+  assert.equal(estimate('60015500').unboundedStorageWarning, false);
 });
 
-test('does not flag simple code', () => {
-    const instructions = [
-        { pc: 0, name: 'PUSH1', imm: '01' },
-        { pc: 2, name: 'SSTORE', imm: null },
-        { pc: 3, name: 'STOP', imm: null },
-    ];
-    const estimate = estimateGasAndDetectDos(instructions);
-    assert.equal(estimate.unboundedStorageWarning, false);
+test('does not flag storage outside the backward jump interval', () => {
+  assert.equal(estimate('545b600156').unboundedStorageWarning, false);
+});
+
+test('does not treat an unrelated PUSH as a dynamic jump destination', () => {
+  assert.equal(estimate('5b5460003556').unboundedStorageWarning, false);
+});
+
+test('does not flag a forward jump or a loop without storage', () => {
+  assert.equal(estimate('600456005b5400').unboundedStorageWarning, false);
+  assert.equal(estimate('5b600056').unboundedStorageWarning, false);
 });
