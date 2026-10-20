@@ -1,4 +1,5 @@
 import { disassemble, formatDisassembly, type Instruction } from "./disassemble.ts";
+import { estimateGasAndDetectDos } from "./gas-estimator.ts";
 import { lookupSelector } from "./selectors.ts";
 import type { Finding, Inventory, SelectorHit, TopicHit } from "./types.ts";
 
@@ -213,6 +214,25 @@ export function analyzeBytecode(raw: string): BytecodeReport {
   const sels = selectorsOf(ins);
   const formatted = formatDisassembly(ins, 420);
   const hex = [...(meta.body.length ? meta.body : code)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const gasStats = estimateGasAndDetectDos(ins);
+  if (gasStats.unboundedStorageWarning) {
+    findings.push(
+      finding({
+        severity: "medium",
+        swc: "SWC-128",
+        title: "Potential DoS: Unbounded storage access in loop",
+        confidence: "medium",
+        detector: "gas-estimator-dos",
+        summary: `Detected potential unbounded storage access in a loop: ${gasStats.warnings.join(" ")}`,
+        walkthrough: "If a loop iterates over an unbounded storage array (e.g., users, recipients), and performs SLOAD/SSTORE per iteration, the transaction will exceed the block gas limit, causing a Denial of Service.",
+        exploitSolidity: "contract Attacker { function trigger() external { /* call target repeatedly to bloat array */ } }",
+        remediationSolidity: "Use a pull-payment pattern (withdraw pattern) instead of push-payment loops. Limit array sizes.",
+        locationFn: "runtime",
+        locationLine: null,
+        snippet: gasStats.warnings.join("\n"),
+      })
+    );
+  }
 
   const notes: string[] = [];
   if (meta.compiler) notes.push(`Solidity metadata suffix decoded. Compiler ${meta.compiler}.`);
