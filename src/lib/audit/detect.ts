@@ -102,6 +102,30 @@ const BUILTIN = new Set([
 
 const PRIVILEGED = /^(owner|admin|governor|implementation|pendingOwner|operator|oracle|beacon|logic|feeRecipient|treasury)$/;
 
+/**
+ * Cached `new RegExp`. The detector helpers build their patterns from contract
+ * identifiers, so the same pattern was compiled again on every call — and the
+ * analysis is the per-address bottleneck of a large run. Compiling each distinct
+ * pattern once is a cheap, behaviour-preserving win.
+ *
+ * Global-flag regexes are stateful (`lastIndex`), so they are never shared: a
+ * cached `/g` pattern reused by `matchAll`/`test` would resume mid-string. Those
+ * are constructed fresh, exactly as before.
+ */
+const REGEX_CACHE = new Map<string, RegExp>();
+function rx(pattern: string, flags = ""): RegExp {
+  if (flags.includes("g")) return new RegExp(pattern, flags);
+  const key = flags ? `${flags}:${pattern}` : pattern;
+  let compiled = REGEX_CACHE.get(key);
+  if (!compiled) {
+    // Bound the cache; patterns vary with identifiers across a long run.
+    if (REGEX_CACHE.size >= 5000) REGEX_CACHE.clear();
+    compiled = new RegExp(pattern, flags);
+    REGEX_CACHE.set(key, compiled);
+  }
+  return compiled;
+}
+
 function lineOf(node: AstNode | undefined, delta: number, fallback: number): number {
   const raw = node?.loc?.start.line ?? fallback + delta;
   return Math.max(1, raw - delta);
@@ -221,8 +245,8 @@ function parenClose(src: string, openIdx: number): number {
 // in an if.
 function hasZeroGuardFor(src: string, param: string): boolean {
   const esc = param.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`require\\s*\\(\\s*${esc}\\s*!=`).test(src) ||
-    new RegExp(`if\\s*\\(\\s*${esc}\\s*==\\s*(0\\b|address\\s*\\(\\s*0\\s*\\))`).test(src);
+  return rx(`require\\s*\\(\\s*${esc}\\s*!=`).test(src) ||
+    rx(`if\\s*\\(\\s*${esc}\\s*==\\s*(0\\b|address\\s*\\(\\s*0\\s*\\))`).test(src);
 }
 
 // Split a call argument list on top-level commas (respecting nested
@@ -263,7 +287,7 @@ function internalZeroSetterHasUngatedCaller(
   const paramIdx = fn.params.findIndex((p) => p.typeName === "address");
   if (paramIdx < 0) return true; // not a setter of this shape — fail closed
   const escName = fn.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const callRe = new RegExp(`\\b${escName}\\s*\\(`, "g");
+  const callRe = rx(`\\b${escName}\\s*\\(`, "g");
   for (const c of model.contracts) {
     for (const g of c.functions) {
       if (c.name === contract.name && g.name === fn.name) continue;
@@ -301,14 +325,14 @@ function isCallerControlled(expr: string, fn: FnModel, contract: ContractModel):
   if (squashed === "address(this)" || squashed === "payable(address(this))") return false;
   if (/\bmsg\.sender\b/.test(text)) return true;
   for (const p of fn.params) {
-    if (p.name && new RegExp(`\\b${p.name}\\b`).test(text)) return true;
+    if (p.name && rx(`\\b${p.name}\\b`).test(text)) return true;
   }
   const root = text.replace(/\[.*\]$/, "").trim();
   if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(root)) {
     const v = contract.stateVars.find((s) => s.name === root);
     if (v) {
       // Fixed unless this function writes it (caller can redirect it).
-      return !v.constOrImmutable && new RegExp(`\\b${root}\\s*[-+*/%]?=`).test(fn.source);
+      return !v.constOrImmutable && rx(`\\b${root}\\s*[-+*/%]?=`).test(fn.source);
     }
   }
   return true; // complex expression -> conservative
@@ -460,7 +484,7 @@ function delegateTargetIsConstrained(fnSrc: string, targetParam: string): boolea
     .replace(/\/\*[\s\S]*?\*\//g, "");
   const esc = escapeRegExp(targetParam);
   // Direct: require(...) reads a mapping keyed by the target itself.
-  if (new RegExp(`require\\s*\\([^)]*\\[[^\\]]*\\b${esc}\\b[^\\]]*\\]`).test(clean)) return true;
+  if (rx(`require\\s*\\([^)]*\\[[^\\]]*\\b${esc}\\b[^\\]]*\\]`).test(clean)) return true;
   // Derived: fixpoint over assignments mentioning the target or a
   // previously derived identifier.
   const derived = new Set<string>();
@@ -468,7 +492,7 @@ function delegateTargetIsConstrained(fnSrc: string, targetParam: string): boolea
   while (grew) {
     grew = false;
     const known = [targetParam, ...derived].map(escapeRegExp).join("|");
-    const assignRe = new RegExp(`\\b([A-Za-z_]\\w*)\\s*=(?!=)[^;=]*\\b(?:${known})\\b`, "g");
+    const assignRe = rx(`\\b([A-Za-z_]\\w*)\\s*=(?!=)[^;=]*\\b(?:${known})\\b`, "g");
     let m: RegExpExecArray | null;
     while ((m = assignRe.exec(clean)) !== null) {
       if (m[1] !== targetParam && !derived.has(m[1])) {
@@ -479,8 +503,8 @@ function delegateTargetIsConstrained(fnSrc: string, targetParam: string): boolea
   }
   if (derived.size === 0) return false;
   const names = [...derived].map(escapeRegExp).join("|");
-  const requireMentionsDerived = new RegExp(`require\\s*\\([^)]*\\b(?:${names})\\b`).test(clean);
-  const mappingKeyedByDerived = new RegExp(`\\[[^\\]]*\\b(?:${names})\\b[^\\]]*\\]`).test(clean);
+  const requireMentionsDerived = rx(`require\\s*\\([^)]*\\b(?:${names})\\b`).test(clean);
+  const mappingKeyedByDerived = rx(`\\[[^\\]]*\\b(?:${names})\\b[^\\]]*\\]`).test(clean);
   return requireMentionsDerived && mappingKeyedByDerived;
 }
 
@@ -546,7 +570,7 @@ function isMerkleBoundedPayout(
     if (target === "msg.sender") return true;
     const ident = target.replace(/[^A-Za-z0-9_$]/g, "");
     if (!ident) return false;
-    return new RegExp(`\\b${ident}\\s*=\\s*msg\\.sender\\b`).test(fn.source);
+    return rx(`\\b${ident}\\s*=\\s*msg\\.sender\\b`).test(fn.source);
   });
   if (!recipientIsSender) return false;
   return (
@@ -573,14 +597,14 @@ function debitsOwnCredit(fn: FnModel, source?: string): boolean {
   // true closes a claim) matches by name. `claimed` stays \b-anchored so
   // `unclaimed` (an accrual mapping) does not match it.
   const credit = "(?:[\\w]*[Bb]alance[\\w]*|[\\w]*deposits|[\\w]*credits|[\\w]*payoutsTo_?|\\bpaidOut|\\bclaimed|\\bwithdrawn)";
-  const debit = src.match(new RegExp(`${credit}\\s*\\[\\s*([\\w.]+)\\s*\\]\\s*[-+*/%]?=`));
+  const debit = src.match(rx(`${credit}\\s*\\[\\s*([\\w.]+)\\s*\\]\\s*[-+*/%]?=`));
   if (!debit) return false;
   const account = debit[1];
   if (account === "msg.sender") return true;
   // The debited account may be a local assigned from msg.sender
   // (DailyDivs withdraw: `address _customerAddress = msg.sender`).
-  if (new RegExp(`\\b${escapeRegExp(account)}\\s*=\\s*msg\\.sender\\b`).test(src)) return true;
-  return new RegExp(`allowance\\s*\\[\\s*${account}\\s*\\]\\s*\\[\\s*msg\\.sender\\s*\\]\\s*>=`).test(src);
+  if (rx(`\\b${escapeRegExp(account)}\\s*=\\s*msg\\.sender\\b`).test(src)) return true;
+  return rx(`allowance\\s*\\[\\s*${account}\\s*\\]\\s*\\[\\s*msg\\.sender\\s*\\]\\s*>=`).test(src);
 }
 
 let seq = 0;
@@ -860,7 +884,7 @@ function allSendsRequireProvenSelf(fn: FnModel, sendTargets: string[]): boolean 
   // `=(?!=)` keeps a `==` comparison from counting as an assignment.
   const assignedFromStoredField = (target: string): string[] => {
     const out: string[] = [];
-    for (const m of src.matchAll(new RegExp(`\\b${escapeRegExp(target)}\\s*=(?!=)\\s*([^;]*)`, "g"))) {
+    for (const m of src.matchAll(rx(`\\b${escapeRegExp(target)}\\s*=(?!=)\\s*([^;]*)`, "g"))) {
       for (const sm of m[1].matchAll(/[A-Za-z_][\w.]*\[[^\]]+\][\w.[\]]*/g)) out.push(sm[0]);
     }
     return out;
@@ -899,8 +923,8 @@ function isSameMappingClearingSelfPayout(fn: FnModel, sendTargets: string[]): bo
   if (!targetIsSelf) return false;
   for (const alias of aliases) {
     const esc = escapeRegExp(alias);
-    if (new RegExp(`\\w+\\s*\\[\\s*${esc}\\s*\\]\\s*(=\\s*0\\b|-=)`).test(src)) return true;
-    if (new RegExp(`\\w+\\s*\\[\\s*${esc}\\s*\\]\\s*=\\s*\\w+\\s*\\[\\s*${esc}\\s*\\]\\s*-`).test(src)) return true;
+    if (rx(`\\w+\\s*\\[\\s*${esc}\\s*\\]\\s*(=\\s*0\\b|-=)`).test(src)) return true;
+    if (rx(`\\w+\\s*\\[\\s*${esc}\\s*\\]\\s*=\\s*\\w+\\s*\\[\\s*${esc}\\s*\\]\\s*-`).test(src)) return true;
   }
   return false;
 }
@@ -916,8 +940,8 @@ function isSameMappingClearingSelfPayout(fn: FnModel, sendTargets: string[]): bo
  * call site); the qualified form is exact.
  */
 function isLibraryDelegatecallCalledFromContract(libraryName: string, fnName: string, model: SourceModel): boolean {
-  const qualified = new RegExp(`\\b${escapeRegExp(libraryName)}\\s*\\.\\s*${escapeRegExp(fnName)}\\s*\\(`);
-  const member = new RegExp(`\\.\\s*${escapeRegExp(fnName)}\\s*\\(`);
+  const qualified = rx(`\\b${escapeRegExp(libraryName)}\\s*\\.\\s*${escapeRegExp(fnName)}\\s*\\(`);
+  const member = rx(`\\.\\s*${escapeRegExp(fnName)}\\s*\\(`);
   for (const c of model.contracts) {
     if (c.kind === "library") continue;
     for (const f of c.functions) {
@@ -2498,7 +2522,7 @@ function scanSimple(
     }));
   }
 
-  const writesPriv = contract.stateVars.some((v) => PRIVILEGED.test(v.name) && new RegExp(`\\b${v.name}\\s*=`).test(src));
+  const writesPriv = contract.stateVars.some((v) => PRIVILEGED.test(v.name) && rx(`\\b${v.name}\\s*=`).test(src));
   // Fix 14: a self-burn is a standard user action, not an admin action.
   // `burn` stays in the name list, but a burn that burns the caller's
   // OWN tokens (_burn(msg.sender, ...) / _burn(_msgSender(), ...)) does
@@ -2821,14 +2845,14 @@ contract ReplayAttack {
     }));
   }
 
-  const addrWrite = contract.stateVars.find((v) => v.typeName === "address" && new RegExp(`\\b${v.name}\\s*=\\s*${fn.params.find((p) => p.typeName === "address")?.name}\\b`).test(src));
+  const addrWrite = contract.stateVars.find((v) => v.typeName === "address" && rx(`\\b${v.name}\\s*=\\s*${fn.params.find((p) => p.typeName === "address")?.name}\\b`).test(src));
   // A zero guard for THIS parameter exempts the write: require(p != 0),
   // require(p != address(0)), if (p == 0) throw/revert. The old check only
   // saw address(0), so `if (newOwner == 0) throw` was still flagged.
   const zeroParam = fn.params.find((p) => p.typeName === "address")?.name;
   const hasZeroGuard = Boolean(
     zeroParam &&
-      new RegExp(
+      rx(
         `(require\\s*\\(\\s*${zeroParam}\\s*!=|if\\s*\\(\\s*${zeroParam}\\s*==\\s*(0\\b|address\\s*\\(\\s*0\\s*\\)))`,
       ).test(src),
   );
@@ -2859,7 +2883,7 @@ contract ReplayAttack {
   // Pre-0.4.21 code invokes events without the `emit` keyword
   // (OwnerChanged(newOwner);), so a bare /emit/ test false-positives on
   // 0.4.x contracts. A call to a declared event name counts as an emit.
-  const emitsEvent = /emit\s+/.test(src) || contract.events.some((e) => new RegExp(`\\b${e.name}\\s*\\(`).test(src));
+  const emitsEvent = /emit\s+/.test(src) || contract.events.some((e) => rx(`\\b${e.name}\\s*\\(`).test(src));
   if (writesOwner(src, contract) && !emitsEvent && !fn.isConstructor) {
     push(make({
       severity: "info",
@@ -2943,7 +2967,7 @@ contract ReplayAttack {
         const assignMatches = [...stmt.slice(0, callStart - stmtStart).matchAll(/([A-Za-z_$][\w$]*)\s*=(?!=)/g)];
         const assigned = assignMatches[assignMatches.length - 1]?.[1];
         if (assigned) {
-          varFlowsToHash = hashSpans.some(([hs, he]) => new RegExp(`\\b${assigned}\\b`).test(text.slice(hs, he)));
+          varFlowsToHash = hashSpans.some(([hs, he]) => rx(`\\b${assigned}\\b`).test(text.slice(hs, he)));
         }
       }
       if (!insideHash && !varFlowsToHash) continue;
@@ -2973,7 +2997,7 @@ keccak256(abi.encodePacked("a", "bc"));`,
 }
 
 function writesOwner(src: string, contract: ContractModel): boolean {
-  return contract.stateVars.some((v) => PRIVILEGED.test(v.name) && new RegExp(`\\b${v.name}\\s*=`).test(src));
+  return contract.stateVars.some((v) => PRIVILEGED.test(v.name) && rx(`\\b${v.name}\\s*=`).test(src));
 }
 
 function hasDivThenMul(body: AstNode | null): boolean {

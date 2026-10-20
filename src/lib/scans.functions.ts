@@ -74,6 +74,8 @@ export const analyzeContract = createServerFn({ method: "POST" })
     return { body, label };
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("./admin-guard.server");
+    assertAdminToken();
     const { runAndStore } = await import("./audit/persist.server");
     return runAndStore(data);
   });
@@ -104,6 +106,8 @@ export const saveComprehensiveScanFn = createServerFn({ method: "POST" })
     return val;
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("./admin-guard.server");
+    assertAdminToken();
     const { saveComprehensiveRecord } = await import("./audit/persist.server");
     return saveComprehensiveRecord(data);
   });
@@ -116,6 +120,8 @@ export const saveBatchComprehensiveScansFn = createServerFn({ method: "POST" })
     return input as { records: import("./audit/persist.server").ComprehensiveRecordInput[] };
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("./admin-guard.server");
+    assertAdminToken();
     const { validateAuditBatch } = await import("./audit/bulk-persist.server");
     validateAuditBatch(data.records);
     const { saveBatchComprehensiveRecords } = await import("./audit/persist.server");
@@ -130,6 +136,8 @@ export const removeScan = createServerFn({ method: "POST" })
     return { id: input.id };
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("./admin-guard.server");
+    assertAdminToken();
     const { deleteScan } = await import("./audit/persist.server");
     await deleteScan(data.id);
     return { ok: true as const };
@@ -169,6 +177,8 @@ export const deleteRagChunkFn = createServerFn({ method: "POST" })
     return { id: input.id };
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("./admin-guard.server");
+    assertAdminToken();
     const { deleteRagChunk } = await import("./audit/rag.server");
     await deleteRagChunk(data.id);
     return { ok: true as const };
@@ -217,6 +227,8 @@ export const testDatabaseConnectionFn = createServerFn({ method: "POST" })
     return val;
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("./admin-guard.server");
+    assertAdminToken();
     const {
       loadSupabaseDbConfig,
       buildSupabasePostgresUrl,
@@ -265,6 +277,8 @@ export const saveDatabaseConfigFn = createServerFn({ method: "POST" })
     return val;
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("./admin-guard.server");
+    assertAdminToken();
     const {
       saveSupabaseDbConfig,
       buildSupabasePostgresUrl,
@@ -325,6 +339,8 @@ export const saveDatabaseConfigFn = createServerFn({ method: "POST" })
   });
 
 export const disconnectDatabaseFn = createServerFn({ method: "POST" }).handler(async () => {
+  const { assertAdminToken } = await import("./admin-guard.server");
+  assertAdminToken();
   const { resetDatabasePool } = await import("./db");
   resetDatabasePool();
   return { ok: true, message: "Database connection pool refreshed." };
@@ -356,6 +372,8 @@ export const saveFindingPocResultFn = createServerFn({ method: "POST" })
     return val;
   })
   .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("./admin-guard.server");
+    assertAdminToken();
     const { saveFindingPocResult } = await import("./audit/persist.server");
     await saveFindingPocResult(data);
     return { ok: true };

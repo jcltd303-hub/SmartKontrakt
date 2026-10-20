@@ -15,7 +15,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const WRAPPER = join(projectRoot(), "scripts/with-app-env.mjs");
-const PRINT_FLAG = "process.stdout.write(String(process.env.VITE_AUTH_ENABLED));";
+const PRINT_FLAG = "process.stdout.write(String(process.env.VITE_SAMPLE));";
 
 function makeWorkspace(appEnvJson) {
   const root = mkdtempSync(join(tmpdir(), "app-env-"));
@@ -27,8 +27,8 @@ function makeWorkspace(appEnvJson) {
 }
 
 test("keeps VITE_-prefixed string entries", () => {
-  assert.deepEqual(parseAppEnv('{"VITE_AUTH_ENABLED":"false"}'), {
-    VITE_AUTH_ENABLED: "false",
+  assert.deepEqual(parseAppEnv('{"VITE_SAMPLE":"false"}'), {
+    VITE_SAMPLE: "false",
   });
 });
 
@@ -37,7 +37,7 @@ test("drops non-VITE keys, non-string values and malformed documents", () => {
     VITE_OK: "y",
   });
   assert.deepEqual(parseAppEnv("not json"), {});
-  assert.deepEqual(parseAppEnv('["VITE_AUTH_ENABLED"]'), {});
+  assert.deepEqual(parseAppEnv('["VITE_SAMPLE"]'), {});
   assert.deepEqual(parseAppEnv("null"), {});
 });
 
@@ -46,48 +46,46 @@ test("a missing app-env.json is a clean no-op", () => {
 });
 
 test("reads the app env from a workspace", () => {
-  const root = makeWorkspace('{"VITE_AUTH_ENABLED":"false"}');
-  assert.deepEqual(readAppEnv(root), { VITE_AUTH_ENABLED: "false" });
+  const root = makeWorkspace('{"VITE_SAMPLE":"false"}');
+  assert.deepEqual(readAppEnv(root), { VITE_SAMPLE: "false" });
 });
 
 test("an explicit process-env override wins over the file", () => {
   const merged = mergeAppEnv(
-    { VITE_AUTH_ENABLED: "false" },
-    { VITE_AUTH_ENABLED: "true", PATH: "/usr/bin" },
+    { VITE_SAMPLE: "false" },
+    { VITE_SAMPLE: "true", PATH: "/usr/bin" },
   );
-  assert.equal(merged.VITE_AUTH_ENABLED, "true");
+  assert.equal(merged.VITE_SAMPLE, "true");
   assert.equal(merged.PATH, "/usr/bin");
 });
 
-test("the template ships auth off", () => {
-  assert.deepEqual(readAppEnv(projectRoot()), { VITE_AUTH_ENABLED: "false" });
-});
-
 test("vite loadEnv resolves the wrapped value", () => {
-  // What `import.meta.env.VITE_AUTH_ENABLED` becomes: loadEnv prefix-matches
+  // What `import.meta.env.VITE_SAMPLE` becomes: loadEnv prefix-matches
   // process.env, so the wrapper's merge has to land before Vite starts.
   // Do not `import { loadEnv } from "vite"` here — Vite 8 loads rolldown
   // native bindings that SIGSEGV the test worker under qemu-user.
-  const root = makeWorkspace('{"VITE_AUTH_ENABLED":"false"}');
+  const root = makeWorkspace('{"VITE_SAMPLE":"false"}');
   const merged = mergeAppEnv(readAppEnv(root), { PATH: "/usr/bin" });
-  assert.equal(merged.VITE_AUTH_ENABLED, "false");
+  assert.equal(merged.VITE_SAMPLE, "false");
 });
 
 test("the wrapped command runs with the app env applied", async () => {
+  // No `.grok/app-env.json` VITE_ flag ships, so the child sees the variable
+  // unset ("undefined") — the wrapper injects nothing it was not given.
   const { stdout } = await execFileAsync(process.execPath, [
     WRAPPER,
     process.execPath,
     "-e",
     PRINT_FLAG,
   ]);
-  assert.equal(stdout, "false");
+  assert.equal(stdout, "undefined");
 });
 
 test("the wrapped command sees an explicit override, not the file value", async () => {
   const { stdout } = await execFileAsync(
     process.execPath,
     [WRAPPER, process.execPath, "-e", PRINT_FLAG],
-    { env: { ...process.env, VITE_AUTH_ENABLED: "true" } },
+    { env: { ...process.env, VITE_SAMPLE: "true" } },
   );
   assert.equal(stdout, "true");
 });
@@ -124,5 +122,5 @@ test("the CLI still runs when invoked through a symlinked path", async () => {
     "-e",
     PRINT_FLAG,
   ]);
-  assert.equal(stdout, "false");
+  assert.equal(stdout, "undefined");
 });

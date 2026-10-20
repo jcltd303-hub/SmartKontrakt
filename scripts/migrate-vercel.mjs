@@ -21,8 +21,8 @@
  * a database). Runtime auto-migration in src/lib/db.ts covers the same files
  * on first connection when a database is present.
  *
- * The read is non-recursive, so the opt-in auth schema under migrations/auth/
- * is not applied to an app that never asked for sign-in.
+ * The read is non-recursive: nested `*.sql` files under a subdirectory are
+ * not applied.
  */
 import { readdir, readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";

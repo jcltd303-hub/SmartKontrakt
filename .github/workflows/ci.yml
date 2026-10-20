@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# The app targets Node 22.16+ (see package.json engines in the README).
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # No lockfile is committed yet, so `npm ci` cannot run. `npm install`
+      # resolves package.json directly. Commit a package-lock.json (npm install
+      # once, locally) and switch this to `npm ci` for reproducible builds.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # Unit tests plus the detector self-check (also run by `npm test`).
+      - name: Test
+        run: npm test

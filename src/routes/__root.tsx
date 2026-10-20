@@ -1,7 +1,10 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
-import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
+import { installAdminTokenFetch } from "@/lib/admin-token";
 import appCss from "../styles.css?url";
+
+// Attach the optional admin token to same-origin requests (client only).
+if (typeof window !== "undefined") installAdminTokenFetch();
 
 const APP_NAME = "Kiln";
 
@@ -28,9 +31,7 @@ export const Route = createRootRoute({
       </head>
       <body suppressHydrationWarning>
         <PreviewHostBridge />
-        <AuthProvider>
-          <Outlet />
-        </AuthProvider>
+        <Outlet />
         <Scripts />
       </body>
     </html>
