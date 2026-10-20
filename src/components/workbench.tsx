@@ -153,7 +153,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
       {/* Main Layout Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6">
         <div hidden={workbenchMode !== "pipeline"}>
-          <BatchPipeline onInspectItem={handleInspectPipelineItem} />
+          <BatchPipeline onInspectItem={handleInspectPipelineItem} active={workbenchMode === "pipeline"} />
         </div>
         {workbenchMode === "pipeline" ? null : workbenchMode === "records" ? (
           <LocalDbRecords

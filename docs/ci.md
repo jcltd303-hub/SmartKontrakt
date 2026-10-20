@@ -20,7 +20,7 @@ bash scripts/ci-browser-smoke.sh
 ```
 
 The existing browser guard requires `/workspace/screenshots/ci` to be writable.
-On failure, the workflow retains available desktop/mobile screenshots, JSON
+On every run, the workflow retains available desktop/mobile screenshots, JSON
 verdicts, and server/browser logs as a seven-day Actions artifact. A startup
 failure may only produce a server log. These logs are generated without CI secrets;
 do not add credential-bearing environment variables to this job.
@@ -28,3 +28,5 @@ do not add credential-bearing environment variables to this job.
 A successful HTTP readiness probe alone is not the browser test. Both actual
 browser captures and their stricter CI verdict checks must pass. Human review of
 the retained screenshots remains useful for visual layout issues.
+
+The pipeline remains mounted across view changes, while its optional phone-worker monitor polls only when the pipeline view is active. This prevents hidden panels from issuing background requests to an absent local backend.

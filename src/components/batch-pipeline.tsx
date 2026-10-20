@@ -34,6 +34,7 @@ import { SupabaseDbModal } from "./supabase-db-modal";
 import { PipelineWorkerStatus } from "./pipeline-worker-status";
 
 interface BatchPipelineProps {
+  active?: boolean;
   onInspectItem: (report: Report, rawBody: string, label: string) => void;
 }
 
@@ -44,7 +45,7 @@ const SAMPLE_BATCH_INPUT = `# High-profile EVM contracts for security analysis
 0x6B175474E89094C44Da98b954EedeAC495271d0F # Dai Stablecoin (DAI)
 0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7 # Curve.fi 3pool`;
 
-export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
+export function BatchPipeline({ onInspectItem, active = true }: BatchPipelineProps) {
   // Input text state
   const [inputText, setInputText] = useState<string>(SAMPLE_BATCH_INPUT);
   const [selectedChainId, setSelectedChainId] = useState<string>("ethereum");
@@ -744,7 +745,7 @@ export function BatchPipeline({ onInspectItem }: BatchPipelineProps) {
       />
 
       {/* Headless pipeline worker (Termux) — survives browser close. */}
-      <PipelineWorkerStatus />
+      <PipelineWorkerStatus active={active} />
 
       {/* Supabase Connection Modal */}
       <PipelineConnectionModal

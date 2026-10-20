@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { startWorkerPolling } from "@/lib/audit/worker-polling";
 import { Play, Pause, Square, Loader2, Server, AlertTriangle } from "lucide-react";
 
 /**
@@ -9,13 +10,8 @@ import { Play, Pause, Square, Loader2, Server, AlertTriangle } from "lucide-reac
  * (loopback, same pattern as FoundryLocalRun) and POSTs start/pause/resume/
  * stop. Client-side only — no server call, no keys.
  *
- * WIRING (in src/components/batch-pipeline.tsx — do NOT edit that
- * file here):
- *
- * 1. Import:  import { PipelineWorkerStatus } from "./pipeline-worker-status";
- * 2. Render <PipelineWorkerStatus /> near the top of the Address Pipeline
- *    tab, above the in-browser pipeline controls.
- * 3. Done — self-contained, no props.
+ * Monitoring can be suspended while the retained pipeline panel is hidden.
+ * The worker and in-browser queue continue independently.
  */
 type WorkerStatus = {
   state: "idle" | "running" | "paused" | "stopping";
@@ -47,7 +43,7 @@ type WorkerStatus = {
 const WORKER_KEY = "sk-pipeline-worker-url";
 const DEFAULT_WORKER = "http://127.0.0.1:8788";
 
-export function PipelineWorkerStatus() {
+export function PipelineWorkerStatus({ active = true }: { active?: boolean }) {
   const [workerUrl, setWorkerUrl] = useState(DEFAULT_WORKER);
   const [status, setStatus] = useState<WorkerStatus | null>(null);
   const [unreachable, setUnreachable] = useState(false);
@@ -78,21 +74,21 @@ export function PipelineWorkerStatus() {
           signal: AbortSignal.timeout(5000),
         });
         if (!res.ok) throw new Error(`worker answered ${res.status}`);
+        const nextStatus = (await res.json()) as WorkerStatus;
         if (!cancelled) {
-          setStatus((await res.json()) as WorkerStatus);
+          setStatus(nextStatus);
           setUnreachable(false);
         }
       } catch {
         if (!cancelled) setUnreachable(true);
       }
     };
-    void fetchStatus();
-    const t = setInterval(fetchStatus, 5000);
+    const stopPolling = startWorkerPolling(active, () => { void fetchStatus(); });
     return () => {
       cancelled = true;
-      clearInterval(t);
+      stopPolling();
     };
-  }, [workerUrl]);
+  }, [workerUrl, active]);
 
   useEffect(() => {
     // When a run is active, show ITS config in the form, not the form

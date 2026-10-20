@@ -48,3 +48,5 @@
 ## Verification notes
 
 Local tests, types, lint, and production build pass. Real local browser execution remains blocked by the host network-interface syscall restriction; CI retains the real browser checks without bypassing it. No live database or fork execution was performed. Independent review found and fixed the empty-target evidence invalidation edge case.
+
+The first real Actions browser run caught hidden worker-monitor polling against an absent local backend. Visibility-aware polling now pauses that monitor while retaining the pipeline and actual runs; timer regression tests cover hidden, active, cleanup, and reactivation behavior.
