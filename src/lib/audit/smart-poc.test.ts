@@ -100,3 +100,15 @@ test("a repaired proof is reused only while its original finding input is unchan
   assert.equal(needsSmartPoc(f),false);
   assert.equal(needsSmartPoc({...f,exploitSolidity:"changed"}),true);
 });
+
+test('SmartPoC binds the executed source for synchronous UI evidence labels', async () => {
+  const { classifyPocEvidence } = await import('./poc-evidence.ts');
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ok:true,passed:true,logs:'[PASS] test_exploit()\n1 passed; 0 failed',durationMs:1}));
+  try {
+    const code = 'contract PoC { function test_exploit() public {} }';
+    const result = await runSmartPoc('http://localhost:8787', {address:'0x'+'1'.repeat(40),testCode:code});
+    assert.equal(classifyPocEvidence({code,result}).stage,'reproduced');
+    assert.notEqual(classifyPocEvidence({code:code+' // edited',result}).stage,'reproduced');
+  } finally { globalThis.fetch = original; }
+});

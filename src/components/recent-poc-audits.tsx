@@ -1,5 +1,7 @@
+import { PocEvidenceBadge } from "@/components/poc-evidence-badge";
+import { findingPocEvidence } from "@/lib/audit/poc-evidence";
 import { SUPPORTED_CHAINS } from "@/lib/audit/address-fetcher";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import {
   ShieldAlert,
   Play,
@@ -15,7 +17,6 @@ import {
   Check,
   Search,
   Wand2,
-  Clock,
   ChevronDown,
   ChevronUp,
   StopCircle,
@@ -27,9 +28,9 @@ import {
 import type { FindingWithScanInfo } from "@/lib/audit/persist.server";
 import { wrapPocSnippet } from "@/lib/audit/poc-wrap";
 import {
-  runPocOnBackend,
   runPocWithRpcRetries,
   getBackendUrl,
+  pocInputDigest,
   checkFoundryBackend,
   isPocCompileError,
   BACKEND_KEY,
@@ -217,7 +218,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
       const finishedAt = new Date().toISOString();
       const status = mapStatus(poc);
       const rawLogs = poc.logs ?? "";
-      const displayLogs = wrapped?.note ? `${wrapped.note}\n${rawLogs}` : rawLogs;
+      const displayLogs = `Finding input SHA3-256: ${pocInputDigest(finding.exploitSolidity)}\n${wrapped?.note ? `${wrapped.note}\n` : ""}${rawLogs}`;
       const durationMs = poc.durationMs ?? 0;
       const runId = generateRunId();
 
@@ -361,8 +362,10 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   };
 
   // Filter findings
+  const evidenceById = useMemo(() => new Map(findings.map(f => [f.id, findingPocEvidence(f)])), [findings]);
+
   const filteredFindings = findings.filter((f) => {
-    if (statusFilter === "passed" && f.pocStatus !== "passed") return false;
+    if (statusFilter === "passed" && evidenceById.get(f.id)?.stage !== "reproduced") return false;
     if (statusFilter === "failed" && f.pocStatus !== "failed") return false;
     if (statusFilter === "error" && f.pocStatus !== "error") return false;
     if (statusFilter === "unrun" && f.pocStatus) return false;
@@ -383,7 +386,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   const totalCount = findings.length;
   const criticalCount = findings.filter((f) => f.severity === "critical").length;
   const highCount = findings.filter((f) => f.severity === "high").length;
-  const reproducedCount = findings.filter((f) => f.pocStatus === "passed").length;
+  const reproducedCount = findings.filter((f) => evidenceById.get(f.id)?.stage === "reproduced").length;
   const unverifiedCount = findings.filter((f) => f.pocStatus === "failed").length;
   const errorCount = findings.filter((f) => f.pocStatus === "error").length;
 
@@ -519,7 +522,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
           </div>
 
           <div className="bg-[#12110e] border border-[#2d281f] rounded-xl p-3">
-            <span className="text-[10px] font-mono uppercase text-emerald-400/80 block">Exploit Reproduced (Passed)</span>
+            <span className="text-[10px] font-mono uppercase text-emerald-400/80 block">Reproduced assertions</span>
             <div className="text-xl font-bold font-mono text-emerald-400 mt-1 flex items-center gap-1.5">
               <CheckCircle2 className="w-4 h-4" />
               {reproducedCount}
@@ -527,7 +530,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
           </div>
 
           <div className="bg-[#12110e] border border-[#2d281f] rounded-xl p-3">
-            <span className="text-[10px] font-mono uppercase text-amber-400/80 block">Unreproduced / Safe</span>
+            <span className="text-[10px] font-mono uppercase text-amber-400/80 block">Not reproduced</span>
             <div className="text-xl font-bold font-mono text-amber-400 mt-1 flex items-center gap-1.5">
               <ShieldAlert className="w-4 h-4" />
               {unverifiedCount}
@@ -690,28 +693,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
 
                   {/* Right side: PoC status badge & action buttons */}
                   <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                    {/* Status Badge */}
-                    {finding.pocStatus === "passed" ? (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-emerald-950 border border-emerald-700 text-emerald-300">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                        REPRODUCED (PASSED)
-                      </span>
-                    ) : finding.pocStatus === "failed" ? (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-amber-950/80 border border-amber-800 text-amber-300" title="Exploit did not reproduce on fork / assertions held">
-                        <XCircle className="w-3.5 h-3.5 text-amber-400" />
-                        DID NOT REPRODUCE
-                      </span>
-                    ) : finding.pocStatus === "error" ? (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-red-950/80 border border-red-800 text-red-300">
-                        <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-                        ERROR / NEEDS REPAIR
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono text-[#746c60] bg-[#12110e] border border-[#3a3428]">
-                        <Clock className="w-3.5 h-3.5" />
-                        NOT AUDITED YET
-                      </span>
-                    )}
+                    <PocEvidenceBadge evidence={evidenceById.get(finding.id)!} />
 
                     {/* Run Single PoC Button */}
                     <button
