@@ -66,8 +66,8 @@ POC_TARGET=${target} forge test --fork-url "$ETH_RPC_URL" --match-path test/Expl
 
 ## Reading results
 
-- Test passes  -> the exploit reproduced on fork state.
-- Test fails    -> exploit did NOT reproduce (guarded target, wrong
+- Test passes  -> its assertions passed on fork state; review them to assess exploit validity.
+- Test fails    -> this test did NOT reproduce the exploit (guarded target, wrong
   interface, or fork state moved). That failure is the signal, not a bug.
 
 ## Reference harness

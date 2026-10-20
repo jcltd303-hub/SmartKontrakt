@@ -1,48 +1,39 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { runSmartPoc } from '../src/lib/audit/foundry-backend.ts';
+import { POC_FALLBACK_TEMPLATES } from '../src/lib/audit/poc-fallbacks.ts';
 
-test('structural validation of all 44 PoC fallback harnesses', async () => {
-  const fallbacksDir = new URL('../../foundry/poc-fallbacks', import.meta.url);
-  // Fixed path:
-  const targetDir = '/app/applet/foundry/poc-fallbacks';
-  const files = (await readdir(targetDir)).filter(f => f.endsWith('.t.sol'));
-  
+test('all indexed PoC fallback harnesses have the expected structure and embedded source', async () => {
+  const directory = new URL('../foundry/poc-fallbacks/', import.meta.url);
+  const index = JSON.parse(await readFile(new URL('index.json', directory), 'utf8'));
+  const files = (await readdir(directory)).filter(f => f.endsWith('.t.sol')).sort();
   assert.equal(files.length, 45, 'Should have 45 PoC fallback files');
-
-  const dummyTarget = '0x' + '1'.repeat(40);
-  // Mock backend URL — we expect this to fail with backend_unreachable, 
-  // but we want to ensure the code *compiles* and *calls* the backend correctly.
-  const backendUrl = 'http://127.0.0.1:8787';
+  assert.deepEqual(index.fallbacks.map(f => f.file).sort(), files);
+  assert.deepEqual(Object.keys(POC_FALLBACK_TEMPLATES).sort(), files);
 
   for (const file of files) {
-    const testCode = await readFile(join(targetDir, file), 'utf8');
-    
-    // Validate structural requirements
-    assert.match(testCode, /contract PoC is Test/, `File ${file} missing PoC contract declaration`);
-    assert.match(testCode, /function test_/, `File ${file} missing test functions`);
+    const source = await readFile(new URL(file, directory), 'utf8');
+    assert.match(source, /contract PoC is Test/, `${file}: missing PoC contract`);
+    assert.match(source, /function test_/, `${file}: missing test function`);
+    assert.equal(POC_FALLBACK_TEMPLATES[file], source, `${file}: regenerate embedded template`);
+  }
+});
 
-    // Verify infrastructure can package the test code
-    try {
-      // This will fail against a real backend, which is expected for structural tests.
-      // We are proving the harness *could* be run.
-      const result = await runSmartPoc(backendUrl, {
-        address: dummyTarget,
-        testCode: testCode,
-        chainId: 1,
-        retry: false 
-      });
-      
-      // If it reaches here, either backend is up or it failed in a known way
-      assert.ok(
-        result.status === 'backend_unreachable' || result.status === 'error' || result.status === 'skipped',
-        `PoC harness ${file} should fail safely without a real target, but got: ${result.status}`
-      );
-      console.log(`Verified harness structure: ${file}`);
-    } catch (e) {
-      assert.fail(`Harness ${file} caused unexpected error: ${e}`);
+test('unadapted success-only scenarios cannot masquerade as exploit reproductions', async () => {
+  const { createRequire } = await import('node:module');
+  const { parse } = createRequire(import.meta.url)('@solidity-parser/parser');
+  for (const file of ['07b-unprotected-visibility.t.sol', '42-short-address-attack.t.sol', '43-front-running.t.sol', '44-external-contract-ref.t.sol']) {
+    const source = await readFile(new URL(`../foundry/poc-fallbacks/${file}`, import.meta.url), 'utf8');
+    const ast = parse(source);
+    const contract = ast.children.find(node => node.type === 'ContractDefinition' && node.name === 'PoC');
+    const tests = contract.subNodes.filter(node => node.type === 'FunctionDefinition' && node.name.startsWith('test_'));
+    assert.ok(tests.length > 0);
+    for (const fn of tests) {
+      const first = fn.body.statements[0];
+      assert.equal(first.type, 'ExpressionStatement', `${file}: placeholder must stop before arbitrary calls`);
+      assert.equal(first.expression.type, 'FunctionCall');
+      assert.equal(first.expression.expression.name, 'revert');
+      assert.match(first.expression.arguments[0].value, /TEMPLATE_NOT_ADAPTED/);
     }
   }
 });

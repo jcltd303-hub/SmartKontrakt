@@ -1,6 +1,9 @@
+import { PocEvidenceBadge } from "@/components/poc-evidence-badge";
+import { classifyPocEvidence } from "@/lib/audit/poc-evidence";
+import type { PocOrigin } from "@/lib/audit/poc-evidence";
 import { requestPocRepair } from "@/lib/audit/ai.functions";
 import { useEffect, useState } from "react";
-import { Play, Loader2, CheckCircle2, XCircle, Server, AlertTriangle } from "lucide-react";
+import { Play, Loader2, Server, AlertTriangle } from "lucide-react";
 import {
   ADDRESS_RE,
   BACKEND_KEY,
@@ -33,6 +36,7 @@ import { RotateCw } from "lucide-react";
 interface FoundryLocalRunProps {
   /** Generated Foundry test code (aiReview.foundryTestCode). Must declare `contract PoC`. */
   testCode: string;
+  origin?: PocOrigin;
   /** Address of the audited contract, if the workbench fetched one. */
   address: string;
   /** Upstream RPC the backend forks from. Defaults to the backend's ETH_RPC_URL / public endpoint. */
@@ -45,7 +49,7 @@ interface FoundryLocalRunProps {
 type Health = BackendHealth;
 type RunResult = (PocResult & { passed: boolean }) | null;
 
-export function FoundryLocalRun({ testCode, address, rpcUrl, chainId = "ethereum", contractName = "Contract", contractBody = "" }: FoundryLocalRunProps) {
+export function FoundryLocalRun({ testCode, origin = "generated", address, rpcUrl, chainId = "ethereum", contractName = "Contract", contractBody = "" }: FoundryLocalRunProps) {
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND);
   const [health, setHealth] = useState<Health>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -241,22 +245,7 @@ export function FoundryLocalRun({ testCode, address, rpcUrl, chainId = "ethereum
 
       {result && (
         <div className="flex flex-col gap-2">
-          <div
-            className={`flex items-center gap-1.5 text-xs font-mono font-bold ${
-              result.passed ? "text-emerald-400" : "text-red-400"
-            }`}
-          >
-            {result.passed ? (
-              <CheckCircle2 className="w-4 h-4" />
-            ) : (
-              <XCircle className="w-4 h-4" />
-            )}
-            {result.passed
-              ? `PoC PASSED — exploit reproduced on fork (${result.durationMs}ms)`
-              : result.error
-                ? `Backend error: ${result.error}`
-                : `PoC FAILED — exploit did not reproduce on fork (${result.durationMs}ms)`}
-          </div>
+          <PocEvidenceBadge evidence={classifyPocEvidence({ code: testCode, origin, result, target: address, chainId })} />
           {!result.passed && !result.error && (
             <p className="text-[11px] font-mono text-[#a39886]">
               Failure is the signal, not a bug: guarded target, wrong interface, or fork state moved.

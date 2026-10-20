@@ -24,6 +24,10 @@ contract PoC is Test {
     }
 
     function test_exploit() public {
+        // TODO: Replace this guard only after implementing target-specific
+        // calldata and an observable before/after exploit-effect assertion.
+        // A successful low-level call alone is not evidence of a vulnerability.
+        revert("TEMPLATE_NOT_ADAPTED: target-specific exploit assertion required");
         address attackerEOA = makeAddr("attacker");
         
         // TODO: Adapt to the target's sensitive function (e.g., _internalSetOwner)

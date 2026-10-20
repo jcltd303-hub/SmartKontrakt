@@ -10,3 +10,13 @@ test("unchecked Solidity blocks produce a detector finding without crashing", as
     assert.ok(result.findings.some((f) => f.detector === "unchecked-block"));
   } finally { await server.close(); }
 });
+
+
+test("bytecode storage loops produce a gas finding without crashing", async () => {
+  const server = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true }, appType: "custom" });
+  try {
+    const { analyzeInput } = await server.ssrLoadModule("/src/lib/audit/engine.ts");
+    const result = analyzeInput("0x5b54600056", "Storage loop");
+    assert.ok(result.findings.some((f) => f.detector === "gas-estimator-dos"));
+  } finally { await server.close(); }
+});

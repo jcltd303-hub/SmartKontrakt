@@ -38,8 +38,14 @@ export function estimateGasAndDetectDos(ins: Instruction[]): GasEstimate {
     const cur = ins[i]!;
     totalGas += GAS_COSTS[cur.name] ?? 3; // 3 is default low gas
 
-    if ((cur.name === "JUMP" || cur.name === "JUMPI") && cur.imm) {
-      const targetPc = parseInt(cur.imm, 16);
+    // EVM jumps consume their destination from the stack; only PUSH carries
+    // an immediate. Recognize the local PUSH/JUMP pattern without guessing
+    // at dynamic destinations computed by intervening instructions.
+    const previous = ins[i - 1];
+    const target = previous?.name === "PUSH0" ? "0"
+      : previous && /^PUSH\d+$/.test(previous.name) ? previous.imm : undefined;
+    if ((cur.name === "JUMP" || cur.name === "JUMPI") && target !== undefined) {
+      const targetPc = parseInt(target, 16);
       const targetIndex = jumpDestinations.get(targetPc);
       
       // If jump points to an earlier instruction, it's a loop
