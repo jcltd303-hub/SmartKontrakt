@@ -107,7 +107,7 @@ test("no template decides from a single guessed call (ratchet)", async () => {
     "45-timestamp-dependence.t.sol",
   ]);
 
-  const dir = join(FIXTURES, "..", "poc-fallbacks");
+  const dir = FALLBACKS_DIR;
   const files = (await readdir(dir)).filter((f) => f.endsWith(".t.sol"));
   const offenders = [];
   for (const file of files) {
