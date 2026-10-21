@@ -21,4 +21,13 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
+# Node's default old-space cap is ~2GB on many builds — that is exactly what the
+# 43k-address run hit ("Reached heap limit Allocation failed"). Give it real
+# headroom, and let the operator override it. Keep this in step with the worker's
+# MEMORY_PARK_PCT watchdog: the worker parks the run at 85% of whatever cap is set
+# here, so raising the cap also raises the point at which it parks.
+WORKER_MAX_OLD_SPACE_MB="${WORKER_MAX_OLD_SPACE_MB:-3072}"
+export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=${WORKER_MAX_OLD_SPACE_MB}"
+echo "[start] node heap cap: ${WORKER_MAX_OLD_SPACE_MB}MB (override with WORKER_MAX_OLD_SPACE_MB=<mb>)"
+
 exec npx -y tsx pipeline-worker/worker.ts

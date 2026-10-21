@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  BoundedCache,
   tokenAmount,
   usdValue,
   formatUsd,
@@ -62,4 +63,38 @@ test("isZeroValue only fires on a CONFIRMED, fully priced zero", () => {
   // An unpriced holding means the total is a floor, so never "zero".
   assert.equal(isZeroValue(value({ unpriced: 1 })), false);
   assert.equal(isZeroValue(null), false);
+});
+
+
+test("BoundedCache stays bounded by entry count (the leak that OOM'd the worker)", () => {
+  const c = new BoundedCache<number>(3, 1_000_000, () => 10);
+  for (let i = 0; i < 10; i++) c.set(`k${i}`, i);
+  assert.equal(c.size, 3, "cache must not grow with the run");
+  assert.equal(c.get("k0"), undefined, "oldest entry evicted");
+  assert.equal(c.get("k9"), 9, "newest entry kept");
+});
+
+test("BoundedCache stays bounded by retained bytes", () => {
+  const c = new BoundedCache<string>(100, 100, (v) => v.length);
+  c.set("a", "x".repeat(60));
+  c.set("b", "y".repeat(60));
+  assert.ok(c.bytes <= 100, `retained bytes ${c.bytes} exceeded the budget`);
+  assert.equal(c.size, 1);
+});
+
+test("BoundedCache refuses a value larger than the whole budget", () => {
+  const c = new BoundedCache<string>(10, 100, (v) => v.length);
+  c.set("big", "z".repeat(500));
+  assert.equal(c.size, 0);
+  assert.equal(c.get("big"), undefined);
+});
+
+test("BoundedCache.get refreshes recency, so hot entries survive", () => {
+  const c = new BoundedCache<number>(2, 1_000_000, () => 1);
+  c.set("a", 1);
+  c.set("b", 2);
+  assert.equal(c.get("a"), 1); // touch a so it is no longer the oldest
+  c.set("c", 3);
+  assert.equal(c.get("a"), 1, "recently used entry must survive");
+  assert.equal(c.get("b"), undefined, "least recently used entry is evicted");
 });

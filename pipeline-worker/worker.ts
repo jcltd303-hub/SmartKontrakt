@@ -40,8 +40,10 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import v8 from "node:v8";
 
 import type { BatchItem } from "../src/lib/audit/address-fetcher.ts";
+import { valueCacheStats } from "../src/lib/audit/value.ts";
 import type { ComprehensiveRecordInput } from "../src/lib/audit/persist.server.ts";
 
 // ---------------------------------------------------------------- .env ----
@@ -135,6 +137,14 @@ const HOST = "127.0.0.1";
 const FLUSH_MAX_RECORDS = 50; // writeAuditBatch cap
 const FLUSH_MAX_BYTES = 1_400_000; // writeAuditBatch caps at 1.5MB — headroom
 const FLUSH_MAX_AGE_MS = 30_000;
+
+// Memory watchdog. A 43k-address run died with "Reached heap limit Allocation
+// failed" after ~3 hours (2026-10-21) with nothing logged about the trend, so a
+// multi-day run could only fail blind. Now the heap is reported periodically and
+// the run PARKS (resumable) before it would crash: on /start the worker skips
+// already-saved rows, so parking costs nothing but a restart.
+const MEMORY_CHECK_EVERY = 50;
+const MEMORY_PARK_PCT = 85;
 const MAX_BODY = 1024 * 1024; // bytes
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -198,6 +208,15 @@ const pending: ComprehensiveRecordInput[] = [];
 let pendingBytes = 0;
 let pendingSince: number | null = null;
 let shuttingDown = false;
+
+/** Node's old-space limit, so the watchdog can express pressure as a percentage. */
+function heapLimitMb(): number {
+  try {
+    return Math.round(v8.getHeapStatistics().heap_size_limit / 1024 / 1024);
+  } catch {
+    return 0;
+  }
+}
 
 function writeStatusFile(): void {
   try {
@@ -419,6 +438,26 @@ async function runLoop(): Promise<void> {
         console.log(
           `[worker] ${status.completed}/${status.total} completed (${status.failed} failed, ${status.skipped} skipped)`,
         );
+      }
+      if (status.completed % MEMORY_CHECK_EVERY === 0) {
+        const mu = process.memoryUsage();
+        const limitMb = heapLimitMb();
+        const heapMb = Math.round(mu.heapUsed / 1024 / 1024);
+        const pct = limitMb > 0 ? Math.round((heapMb / limitMb) * 100) : 0;
+        const vc = valueCacheStats();
+        console.log(
+          `[worker] memory: heap ${heapMb}MB / ~${limitMb}MB (${pct}%), rss ${Math.round(mu.rss / 1024 / 1024)}MB, valuation cache ${vc.entries} entries / ${Math.round(vc.bytes / 1024)}KB`,
+        );
+        if (limitMb > 0 && pct >= MEMORY_PARK_PCT) {
+          // Flush what we have, then park: resume skips the saved rows.
+          await flush();
+          status.lastError =
+            `memory pressure: heap ${heapMb}MB of ~${limitMb}MB (${pct}%) — run parked so it resumes instead of crashing. Restart with a larger WORKER_MAX_OLD_SPACE_MB if this recurs.`;
+          console.warn("[worker]", status.lastError);
+          pauseRequested = true;
+          writeStatusFile();
+          break;
+        }
       }
       writeStatusFile();
       if (status.delayMs > 0 && ctx.index < ctx.items.length) await sleep(status.delayMs);
