@@ -74,6 +74,29 @@ export function riskScore(findings: Finding[]): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
+/**
+ * The band, in the vocabulary stored in the knowledge base ("none" is not one of
+ * the severities the chunk table accepts).
+ *
+ * Lives here, with `riskBand`, so the chunk tag and the UI filter cannot
+ * disagree. They used to: the RAG chunks had their own 60/30 scale while the
+ * Records tab filtered on 75/50/25, so a contract scoring 65 was tagged
+ * "critical" in the knowledge base and shown as "high" in the list.
+ */
+export function riskBandForChunk(score: number): Severity {
+  const band = riskBand(score);
+  return band === "none" ? "info" : band;
+}
+
+/** Display label per band, so every surface names the same band the same way. */
+export const RISK_LABEL: Record<RiskBand, string> = {
+  critical: "CRITICAL",
+  high: "HIGH",
+  medium: "MEDIUM",
+  low: "LOW",
+  none: "NONE",
+};
+
 /** The band a score falls in — the same thresholds the UI filters on. */
 export function riskBand(score: number): RiskBand {
   if (score >= 75) return "critical";

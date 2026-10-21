@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { riskScore, riskBand, worstFinding, SEVERITY_FLOOR } from "./risk.ts";
+import { riskScore, riskBand, riskBandForChunk, RISK_LABEL, worstFinding, SEVERITY_FLOOR } from "./risk.ts";
 import type { Finding, Severity } from "./types.ts";
 
 function f(severity: Severity, over: Partial<Finding> = {}): Finding {
@@ -76,4 +76,31 @@ test("the score is clamped to 0-100", () => {
 test("worstFinding picks by severity, not order", () => {
   assert.equal(worstFinding([f("low"), f("critical"), f("high")])?.severity, "critical");
   assert.equal(worstFinding([]), null);
+});
+
+
+test("one severity vocabulary: the knowledge-base tag matches the UI band", () => {
+  // The RAG chunks had their own 60/30 scale while the Records tab filtered on
+  // 75/50/25, so a contract scoring 65 was tagged "critical" in the knowledge
+  // base and displayed as "high" in the list. Every consumer now reads riskBand.
+  assert.equal(riskBandForChunk(65), "high");
+  assert.equal(riskBand(65), "high");
+  assert.equal(riskBandForChunk(20), "low", "a low score must not be tagged medium");
+  assert.equal(riskBandForChunk(80), "critical");
+  assert.equal(riskBandForChunk(0), "info", "riskBand's \"none\" is not a chunk severity");
+});
+
+test("the chunk tag and the band agree at every boundary", () => {
+  for (const score of [0, 1, 24, 25, 49, 50, 74, 75, 100]) {
+    const band = riskBand(score);
+    const chunk = riskBandForChunk(score);
+    assert.equal(chunk === "info" ? "none" : chunk, band, `score ${score} must agree`);
+  }
+});
+
+test("every band has a label, so no surface has to invent one", () => {
+  for (const band of ["critical", "high", "medium", "low", "none"] as const) {
+    assert.equal(typeof RISK_LABEL[band], "string");
+    assert.ok(RISK_LABEL[band].length > 0);
+  }
 });

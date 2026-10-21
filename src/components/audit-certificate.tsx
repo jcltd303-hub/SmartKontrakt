@@ -1,5 +1,6 @@
 import { Flame, Award, Printer, X, CheckCircle2 } from "lucide-react";
 import type { Report } from "@/lib/audit/types";
+import { riskBand, RISK_LABEL } from "@/lib/audit/risk";
 
 interface AuditCertificateProps {
   report: Report;
@@ -87,11 +88,11 @@ export function AuditCertificate({ report, contractBody, onClose }: AuditCertifi
             <div className="p-3.5 bg-[#1c1a16] border border-[#3a3428] rounded-lg print:border print:border-black print:bg-neutral-50">
               <span className="text-[10px] font-mono text-[#a39886] uppercase block mb-1">Assessed Risk Score</span>
               <div className="flex items-center gap-2 font-mono">
-                <span className={`text-xl font-bold ${report.riskScore >= 50 ? "text-red-400 print:text-red-700" : "text-emerald-400 print:text-emerald-700"}`}>
+                <span className={`text-xl font-bold ${riskBand(report.riskScore) === "critical" || riskBand(report.riskScore) === "high" ? "text-red-400 print:text-red-700" : "text-emerald-400 print:text-emerald-700"}`}>
                   {report.riskScore} / 100
                 </span>
                 <span className="text-[10px] px-1.5 py-0.5 rounded border border-[#3a3428] text-[#a39886]">
-                  {report.riskScore >= 70 ? "CRITICAL" : report.riskScore >= 40 ? "HIGH" : "MODERATE/LOW"}
+                  {RISK_LABEL[riskBand(report.riskScore)]}
                 </span>
               </div>
             </div>

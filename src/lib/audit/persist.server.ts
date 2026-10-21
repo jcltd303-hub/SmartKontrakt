@@ -5,7 +5,7 @@ import type { Finding, Inventory, PocResult, Report, Severity } from "./types";
 import type { ProxyAnalysis } from "./proxy-resolver";
 import type { CallProbeResult } from "./simulator";
 import type { AiSecurityReview } from "./ai-review.server";
-import { OPENROUTER_API_URL, resolveOpenRouterConfig, stripThinkBlocks } from "./ai-review.server";
+import { postChatWithModelFallback, resolveOpenRouterConfig, stripThinkBlocks } from "./ai-review.server";
 import { openRouterLimiter, withRetry } from "./rate-limit";
 import { pocRunKey } from "./poc-run-key.ts";
 
@@ -456,7 +456,7 @@ export async function secondPass(report: Report, body: string): Promise<{ text: 
   // the old xAI/Grok path (XAI_API_KEY, api.x.ai, grok-4.5) was never
   // migrated and silently returned "unavailable" on every audit.
   // Prose reasoning over findings + a source excerpt → the "review" model.
-  const { apiKey, model } = resolveOpenRouterConfig(process.env, "review");
+  const { apiKey } = resolveOpenRouterConfig(process.env, "review");
   if (!apiKey) return { text: null, status: "unavailable" };
   const listed = report.findings
     .slice(0, 12)
@@ -467,16 +467,17 @@ export async function secondPass(report: Report, body: string): Promise<{ text: 
   try {
     const res = await withRetry(async () => {
       await openRouterLimiter.acquire();
-      return fetch(OPENROUTER_API_URL, {
-        method: "POST",
-        signal: AbortSignal.timeout(28_000),
+      return postChatWithModelFallback({
+        purpose: "review",
+        apiKey,
+        timeoutMs: 28_000,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
           "HTTP-Referer": process.env.APP_URL?.trim() || "https://smart-kontrakt.vercel.app",
           "X-Title": "SmartKontrakt / Kiln",
         },
-        body: JSON.stringify({
+        makeBody: (model) => ({
           model,
           max_tokens: 2000,
           temperature: 0.7,

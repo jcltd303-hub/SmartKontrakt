@@ -1,8 +1,8 @@
 import type { Finding } from "./types.ts";
 import { openRouterLimiter, withRetry } from "./rate-limit.ts";
 import {
-  OPENROUTER_API_URL,
   extractJsonContent,
+  postChatWithModelFallback,
   resolveOpenRouterConfig,
 } from "./ai-review.server.ts";
 import { POC_FALLBACK_CATALOG, selectPocFallbacks } from "./poc-fallbacks.ts";
@@ -179,7 +179,7 @@ export async function runDeepAgentRound(
   fourbyte?: FourbyteResults,
 ): Promise<DeepAgentRoundResult> {
   // Structured output (JSON hypotheses + tool-calling shape) → the "json" model.
-  const { apiKey, model } = resolveOpenRouterConfig(process.env, "json");
+  const { apiKey } = resolveOpenRouterConfig(process.env, "json");
   if (!apiKey) {
     return { hypotheses: [], stopReason: "no_api_key", llmMs: 0 };
   }
@@ -213,15 +213,23 @@ export async function runDeepAgentRound(
 
   const response = await withRetry(async () => {
     await openRouterLimiter.acquire();
-    return fetch(OPENROUTER_API_URL, {
-      method: "POST",
+    // Routed through the fallback helper: this round died with
+    // "OpenRouter returned HTTP 404 ... This model is unavailable for free"
+    // when a free-tier id was withdrawn, which the chain now absorbs.
+    return postChatWithModelFallback({
+      purpose: "json",
+      apiKey,
+      // The prompt carries source + templates + prior results, and the
+      // model must emit up to 2 full PoCs — 60s was not enough (every
+      // round timed out on the pipeline). 180s for one attempt.
+      timeoutMs: 180_000,
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
         "HTTP-Referer": referer,
         "X-Title": "SmartKontrakt / Kiln Deep Agent",
       },
-      body: JSON.stringify({
+      makeBody: (model) => ({
         model,
         messages: [
           { role: "system", content: system },
@@ -231,10 +239,6 @@ export async function runDeepAgentRound(
         temperature: 0.7,
         max_tokens: 8000,
       }),
-      // The prompt carries source + templates + prior results, and the
-      // model must emit up to 2 full PoCs — 60s was not enough (every
-      // round timed out on the pipeline). 180s for one attempt.
-      signal: AbortSignal.timeout(180_000),
     });
   }, {
     retries: 3,
@@ -359,7 +363,7 @@ export async function repairPocCode(
   body = "",
 ): Promise<{ fixedCode: string; llmMs: number }> {
   // Foundry/Solidity code repair → the "code" model.
-  const { apiKey, model } = resolveOpenRouterConfig(process.env, "code");
+  const { apiKey } = resolveOpenRouterConfig(process.env, "code");
   if (!apiKey) {
     throw new Error("OPENROUTER_API_KEY is not set");
   }
@@ -396,15 +400,19 @@ Respond strictly as JSON matching this schema:
 
   const response = await withRetry(async () => {
     await openRouterLimiter.acquire();
-    return fetch(OPENROUTER_API_URL, {
-      method: "POST",
+    return postChatWithModelFallback({
+      purpose: "code",
+      apiKey,
+      // A repair is one PoC, not a full round — but the model still
+      // needs room to read the failure + rewrite the test.
+      timeoutMs: 180_000,
       headers: {
         Authorization: ["Bearer", apiKey].join(" "),
         "Content-Type": "application/json",
         "HTTP-Referer": referer,
         "X-Title": "SmartKontrakt / Kiln PoC repair",
       },
-      body: JSON.stringify({
+      makeBody: (model) => ({
         model,
         messages: [
           {
@@ -418,9 +426,6 @@ Respond strictly as JSON matching this schema:
         temperature: 0.2,
         max_tokens: 8000,
       }),
-      // A repair is one PoC, not a full round — but the model still
-      // needs room to read the failure + rewrite the test.
-      signal: AbortSignal.timeout(180_000),
     });
   }, {
     retries: 3,

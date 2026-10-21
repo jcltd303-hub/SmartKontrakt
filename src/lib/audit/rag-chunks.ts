@@ -4,6 +4,7 @@ import type { CallProbeResult } from "./simulator.ts";
 import { resolveContractDisplayName } from "./simulator.ts";
 import { tokenize } from "./tokenize.ts";
 import type { AiSecurityReview } from "./ai-review.server.ts";
+import { riskBandForChunk } from "./risk.ts";
 
 
 export interface RagDbRow {
@@ -114,7 +115,7 @@ export function buildReportRagChunks(params: RagIndexInput): Omit<RagDbRow, "cre
       category: "threat_model",
       title: `Executive Threat Model: ${contractName}`,
       content: `Threat Model Analysis for ${contractName}:\n\n${narrativeText}`,
-      severity: report.riskScore > 60 ? "critical" : report.riskScore > 30 ? "high" : "medium",
+      severity: riskBandForChunk(report.riskScore),
       swc: null,
       detector: "ai-threat-model",
       contract_name: contractName,
