@@ -62,7 +62,9 @@ test("every dataset contract a template claims has a fixture port", async () => 
     for (const m of src.matchAll(/dataset\/[a-z_]+\/[A-Za-z0-9_]+\.sol/g)) declared.add(m[0]);
   }
 
-  const missing = [...claimed].filter((s) => !declared.has(s)).sort();
+  // provenance records `<category>/<file>.sol`; the port headers record the full
+  // `dataset/<category>/<file>.sol` path. Normalise before comparing.
+  const missing = [...claimed].filter((s) => !declared.has(`dataset/${s}`)).sort();
   assert.deepEqual(missing, [], `no fixture port for: ${missing.join(", ")}`);
 });
 
