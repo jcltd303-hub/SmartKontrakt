@@ -22,8 +22,10 @@ test("every fixture is differential: reproduce, and do NOT reproduce when fixed"
     assert.match(src, /import \{Test, console\} from "forge-std\/Test\.sol";/, `${file}: forge-std import`);
     assert.match(src, /test_fixtureReproduces/, `${file}: missing the reproduction half`);
     assert.match(src, /test_fixtureDoesNotReproduce/, `${file}: missing the precision half`);
-    // The precision half must really attempt the attack, not just assert nothing.
-    assert.match(src, /receive\(\) external payable/, `${file}: attacker never attempts re-entry`);
+    // Both halves must make a real assertion — not just call the contract.
+    const assertions = src.match(/assert(?:Eq|Gt|Lt|Ge|Le|True|False|NotEq)\(/g) ?? [];
+    assert.ok(assertions.length >= 2, `${file}: needs assertions in both halves`);
+    assert.match(src, /vm\.prank|vm\.startPrank/, `${file}: the exploit must be driven by a distinct actor`);
   }
 });
 
@@ -38,6 +40,32 @@ test("every fixture port carries provenance and preserves the vulnerable orderin
     assert.match(src, /dataset\/[a-z_]+\/[A-Za-z0-9_]+\.sol/, `${file}: provenance must name the dataset path`);
     assert.match(src, /pragma solidity \^?0\.8/, `${file}: ports must be migrated to >= 0.8`);
   }
+});
+
+test("every dataset contract a template claims has a fixture port", async () => {
+  // The coverage guarantee: if a template says it derives from a SmartBugs
+  // contract, a port of that contract must exist. This is what keeps the
+  // "grounded in real code" claim honest as templates are added.
+  const { POC_FALLBACK_CATALOG } = await import("../src/lib/audit/poc-fallbacks.ts");
+  const claimed = new Set();
+  for (const entry of POC_FALLBACK_CATALOG) {
+    if (entry.provenance.kind === "dataset") {
+      for (const source of entry.provenance.sources) claimed.add(source);
+    }
+  }
+  assert.ok(claimed.size >= 20, `expected many claimed dataset contracts, got ${claimed.size}`);
+
+  const srcDir = join(FIXTURES, "src");
+  const declared = new Set();
+  for (const file of (await readdir(srcDir)).filter((f) => f.endsWith(".sol") && !/Fixed\.sol$/.test(f))) {
+    const src = await readFile(join(srcDir, file), "utf8");
+    for (const m of src.matchAll(/dataset\/[a-z_]+\/[A-Za-z0-9_]+\.sol/g)) declared.add(m[0]);
+  }
+
+  // provenance records `<category>/<file>.sol`; the port headers record the full
+  // `dataset/<category>/<file>.sol` path. Normalise before comparing.
+  const missing = [...claimed].filter((s) => !declared.has(`dataset/${s}`)).sort();
+  assert.deepEqual(missing, [], `no fixture port for: ${missing.join(", ")}`);
 });
 
 test("every dataset-backed template names a real dataset contract", async () => {

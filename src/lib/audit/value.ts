@@ -212,12 +212,83 @@ export async function fetchDefillamaPrices(
   return out;
 }
 
-/** In-memory valuation cache, so a batch run values each address once. */
-const cache = new Map<string, { at: number; value: AddressValue }>();
+/**
+ * A bounded LRU. The valuation cache MUST NOT grow with the run.
+ *
+ * It previously was an unbounded Map with a read-time TTL and no eviction, so a
+ * 43k-address worker run retained one full AddressValue per address for the
+ * whole run — every holding, price, symbol and note — until Node exhausted its
+ * ~2GB old space and died ("Reached heap limit Allocation failed"). A TTL only
+ * expires an entry if something reads it again; an address that is valued once
+ * and never revisited is never reclaimed. Bounding by entry count AND retained
+ * bytes is what actually keeps the worker flat.
+ */
+export class BoundedCache<V> {
+  private entries = new Map<string, { value: V; bytes: number }>();
+  private retainedBytes = 0;
+  // Declared and assigned explicitly rather than as constructor parameter
+  // properties: Node's strip-only TypeScript mode (which `npm test` runs under)
+  // rejects `constructor(private readonly x: T)` with
+  // ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX.
+  private readonly maxEntries: number;
+  private readonly maxBytes: number;
+  private readonly sizeOf: (value: V) => number;
+  constructor(maxEntries: number, maxBytes: number, sizeOf: (value: V) => number) {
+    this.maxEntries = maxEntries;
+    this.maxBytes = maxBytes;
+    this.sizeOf = sizeOf;
+  }
+  get size(): number { return this.entries.size; }
+  get bytes(): number { return this.retainedBytes; }
+  get(key: string): V | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    // Refresh recency so the LRU order reflects use, not insertion.
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.value;
+  }
+  set(key: string, value: V): void {
+    const bytes = this.sizeOf(value);
+    // Never retain something that alone blows the budget.
+    if (bytes > this.maxBytes) return;
+    const previous = this.entries.get(key);
+    if (previous) {
+      this.retainedBytes -= previous.bytes;
+      this.entries.delete(key);
+    }
+    this.entries.set(key, { value, bytes });
+    this.retainedBytes += bytes;
+    while (this.entries.size > this.maxEntries || this.retainedBytes > this.maxBytes) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.retainedBytes -= this.entries.get(oldest)!.bytes;
+      this.entries.delete(oldest);
+    }
+  }
+  clear(): void {
+    this.entries.clear();
+    this.retainedBytes = 0;
+  }
+}
+
+/** In-memory valuation cache, so a batch values each address once — bounded. */
+const CACHE_MAX_ENTRIES = 512;
+const CACHE_MAX_BYTES = 8 * 1024 * 1024;
+const cache = new BoundedCache<{ at: number; value: AddressValue }>(
+  CACHE_MAX_ENTRIES,
+  CACHE_MAX_BYTES,
+  (entry) => JSON.stringify(entry.value).length,
+);
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 export function clearValueCache(): void {
   cache.clear();
+}
+
+/** Cache occupancy, for the worker's memory watchdog. */
+export function valueCacheStats(): { entries: number; bytes: number } {
+  return { entries: cache.size, bytes: cache.bytes };
 }
 
 /**

@@ -12,6 +12,7 @@ EVM contract audit workbench with a batch address pipeline, comprehensive audit 
 - Supabase summary sync uses its own bounded writer: one REST request per batch, minimal responses, finite retries, and surfaced errors. Pending summary acknowledgments are checkpointed and replayed after reload, even when the main archive already saved the report. Corrected saved connection settings apply to retries.
 - IndexedDB stores all address summaries and updates only changed positions during processing. On reload, interrupted or unacknowledged results return to pending with the same scan ID. Keep the browser open until pending writes drain; full report bodies are not persisted in the browser checkpoint.
 - Switching between pipeline and workbench views keeps the pipeline mounted. Pausing stops after the current address and drains both writers.
+- **Worker memory stays flat.** Every per-address cache in the worker is bounded: the valuation cache holds at most 512 entries / 8 MB (a TTL alone is not enough — an entry valued once and never revisited is never reclaimed, which is what exhausted the heap on a 43k-address run). `pipeline-worker/start.sh` raises Node's old-space cap (default 3072 MB, override with `WORKER_MAX_OLD_SPACE_MB`), and the worker reports heap/RSS/cache every 50 addresses and **parks the run at 85% of the cap** instead of crashing — resuming skips already-saved rows, so a park costs only a restart.
 
 ## Run and verify
 

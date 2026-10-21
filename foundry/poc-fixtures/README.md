@@ -32,6 +32,16 @@ states exactly which edits were made. For a 0.4/0.5 contract those edits are the
 visibility); **the vulnerable ordering is preserved verbatim**, because that
 ordering *is* the bug.
 
+## What's covered
+
+Every SmartBugs-Curated contract that a fallback template claims to derive from
+has a port here — enforced by `scripts/verify-poc-fixtures.test.mjs`, which fails
+if a template's `provenance.sources` names a dataset contract with no port. As of
+this writing that is 29 ports across all nine DASP classes: reentrancy (6),
+access control (9), arithmetic (3), unchecked low-level calls (2), denial of
+service (3), bad randomness (2), front running (2), time manipulation (1), short
+addresses (1).
+
 ## Running
 
 ```sh

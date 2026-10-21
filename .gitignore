@@ -13,3 +13,9 @@ coverage/
 
 # Local database connection settings can contain credentials.
 .supabase-db-config.json
+
+# Foundry fixture project: dependencies and build output are not committed
+# (`npm run check:fixtures` installs forge-std and builds on demand).
+foundry/poc-fixtures/lib/
+foundry/poc-fixtures/out/
+foundry/poc-fixtures/cache/
