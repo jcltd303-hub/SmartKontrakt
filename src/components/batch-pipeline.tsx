@@ -10,6 +10,7 @@ import {
   SUPPORTED_CHAINS,
   type BatchItem,
 } from "@/lib/audit/address-fetcher";
+import { isStaleVersion } from "@/lib/audit/analyzer-version";
 import { detectProxyArchitecture } from "@/lib/audit/proxy-resolver";
 import { probeContractInterfaces } from "@/lib/audit/simulator";
 import {
@@ -539,6 +540,9 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
     try {
       let loadedCount = 0;
       let matchedCount = 0;
+      // Records produced by an older analyzer. They are NOT marked complete:
+      // leaving them pending is what makes a freshen run re-analyze them.
+      let staleCount = 0;
 
       // 1. Load directly from Supabase PostgreSQL archive
       try {
@@ -551,12 +555,16 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
             if (!scan.targetAddress) continue;
             const key = `${scan.chainId || "ethereum"}:${scan.targetAddress.toLowerCase()}`;
             const existing = map.get(key);
+            const stale = isStaleVersion(scan.analyzerVersion);
+            if (stale) staleCount++;
             loadedCount++;
             if (existing) {
               matchedCount++;
               map.set(key, {
                 ...existing,
-                status: "completed",
+                // Stale: keep it pending so the next run refreshes it rather
+                // than treating an older analyzer's verdict as final.
+                status: stale ? "pending" : "completed",
                 riskScore: scan.riskScore,
                 balanceWei: scan.balanceWei ?? null,
                 valueUsd: scan.valueUsd ?? null,
@@ -574,7 +582,7 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
                 address: scan.targetAddress,
                 label: scan.label || scan.contractName || scan.targetAddress,
                 chainId: scan.chainId || "ethereum",
-                status: "completed",
+                status: stale ? "pending" : "completed",
                 riskScore: scan.riskScore,
                 balanceWei: scan.balanceWei ?? null,
                 valueUsd: scan.valueUsd ?? null,
@@ -622,7 +630,12 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
       }
 
       if (loadedCount > 0) {
-        showNotice(`Resumed from Supabase: ${loadedCount} audits indexed (${matchedCount} in current queue marked complete).`);
+        showNotice(
+          `Resumed from Supabase: ${loadedCount} audits indexed (${matchedCount} in current queue). ` +
+          (staleCount > 0
+            ? `${staleCount} were produced by an older analyzer and stay pending — start a run to refresh them.`
+            : "All are current."),
+        );
       } else {
         showNotice("No prior audits found in Supabase database to resume from.", false);
       }
