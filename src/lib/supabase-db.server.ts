@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
+import { encodePostgresCredentials } from "./pg-url.ts";
 
 export type SupabaseDbConfig = {
   projectName: string;
@@ -86,7 +87,8 @@ export function saveSupabaseDbConfig(cfg: Partial<SupabaseDbConfig>): SupabaseDb
  */
 export function buildSupabasePostgresUrl(cfg: SupabaseDbConfig): string {
   if (cfg.mode === "custom" && cfg.customUrl?.trim()) {
-    return cfg.customUrl.trim();
+    // A pasted URL may carry a raw password; encode it before use.
+    return encodePostgresCredentials(cfg.customUrl);
   }
 
   // Credentials must be supplied explicitly, never recovered from source defaults.
@@ -97,7 +99,9 @@ export function buildSupabasePostgresUrl(cfg: SupabaseDbConfig): string {
   if (cfg.host?.trim() && cfg.user?.trim()) {
     const port = cfg.port || 6543;
     const db = cfg.database || "postgres";
-    return `postgresql://${cfg.user.trim()}:${encPw}@${cfg.host.trim()}:${port}/${db}`;
+    // Encode the user as well as the password: the username sits in the same
+    // userinfo section and is subject to the same rules.
+    return `postgresql://${encodeURIComponent(cfg.user.trim())}:${encPw}@${cfg.host.trim()}:${port}/${db}`;
   }
 
   const cleanRef = (cfg.projectRef || DEFAULT_SUPABASE_DB_CONFIG.projectRef)
@@ -144,7 +148,7 @@ export async function testPostgresConnection(connectionString: string): Promise<
   }
 
   const start = Date.now();
-  const cleanUrl = connectionString.trim().replace(/([?&])sslmode=[^&]*(&|$)/, "$1").replace(/[?&]$/, "");
+  const cleanUrl = encodePostgresCredentials(connectionString).replace(/([?&])sslmode=[^&]*(&|$)/, "$1").replace(/[?&]$/, "");
   const pool = new pg.Pool({
     connectionString: cleanUrl,
     ssl: { rejectUnauthorized: false },
@@ -201,7 +205,7 @@ export async function applyMigrationsToPostgres(connectionString: string): Promi
   appliedCount: number;
   message: string;
 }> {
-  const cleanUrl = connectionString.trim().replace(/([?&])sslmode=[^&]*(&|$)/, "$1").replace(/[?&]$/, "");
+  const cleanUrl = encodePostgresCredentials(connectionString).replace(/([?&])sslmode=[^&]*(&|$)/, "$1").replace(/[?&]$/, "");
   const pool = new pg.Pool({
     connectionString: cleanUrl,
     ssl: { rejectUnauthorized: false },
