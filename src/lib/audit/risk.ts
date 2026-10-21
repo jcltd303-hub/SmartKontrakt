@@ -20,6 +20,7 @@
  * separate so a critical on a valueless contract still ranks as a critical.
  */
 import type { Finding, Severity } from "./types.ts";
+import { severityRank } from "./severity.ts";
 
 export type RiskBand = "critical" | "high" | "medium" | "low" | "none";
 
@@ -32,8 +33,6 @@ export const SEVERITY_FLOOR: Record<Severity, number> = {
   info: 0,
 };
 
-const RANK: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-
 /** Maximum the "more findings" term may add, so volume can never dominate severity. */
 export const MAX_VOLUME_BONUS = 12;
 /** Points added when at least one finding has a reproduced (fork-passed) exploit. */
@@ -44,7 +43,9 @@ export const MAX_COMPOUND_BONUS = 6;
 /** The most severe finding, by severity rank. */
 export function worstFinding(findings: Finding[]): Finding | null {
   if (findings.length === 0) return null;
-  return findings.reduce((worst, f) => (RANK[f.severity] < RANK[worst.severity] ? f : worst));
+  return findings.reduce((worst, f) =>
+    severityRank(f.severity) < severityRank(worst.severity) ? f : worst,
+  );
 }
 
 /**
