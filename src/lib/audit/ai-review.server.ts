@@ -43,7 +43,13 @@ export const OPENROUTER_MODELS = {
   // here, so the SmartPoC repair failed every time. A general free model that
   // does answer the API, ranked for programming.
   code: "nvidia/nemotron-3-ultra-550b-a55b:free",
-  json: "qwen/qwen3.8-27b:free",
+  // Was `qwen/qwen3.8-27b:free`, which OpenRouter answered with HTTP 404:
+  // "This model is unavailable for free. The paid version is available now -
+  // use this slug instead: qwen/qwen3.8-27b". A free-tier id can be withdrawn
+  // at any time, which is why the fallback chain below matters more than the
+  // choice: with one verified-working free model, all three purposes point at
+  // it rather than at an id that may have been pulled.
+  json: "nvidia/nemotron-3-ultra-550b-a55b:free",
 } as const;
 
 export type OpenRouterPurpose = keyof typeof OPENROUTER_MODELS;
@@ -331,6 +337,8 @@ Your tasks:
    - declare \`contract PoC is Test\` and \`import "forge-std/Test.sol";\`
    - in setUp(): fork live chain state with \`vm.createSelectFork(vm.envString("POC_RPC_URL"))\` (pin a block with \`vm.envUint("POC_FORK_BLOCK")\` when it is nonzero) and attach to the live target via \`vm.envAddress("POC_TARGET")\` — never hardcode a target address
    - fund an attacker with \`vm.deal\`, execute the attack against the forked live contract, and assert a balance/profit change
+   - when the entry point is a GUESS (an unverified target, or a function name you inferred rather than read), do NOT commit to one name. Try the plausible ones and judge by the OBSERVED STATE DELTA, not by the call returning: a no-op or already-guarded function returns successfully and changes nothing, so a single wrong name reports "not reproduced" for a vulnerability that exists under another. For a destroy/selfdestruct finding try at least kill(), destroy(), selfdestruct(), terminate(), burn(), close() and destroy(address) before concluding, and name in the failure message which selectors you tried.
+   - when the finding is refuted (the assertion fails), say so plainly in the threat model rather than asserting the exploit as fact: the test result is the evidence and it may contradict the narrative.
 3. Provide a 2-sentence economic risk summary.
 
 Format your response strictly as JSON with this schema:

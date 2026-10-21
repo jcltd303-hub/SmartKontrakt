@@ -3,6 +3,7 @@ import { SUPPORTED_CHAINS, type BatchItem } from "@/lib/audit/address-fetcher";
 import { balanceLabel, nativeSymbol } from "@/lib/audit/balance";
 import { formatUsd } from "@/lib/audit/value";
 import { Download, Search, ExternalLink, Copy, Check, CheckCircle2, XCircle, Loader2, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { riskBand } from "@/lib/audit/risk";
 
 type Setter<T> = Dispatch<SetStateAction<T>>;
 interface PipelineQueueTableProps {
@@ -226,9 +227,9 @@ export function PipelineQueueTable({
                           {typeof item.riskScore === "number" ? (
                             <span
                               className={`px-1.5 py-0.5 rounded text-[11px] ${
-                                item.riskScore >= 70
+                                riskBand(item.riskScore) === "critical"
                                   ? "bg-red-950 text-red-300"
-                                  : item.riskScore >= 40
+                                  : riskBand(item.riskScore) === "high"
                                   ? "bg-amber-950 text-amber-300"
                                   : "bg-emerald-950 text-emerald-300"
                               }`}
