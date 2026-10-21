@@ -106,13 +106,44 @@ curl -s -X POST http://127.0.0.1:8788/start \
 - `/status` reports `deepAgentRuns` (addresses that ran the agent) and
   `deepAgentConfirmed` (fork-confirmed findings total).
 
-## Resume
+## Resume and freshness
 
-No checkpoint file. On `/start` the worker queries Supabase for
-already-saved `(chain, address)` pairs and skips them — the same resume
-semantics as the browser's Resume-from-Supabase. Restarting after a
-crash or a stop re-skips everything already saved. Progress is also
-written to `pipeline-worker/status.json` on every flush.
+No checkpoint file. On `/start` the worker queries Supabase for saved
+`(chain, address)` pairs — the same resume semantics as the browser's
+Resume-from-Supabase. Restarting after a crash or a stop re-skips what
+is already done. Progress is also written to
+`pipeline-worker/status.json` on every flush.
+
+**Resume is version-aware.** Every saved record carries a stamp naming
+the analyzer that produced it (`analyzer_version`, migration 0014): a
+baseline string plus a fingerprint computed from the detector set and
+the scoring model. A row is skipped only when its stamp matches the
+current analyzer. Records written by older code — including every row
+predating the column, which is NULL and therefore stale by definition —
+are **re-analyzed** rather than skipped.
+
+That is what "freshen the archive" means operationally: after any change
+to detectors, scoring, value-at-risk, ABI gathering or the PoC pipeline,
+start a run and the stale rows refresh themselves. There is no wipe step
+and no manual list to maintain.
+
+The `refresh` field on `/start` selects the policy:
+
+| `refresh` | Behaviour |
+| --- | --- |
+| `stale` (default) | skip rows the current analyzer saved; re-analyze the rest |
+| `all` | re-analyze every address in the file, ignoring the archive |
+| `none` | legacy: any saved row counts as done, stale or not |
+
+Ask what a freshen would cost before committing to a long run:
+
+```sh
+curl -s http://127.0.0.1:8788/freshness
+# { "total": 43157, "current": 0, "stale": 43157, "analyzer": "2026-10-21.1+..." }
+```
+
+The startup log and `/status` both report `stale` alongside `skipped`, so
+you can see how much of the run is a refresh.
 
 ## Safety
 

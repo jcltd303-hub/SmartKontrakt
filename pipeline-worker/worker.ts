@@ -44,6 +44,8 @@ import v8 from "node:v8";
 
 import type { BatchItem } from "../src/lib/audit/address-fetcher.ts";
 import { valueCacheStats } from "../src/lib/audit/value.ts";
+import { analyzerStamp } from "../src/lib/audit/analyzer-version.ts";
+import { savedScanVersions, scanFreshness } from "../src/lib/audit/persist.server.ts";
 import type { ComprehensiveRecordInput } from "../src/lib/audit/persist.server.ts";
 
 // ---------------------------------------------------------------- .env ----
@@ -158,6 +160,10 @@ type Status = {
   completed: number;
   failed: number;
   skipped: number;
+  /** Saved by an older analyzer — re-analyzed on this run. */
+  stale: number;
+  /** Freshness policy for this run: stale (default) | all | none. */
+  refresh: string;
   current: string | null;
   startedAt: string | null;
   lastFlushAt: string | null;
@@ -181,6 +187,8 @@ let status: Status = {
   completed: 0,
   failed: 0,
   skipped: 0,
+  stale: 0,
+  refresh: "stale",
   current: null,
   startedAt: null,
   lastFlushAt: null,
@@ -536,6 +544,10 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
     return;
   }
+  const refresh = (() => {
+    const raw = typeof body.refresh === "string" ? body.refresh.trim().toLowerCase() : "";
+    return raw === "all" || raw === "none" ? raw : "stale";
+  })();
   const addressesFile = typeof body.addressesFile === "string" ? body.addressesFile.trim() : "";
   if (!addressesFile) {
     sendJson(res, 400, { error: "addressesFile is required (path on this machine, e.g. ~/addresses.csv)" });
@@ -593,23 +605,28 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   // Skip/resume: already-saved (chain, address) pairs, same semantics as
   // the browser's handleResumeSupabase. A failed skip check aborts the
   // start — re-analyzing everything blind would waste a multi-day run.
+  // Skip what the CURRENT analyzer already saved; re-analyze what an older one
+  // saved. Records written before the stamp existed (analyzer_version IS NULL)
+  // are stale, so the first run after a pipeline change refreshes the archive
+  // instead of skipping it — which is the whole point of the stamp.
+  //   refresh=stale (default) — skip current, re-analyze stale
+  //   refresh=all             — re-analyze everything in the file
+  //   refresh=none            — legacy behaviour: any saved row counts as done
   let skipped = 0;
+  let stale = 0;
   try {
-    const sql = await getSql();
-    // Ask only about the addresses in THIS run, not every saved row: the result
-    // is then bounded by the run size instead of growing with the archive, and
-    // it uses the (chain_id, lower(target_address)) index (migration 0010).
-    const wanted = [...new Set(items.map((i) => i.address))];
-    const rows = await sql<{ chain_id: string; addr: string }>`
-      select chain_id, lower(target_address) as addr
-      from contract_scans
-      where lower(target_address) = any(${wanted}::text[])
-    `;
-    const done = new Set(rows.map((r) => `${r.chain_id}:${r.addr}`));
-    for (const item of items) {
-      if (done.has(`${item.chainId}:${item.address}`)) {
-        item.status = "skipped";
-        skipped++;
+    if (refresh !== "all") {
+      const wanted = items.map((i) => ({ chainId: i.chainId, address: i.address }));
+      const { current, stale: staleKeys } = await savedScanVersions(wanted, analyzerStamp());
+      for (const item of items) {
+        const key = `${item.chainId}:${item.address.toLowerCase()}`;
+        const saved = current.has(key) || staleKeys.has(key);
+        if (refresh === "none") {
+          if (saved) { item.status = "skipped"; skipped++; }
+          continue;
+        }
+        if (current.has(key)) { item.status = "skipped"; skipped++; }
+        else if (staleKeys.has(key)) stale++;
       }
     }
   } catch (err) {
@@ -626,6 +643,8 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     completed: 0,
     failed: 0,
     skipped,
+    stale,
+    refresh,
     current: null,
     startedAt: new Date().toISOString(),
     lastFlushAt: null,
@@ -649,8 +668,10 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     console.warn("[worker] run loop error:", err instanceof Error ? err.message : String(err));
   });
   writeStatusFile();
-  console.log(`[worker] started: ${items.length} addresses (${skipped} already saved, skipped), chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems})`);
-  sendJson(res, 200, { ok: true, started: true, total: items.length, skipped, deepAgent, deepAgentMaxItems, deepAgentMinSeverity });
+  console.log(
+    `[worker] started: ${items.length} addresses (${skipped} current, skipped; ${stale} stale, re-analyzing), refresh=${refresh}, chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems})`,
+  );
+  sendJson(res, 200, { ok: true, started: true, total: items.length, skipped, stale, refresh, deepAgent, deepAgentMaxItems, deepAgentMinSeverity });
 }
 
 // Which database is the worker actually talking to? The dashboard-shows-0
@@ -706,6 +727,16 @@ const server = http.createServer((req, res) => {
   }
 
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? HOST}`);
+
+  // How much of the archive the current analyzer would refresh. Ask this
+  // before committing to a long run: a pipeline change makes every older row
+  // stale, so "freshen everything" is a run with refresh=stale (the default).
+  if (req.method === "GET" && url.pathname === "/freshness") {
+    void scanFreshness()
+      .then((f) => sendJson(res, 200, { ...f, analyzer: analyzerStamp() }))
+      .catch((err) => sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) }));
+    return;
+  }
 
   if (req.method === "GET" && url.pathname === "/status") {
     void handleStatus(req, res);

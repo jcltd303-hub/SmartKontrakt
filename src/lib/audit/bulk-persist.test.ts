@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { createSqlClient } from "../sql-client.ts";
 import { writeAuditBatch } from "./bulk-persist.server.ts";
+import { savedScanVersions, scanFreshness } from "./persist.server.ts";
+import { analyzerStamp } from "./analyzer-version.ts";
 
 import { record } from "../../../scripts/audit-fixture.ts";
 
@@ -23,6 +25,7 @@ async function database() {
     "0011_balance.sql",
     "0012_value_at_risk.sql",
     "0013_poc_run_idempotency.sql",
+    "0014_analyzer_version.sql",
   ]) {
     await pg.exec(await readFile(new URL(`../../../migrations/${f}`, import.meta.url), "utf8"));
   }
@@ -111,5 +114,69 @@ test("a PoC run is identified by (finding, source digest) — replays upsert ins
     assert.equal(row.n, 1, "a replay must not append a duplicate run");
     assert.equal(row.status, "passed");
     assert.equal(row.output, "updated");
+  } finally { await pg.close(); }
+});
+
+
+test("records carry the analyzer stamp, and resume re-analyzes only the stale ones", async () => {
+  const { pg, sql } = await database();
+  try {
+    const fresh = record("fresh");
+    fresh.targetAddress = "0x00000000000000000000000000000000000000a1";
+    const stale = record("stale");
+    stale.targetAddress = "0x00000000000000000000000000000000000000b2";
+    await writeAuditBatch(sql, [fresh, stale]);
+
+    // Every saved row is stamped with the analyzer that produced it.
+    const stamped = (await pg.query<{ id: string; v: string | null }>(
+      "select id, analyzer_version as v from contract_scans order by id",
+    )).rows;
+    assert.deepEqual(
+      stamped.map((r) => [r.id, r.v]),
+      [["fresh", analyzerStamp()], ["stale", analyzerStamp()]],
+    );
+
+    // Now pretend one of them was produced by an older analyzer.
+    await pg.exec(
+      "update contract_scans set analyzer_version = '2020-01-01.0+0000000000000000' where id = 'stale'",
+    );
+
+    const { current, stale: staleKeys } = await savedScanVersions(
+      [
+        { chainId: "ethereum", address: fresh.targetAddress! },
+        { chainId: "ethereum", address: stale.targetAddress! },
+        { chainId: "ethereum", address: "0x00000000000000000000000000000000000000c3" },
+      ],
+      analyzerStamp(),
+      sql,
+    );
+    assert.ok(current.has(`ethereum:${fresh.targetAddress}`), "a current row is skipped");
+    assert.ok(!current.has(`ethereum:${stale.targetAddress}`));
+    assert.ok(staleKeys.has(`ethereum:${stale.targetAddress}`), "an older row is re-analyzed");
+    assert.ok(
+      !staleKeys.has("ethereum:0x00000000000000000000000000000000000000c3"),
+      "an address that was never saved is neither current nor stale",
+    );
+
+    // A key with ANY current row is current, whatever else the archive holds —
+    // the archive can hold several scans of one address.
+    const again = record("fresh2");
+    again.targetAddress = fresh.targetAddress;
+    await writeAuditBatch(sql, [again]);
+    await pg.exec(
+      "update contract_scans set analyzer_version = '2020-01-01.0+0000000000000000' where id = 'fresh'",
+    );
+    const mixed = await savedScanVersions(
+      [{ chainId: "ethereum", address: fresh.targetAddress! }],
+      analyzerStamp(),
+      sql,
+    );
+    assert.ok(mixed.current.has(`ethereum:${fresh.targetAddress}`));
+    assert.ok(!mixed.stale.has(`ethereum:${fresh.targetAddress}`), "one current row is enough");
+
+    const counts = await scanFreshness(sql);
+    assert.equal(counts.total, 3);
+    assert.equal(counts.current, 2);
+    assert.equal(counts.stale, 1);
   } finally { await pg.close(); }
 });
