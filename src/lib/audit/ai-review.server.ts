@@ -37,7 +37,12 @@ export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions
  */
 export const OPENROUTER_MODELS = {
   review: "nvidia/nemotron-3-ultra-550b-a55b:free",
-  code: "thinkingmachines/inkling-small:free",
+  // Was `thinkingmachines/inkling-small:free`, which OpenRouter refuses for a
+  // plain API call: "only available on agentic harnesses" (HTTP 403, routing
+  // step "Gate Free Endpoints by Agentic Harness"). That model can never work
+  // here, so the SmartPoC repair failed every time. A general free model that
+  // does answer the API, ranked for programming.
+  code: "nvidia/nemotron-3-ultra-550b-a55b:free",
   json: "qwen/qwen3.8-27b:free",
 } as const;
 
@@ -45,6 +50,94 @@ export type OpenRouterPurpose = keyof typeof OPENROUTER_MODELS;
 
 /** Default model — matches the default purpose ("review"); overridable via env. */
 export const DEFAULT_OPENROUTER_MODEL = OPENROUTER_MODELS.review;
+
+/**
+ * Tried in order when a preferred model cannot be used by a plain API call at
+ * all — gated to specific apps, retired, or misspelled. Free-tier ids churn and
+ * gating appears without notice, so the pipeline must degrade rather than stop.
+ *
+ * `openrouter/free` is OpenRouter's own router to whichever free model is
+ * currently available, so it cannot itself be gated to an app.
+ */
+export const OPENROUTER_FALLBACK_MODELS: readonly string[] = ["openrouter/free"];
+
+/** Models to try for a purpose, most preferred first, de-duplicated. */
+export function modelCandidates(
+  purpose: OpenRouterPurpose,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of [resolveOpenRouterModel(purpose, env), ...OPENROUTER_FALLBACK_MODELS]) {
+    const model = id.trim();
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    out.push(model);
+  }
+  return out;
+}
+
+/**
+ * Does this failure mean the MODEL cannot be used, as opposed to the request
+ * being wrong or the provider being down?
+ *
+ * Matched on the message on purpose: OpenRouter answers 403 for a gated model
+ * and 404 for an unknown one, but a plain 403/404 can also mean something else
+ * entirely (a bad key), and falling back for those would triple the latency for
+ * no reason.
+ */
+export function isModelUnavailable(status: number, body: string): boolean {
+  if (status === 404) return true;
+  if (status !== 400 && status !== 403) return false;
+  return /only available on|agentic harness|gate free endpoints|no endpoints found|not a valid model|is not available|does not exist/i.test(
+    body,
+  );
+}
+
+/**
+ * POST a chat completion, advancing through the candidate models when the model
+ * itself is unusable.
+ *
+ * A gated free model used to fail the whole step: a SmartPoC repair died on
+ * `thinkingmachines/inkling-small:free` with "only available on agentic
+ * harnesses", and the run stopped there. Now the call degrades to the next free
+ * model instead.
+ *
+ * Returns the first usable response. A non-model failure (bad request, provider
+ * outage) is returned immediately for the caller to handle exactly as before.
+ */
+export async function postChatWithModelFallback(args: {
+  purpose: OpenRouterPurpose;
+  apiKey: string;
+  headers: Record<string, string>;
+  makeBody: (model: string) => unknown;
+  timeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+}): Promise<Response> {
+  const candidates = modelCandidates(args.purpose, args.env ?? process.env);
+  let last: Response | null = null;
+  for (let i = 0; i < candidates.length; i += 1) {
+    const model = candidates[i]!;
+    const response = await fetch(OPENROUTER_API_URL, {
+      method: "POST",
+      headers: args.headers,
+      body: JSON.stringify(args.makeBody(model)),
+      signal: AbortSignal.timeout(args.timeoutMs ?? 60_000),
+    });
+    if (response.ok) return response;
+    // Read a copy: the caller still needs the body for its own error message.
+    const detail = (await response.clone().text().catch(() => "")).slice(0, 500);
+    if (!isModelUnavailable(response.status, detail)) return response;
+    last = response;
+    const next = candidates[i + 1];
+    console.warn(
+      next
+        ? `[openrouter] ${model} is not usable (HTTP ${response.status}) — falling back to ${next}`
+        : `[openrouter] no usable model for purpose "${args.purpose}" (last tried ${model}, HTTP ${response.status})`,
+    );
+  }
+  return last!;
+}
 
 export type OpenRouterConfig = {
   apiKey: string | undefined;
@@ -260,7 +353,10 @@ export async function generateAiSecurityReview(
   findings: Finding[],
   fourbyte?: FourbyteResults,
 ): Promise<AiSecurityReview> {
-  const { apiKey, model } = resolveOpenRouterConfig();
+  // The review pass uses the "review" purpose; the model itself is chosen (and
+  // fallen back through) inside postChatWithModelFallback.
+  const purpose: OpenRouterPurpose = "review";
+  const { apiKey } = resolveOpenRouterConfig(process.env, purpose);
 
   if (!apiKey) {
     return buildFallbackReview(contractName, findings, body);
@@ -276,15 +372,17 @@ export async function generateAiSecurityReview(
 
     const response = await withRetry(async () => {
       await openRouterLimiter.acquire();
-      return fetch(OPENROUTER_API_URL, {
-        method: "POST",
+      return postChatWithModelFallback({
+        purpose,
+        apiKey,
+        timeoutMs: 60_000,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
           "HTTP-Referer": referer,
           "X-Title": "SmartKontrakt / Kiln",
         },
-        body: JSON.stringify({
+        makeBody: (model) => ({
           model,
           messages: [
             { role: "system", content: system },
@@ -294,7 +392,6 @@ export async function generateAiSecurityReview(
           temperature: 0.7,
           max_tokens: 6000,
         }),
-        signal: AbortSignal.timeout(60_000),
       });
     }, { retries: 3, baseDelayMs: 2000 });
 

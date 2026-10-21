@@ -20,7 +20,7 @@
 
 import { openRouterLimiter, withRetry } from "../rate-limit.ts";
 import {
-  OPENROUTER_API_URL,
+  postChatWithModelFallback,
   resolveOpenRouterConfig,
   extractJsonContent,
   stripThinkBlocks,
@@ -125,20 +125,24 @@ async function chat(
   user: string,
   opts: { json?: boolean; maxTokens?: number; timeoutMs?: number } = {},
 ): Promise<string> {
-  const { apiKey, model } = resolveOpenRouterConfig(process.env, purpose);
+  const { apiKey } = resolveOpenRouterConfig(process.env, purpose);
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is not set");
   const response = await withRetry(
     async () => {
       await openRouterLimiter.acquire();
-      return fetch(OPENROUTER_API_URL, {
-        method: "POST",
+      // The model is chosen — and fallen back through — inside the helper, so a
+      // free model gated to an app (HTTP 403) degrades instead of failing the step.
+      return postChatWithModelFallback({
+        purpose,
+        apiKey,
+        timeoutMs: opts.timeoutMs ?? 180_000,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
           "HTTP-Referer": referer(),
           "X-Title": "SmartKontrakt / Kiln SmartPoC",
         },
-        body: JSON.stringify({
+        makeBody: (model) => ({
           model,
           messages: [
             { role: "system", content: system },
@@ -148,7 +152,6 @@ async function chat(
           temperature: 0.3, // paper §4.2: temperature 0.3
           max_tokens: opts.maxTokens ?? 8000,
         }),
-        signal: AbortSignal.timeout(opts.timeoutMs ?? 180_000),
       });
     },
     {
