@@ -45,7 +45,7 @@ import v8 from "node:v8";
 import type { BatchItem } from "../src/lib/audit/address-fetcher.ts";
 import { valueCacheStats } from "../src/lib/audit/value.ts";
 import { analyzerStamp } from "../src/lib/audit/analyzer-version.ts";
-import { savedScanVersions, scanFreshness } from "../src/lib/audit/persist.server.ts";
+import { assertFreshnessSchema, savedScanVersions, scanFreshness } from "../src/lib/audit/scan-freshness.server.ts";
 import type { ComprehensiveRecordInput } from "../src/lib/audit/persist.server.ts";
 
 // ---------------------------------------------------------------- .env ----
@@ -615,9 +615,12 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   let skipped = 0;
   let stale = 0;
   try {
+    // Migration 0014 must be applied before a run: the skip reads the stamp and
+    // every save writes it. Fail with instructions, not a raw SQL error.
+    await assertFreshnessSchema(await getSql());
     if (refresh !== "all") {
       const wanted = items.map((i) => ({ chainId: i.chainId, address: i.address }));
-      const { current, stale: staleKeys } = await savedScanVersions(wanted, analyzerStamp());
+      const { current, stale: staleKeys } = await savedScanVersions(await getSql(), wanted, analyzerStamp());
       for (const item of items) {
         const key = `${item.chainId}:${item.address.toLowerCase()}`;
         const saved = current.has(key) || staleKeys.has(key);
@@ -732,8 +735,8 @@ const server = http.createServer((req, res) => {
   // before committing to a long run: a pipeline change makes every older row
   // stale, so "freshen everything" is a run with refresh=stale (the default).
   if (req.method === "GET" && url.pathname === "/freshness") {
-    void scanFreshness()
-      .then((f) => sendJson(res, 200, { ...f, analyzer: analyzerStamp() }))
+    void getSql()
+      .then((sql) => scanFreshness(sql).then((f) => sendJson(res, 200, { ...f, analyzer: analyzerStamp() })))
       .catch((err) => sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) }));
     return;
   }
