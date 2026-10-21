@@ -25,17 +25,23 @@
  * not applied.
  */
 import { readdir, readFile } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "./migration-plan.mjs";
+import { encodePostgresCredentials } from "../src/lib/pg-url.mjs";
 
 function cleanPostgresUrl(value) {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   if (trimmed.startsWith("postgresql://") || trimmed.startsWith("postgres://")) {
-    return trimmed;
+    // Credentials must be percent-encoded or the URL silently mis-parses (a raw
+    // `@` in the password turns the host into the password's tail). This is the
+    // same normaliser the app, the worker and the browser use — see
+    // src/lib/pg-url.mjs — so `npm run db:migrate` cannot fail on a password
+    // that the rest of the stack handles.
+    return encodePostgresCredentials(trimmed);
   }
   return undefined;
 }
@@ -48,6 +54,57 @@ export function resolveMigrateDatabaseUrl(env = process.env) {
     cleanPostgresUrl(env.POSTGRES_URL)
   );
 }
+
+/**
+ * Load `.env` (repo root) and `pipeline-worker/.env` before resolving the URL.
+ *
+ * Nothing loaded these for scripts: the app's `with-app-env.mjs` only merges
+ * `VITE_`-prefixed keys from `.grok/app-env.json`, and the worker has its own
+ * loader for `pipeline-worker/.env`. So `npm run db:migrate` on a machine whose
+ * URL lives in a `.env` file printed "No Postgres URL in environment — skipping"
+ * and did nothing, which is exactly the wrong answer when you are trying to
+ * apply a migration.
+ *
+ * Existing `process.env` still wins, so an explicit shell override beats a file,
+ * and on Vercel there are no such files — this is a no-op there. Root `.env` is
+ * read first, so the app's config wins over `pipeline-worker/.env` when both
+ * name a URL (they should name the same project).
+ */
+function loadEnvFiles() {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  for (const envPath of [join(root, ".env"), join(root, "pipeline-worker", ".env")]) {
+    let text;
+    try {
+      text = readFileSync(envPath, "utf8");
+    } catch {
+      continue; // no such file: nothing to load
+    }
+    // Last occurrence in the file wins (standard dotenv behaviour); an existing
+    // process.env entry still wins over the file.
+    const fileVars = new Map();
+    for (const raw of text.split("\n")) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      if (eq === -1) continue;
+      const key = line.slice(0, eq).trim();
+      if (!key) continue;
+      let value = line.slice(eq + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      fileVars.set(key, value);
+    }
+    for (const [key, value] of fileVars) {
+      if (process.env[key] === undefined) process.env[key] = value;
+    }
+  }
+}
+
+loadEnvFiles();
 
 const databaseUrl = resolveMigrateDatabaseUrl();
 
