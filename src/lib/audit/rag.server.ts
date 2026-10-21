@@ -2,6 +2,7 @@ import type { RagDbRow } from "./rag-chunks";
 import { tokenize } from "./tokenize";
 import { getSql } from "@/lib/db";
 import type { Severity } from "./types";
+import { SEVERITY_ORDER } from "./severity.ts";
 
 export interface RagChunk {
   id: string;
@@ -377,7 +378,6 @@ function highlightFor(query: string, content: string): string {
   return (start > 0 ? "..." : "") + content.slice(start, end).trim() + (end < content.length ? "..." : "");
 }
 
-const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"] as const;
 
 /** Severities at or above `min`; null when no filter should apply. */
 function severitiesAtLeast(min: string | undefined): string[] | null {

