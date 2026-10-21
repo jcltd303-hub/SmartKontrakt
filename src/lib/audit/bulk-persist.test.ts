@@ -174,9 +174,10 @@ test("records carry the analyzer stamp, and resume re-analyzes only the stale on
     assert.ok(mixed.current.has(`ethereum:${fresh.targetAddress}`));
     assert.ok(!mixed.stale.has(`ethereum:${fresh.targetAddress}`), "one current row is enough");
 
+    // fresh -> old, stale -> old, fresh2 -> current.
     const counts = await scanFreshness(sql);
     assert.equal(counts.total, 3);
-    assert.equal(counts.current, 2);
-    assert.equal(counts.stale, 1);
+    assert.equal(counts.current, 1);
+    assert.equal(counts.stale, 2);
   } finally { await pg.close(); }
 });
