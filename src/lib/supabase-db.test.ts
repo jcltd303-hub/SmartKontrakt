@@ -114,3 +114,82 @@ test("the user is encoded as well as the password", () => {
   assert.ok(url.includes("weird%20user"), `user must be encoded: ${url}`);
   assert.ok(url.includes("p%40ss"), `password must be encoded: ${url}`);
 });
+
+
+// --- the project reference must win over a stored host/user ---
+
+test("a changed project reference wins over a stale stored host/user", () => {
+  // The reported symptom: the dialog was given a new project reference but kept
+  // connecting to the previous project. The stored pooler user is
+  // `postgres.<old-ref>` and host/user used to be consulted BEFORE the
+  // reference, so the URL was rebuilt from the stale pair.
+  const url = buildSupabasePostgresUrl({
+    ...DEFAULT_SUPABASE_DB_CONFIG,
+    projectRef: "wvknnljtrsjghfbhylqn",
+    host: "aws-1-us-west-2.pooler.supabase.com",
+    user: "postgres.aadhpvhpjzkkeydzxxhk",
+    password: "pw",
+    region: "us-east-1",
+    mode: "pooler",
+    active: true,
+  });
+  assert.ok(url.includes("postgres.wvknnljtrsjghfbhylqn:"), `the pooler user must follow the reference: ${url}`);
+  assert.ok(!url.includes("aadhpvhpjzkkeydzxxhk"), `the previous project must not appear at all: ${url}`);
+  // The stored host names a different region, so it is not reused either.
+  assert.ok(url.includes("@aws-0-us-east-1.pooler.supabase.com:6543/"), url);
+});
+
+test("a stored host in the same region is kept (it carries the provider index)", () => {
+  // `aws-0-` vs `aws-1-` is a Supabase-side detail the reference does not
+  // encode, so a host that names the right region is worth preserving.
+  const url = buildSupabasePostgresUrl({
+    ...DEFAULT_SUPABASE_DB_CONFIG,
+    projectRef: "wvknnljtrsjghfbhylqn",
+    host: "aws-1-us-east-1.pooler.supabase.com",
+    user: "postgres.aadhpvhpjzkkeydzxxhk",
+    password: "pw",
+    region: "us-east-1",
+    mode: "pooler",
+    active: true,
+  });
+  assert.ok(url.includes("@aws-1-us-east-1.pooler.supabase.com:6543/"), url);
+  assert.ok(url.includes("postgres.wvknnljtrsjghfbhylqn:"), url);
+});
+
+test("a reference beats a stale host in direct mode too", () => {
+  const url = buildSupabasePostgresUrl({
+    ...DEFAULT_SUPABASE_DB_CONFIG,
+    projectRef: "wvknnljtrsjghfbhylqn",
+    host: "aws-1-us-west-2.pooler.supabase.com",
+    user: "postgres.aadhpvhpjzkkeydzxxhk",
+    password: "pw",
+    mode: "direct",
+    active: true,
+  });
+  assert.equal(
+    url,
+    "postgresql://postgres:pw@db.wvknnljtrsjghfbhylqn.supabase.co:5432/postgres",
+  );
+});
+
+test("with no reference and no host there is no URL, not a guess at a project", () => {
+  assert.equal(
+    buildSupabasePostgresUrl({ ...DEFAULT_SUPABASE_DB_CONFIG, password: "pw", active: true }),
+    "",
+  );
+});
+
+test("with no reference, an explicit host/user is still honoured", () => {
+  const url = buildSupabasePostgresUrl({
+    ...DEFAULT_SUPABASE_DB_CONFIG,
+    projectRef: "",
+    host: "db.internal.example",
+    user: "someone",
+    password: "pw",
+    port: 5432,
+    database: "appdb",
+    mode: "pooler",
+    active: true,
+  });
+  assert.equal(url, "postgresql://someone:pw@db.internal.example:5432/appdb");
+});

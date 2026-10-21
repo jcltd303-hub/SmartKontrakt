@@ -28,15 +28,20 @@ interface SupabaseDbModalProps {
 
 export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: SupabaseDbModalProps) {
   const [projectName, setProjectName] = useState<string>("SmartKontrakt");
-  const [projectRef, setProjectRef] = useState<string>("aadhpvhpjzkkeydzxxhk");
-  const [host, setHost] = useState<string>("aws-1-us-west-2.pooler.supabase.com");
-  const [user, setUser] = useState<string>("postgres.aadhpvhpjzkkeydzxxhk");
+  // Empty, not a real project: a baked-in reference made a stale value look
+  // authoritative, and the pooler user carries the reference in its name.
+  const [projectRef, setProjectRef] = useState<string>("");
+  const [host, setHost] = useState<string>("");
+  const [user, setUser] = useState<string>("");
   const [port, setPort] = useState<number>(6543);
   const [database, setDatabase] = useState<string>("postgres");
-  const [password, setPassword] = useState<string>("hX*+JxfrR4Q&3BB");
+  // Never seed this with a literal: a component's default is compiled into the
+  // client bundle, and this repo is public. The password comes from the saved
+  // config (or the user types it) and is never committed.
+  const [password, setPassword] = useState<string>("");
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [mode, setMode] = useState<"pooler" | "direct" | "custom">("pooler");
-  const [region, setRegion] = useState<string>("us-west-2");
+  const [region, setRegion] = useState<string>("us-east-1");
   const [customUrl, setCustomUrl] = useState<string>("");
   const [isActive, setIsActive] = useState<boolean>(false);
   const [activeUrlMasked, setActiveUrlMasked] = useState<string>("");
@@ -51,13 +56,13 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
       const res = await getDatabaseStatusFn();
       if (res?.config) {
         setProjectName(res.config.projectName || "SmartKontrakt");
-        setProjectRef(res.config.projectRef || "aadhpvhpjzkkeydzxxhk");
+        setProjectRef(res.config.projectRef || "");
         if (res.config.host) setHost(res.config.host);
         if (res.config.user) setUser(res.config.user);
         if (res.config.port) setPort(res.config.port);
         if (res.config.database) setDatabase(res.config.database);
         setMode((res.config.mode as "pooler" | "direct" | "custom") || "pooler");
-        setRegion(res.config.region || "us-west-2");
+        setRegion(res.config.region || "us-east-1");
         setCustomUrl(res.config.customUrl || "");
         setIsActive(Boolean(res.config.active));
       }
@@ -112,10 +117,11 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
       const res = await testDatabaseConnectionFn({
         data: {
           projectRef: cleanRef,
-          host: mode === "pooler" ? host : undefined,
-          user: mode === "pooler" ? user : undefined,
-          port: mode === "pooler" ? port : undefined,
-          database: mode === "pooler" ? database : undefined,
+          // host/user/port/database are NOT sent: they are not editable in this
+          // dialog, so passing them only re-transmitted the stored values — the
+          // stale `postgres.<old-ref>` user is what made a changed project
+          // reference connect to the previous project. The server derives the
+          // pooler user from the reference.
           password,
           mode,
           region,
@@ -161,10 +167,11 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
         data: {
           projectName,
           projectRef: cleanRef,
-          host: mode === "pooler" ? host : undefined,
-          user: mode === "pooler" ? user : undefined,
-          port: mode === "pooler" ? port : undefined,
-          database: mode === "pooler" ? database : undefined,
+          // host/user/port/database are NOT sent: they are not editable in this
+          // dialog, so passing them only re-transmitted the stored values — the
+          // stale `postgres.<old-ref>` user is what made a changed project
+          // reference connect to the previous project. The server derives the
+          // pooler user from the reference.
           password,
           mode,
           region,
