@@ -95,8 +95,16 @@ test("selectPocFallbacksBySmartbugs returns a harness for every category", async
  */
 test("no template decides from a single guessed call (ratchet)", async () => {
   const KNOWN = new Set([
-${o.map(f => `    "${f}",`).join("
-")}
+    "04-reentrancy-erc721.t.sol",
+    "05-reentrancy-read-only.t.sol",
+    "24-div-before-mul.t.sol",
+    "32-storage-collision-upgrade.t.sol",
+    "33-shadowing-mismatch.t.sol",
+    "40-erc4626-inflation.t.sol",
+    "42-short-address-attack.t.sol",
+    "43-front-running.t.sol",
+    "44-external-contract-ref.t.sol",
+    "45-timestamp-dependence.t.sol",
   ]);
 
   const dir = join(FIXTURES, "..", "poc-fallbacks");
