@@ -135,6 +135,10 @@ The `refresh` field on `/start` selects the policy:
 | `all` | re-analyze every address in the file, ignoring the archive |
 | `none` | legacy: any saved row counts as done, stale or not |
 
+Migration 0014 must be applied first — the worker preflights for the column and
+tells you how to apply it (reconnect the Supabase database in the app) rather
+than failing with a raw SQL error.
+
 Ask what a freshen would cost before committing to a long run:
 
 ```sh

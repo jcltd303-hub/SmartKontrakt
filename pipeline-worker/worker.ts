@@ -45,7 +45,7 @@ import v8 from "node:v8";
 import type { BatchItem } from "../src/lib/audit/address-fetcher.ts";
 import { valueCacheStats } from "../src/lib/audit/value.ts";
 import { analyzerStamp } from "../src/lib/audit/analyzer-version.ts";
-import { savedScanVersions, scanFreshness } from "../src/lib/audit/scan-freshness.server.ts";
+import { assertFreshnessSchema, savedScanVersions, scanFreshness } from "../src/lib/audit/scan-freshness.server.ts";
 import type { ComprehensiveRecordInput } from "../src/lib/audit/persist.server.ts";
 
 // ---------------------------------------------------------------- .env ----
@@ -615,6 +615,9 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   let skipped = 0;
   let stale = 0;
   try {
+    // Migration 0014 must be applied before a run: the skip reads the stamp and
+    // every save writes it. Fail with instructions, not a raw SQL error.
+    await assertFreshnessSchema(await getSql());
     if (refresh !== "all") {
       const wanted = items.map((i) => ({ chainId: i.chainId, address: i.address }));
       const { current, stale: staleKeys } = await savedScanVersions(await getSql(), wanted, analyzerStamp());

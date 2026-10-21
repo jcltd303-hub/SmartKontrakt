@@ -61,3 +61,23 @@ export async function scanFreshness(
   const cur = Number.parseInt(r?.current ?? "0", 10) || 0;
   return { total, current: cur, stale: Math.max(total - cur, 0) };
 }
+
+/**
+ * Preflight: the freshness skip reads `analyzer_version` and every save writes
+ * it, so migration 0014 must be applied first. Fail with the fix rather than a
+ * raw "column analyzer_version does not exist" from deep inside a flush.
+ */
+export async function assertFreshnessSchema(sql: Sql): Promise<void> {
+  const rows = await sql<{ ok: boolean }>`
+    select exists (
+      select 1 from information_schema.columns
+      where table_name = 'contract_scans' and column_name = 'analyzer_version'
+    ) as ok`;
+  if (!rows[0]?.ok) {
+    throw new Error(
+      "contract_scans.analyzer_version is missing (migration 0014 not applied). " +
+      "Apply migrations by reconnecting the Supabase database in the app " +
+      "(Connect to Supabase), then start the run again.",
+    );
+  }
+}
