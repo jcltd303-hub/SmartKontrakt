@@ -7,6 +7,7 @@ import type { CallProbeResult } from "./simulator";
 import type { AiSecurityReview } from "./ai-review.server";
 import { OPENROUTER_API_URL, resolveOpenRouterConfig, stripThinkBlocks } from "./ai-review.server";
 import { openRouterLimiter, withRetry } from "./rate-limit";
+import { pocRunKey } from "./poc-run-key.ts";
 
 export type ScanSummary = {
   id: string;
@@ -643,7 +644,8 @@ export async function getRecentHighSeverityFindings(opts?: {
 
 /**
  * Persist an executed PoC run verdict for a specific finding to the database.
- * Updates the finding record and appends a run row to finding_poc_runs.
+ * Updates the finding record and UPSERTS the run row keyed by
+ * (finding, source digest), so repeating a run is idempotent.
  */
 export async function saveFindingPocResult(data: {
   findingId: string;
@@ -658,9 +660,7 @@ export async function saveFindingPocResult(data: {
   truncated?: boolean;
 }): Promise<void> {
   const sql = await getSql();
-  const id = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `poc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const { id, digest } = pocRunKey(data.findingId, data.source);
 
   // 1. Update finding row with latest PoC outcome
   await sql`
@@ -677,11 +677,19 @@ export async function saveFindingPocResult(data: {
   try {
     await sql`
       insert into finding_poc_runs (
-        id, finding_id, scan_id, status, source, output, duration_ms, chain_id, target_address, exit_code, truncated, created_at
+        id, finding_id, scan_id, status, source, source_digest, output, duration_ms, chain_id, target_address, exit_code, truncated, created_at
       ) values (
-        ${id}, ${data.findingId}, ${data.scanId}, ${data.status}, ${data.source.slice(0, 100000)}, ${data.output.slice(0, 50000)},
+        ${id}, ${data.findingId}, ${data.scanId}, ${data.status}, ${data.source.slice(0, 100000)}, ${digest}, ${data.output.slice(0, 50000)},
         ${Math.round(data.durationMs)}, ${data.chainId ?? null}, ${data.targetAddress ?? null}, ${data.exitCode ?? null}, ${Boolean(data.truncated)}, now()
       )
+      on conflict (id) do update set
+        status = excluded.status,
+        output = excluded.output,
+        duration_ms = excluded.duration_ms,
+        chain_id = excluded.chain_id,
+        target_address = excluded.target_address,
+        exit_code = excluded.exit_code,
+        truncated = excluded.truncated
     `;
   } catch (runErr) {
     console.warn("[kiln] finding_poc_runs insert failed (non-fatal):", runErr);

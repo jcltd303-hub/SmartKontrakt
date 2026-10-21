@@ -22,6 +22,7 @@ async function database() {
     "0010_indexes.sql",
     "0011_balance.sql",
     "0012_value_at_risk.sql",
+    "0013_poc_run_idempotency.sql",
   ]) {
     await pg.exec(await readFile(new URL(`../../../migrations/${f}`, import.meta.url), "utf8"));
   }
@@ -83,4 +84,32 @@ test("bulk saves preserve SmartPoC evidence and its run history on replay", asyn
     assert.equal((await pg.query<{poc_status:string}>("select poc_status from findings where id='proof:0'")).rows[0].poc_status,"passed");
     assert.equal((await pg.query<{n:number}>("select count(*)::int as n from finding_poc_runs")).rows[0].n,1);
   } finally {await pg.close();}
+});
+
+test("a PoC run is identified by (finding, source digest) — replays upsert instead of appending", async () => {
+  const { pg, sql } = await database();
+  try {
+    await writeAuditBatch(sql, [record("idem")]); // scan 'idem' + finding 'idem:0'
+    const digest = "d".repeat(64);
+    await pg.exec(
+      `insert into finding_poc_runs(id,finding_id,scan_id,status,source,source_digest,output) values('r1','idem:0','idem','failed','src','${digest}','first')`,
+    );
+    // The identity index rejects a second row for the same (finding, digest).
+    await assert.rejects(
+      pg.exec(
+        `insert into finding_poc_runs(id,finding_id,scan_id,status,source,source_digest,output) values('r2','idem:0','idem','passed','src','${digest}','second')`,
+      ),
+      /duplicate key|unique/i,
+    );
+    // The upsert path saveFindingPocResult uses updates the existing row in place.
+    await pg.exec(
+      `insert into finding_poc_runs(id,finding_id,scan_id,status,source,source_digest,output) values('r1','idem:0','idem','passed','src','${digest}','updated') on conflict (id) do update set status=excluded.status, output=excluded.output`,
+    );
+    const row = (await pg.query<{ n: number; status: string; output: string }>(
+      "select count(*)::int as n, max(status) as status, max(output) as output from finding_poc_runs",
+    )).rows[0];
+    assert.equal(row.n, 1, "a replay must not append a duplicate run");
+    assert.equal(row.status, "passed");
+    assert.equal(row.output, "updated");
+  } finally { await pg.close(); }
 });

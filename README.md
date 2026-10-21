@@ -91,6 +91,32 @@ The PoC pipeline follows **SmartPoC** (Chen et al., *SmartPoC: Generating Execut
 
 The headless pipeline worker runs the full pipeline per flagged address. Settings mirror the paper: temperature 0.3, retry budget B = 5, Foundry fork tests.
 
+## Risk score
+
+`src/lib/audit/risk.ts` scores 0-100 by **dominance, not a sum**. The old model
+was `min(100, Σ weight)` with `critical: 28`, so a single critical scored 28 and a
+critical plus a high scored 42 — a critical contract read as "medium". Now the
+worst finding sets the floor (`critical: 78`, `high: 55`, `medium: 30`,
+`low: 12`, `info: 0`), the rest add bounded pressure (so ten mediums can never
+outrank a critical), and a fork-PoC-confirmed exploit adds proof weight. Bands
+are 75 / 50 / 25 — the same thresholds the UI filters on, so the number, the
+colour and the filter agree. Value at risk is kept as a separate axis.
+
+## Idempotency
+
+Everything expensive is keyed so it is not repeated:
+
+- **PoC runs** — a run's identity is `(finding, sha3-256 of the executed source)`
+  (`src/lib/audit/poc-run-key.ts`, migration 0013). Re-saving the same proof
+  **upserts** the run row instead of appending a duplicate, and the unique index
+  makes the identity a database guarantee. `needsSmartPoc` already refuses to
+  re-run a proof whose input digest is unchanged.
+- **Findings dispositions** — triage states live in `contract_scans.triage_states_json`,
+  written through the batched upsert, so a save is a row update, not an append.
+- **Tabs** — the workbench tabs are always-mounted pure renderers over a single
+  controller, so switching tabs runs nothing. Loading a saved record rehydrates
+  the report, probes, AI review, triage states and per-finding PoC verdicts.
+
 ## Balance guard and the balance column
 
 Every address audit reads the target's native balance (`eth_getBalance`) at analysis time and stores it as `contract_scans.balance_wei` — a decimal wei string, since balances exceed 2^53. `NULL` means "not read" (no RPC answered) and is deliberately distinct from `'0'` (a confirmed empty balance). The balance renders prominently in the workbench scorecard, the Records table, the Recent PoC audits list, and the batch pipeline.

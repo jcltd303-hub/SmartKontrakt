@@ -2,20 +2,8 @@ import { analyzeBytecode, looksLikeBytecode } from "./bytecode.ts";
 import { detectSource } from "./detect.ts";
 import { parseSource, type SourceModel } from "./model.ts";
 import { calibrateFindings } from "./severity-calibration.ts";
-import type { Finding, Inventory, Report, Severity } from "./types.ts";
-
-const WEIGHT: Record<Severity, number> = {
-  critical: 28,
-  high: 14,
-  medium: 6,
-  low: 2,
-  info: 0,
-};
-
-function scoreOf(findings: Finding[]): number {
-  const raw = findings.reduce((sum, f) => sum + WEIGHT[f.severity], 0);
-  return Math.min(100, raw);
-}
+import { riskScore } from "./risk.ts";
+import type { Finding, Inventory, Report } from "./types.ts";
 
 function summarize(findings: Finding[], name: string): string {
   if (findings.length === 0) {
@@ -112,7 +100,7 @@ export function analyzeInput(body: string, label: string, onlyContract?: string 
     return {
       label,
       inputKind: "bytecode",
-      riskScore: scoreOf(findings),
+      riskScore: riskScore(findings),
       summary: summarize(findings, name),
       inventory: byte.inventory,
       findings,
@@ -203,7 +191,7 @@ export function analyzeInput(body: string, label: string, onlyContract?: string 
   return {
     label,
     inputKind: "source",
-    riskScore: scoreOf(findings),
+    riskScore: riskScore(findings),
     summary: summarize(findings, name),
     inventory,
     findings,
