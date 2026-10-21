@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { createSqlClient } from "../sql-client.ts";
 import { writeAuditBatch } from "./bulk-persist.server.ts";
-import { savedScanVersions, scanFreshness } from "./persist.server.ts";
+import { savedScanVersions, scanFreshness } from "./scan-freshness.server.ts";
 import { analyzerStamp } from "./analyzer-version.ts";
 
 import { record } from "../../../scripts/audit-fixture.ts";
@@ -142,13 +142,13 @@ test("records carry the analyzer stamp, and resume re-analyzes only the stale on
     );
 
     const { current, stale: staleKeys } = await savedScanVersions(
+      sql,
       [
         { chainId: "ethereum", address: fresh.targetAddress! },
         { chainId: "ethereum", address: stale.targetAddress! },
         { chainId: "ethereum", address: "0x00000000000000000000000000000000000000c3" },
       ],
       analyzerStamp(),
-      sql,
     );
     assert.ok(current.has(`ethereum:${fresh.targetAddress}`), "a current row is skipped");
     assert.ok(!current.has(`ethereum:${stale.targetAddress}`));
@@ -167,9 +167,9 @@ test("records carry the analyzer stamp, and resume re-analyzes only the stale on
       "update contract_scans set analyzer_version = '2020-01-01.0+0000000000000000' where id = 'fresh'",
     );
     const mixed = await savedScanVersions(
+      sql,
       [{ chainId: "ethereum", address: fresh.targetAddress! }],
       analyzerStamp(),
-      sql,
     );
     assert.ok(mixed.current.has(`ethereum:${fresh.targetAddress}`));
     assert.ok(!mixed.stale.has(`ethereum:${fresh.targetAddress}`), "one current row is enough");
