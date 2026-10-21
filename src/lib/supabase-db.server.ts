@@ -20,18 +20,33 @@ export type SupabaseDbConfig = {
 
 const CONFIG_FILE = ".supabase-db-config.json";
 
+/**
+ * Fallbacks for a config file that is missing fields — deliberately NOT a real
+ * project. These used to name one (`projectRef`/`host`/`user` baked with a
+ * specific reference), which meant a config that did not carry its own values
+ * silently pointed at that project, and a stale copy of those values could
+ * override a project reference the user had just changed. With no project
+ * reference there is no connection URL, which is the honest state for a fresh
+ * install.
+ */
 export const DEFAULT_SUPABASE_DB_CONFIG: SupabaseDbConfig = {
   projectName: "SmartKontrakt",
-  projectRef: "aadhpvhpjzkkeydzxxhk",
+  projectRef: "",
   password: "",
-  region: "us-west-2",
-  host: "aws-1-us-west-2.pooler.supabase.com",
+  region: "us-east-1",
+  host: "",
   port: 6543,
   database: "postgres",
-  user: "postgres.aadhpvhpjzkkeydzxxhk",
+  user: "",
   mode: "pooler",
   active: false,
 };
+
+/** The region a Supabase pooler hostname encodes (`aws-1-us-west-2.pooler.supabase.com` -> `us-west-2`). */
+function poolerHostRegion(host: string): string | null {
+  const match = /^aws-\d+-([a-z0-9-]+)\.pooler\.supabase\.com$/i.exec(host.trim());
+  return match ? match[1] : null;
+}
 
 function getConfigFilePath(): string {
   return join(process.cwd(), CONFIG_FILE);
@@ -95,7 +110,39 @@ export function buildSupabasePostgresUrl(cfg: SupabaseDbConfig): string {
   if (!cfg.password) return "";
   const encPw = encodeURIComponent(cfg.password);
 
-  // If explicit host and user are provided (e.g. Supabase pooler host)
+  const cleanRef = (cfg.projectRef || "")
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\.supabase\.co.*$/i, "")
+    .replace(/\/.*$/, "");
+
+  // THE PROJECT REFERENCE WINS over a stored host/user.
+  //
+  // A saved config keeps the host and user from whenever it was first written,
+  // and the pooler user is `postgres.<ref>` — so checking host/user first meant
+  // that changing the project reference did NOTHING: the URL was rebuilt from
+  // the stale pair and the app kept talking to the previous project. The user is
+  // therefore always derived from the reference.
+  if (cleanRef) {
+    const region = (cfg.region || "us-east-1").trim();
+
+    if (cfg.mode === "direct") {
+      return `postgresql://postgres:${encPw}@db.${cleanRef}.supabase.co:5432/postgres`;
+    }
+
+    // Supabase Connection Pooler (Transaction Mode, port 6543). The pooler host
+    // embeds the region AND a provider index (`aws-0-` / `aws-1-`) that the
+    // reference does not encode, so a stored host is worth keeping — but only
+    // when it names the region we are actually connecting to. Otherwise the
+    // stored host belongs to a different project's region and must not be used.
+    const savedHost = cfg.host?.trim() ?? "";
+    const host =
+      poolerHostRegion(savedHost) === region ? savedHost : `aws-0-${region}.pooler.supabase.com`;
+    return `postgresql://postgres.${cleanRef}:${encPw}@${host}:${cfg.port || 6543}/${cfg.database || "postgres"}`;
+  }
+
+  // No reference given: a fully explicit host/user is the only way left. This is
+  // the programmatic path (a config written with host/user and no reference).
   if (cfg.host?.trim() && cfg.user?.trim()) {
     const port = cfg.port || 6543;
     const db = cfg.database || "postgres";
@@ -104,22 +151,7 @@ export function buildSupabasePostgresUrl(cfg: SupabaseDbConfig): string {
     return `postgresql://${encodeURIComponent(cfg.user.trim())}:${encPw}@${cfg.host.trim()}:${port}/${db}`;
   }
 
-  const cleanRef = (cfg.projectRef || DEFAULT_SUPABASE_DB_CONFIG.projectRef)
-    .trim()
-    .replace(/^https?:\/\//i, "")
-    .replace(/\.supabase\.co.*$/i, "")
-    .replace(/\/.*$/, "");
-
-  if (!cleanRef) return "";
-
-  const region = (cfg.region || "us-east-1").trim();
-
-  if (cfg.mode === "direct") {
-    return `postgresql://postgres:${encPw}@db.${cleanRef}.supabase.co:5432/postgres`;
-  }
-
-  // Supabase Connection Pooler (Transaction Mode, port 6543)
-  return `postgresql://postgres.${cleanRef}:${encPw}@aws-0-${region}.pooler.supabase.com:6543/postgres`;
+  return "";
 }
 
 /**
