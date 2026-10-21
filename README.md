@@ -152,6 +152,29 @@ template is tailored additively: the real `ITarget` interface is prepended to
 the template, and the generation prompt is given the same surface, so the model
 starts from the contract's actual signatures rather than an invented one.
 
+## How the PoC library is grounded in real code
+
+The library is deliberately two layers, because the two artifacts have different
+jobs and only one of them can run against a stranger's contract:
+
+| Layer | What it is | Why |
+| --- | --- | --- |
+| `foundry/poc-fallbacks/` | tailored **pattern** harnesses, wired to the target's real ABI | must run against any deployed target, whose ABI and storage layout differ from any dataset contract |
+| `foundry/poc-fixtures/` | verbatim, modernized **ports** of specific SmartBugs Curated contracts + the harness that reproduces them | ground truth: proves the pattern actually reproduces a known bug, and — run against a fixed variant — does not fire on patched code |
+
+This mirrors how the field measures itself: [Immunefi's PoC templates](https://github.com/immunefi-team/forge-poc-templates)
+are reusable *patterns* per vulnerability class precisely because "design
+patterns [are] commonly repeated across different protocols"; [SmartBugs 2.0](https://joaoff.com/publication/2023/ase-smartbugs2/)
+and [PoPoC](https://github.com/ASSERT-KTH/PoPoC) exist as *benchmarks* with
+reproduction environments; and [SmartPoC](https://arxiv.org/abs/2511.12993)
+reports confirmation precision/recall against SmartBugs-Vul and FORGE-Vul.
+
+Every template records its `provenance` — `dataset` (with the SmartBugs paths it
+derives from) or `modelled` (with a note saying why the dataset has no
+equivalent, e.g. no ERC-20-fee or oracle case). A test enforces that.
+
+`npm run check:fixtures` runs the fixture suite (needs `forge`).
+
 ## Fallback PoC library
 
 `foundry/poc-fallbacks/` holds one working Foundry harness per scenario, organised by the [SmartBugs Curated](https://github.com/smartbugs/smartbugs-curated) DASP taxonomy. A finding starts from the harness for its detector, or — when the detector has none — the harness for its SmartBugs category. `npm run check:fallbacks` compiles every harness with Foundry; see `docs/smartbugs-alignment.md`.

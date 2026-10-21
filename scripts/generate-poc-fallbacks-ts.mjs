@@ -49,6 +49,9 @@ const catalog = index.fallbacks.map((f) => ({
   scenario: f.scenario,
   detectors: f.detectors,
   smartbugs: f.smartbugs ?? "other",
+  // Where the harness comes from: a SmartBugs Curated port ("dataset", with the
+  // dataset paths) or a modelled class with no dataset equivalent.
+  provenance: f.provenance ?? { kind: "modelled", category: f.smartbugs ?? "other", sources: [] },
 }));
 
 // SmartBugs category -> template file(s).
@@ -78,8 +81,14 @@ export const POC_FALLBACK_TEMPLATES: Record<string, string> = ${JSON.stringify(t
 /** Detector id -> fallback template file(s), from the library index. */
 export const POC_FALLBACK_BY_DETECTOR: Record<string, string[]> = ${JSON.stringify(byDetector, null, 2)};
 
-/** Full fallback catalog: file -> scenario + detectors + SmartBugs category. */
-export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detectors: string[]; smartbugs: string }> = ${JSON.stringify(catalog, null, 2)};
+/** Full fallback catalog: file -> scenario + detectors + category + provenance. */
+export const POC_FALLBACK_CATALOG: Array<{
+  file: string;
+  scenario: string;
+  detectors: string[];
+  smartbugs: string;
+  provenance: { kind: "dataset" | "modelled"; category: string; sources: string[]; note?: string };
+}> = ${JSON.stringify(catalog, null, 2)};
 
 /** SmartBugs-Curated (DASP) category -> fallback template file(s). */
 export const POC_FALLBACK_BY_SMARTBUGS: Record<string, string[]> = ${JSON.stringify(bySmartbugs, null, 2)};
