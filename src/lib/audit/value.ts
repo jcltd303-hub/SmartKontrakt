@@ -226,11 +226,18 @@ export async function fetchDefillamaPrices(
 export class BoundedCache<V> {
   private entries = new Map<string, { value: V; bytes: number }>();
   private retainedBytes = 0;
-  constructor(
-    private readonly maxEntries: number,
-    private readonly maxBytes: number,
-    private readonly sizeOf: (value: V) => number,
-  ) {}
+  // Declared and assigned explicitly rather than as constructor parameter
+  // properties: Node's strip-only TypeScript mode (which `npm test` runs under)
+  // rejects `constructor(private readonly x: T)` with
+  // ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX.
+  private readonly maxEntries: number;
+  private readonly maxBytes: number;
+  private readonly sizeOf: (value: V) => number;
+  constructor(maxEntries: number, maxBytes: number, sizeOf: (value: V) => number) {
+    this.maxEntries = maxEntries;
+    this.maxBytes = maxBytes;
+    this.sizeOf = sizeOf;
+  }
   get size(): number { return this.entries.size; }
   get bytes(): number { return this.retainedBytes; }
   get(key: string): V | undefined {
