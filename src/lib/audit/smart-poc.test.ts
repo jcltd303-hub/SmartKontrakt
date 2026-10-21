@@ -1,34 +1,73 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runSmartPoc, needsSmartPoc } from './foundry-backend.ts';
+import { clearValueCache } from './value.ts';
+
+/**
+ * Route mocked fetches. The pre-run value check now hits three sources (JSON-RPC
+ * for the native balance, Blockscout for tokens + native price, DefiLlama for
+ * leftovers), so tests answer those separately and observe only backend traffic.
+ */
+function installFetch(opts: {
+  balance?: string;
+  coinPrice?: string | null;
+  tokens?: unknown[];
+  tokensDown?: boolean;
+  llama?: Record<string, { price: number }>;
+  reply?: (n: number, body: { rpcUrl?: string; method?: string }) => Response;
+} = {}) {
+  const original = globalThis.fetch;
+  const backend: Array<{ url: string; body: { rpcUrl?: string; method?: string } }> = [];
+  globalThis.fetch = (async (input: unknown, init?: { body?: unknown }) => {
+    const url = String(input);
+    if (url.includes('blockscout')) {
+      if (url.includes('/stats')) {
+        if (opts.coinPrice === null) return new Response('down', { status: 500 });
+        return new Response(JSON.stringify({ coin_price: opts.coinPrice ?? '2500' }));
+      }
+      if (opts.tokensDown) return new Response('down', { status: 500 });
+      return new Response(JSON.stringify(opts.tokens ?? []));
+    }
+    if (url.includes('coins.llama.fi')) {
+      return new Response(JSON.stringify({ coins: opts.llama ?? {} }));
+    }
+    const body = JSON.parse(String(init?.body ?? '{}'));
+    if (body.method === 'eth_getBalance') {
+      return new Response(JSON.stringify({ result: opts.balance ?? '0x1' }));
+    }
+    backend.push({ url, body });
+    return opts.reply
+      ? opts.reply(backend.length, body)
+      : new Response(JSON.stringify({ ok: true, passed: true, logs: '1 passed; 0 failed', durationMs: 1 }));
+  }) as typeof fetch;
+  clearValueCache();
+  return { backend, restore: () => { globalThis.fetch = original; } };
+}
+
+const ADDR = '0x' + '1'.repeat(40);
 
 test('SmartPoC rejects zero-test success and records execution evidence', async () => {
-  const original = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ok:true,passed:true,logs:'No tests found',durationMs:1}));
+  const f = installFetch({ reply: () => new Response(JSON.stringify({ok:true,passed:true,logs:'No tests found',durationMs:1})) });
   try {
-    const result = await runSmartPoc('http://localhost:8787', {address:'0x'+'1'.repeat(40),testCode:'contract PoC {}'});
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}'});
     assert.equal(result.status, 'error');
     assert.match(result.logs, /SmartPoC/);
     assert.match(result.logs, /SHA-256/);
     assert.equal(result.evidence?.engine, 'foundry');
     assert.equal(result.evidence?.testCount, 0);
-  } finally { globalThis.fetch = original; }
+  } finally { f.restore(); }
 });
 
 test('SmartPoC keeps Base RPC retries on Base and records real test counts', async () => {
-  const original = globalThis.fetch;
-  const urls: string[] = [];
-  globalThis.fetch = async (_url, init) => {
-    urls.push(JSON.parse(String(init?.body)).rpcUrl);
-    return new Response(JSON.stringify({ok:true,passed:true,logs:'[PASS] testProof()\n1 passed; 0 failed',durationMs:2}));
-  };
+  const f = installFetch({ reply: () => new Response(JSON.stringify({ok:true,passed:true,logs:'[PASS] testProof()\n1 passed; 0 failed',durationMs:2})) });
   try {
-    const result = await runSmartPoc('http://localhost:8787', {address:'0x'+'1'.repeat(40),testCode:'contract PoC {}',chainId:8453});
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}',chainId:8453});
     assert.equal(result.status,'passed');
     assert.equal(result.evidence?.testCount,1);
     assert.equal(result.evidence?.chainId,"8453");
-    assert.ok(urls[0].includes('base'));
-  } finally { globalThis.fetch = original; }
+    assert.ok(f.backend.length > 0);
+    assert.ok(String(f.backend[0].body.rpcUrl).includes('base'));
+  } finally { f.restore(); }
 });
 
 test('saved findings require matching completed execution evidence', () => {
@@ -52,6 +91,58 @@ test('saved audit queue runs only missing high severity proofs and stops on back
 
 test('legacy passed flags without execution logs are rerun', () => { assert.equal(needsSmartPoc({exploitSolidity:'x',pocCode:'x',pocStatus:'passed',pocRunAt:'2026-10-20'}),true); });
 
+test('SmartPoC skips the run when the target holds no value at all', async () => {
+  const f = installFetch({ balance: '0x0', tokens: [] });
+  try {
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}'});
+    assert.equal(result.status, 'skipped');
+    assert.match(result.logs, /holds no value/);
+    assert.equal(f.backend.length, 0, 'the backend must not be called for a zero-value target');
+  } finally { f.restore(); }
+});
+
+test('SmartPoC still runs when only an ERC-20 holding carries the value', async () => {
+  // Zero ETH, but one priced token: exactly the case the native-only guard got wrong.
+  const f = installFetch({
+    balance: '0x0',
+    tokens: [{ token: { address_hash: '0x'+'a'.repeat(40), decimals: '18', exchange_rate: '1.5', symbol: 'TKN', name: 'Token', type: 'ERC-20' }, value: '1000000000000000000' }],
+  });
+  try {
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}'});
+    assert.equal(result.status, 'passed');
+    assert.equal(f.backend.length, 1);
+  } finally { f.restore(); }
+});
+
+test('skipZeroValue:false forces the run on a zero-value target', async () => {
+  const f = installFetch({ balance: '0x0', tokens: [] });
+  try {
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}',skipZeroValue:false});
+    assert.equal(result.status, 'passed');
+  } finally { f.restore(); }
+});
+
+test('an incomplete valuation (token indexer down) does NOT skip the run', async () => {
+  const f = installFetch({ balance: '0x0', tokensDown: true });
+  try {
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}'});
+    assert.equal(result.status, 'passed', 'unknown value must never be treated as zero');
+  } finally { f.restore(); }
+});
+
+test('an unpriced token holding does NOT skip the run', async () => {
+  // Balance read, tokens read, but the token has no price — the total is a floor.
+  const f = installFetch({
+    balance: '0x0',
+    coinPrice: '2500',
+    tokens: [{ token: { address_hash: '0x'+'b'.repeat(40), decimals: '18', exchange_rate: null, symbol: 'NOPRICE', name: 'X', type: 'ERC-20' }, value: '5000000000000000000' }],
+  });
+  try {
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}'});
+    assert.equal(result.status, 'passed');
+  } finally { f.restore(); }
+});
+
 test('standalone SmartPoC persistence never saves an unexecuted proof', async () => {
   const { saveSmartPocResult } = await import('./smart-poc-save.ts');
   assert.equal(await saveSmartPocResult({status:'skipped',logs:'No target',durationMs:0,runAt:new Date().toISOString()},'code',1,{url:'',anonKey:'',enabled:true}), 'not-run');
@@ -68,7 +159,7 @@ test('standalone persistence saves the executed source and complete evidence', a
   try {
     const now = new Date().toISOString();
     const result = await saveSmartPocResult({status:'passed',logs:'[SmartPoC | Foundry] tests=1',durationMs:3,runAt:now,
-      evidence:{engine:'foundry',startedAt:now,finishedAt:now,target:'0x'+'1'.repeat(40),chainId:'8453',sourceHash:'hash',backendUrl:'http://localhost:8787',rpcUrls:[],testCount:1}},
+      evidence:{engine:'foundry',startedAt:now,finishedAt:now,target:ADDR,chainId:'8453',sourceHash:'hash',backendUrl:'http://localhost:8787',rpcUrls:[],testCount:1}},
       'executed source',8453,{url:'https://test.supabase.co',anonKey:'sb_publishable_test',enabled:true});
     assert.equal(result,'saved');
     assert.equal(row?.source,'executed source');
@@ -78,21 +169,21 @@ test('standalone persistence saves the executed source and complete evidence', a
 });
 
 test('SmartPoC repairs a compile failure once and records the code actually executed', async () => {
-  const original = globalThis.fetch;
-  let calls = 0, repairs = 0;
-  globalThis.fetch = async () => new Response(JSON.stringify(++calls === 1
-    ? {ok:true,passed:false,logs:'Compiler run failed: TypeError',durationMs:1}
-    : {ok:true,passed:true,logs:'1 passed; 0 failed',durationMs:1}));
+  let repairs = 0;
+  const f = installFetch({
+    reply: (n) => new Response(JSON.stringify(n === 1
+      ? {ok:true,passed:false,logs:'Compiler run failed: TypeError',durationMs:1}
+      : {ok:true,passed:true,logs:'1 passed; 0 failed',durationMs:1})),
+  });
   try {
-    const result = await runSmartPoc('http://localhost:8787',{address:'0x'+'1'.repeat(40),testCode:'broken',
+    const result = await runSmartPoc('http://localhost:8787',{address:ADDR,testCode:'broken',
       repair: async () => { repairs++; return 'fixed'; }});
     assert.equal(result.status,'passed');
     assert.equal(result.executedSource,'fixed');
     assert.equal(repairs,1);
-    assert.equal(calls,2);
-  } finally { globalThis.fetch = original; }
+    assert.equal(f.backend.length,2);
+  } finally { f.restore(); }
 });
-
 
 test("a repaired proof is reused only while its original finding input is unchanged", async () => {
   const {pocInputDigest} = await import("./foundry-backend.ts");
@@ -103,12 +194,11 @@ test("a repaired proof is reused only while its original finding input is unchan
 
 test('SmartPoC binds the executed source for synchronous UI evidence labels', async () => {
   const { classifyPocEvidence } = await import('./poc-evidence.ts');
-  const original = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ok:true,passed:true,logs:'[PASS] test_exploit()\n1 passed; 0 failed',durationMs:1}));
+  const f = installFetch({ reply: () => new Response(JSON.stringify({ok:true,passed:true,logs:'[PASS] test_exploit()\n1 passed; 0 failed',durationMs:1})) });
   try {
     const code = 'contract PoC { function test_exploit() public {} }';
-    const result = await runSmartPoc('http://localhost:8787', {address:'0x'+'1'.repeat(40),testCode:code});
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:code});
     assert.equal(classifyPocEvidence({code,result}).stage,'reproduced');
     assert.notEqual(classifyPocEvidence({code:code+' // edited',result}).stage,'reproduced');
-  } finally { globalThis.fetch = original; }
+  } finally { f.restore(); }
 });

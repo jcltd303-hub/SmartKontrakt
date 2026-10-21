@@ -1,4 +1,19 @@
+import type { AddressValue } from "./value.ts";
+
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
+
+/**
+ * One ABI entry, as returned by Sourcify/Etherscan or rebuilt heuristically.
+ * Defined here (not in abi.ts) so the ABI can live on the persisted Inventory
+ * without a circular type import.
+ */
+export type AbiItem = {
+  type?: string;
+  name?: string;
+  inputs?: Array<{ name?: string; type?: string; components?: AbiItem[] }>;
+  outputs?: Array<{ name?: string; type?: string; components?: AbiItem[] }>;
+  stateMutability?: string;
+};
 
 export type Confidence = "high" | "medium" | "low";
 
@@ -78,6 +93,30 @@ export type Inventory = {
   proxy: string | null;
   notes: string[];
   disassembly: string;
+  /**
+   * Native-coin balance (wei, decimal string) of the target at analysis time,
+   * read over public JSON-RPC. Null/absent when not read (no RPC answer).
+   * Distinct from zero: `"0"` is a confirmed empty balance.
+   */
+  balanceWei?: string | null;
+  /** Native symbol for the chain (ETH / POL / BNB), for display. */
+  balanceSymbol?: string | null;
+  /**
+   * Total USD value of the target at analysis time (native + ERC-20 holdings),
+   * from the value layer. Null when not valued; the record's `value_usd` column
+   * mirrors this for sorting.
+   */
+  valueUsd?: number | null;
+  /** Full valuation (holdings, prices, sources, completeness). */
+  value?: AddressValue | null;
+  /**
+   * The target's ABI when one was gathered (Sourcify / Etherscan / inferred
+   * from selectors + events), stored so a later PoC run in ANY context can
+   * tailor its template to the real surface without re-fetching.
+   */
+  abi?: AbiItem[] | null;
+  /** Where the ABI came from: "sourcify" | "etherscan" | "heuristic" | "input". */
+  abiSource?: string | null;
 };
 
 export type Report = {
@@ -125,5 +164,7 @@ export type PocResult = {
   runAt: string;
   /** Backend-side error message, when status is "error". */
   error?: string;
+  /** Total USD value of the target at the pre-run check (migration 0012). */
+  valueUsd?: number | null;
 };
 

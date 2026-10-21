@@ -607,6 +607,9 @@ function debitsOwnCredit(fn: FnModel, source?: string): boolean {
   return rx(`allowance\\s*\\[\\s*${account}\\s*\\]\\s*\\[\\s*msg\\.sender\\s*\\]\\s*>=`).test(src);
 }
 
+/** Report cap: beyond this the least-severe findings are dropped (visibly). */
+export const MAX_FINDINGS = 40;
+
 let seq = 0;
 function make(
   partial: Omit<Finding, "id">,
@@ -740,7 +743,30 @@ credit += 2; // equals 1. The deposit was not rejected.`,
 
   const rank: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
   findings.sort((a, b) => rank[a.severity] - rank[b.severity] || (a.locationLine ?? 0) - (b.locationLine ?? 0));
-  return findings.slice(0, 40);
+  // The cap drops the LEAST severe first (the sort above), but it used to drop
+  // them SILENTLY — so a report could quietly lose real lower-severity positives
+  // with no trace. The omitted count is now an explicit INFO finding, so the
+  // truncation is visible and reviewable instead of invisible.
+  if (findings.length <= MAX_FINDINGS) return findings;
+  const omitted = findings.length - MAX_FINDINGS;
+  const kept = findings.slice(0, MAX_FINDINGS);
+  kept.push(
+    make({
+      severity: "info",
+      swc: null,
+      title: `${omitted} lower-severity finding${omitted === 1 ? "" : "s"} omitted (report cap ${MAX_FINDINGS})`,
+      confidence: "high",
+      detector: "report-cap",
+      summary: `This report hit the ${MAX_FINDINGS}-finding cap, so the ${omitted} lowest-severity finding(s) were not listed. They are not clean — raise the cap or audit the contract in smaller scopes to see them.`,
+      walkthrough: "1. The detector set produced more findings than the report cap.\n2. Findings were sorted by severity, so the omitted ones are the least severe.\n3. Re-run against a narrower scope (a single contract or function) to list them.",
+      exploitSolidity: "",
+      remediationSolidity: "",
+      locationFn: null,
+      locationLine: null,
+      snippet: "",
+    }),
+  );
+  return kept;
 }
 
 function formatVer(v: number): string {

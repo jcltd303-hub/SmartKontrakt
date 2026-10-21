@@ -246,4 +246,51 @@ create index if not exists findings_severity_poc_idx
 create index if not exists contract_scans_chain_address_idx
   on contract_scans (chain_id, lower(target_address));
 `,
+  "0011_balance.sql": `-- Migration 0011: native-coin balance of the target at analysis time.
+--
+-- Read over public JSON-RPC (\`eth_getBalance\`) when an address is analyzed, so a
+-- record shows how much native value sits behind the contract, and so the
+-- pre-run PoC guard can skip a target with nothing at stake.
+--
+-- Stored as a decimal wei string in \`text\`: balances exceed 2^53, so a JSON
+-- number would lose precision. NULL means "not read" (no RPC answered), which is
+-- deliberately distinct from '0' (a confirmed empty balance).
+alter table contract_scans add column if not exists balance_wei text;
+`,
+  "0012_value_at_risk.sql": `-- Migration 0012: value-at-risk columns.
+--
+-- \`value_usd\` is the target's total USD value at analysis time (native coin plus
+-- ERC-20 holdings), so the Records list can sort and filter by what is actually
+-- at stake instead of by native balance alone. \`value_json\` keeps the full
+-- valuation (per-holding amounts, prices, sources, completeness) for the UI.
+-- \`abi_json\` + \`abi_source\` persist the target's ABI — gathered once, reused by
+-- any later PoC run so a template can be tailored to the real contract surface.
+--
+-- \`value_usd\` is \`numeric\`, not float, so sorting is exact. NULL means "not
+-- valued" and is distinct from 0 (a confirmed valueless target).
+alter table contract_scans add column if not exists value_usd numeric;
+alter table contract_scans add column if not exists value_json text;
+alter table contract_scans add column if not exists abi_json text;
+alter table contract_scans add column if not exists abi_source text;
+
+create index if not exists contract_scans_value_usd_idx
+  on contract_scans (value_usd desc nulls last);
+`,
+  "0013_poc_run_idempotency.sql": `-- Migration 0013: idempotent PoC runs.
+--
+-- \`finding_poc_runs\` used to get a fresh random UUID on every save, so re-running
+-- the same proof (same finding, same executed source) appended a duplicate row
+-- every time — the table grew with repeats and there was no way to ask "have we
+-- already executed exactly this proof?".
+--
+-- \`source_digest\` is the sha3-256 of the executed source. The partial unique
+-- index makes (finding_id, source_digest) the identity of a run, so a re-save
+-- updates the existing row instead of appending. Rows written before this
+-- migration have a NULL digest and are left alone by the partial index.
+alter table finding_poc_runs add column if not exists source_digest text;
+
+create unique index if not exists finding_poc_runs_identity_idx
+  on finding_poc_runs (finding_id, source_digest)
+  where source_digest is not null;
+`,
 };

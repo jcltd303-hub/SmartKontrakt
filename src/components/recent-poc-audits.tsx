@@ -27,6 +27,7 @@ import {
 } from "@/lib/scans.functions";
 import type { FindingWithScanInfo } from "@/lib/audit/persist.server";
 import { wrapPocSnippet } from "@/lib/audit/poc-wrap";
+import { balanceLabel, nativeSymbol } from "@/lib/audit/balance";
 import {
   runPocWithRpcRetries,
   getBackendUrl,
@@ -683,6 +684,16 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
                             </button>
                           </>
                         )}
+                        <span>•</span>
+                        <span
+                          className={(() => {
+                            const bal = balanceLabel(finding.balanceWei, nativeSymbol(finding.chainId ?? "ethereum"));
+                            return bal === null ? "text-[#746c60]" : bal.startsWith("0 ") ? "text-red-400" : "text-[#e8c07d]";
+                          })()}
+                          title="Native coin balance of the target at analysis time"
+                        >
+                          {balanceLabel(finding.balanceWei, nativeSymbol(finding.chainId ?? "ethereum")) ?? "balance n/a"}
+                        </span>
                         <span>•</span>
                         <span className="text-[#746c60]">
                           Audited: {new Date(finding.scanCreatedAt).toLocaleDateString()}

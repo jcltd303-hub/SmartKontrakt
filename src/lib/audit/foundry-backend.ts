@@ -1,6 +1,8 @@
 import type { PocResult } from "./types";
 import { sha3_256 } from "js-sha3";
 import { wrapPocSnippet } from "./poc-wrap.ts";
+import { nativeSymbol } from "./balance.ts";
+import { fetchAddressValue, isZeroValue, describeValue } from "./value.ts";
 
 /**
  * Forge compile-error detector for PoC logs. Compile failures are the
@@ -197,6 +199,12 @@ async function executeWithRpcRetries(
     retry?: boolean;
     repair?: (source: string, logs: string) => Promise<string>;
     onProgress?: (progress: RpcRetryProgress) => void;
+    /**
+     * Pre-run guard (default on): value the target (native + ERC-20s, in USD) and
+     * skip the run when the total is a CONFIRMED zero — nothing at stake. An
+     * incomplete valuation never skips. Set false to force the run.
+     */
+    skipZeroValue?: boolean;
   },
 ): Promise<PocResult & { triedRpcs: string[]; finalRpc?: string }> {
   const candidateSet = new Set<string>();
@@ -338,6 +346,27 @@ export async function runSmartPoc(
   input: Parameters<typeof executeWithRpcRetries>[1],
 ): Promise<Awaited<ReturnType<typeof executeWithRpcRetries>>> {
   const startedAt = new Date().toISOString();
+
+  // Quick pre-run value check: value the target (native + ERC-20s, USD) at the
+  // latest block and skip when there is nothing at stake. Only a CONFIRMED zero
+  // skips — an incomplete valuation (provider down, chain we cannot read) runs.
+  // See skipZeroValue to force a run.
+  if (input.skipZeroValue !== false) {
+    const rpcs = input.rpcList && input.rpcList.length ? input.rpcList : rpcCandidates(input.chainId);
+    const value = await fetchAddressValue(input.address, input.chainId, { rpcUrls: rpcs }).catch(() => null);
+    if (isZeroValue(value) && value) {
+      return {
+        status: "skipped",
+        logs: `[SmartPoC] Skipped — target ${input.address} holds no value (0 ${nativeSymbol(input.chainId)}, no priced token holdings) at the latest block, so there is nothing at stake to exploit. Pass skipZeroValue: false to run anyway.`,
+        durationMs: 0,
+        runAt: new Date().toISOString(),
+        executedSource: input.testCode,
+        triedRpcs: [],
+        valueUsd: value.totalUsd,
+      };
+    }
+  }
+
   const bytes = new TextEncoder().encode(input.testCode);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   const sourceHash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");

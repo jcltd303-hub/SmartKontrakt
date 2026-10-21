@@ -2,6 +2,8 @@ import type { Report } from "./types.ts";
 import { analyzeInput } from "./engine.ts";
 import { analyzeBytecode } from "./bytecode.ts";
 import { rpcLimiter, sourcifyLimiter, withRetry } from "./rate-limit.ts";
+import { fetchAddressValue } from "./value.ts";
+import { gatherAbi } from "./abi.ts";
 import { enrichReportFourbyte, type FourbyteLookup } from "./fourbyte.ts";
 
 export type SupportedChain = {
@@ -115,6 +117,10 @@ export type BatchItem = {
   error?: string;
   bytecodeSize?: number;
   riskScore?: number;
+  /** Native balance (wei, decimal string) at analysis time (migration 0011). */
+  balanceWei?: string | null;
+  /** Total USD value at analysis time (migration 0012). */
+  valueUsd?: number | null;
   findingsCount?: number;
   criticalCount?: number;
   highCount?: number;
@@ -481,13 +487,47 @@ export async function analyzeAddress(
   address: string,
   chainId = "ethereum",
   customLabel?: string,
-  opts?: { fourbyte?: FourbyteLookup; deployedName?: string | null },
+  opts?: { fourbyte?: FourbyteLookup; deployedName?: string | null; etherscanKey?: string },
 ): Promise<{ report: Report; rawBody: string; inputKind: "source" | "bytecode" }> {
   if (!isValidEvmAddress(address)) {
     throw new Error(`Invalid EVM address format: ${address}`);
   }
 
   const chain = SUPPORTED_CHAINS.find((c) => c.id === chainId) ?? SUPPORTED_CHAINS[0]!;
+
+  // Value at analysis time, attached to the inventory so it persists with the
+  // record, renders in the UI, and drives the pre-run skip. Best-effort: a
+  // provider outage leaves it unset (NOT zero) and is noted, never fatal.
+  const attachValueAndAbi = async (r: Report): Promise<void> => {
+    try {
+      const value = await fetchAddressValue(address, chain.chainId, { rpcUrls: chain.rpcUrls });
+      r.inventory.balanceWei = value.nativeWei;
+      r.inventory.balanceSymbol = value.symbol;
+      r.inventory.valueUsd = value.totalUsd;
+      r.inventory.value = value;
+      if (!value.complete) {
+        r.inventory.notes = [...r.inventory.notes, `Value incomplete: ${value.notes.join("; ")}`];
+      }
+    } catch {
+      // leave unset
+    }
+    // Gather the target ABI once and persist it with the record, so a later PoC
+    // run in any context can tailor its template without re-fetching.
+    try {
+      const gathered = await gatherAbi(address, chain.chainId, {
+        inventory: r.inventory,
+        // Supplied by the server/worker caller; the browser has no key and
+        // falls back to Sourcify, then to the heuristic ABI.
+        etherscanKey: opts?.etherscanKey,
+      });
+      if (gathered) {
+        r.inventory.abi = gathered.abi;
+        r.inventory.abiSource = gathered.source;
+      }
+    } catch {
+      // leave unset
+    }
+  };
 
   // 1. Try Sourcify verified source
   const sourcifyMatch = await fetchSourcifySource(address, chain.chainId);
@@ -543,6 +583,7 @@ export async function analyzeAddress(
     // (worker / server callers pass a DB lookup; the browser workbench
     // enriches via the resolveFourbyte server fn instead).
     if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
+    await attachValueAndAbi(report);
     return {
       report,
       rawBody: sourcifyMatch.source,
@@ -560,6 +601,7 @@ export async function analyzeAddress(
   const report = analyzeInput(bytecode, label);
 
   if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
+  await attachValueAndAbi(report);
 
   return {
     report,

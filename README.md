@@ -91,6 +91,90 @@ The PoC pipeline follows **SmartPoC** (Chen et al., *SmartPoC: Generating Execut
 
 The headless pipeline worker runs the full pipeline per flagged address. Settings mirror the paper: temperature 0.3, retry budget B = 5, Foundry fork tests.
 
+## Risk score
+
+`src/lib/audit/risk.ts` scores 0-100 by **dominance, not a sum**. The old model
+was `min(100, Σ weight)` with `critical: 28`, so a single critical scored 28 and a
+critical plus a high scored 42 — a critical contract read as "medium". Now the
+worst finding sets the floor (`critical: 78`, `high: 55`, `medium: 30`,
+`low: 12`, `info: 0`), the rest add bounded pressure (so ten mediums can never
+outrank a critical), and a fork-PoC-confirmed exploit adds proof weight. Bands
+are 75 / 50 / 25 — the same thresholds the UI filters on, so the number, the
+colour and the filter agree. Value at risk is kept as a separate axis.
+
+## Idempotency
+
+Everything expensive is keyed so it is not repeated:
+
+- **PoC runs** — a run's identity is `(finding, sha3-256 of the executed source)`
+  (`src/lib/audit/poc-run-key.ts`, migration 0013). Re-saving the same proof
+  **upserts** the run row instead of appending a duplicate, and the unique index
+  makes the identity a database guarantee. `needsSmartPoc` already refuses to
+  re-run a proof whose input digest is unchanged.
+- **Findings dispositions** — triage states live in `contract_scans.triage_states_json`,
+  written through the batched upsert, so a save is a row update, not an append.
+- **Tabs** — the workbench tabs are always-mounted pure renderers over a single
+  controller, so switching tabs runs nothing. Loading a saved record rehydrates
+  the report, probes, AI review, triage states and per-finding PoC verdicts.
+
+## Balance guard and the balance column
+
+Every address audit reads the target's native balance (`eth_getBalance`) at analysis time and stores it as `contract_scans.balance_wei` — a decimal wei string, since balances exceed 2^53. `NULL` means "not read" (no RPC answered) and is deliberately distinct from `'0'` (a confirmed empty balance). The balance renders prominently in the workbench scorecard, the Records table, the Recent PoC audits list, and the batch pipeline.
+
+Before any fork PoC run the target is valued (see *Value at risk* below): a **confirmed zero total skips the run** (nothing at stake), returning status `skipped` with the reason in the logs. An incomplete valuation does *not* skip — unknown is not zero. Pass `skipZeroValue: false` to force a run. The balance shown alongside it is the native coin only, read at the latest block.
+
+## Value at risk
+
+Every address audit is valued in USD at analysis time — native coin plus ERC-20
+holdings — and stored as `contract_scans.value_usd` (with the full breakdown in
+`value_json`). The sources are keyless: public JSON-RPC for the native balance,
+[Blockscout](https://www.blockscout.com/) for token balances and per-chain native
+prices, and [DefiLlama](https://defillama.com/) for any token Blockscout leaves
+unpriced. Set `ETHERSCAN_API_KEY` to prefer Etherscan's ABI endpoint when it is
+available.
+
+The Records tab sorts and filters by value (funded / zero / not valued) and shows
+a running **value at risk** total for the current selection; the batch pipeline
+queue carries a value column too.
+
+`complete` is the flag that matters: a valuation is only complete when every
+provider answered and every holding was priced. An incomplete valuation is
+*unknown*, never zero, so it can never trigger a skip.
+
+## Target ABI, gathered once
+
+`src/lib/audit/abi.ts` gathers the target's ABI — Sourcify `metadata.json`
+first, then Etherscan (with a key), then a heuristic ABI rebuilt from what the
+analyzer already parsed (functions with their selectors, and event topics).
+It is stored with the scan (`abi_json` / `abi_source`) so a PoC run in **any**
+context reuses it instead of re-fetching. At PoC time the chosen fallback
+template is tailored additively: the real `ITarget` interface is prepended to
+the template, and the generation prompt is given the same surface, so the model
+starts from the contract's actual signatures rather than an invented one.
+
+## How the PoC library is grounded in real code
+
+The library is deliberately two layers, because the two artifacts have different
+jobs and only one of them can run against a stranger's contract:
+
+| Layer | What it is | Why |
+| --- | --- | --- |
+| `foundry/poc-fallbacks/` | tailored **pattern** harnesses, wired to the target's real ABI | must run against any deployed target, whose ABI and storage layout differ from any dataset contract |
+| `foundry/poc-fixtures/` | verbatim, modernized **ports** of specific SmartBugs Curated contracts + the harness that reproduces them | ground truth: proves the pattern actually reproduces a known bug, and — run against a fixed variant — does not fire on patched code |
+
+This mirrors how the field measures itself: [Immunefi's PoC templates](https://github.com/immunefi-team/forge-poc-templates)
+are reusable *patterns* per vulnerability class precisely because "design
+patterns [are] commonly repeated across different protocols"; [SmartBugs 2.0](https://joaoff.com/publication/2023/ase-smartbugs2/)
+and [PoPoC](https://github.com/ASSERT-KTH/PoPoC) exist as *benchmarks* with
+reproduction environments; and [SmartPoC](https://arxiv.org/abs/2511.12993)
+reports confirmation precision/recall against SmartBugs-Vul and FORGE-Vul.
+
+Every template records its `provenance` — `dataset` (with the SmartBugs paths it
+derives from) or `modelled` (with a note saying why the dataset has no
+equivalent, e.g. no ERC-20-fee or oracle case). A test enforces that.
+
+`npm run check:fixtures` runs the fixture suite (needs `forge`).
+
 ## Fallback PoC library
 
 `foundry/poc-fallbacks/` holds one working Foundry harness per scenario, organised by the [SmartBugs Curated](https://github.com/smartbugs/smartbugs-curated) DASP taxonomy. A finding starts from the harness for its detector, or — when the detector has none — the harness for its SmartBugs category. `npm run check:fallbacks` compiles every harness with Foundry; see `docs/smartbugs-alignment.md`.

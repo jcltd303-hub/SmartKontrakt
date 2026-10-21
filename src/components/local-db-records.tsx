@@ -9,6 +9,8 @@ import {
 } from "@/lib/scans.functions";
 import type { ScanSummary, StoredScan } from "@/lib/audit/persist.server";
 import { SUPPORTED_CHAINS } from "@/lib/audit/address-fetcher";
+import { balanceLabel, nativeSymbol } from "@/lib/audit/balance";
+import { formatUsd } from "@/lib/audit/value";
 import { SupabaseDbModal } from "./supabase-db-modal";
 import {
   Database,
@@ -45,6 +47,9 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [chainFilter, setChainFilter] = useState<string>("all");
   const [riskFilter, setRiskFilter] = useState<string>("all");
+  // Value-at-risk view: filter by whether anything is at stake, and sort by it.
+  const [valueFilter, setValueFilter] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<string>("recent");
   const [selectedRecord, setSelectedRecord] = useState<StoredScan | null>(null);
   const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -212,7 +217,22 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
     if (riskFilter === "high" && (r.riskScore < 50 || r.riskScore >= 75)) return false;
     if (riskFilter === "medium" && (r.riskScore < 25 || r.riskScore >= 50)) return false;
     if (riskFilter === "low" && r.riskScore >= 25) return false;
+    // Value-at-risk: a record with no valuation (null) is "unknown", not "zero".
+    if (valueFilter === "funded" && !((r.valueUsd ?? 0) > 0)) return false;
+    if (valueFilter === "zero" && r.valueUsd !== 0) return false;
+    if (valueFilter === "unknown" && r.valueUsd !== null && r.valueUsd !== undefined) return false;
     return true;
+  });
+
+  // Value at risk across everything currently filtered (the whole loaded set,
+  // not just the visible page), plus a sortable view.
+  const valueAtRisk = filtered.reduce((acc, r) => acc + (r.valueUsd ?? 0), 0);
+  const fundedCount = filtered.filter((r) => (r.valueUsd ?? 0) > 0).length;
+  const visible = [...filtered].sort((a, b) => {
+    if (sortBy === "value-desc") return (b.valueUsd ?? -1) - (a.valueUsd ?? -1);
+    if (sortBy === "value-asc") return (a.valueUsd ?? Number.POSITIVE_INFINITY) - (b.valueUsd ?? Number.POSITIVE_INFINITY);
+    if (sortBy === "risk-desc") return b.riskScore - a.riskScore;
+    return 0; // "recent" — the server already returns newest first
   });
 
   // Aggregated Stats — true totals from the server, not per-page sums.
@@ -368,7 +388,50 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
               <option value="low" className="bg-[#1c1a16] text-emerald-400">Low (&lt;25)</option>
             </select>
           </div>
+
+          {/* Value at risk: the triage axis that actually matters. */}
+          <div className="flex items-center gap-1.5 bg-[#12110e] px-2.5 py-1 rounded-lg border border-[#3a3428]">
+            <span className="text-[#a39886] text-[11px]">Value:</span>
+            <select
+              value={valueFilter}
+              onChange={(e) => setValueFilter(e.target.value)}
+              className="bg-transparent text-[#e8a54b] focus:outline-none cursor-pointer text-xs"
+            >
+              <option value="all" className="bg-[#1c1a16] text-[#f4efe6]">All</option>
+              <option value="funded" className="bg-[#1c1a16] text-[#e8c07d]">Funded (&gt; $0)</option>
+              <option value="zero" className="bg-[#1c1a16] text-red-400">Zero value</option>
+              <option value="unknown" className="bg-[#1c1a16] text-[#a39886]">Not valued</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-1.5 bg-[#12110e] px-2.5 py-1 rounded-lg border border-[#3a3428]">
+            <span className="text-[#a39886] text-[11px]">Sort:</span>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="bg-transparent text-[#e8a54b] focus:outline-none cursor-pointer text-xs"
+            >
+              <option value="recent" className="bg-[#1c1a16] text-[#f4efe6]">Newest</option>
+              <option value="value-desc" className="bg-[#1c1a16] text-[#f4efe6]">Value (high to low)</option>
+              <option value="value-asc" className="bg-[#1c1a16] text-[#f4efe6]">Value (low to high)</option>
+              <option value="risk-desc" className="bg-[#1c1a16] text-[#f4efe6]">Risk score</option>
+            </select>
+          </div>
         </div>
+      </div>
+
+      {/* Value at risk across the current selection — the headline number. */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 mb-3 bg-[#1c1a16] border border-[#3a3428] rounded-xl font-mono">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-[#746c60]">Value at risk</span>
+          <span className="text-lg font-bold text-[#e8c07d]">{formatUsd(valueAtRisk) ?? "$0.00"}</span>
+        </div>
+        <span className="text-[11px] text-[#a39886]">
+          {fundedCount} funded / {filtered.length} shown
+        </span>
+        {valueFilter !== "all" && (
+          <span className="text-[10px] text-[#746c60]">filtered by value</span>
+        )}
       </div>
 
       {/* Records Table / List */}
@@ -391,6 +454,7 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
                   <th className="p-3">Target Contract</th>
                   <th className="p-3">Chain & Address</th>
                   <th className="p-3">Risk Score</th>
+                  <th className="p-3">Value at Risk</th>
                   <th className="p-3">Findings Breakdown</th>
                   <th className="p-3">Dossier Features</th>
                   <th className="p-3">Date Saved</th>
@@ -398,7 +462,7 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#3a3428]/60 text-[#f4efe6]">
-                {filtered.map((r) => {
+                {visible.map((r) => {
                   const riskColor =
                     r.riskScore >= 75
                       ? "text-red-400 border-red-700/60 bg-red-950/40"
@@ -428,6 +492,18 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
                         <div className="flex items-center gap-1.5 text-[11px] text-[#e8a54b]">
                           <span>{chainObj?.name ?? r.chainId ?? "Ethereum"}</span>
                         </div>
+                        {/* Native balance at analysis time (migration 0011). */}
+                        {(() => {
+                          const bal = balanceLabel(r.balanceWei, nativeSymbol(r.chainId));
+                          return (
+                            <div
+                              className={`text-[10px] font-mono mt-0.5 ${bal === null ? "text-[#746c60]" : bal.startsWith("0 ") ? "text-red-400" : "text-[#e8c07d]"}`}
+                              title="Native coin balance of the target at analysis time"
+                            >
+                              {bal ?? "balance n/a"}
+                            </div>
+                          );
+                        })()}
                         {r.targetAddress ? (
                           <div className="flex items-center gap-1 text-[10px] text-[#a39886] mt-0.5">
                             <span className="truncate max-w-[110px]">{r.targetAddress}</span>
@@ -460,6 +536,26 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
                         <span className={`px-2 py-0.5 rounded text-xs font-bold border ${riskColor}`}>
                           {r.riskScore}/100
                         </span>
+                      </td>
+
+                      {/* Value at Risk — USD total, with the native balance beneath. */}
+                      <td className="p-3">
+                        {(() => {
+                          const v = r.valueUsd ?? null;
+                          return (
+                            <>
+                              <div
+                                className={`text-xs font-bold font-mono ${v === null ? "text-[#746c60]" : v > 0 ? "text-[#e8c07d]" : "text-red-400"}`}
+                                title="Total USD value of the target (native + ERC-20) at analysis time"
+                              >
+                                {v === null ? "—" : formatUsd(v)}
+                              </div>
+                              <div className="text-[10px] text-[#746c60] font-mono mt-0.5">
+                                {balanceLabel(r.balanceWei, nativeSymbol(r.chainId)) ?? ""}
+                              </div>
+                            </>
+                          );
+                        })()}
                       </td>
 
                       {/* Findings Breakdown */}

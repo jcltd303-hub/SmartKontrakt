@@ -7,6 +7,7 @@ import type { CallProbeResult } from "./simulator";
 import type { AiSecurityReview } from "./ai-review.server";
 import { OPENROUTER_API_URL, resolveOpenRouterConfig, stripThinkBlocks } from "./ai-review.server";
 import { openRouterLimiter, withRetry } from "./rate-limit";
+import { pocRunKey } from "./poc-run-key.ts";
 
 export type ScanSummary = {
   id: string;
@@ -21,6 +22,11 @@ export type ScanSummary = {
   mediumCount: number;
   lowCount: number;
   infoCount: number;
+  /** Native-coin balance (wei, decimal string) at analysis time. Null = not read
+   *  (distinct from "0", a confirmed empty balance). */
+  balanceWei?: string | null;
+  /** Total USD value at analysis time (native + ERC-20). Null = not valued. */
+  valueUsd?: number | null;
   certHash?: string | null;
   isRagIndexed?: boolean;
   sourceOrigin?: string;
@@ -65,6 +71,10 @@ type ScanRow = {
   medium_count: number;
   low_count: number;
   info_count: number;
+  balance_wei?: string | null;
+  value_usd?: number | null;
+  abi_json?: string | null;
+  abi_source?: string | null;
   summary: string;
   inventory_json: string;
   ai_narrative: string | null;
@@ -133,6 +143,8 @@ function summaryFrom(row: ScanRow): ScanSummary {
     mediumCount: row.medium_count,
     lowCount: row.low_count,
     infoCount: row.info_count,
+    balanceWei: row.balance_wei ?? null,
+    valueUsd: row.value_usd === null || row.value_usd === undefined ? null : Number(row.value_usd),
     certHash: row.cert_hash ?? null,
     isRagIndexed: Boolean(row.is_rag_indexed),
     sourceOrigin: row.source_origin ?? "workbench",
@@ -156,7 +168,7 @@ export async function listScanSummaries(opts?: { limit?: number; offset?: number
       select id, label, input_kind, contract_name, target_address, chain_id,
              proxy_info_json, probes_json, cert_hash, source_origin, is_rag_indexed,
              risk_score, critical_count, high_count, medium_count, low_count, info_count,
-             unparsed, created_at::text as created_at
+             balance_wei, value_usd, unparsed, created_at::text as created_at
       from contract_scans
       order by created_at desc
       limit ${limit} offset ${offset}
@@ -199,6 +211,7 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
            compiler_version, proxy_info_json, probes_json, ai_review_json,
            triage_states_json, cert_hash, source_origin, is_rag_indexed,
            risk_score, critical_count, high_count, medium_count, low_count, info_count,
+           balance_wei, value_usd, abi_json, abi_source,
            summary, inventory_json, ai_narrative, ai_status, unparsed,
            poc_status, poc_logs, poc_duration_ms, poc_run_at::text as poc_run_at,
            created_at::text as created_at
@@ -217,6 +230,13 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
     order by ord asc
   `;
   const inventory = JSON.parse(row.inventory_json) as Inventory;
+  // Backfill from the dedicated column when the stored inventory predates it.
+  if (inventory.balanceWei == null && row.balance_wei != null) inventory.balanceWei = row.balance_wei;
+  if (inventory.valueUsd == null && row.value_usd != null) inventory.valueUsd = Number(row.value_usd);
+  // The stored ABI is authoritative when the inventory does not carry one.
+  if (inventory.abi == null && row.abi_json) {
+    try { inventory.abi = JSON.parse(row.abi_json); inventory.abiSource = row.abi_source ?? null; } catch { /* ignore */ }
+  }
   const findings: Finding[] = findingRows.map((f) => ({
     id: f.id,
     severity: f.severity,
@@ -499,6 +519,8 @@ export type FindingWithScanInfo = Finding & {
   contractName: string | null;
   targetAddress: string | null;
   chainId: string | null;
+  /** Native balance (wei) of the scan's target at analysis time. */
+  balanceWei?: string | null;
   scanCreatedAt: string;
 };
 
@@ -525,13 +547,14 @@ export async function getRecentHighSeverityFindings(opts?: {
         contract_name: string | null;
         target_address: string | null;
         chain_id: string | null;
+        balance_wei: string | null;
         scan_created_at: string;
       }>`
         select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
                f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
-               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.created_at::text as scan_created_at
+               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
         join contract_scans s on f.scan_id = s.id
         where f.severity = 'critical'
@@ -546,13 +569,14 @@ export async function getRecentHighSeverityFindings(opts?: {
         contract_name: string | null;
         target_address: string | null;
         chain_id: string | null;
+        balance_wei: string | null;
         scan_created_at: string;
       }>`
         select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
                f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
-               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.created_at::text as scan_created_at
+               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
         join contract_scans s on f.scan_id = s.id
         where f.severity = 'high'
@@ -567,13 +591,14 @@ export async function getRecentHighSeverityFindings(opts?: {
         contract_name: string | null;
         target_address: string | null;
         chain_id: string | null;
+        balance_wei: string | null;
         scan_created_at: string;
       }>`
         select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
                f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
-               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.created_at::text as scan_created_at
+               s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
         join contract_scans s on f.scan_id = s.id
         where f.severity in ('critical', 'high')
@@ -608,6 +633,7 @@ export async function getRecentHighSeverityFindings(opts?: {
       contractName: f.contract_name,
       targetAddress: f.target_address,
       chainId: f.chain_id,
+      balanceWei: f.balance_wei ?? null,
       scanCreatedAt: f.scan_created_at,
     }));
   } catch (err) {
@@ -618,7 +644,8 @@ export async function getRecentHighSeverityFindings(opts?: {
 
 /**
  * Persist an executed PoC run verdict for a specific finding to the database.
- * Updates the finding record and appends a run row to finding_poc_runs.
+ * Updates the finding record and UPSERTS the run row keyed by
+ * (finding, source digest), so repeating a run is idempotent.
  */
 export async function saveFindingPocResult(data: {
   findingId: string;
@@ -633,9 +660,7 @@ export async function saveFindingPocResult(data: {
   truncated?: boolean;
 }): Promise<void> {
   const sql = await getSql();
-  const id = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `poc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const { id, digest } = pocRunKey(data.findingId, data.source);
 
   // 1. Update finding row with latest PoC outcome
   await sql`
@@ -652,11 +677,19 @@ export async function saveFindingPocResult(data: {
   try {
     await sql`
       insert into finding_poc_runs (
-        id, finding_id, scan_id, status, source, output, duration_ms, chain_id, target_address, exit_code, truncated, created_at
+        id, finding_id, scan_id, status, source, source_digest, output, duration_ms, chain_id, target_address, exit_code, truncated, created_at
       ) values (
-        ${id}, ${data.findingId}, ${data.scanId}, ${data.status}, ${data.source.slice(0, 100000)}, ${data.output.slice(0, 50000)},
+        ${id}, ${data.findingId}, ${data.scanId}, ${data.status}, ${data.source.slice(0, 100000)}, ${digest}, ${data.output.slice(0, 50000)},
         ${Math.round(data.durationMs)}, ${data.chainId ?? null}, ${data.targetAddress ?? null}, ${data.exitCode ?? null}, ${Boolean(data.truncated)}, now()
       )
+      on conflict (id) do update set
+        status = excluded.status,
+        output = excluded.output,
+        duration_ms = excluded.duration_ms,
+        chain_id = excluded.chain_id,
+        target_address = excluded.target_address,
+        exit_code = excluded.exit_code,
+        truncated = excluded.truncated
     `;
   } catch (runErr) {
     console.warn("[kiln] finding_poc_runs insert failed (non-fatal):", runErr);
