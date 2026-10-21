@@ -1,6 +1,7 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 import { createSqlClient, type Sql } from "./sql-client";
 import { EMBEDDED_MIGRATIONS } from "./migrations-sql";
+import { encodePostgresCredentials, looksLikePlaceholder } from "./pg-url.ts";
 import {
   loadSupabaseDbConfig,
   buildSupabasePostgresUrl,
@@ -18,9 +19,13 @@ function cleanPostgresUrl(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   // Reject unreplaced templates/placeholders
-  if (trimmed.includes("<") || trimmed.includes(">")) return undefined;
+  if (trimmed.includes("<") || trimmed.includes(">") || looksLikePlaceholder(trimmed)) return undefined;
   if (trimmed.startsWith("postgresql://") || trimmed.startsWith("postgres://")) {
-    return trimmed;
+    // A DATABASE_URL in the environment is usually hand-written, so its
+    // credentials may be raw. Normalising here means a password with `@ # / :`
+    // connects instead of silently mis-parsing. Idempotent, so an already
+    // encoded URL is untouched.
+    return encodePostgresCredentials(trimmed);
   }
   return undefined;
 }

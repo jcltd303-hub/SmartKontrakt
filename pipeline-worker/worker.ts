@@ -44,6 +44,7 @@ import v8 from "node:v8";
 
 import type { BatchItem } from "../src/lib/audit/address-fetcher.ts";
 import { valueCacheStats } from "../src/lib/audit/value.ts";
+import { encodePostgresCredentials } from "../src/lib/pg-url.ts";
 import { analyzerStamp } from "../src/lib/audit/analyzer-version.ts";
 import { assertFreshnessSchema, savedScanVersions, scanFreshness } from "../src/lib/audit/scan-freshness.server.ts";
 import type { ComprehensiveRecordInput } from "../src/lib/audit/persist.server.ts";
@@ -89,6 +90,19 @@ function loadEnvFile(): void {
 }
 
 loadEnvFile();
+
+// Credentials must be percent-encoded before anything parses this URL. A raw
+// password containing @ # / : ? or a space does not fail loudly — the URL
+// silently re-parses, so the connection either errors confusingly or points
+// somewhere unintended. Normalise once, here, for every consumer.
+if (process.env.DATABASE_URL) {
+  const raw = process.env.DATABASE_URL;
+  const encoded = encodePostgresCredentials(raw);
+  if (encoded !== raw.trim()) {
+    console.log("[worker] DATABASE_URL credentials were not percent-encoded — encoded them (@ -> %40, # -> %23, / -> %2F, : -> %3A, space -> %20)");
+  }
+  process.env.DATABASE_URL = encoded;
+}
 
 // Human-readable diagnosis for a bad DATABASE_URL. A raw "Invalid URL"
 // from the driver tells the user nothing; this names the actual fix.
@@ -560,7 +574,7 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   const dbProblem = databaseUrlProblem(process.env.DATABASE_URL);
   if (dbProblem) {
     sendJson(res, 400, {
-      error: `DATABASE_URL in pipeline-worker/.env is not a valid Supabase pooler URL: ${dbProblem}. Fix: use the Connection string → URI (pooler mode, port 6543) from Supabase Settings → Database, keep exactly one DATABASE_URL line, and URL-encode @ # % : / ? if they appear in the DB password.`,
+      error: `DATABASE_URL in pipeline-worker/.env is not a valid Supabase pooler URL: ${dbProblem}. Fix: use the Connection string → URI (pooler mode, port 6543) from Supabase Settings → Database, keep exactly one DATABASE_URL line. (Credentials are percent-encoded automatically — @ # / : ? and spaces in the password are handled, so do not pre-encode them by hand.)`,
     });
     return;
   }

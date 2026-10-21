@@ -42,6 +42,11 @@ OpenRouter 60/min.
      (host ends in `pooler.supabase.com`, port **6543**). The worker
      refuses to start a run without it — it never falls back to a
      bundled default, so a multi-day run can't land in the wrong database.
+     **Paste it raw.** Credentials are percent-encoded automatically at
+     startup (`@`→`%40`, `#`→`%23`, `/`→`%2F`, `:`→`%3A`, space→`%20`), so a
+     password with special characters works as-is; do not pre-encode it by
+     hand. An already-encoded URI (what the Supabase dashboard gives you) is
+     left untouched, so nothing is ever double-encoded.
    - `OPENROUTER_API_KEY` — only needed if you start a run with
      `aiSecondPass: true` or `deepAgent: true`.
    - `FOUNDRY_BACKEND_URL` — optional, default `http://127.0.0.1:8787`.

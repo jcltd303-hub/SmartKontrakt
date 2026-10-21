@@ -6,6 +6,7 @@ import {
   disconnectDatabaseFn,
 } from "@/lib/scans.functions";
 import {
+import { encodePostgresCredentials } from "@/lib/pg-url";
   Database,
   X,
   Check,
@@ -85,7 +86,7 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
 
   const previewConnectionUrl =
     mode === "custom"
-      ? customUrl
+      ? encodePostgresCredentials(customUrl)
       : host && user
       ? `postgresql://${user}:${encPw}@${host}:${port}/${database}`
       : mode === "direct"

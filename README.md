@@ -15,6 +15,12 @@ EVM contract audit workbench with a batch address pipeline, comprehensive audit 
 - Switching between pipeline and workbench views keeps the pipeline mounted. Pausing stops after the current address and drains both writers.
 - **Worker memory stays flat.** Every per-address cache in the worker is bounded: the valuation cache holds at most 512 entries / 8 MB (a TTL alone is not enough — an entry valued once and never revisited is never reclaimed, which is what exhausted the heap on a 43k-address run). `pipeline-worker/start.sh` raises Node's old-space cap (default 3072 MB, override with `WORKER_MAX_OLD_SPACE_MB`), and the worker reports heap/RSS/cache every 50 addresses and **parks the run at 85% of the cap** instead of crashing — resuming skips already-saved rows, so a park costs only a restart.
 
+## Database connection URLs
+
+Credentials are percent-encoded at every boundary: when the app builds a URL from a project ref, password and host; when a **Connection string → URI** is pasted; when `DATABASE_URL` is read from the environment; and in the worker at startup. A password containing `@ # / : ?` or a space would otherwise silently re-parse the URL — the connection errors confusingly, or points somewhere unintended — so `src/lib/pg-url.ts` normalises it instead of asking the user to.
+
+The normaliser is idempotent: an already-encoded URI (what the Supabase dashboard hands you) is returned unchanged, so a working password is never double-encoded into `%2540`. Unreplaced placeholders like `[YOUR-PASSWORD]` are rejected rather than dialled.
+
 ## Run and verify
 
 Requires Node.js 22.16+ or 24 and npm.
