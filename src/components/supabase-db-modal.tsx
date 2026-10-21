@@ -6,7 +6,6 @@ import {
   disconnectDatabaseFn,
 } from "@/lib/scans.functions";
 import {
-import { encodePostgresCredentials } from "@/lib/pg-url";
   Database,
   X,
   Check,
@@ -19,6 +18,7 @@ import { encodePostgresCredentials } from "@/lib/pg-url";
   Eye,
   EyeOff,
 } from "lucide-react";
+import { encodePostgresCredentials } from "@/lib/pg-url";
 
 interface SupabaseDbModalProps {
   isOpen: boolean;
@@ -81,14 +81,16 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
   // Clean ref: remove protocol, domain suffix
   const cleanRef = projectRef.trim().replace(/^https?:\/\//i, "").replace(/\.supabase\.co.*$/i, "").replace(/\/.*$/, "");
 
-  // Properly URL-encoded password for PostgreSQL URIs
+  // Credentials are percent-encoded so the copied URL matches what the server
+  // builds and what the driver will parse: a raw @ # / : or space in the
+  // password would silently re-parse the host instead of failing.
   const encPw = encodeURIComponent(password);
 
   const previewConnectionUrl =
     mode === "custom"
       ? encodePostgresCredentials(customUrl)
       : host && user
-      ? `postgresql://${user}:${encPw}@${host}:${port}/${database}`
+      ? `postgresql://${encodeURIComponent(user)}:${encPw}@${host}:${port}/${database}`
       : mode === "direct"
       ? cleanRef
         ? `postgresql://postgres:${encPw}@db.${cleanRef}.supabase.co:5432/postgres`
