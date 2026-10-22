@@ -7,6 +7,7 @@ import {
   databaseEnvInventory,
   resolveDatabaseUrl,
   resolveDirectDatabaseUrl,
+  sanitizeForNodePostgres,
 } from "./db-env.ts";
 
 const POOLED = "postgresql://postgres.abcdefghij:pw@aws-1-us-east-1.pooler.supabase.com:6543/postgres";
@@ -88,4 +89,26 @@ test("a missing environment resolves to nothing rather than throwing", () => {
   assert.equal(resolveDatabaseUrl({}), undefined);
   assert.equal(resolveDirectDatabaseUrl({}), undefined);
   assert.equal(resolveDatabaseUrl({ POSTGRES_URL: undefined }), undefined);
+});
+
+test("another client's parameters are stripped before node-postgres sees them", () => {
+  // POSTGRES_PRISMA_URL carries ?pgbouncer=true, which is Prisma's, not pg's.
+  assert.equal(
+    sanitizeForNodePostgres("postgresql://u:p@h:6543/db?pgbouncer=true&sslmode=require"),
+    "postgresql://u:p@h:6543/db?sslmode=require",
+  );
+  assert.equal(sanitizeForNodePostgres("postgresql://u:p@h:6543/db?connection_limit=1"), "postgresql://u:p@h:6543/db");
+  assert.equal(sanitizeForNodePostgres("postgresql://u:p@h:6543/db"), "postgresql://u:p@h:6543/db");
+  // A raw password containing ? or & must not be touched: the authority is
+  // never parsed, only the query string.
+  assert.equal(
+    sanitizeForNodePostgres("postgresql://u:pa?ss@h:6543/db"),
+    "postgresql://u:pa?ss@h:6543/db",
+  );
+});
+
+test("cleanEnvUrl applies that strip, so the Prisma URL resolves pg-safe", () => {
+  const r = resolveDatabaseUrl({ POSTGRES_PRISMA_URL: "postgresql://u:p@h:6543/db?pgbouncer=true" });
+  assert.equal(r?.from, "POSTGRES_PRISMA_URL");
+  assert.ok(!r?.url.includes("pgbouncer"), `pgbouncer survived: ${r?.url}`);
 });
