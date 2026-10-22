@@ -1,6 +1,7 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 import { createSqlClient, type Sql } from "./sql-client";
 import { EMBEDDED_MIGRATIONS } from "./migrations-sql";
+import { describeDbError } from "./db-error.ts";
 import {
   DATABASE_ENV_VARS,
   databaseEnvInventory,
@@ -306,7 +307,10 @@ function createSupabaseSql(customUrl?: string): Promise<Sql> {
       globalRef.__migrationError__ = undefined;
       if (applied > 0) console.log(`[db] applied ${applied} migration(s)`);
     } catch (mErr) {
-      globalRef.__migrationError__ = { message: failMsg(mErr), at: new Date().toISOString() };
+      globalRef.__migrationError__ = {
+        message: describeDbError(mErr, { from: resolveDirectDatabaseUrl(process.env)?.from }),
+        at: new Date().toISOString(),
+      };
       console.warn(
         `[db] could not apply migrations (${failMsg(mErr)}). Keeping the Supabase connection on the existing schema rather than falling back to ephemeral local storage.`,
       );
@@ -366,7 +370,9 @@ async function createSql(): Promise<Sql> {
       globalRef.__lastDbError__ = undefined;
       return sql;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      // Classified, not echoed: "password authentication failed" reads like a
+      // connectivity problem and is not one, and that misreading is expensive.
+      const message = describeDbError(err, { from: resolveDatabaseUrlDetailed()?.from });
       // Recorded, not just logged: on a serverless host the PGLite fallback is
       // ephemeral, so a silent fallback writes every row into the void while
       // looking like working connectivity.
