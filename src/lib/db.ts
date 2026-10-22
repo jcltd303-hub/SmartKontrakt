@@ -102,6 +102,8 @@ const globalRef = globalThis as typeof globalThis & {
    * working connectivity while writing every row into the void.
    */
   __lastDbError__?: { message: string; urlMasked: string; at: string };
+  /** Set when migrations could not be applied, without the connection failing. */
+  __migrationError__?: { message: string; at: string };
 };
 
 let sqlPromise: Promise<Sql> | null = null;
@@ -249,38 +251,65 @@ function createSupabaseSql(customUrl?: string): Promise<Sql> {
       console.warn("[db] Supabase idle connection note:", err.message);
     });
 
-    // Migrations run over a DIRECT connection when the host publishes one. A
-    // transaction-mode pooler (pgbouncer, port 6543) can reject or mis-scope
-    // multi-statement DDL, and a migration failure here takes the whole
-    // connection down with it — the app then fell back to ephemeral local
-    // storage and reported it as "Supabase unreachable".
-    const direct = typeof process === "undefined" ? undefined : resolveDirectDatabaseUrl(process.env);
-    if (direct && direct.url !== targetUrl) {
-      const migrationPool = new Pool({
-        connectionString: stripSslmode(direct.url),
-        ssl: { rejectUnauthorized: false },
-        max: 1,
-        connectionTimeoutMillis: 15_000,
-      });
-      try {
-        const migClient = await migrationPool.connect();
+    // MIGRATIONS ARE BEST-EFFORT AND MUST NEVER COST THE CONNECTION.
+    //
+    // Two things go wrong here in practice, and neither means the database is
+    // unusable: Supabase's direct host is IPv6-only unless the IPv4 add-on is
+    // bought, and a serverless function cannot reach IPv6 at all; and a
+    // transaction-mode pooler can reject multi-statement DDL. Previously either
+    // failure threw out of here, and the caller downgraded the whole app to the
+    // embedded database — which on a serverless host is EPHEMERAL, so every row
+    // was written into the void while the app reported nothing wrong.
+    //
+    // So: try the direct connection briefly, fall back to the pooled one, and
+    // if both fail, record it and keep the connection.
+    const failMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+    let applied = 0;
+    try {
+      const direct = typeof process === "undefined" ? undefined : resolveDirectDatabaseUrl(process.env);
+      if (direct && direct.url !== targetUrl) {
+        const migrationPool = new Pool({
+          connectionString: stripSslmode(direct.url),
+          ssl: { rejectUnauthorized: false },
+          max: 1,
+          // Short: this is an optimisation, not a prerequisite.
+          connectionTimeoutMillis: 5_000,
+        });
         try {
-          const applied = await applyMigrationsOver(migClient);
-          if (applied > 0) console.log(`[db] applied ${applied} migration(s) over ${direct.from} (direct)`);
+          const migClient = await migrationPool.connect();
+          try {
+            applied = await applyMigrationsOver(migClient);
+          } finally {
+            migClient.release();
+          }
+        } catch (directErr) {
+          console.warn(
+            `[db] migrations over ${direct.from} (direct) failed: ${failMsg(directErr)} — retrying on the pooled connection.`,
+          );
+          const client = await pool.connect();
+          try {
+            applied = await applyMigrationsOver(client);
+          } finally {
+            client.release();
+          }
         } finally {
-          migClient.release();
+          await migrationPool.end().catch(() => undefined);
         }
-      } finally {
-        await migrationPool.end().catch(() => undefined);
+      } else {
+        const client = await pool.connect();
+        try {
+          applied = await applyMigrationsOver(client);
+        } finally {
+          client.release();
+        }
       }
-    } else {
-      const client = await pool.connect();
-      try {
-        const applied = await applyMigrationsOver(client);
-        if (applied > 0) console.log(`[db] applied ${applied} migration(s)`);
-      } finally {
-        client.release();
-      }
+      globalRef.__migrationError__ = undefined;
+      if (applied > 0) console.log(`[db] applied ${applied} migration(s)`);
+    } catch (mErr) {
+      globalRef.__migrationError__ = { message: failMsg(mErr), at: new Date().toISOString() };
+      console.warn(
+        `[db] could not apply migrations (${failMsg(mErr)}). Keeping the Supabase connection on the existing schema rather than falling back to ephemeral local storage.`,
+      );
     }
 
     activeDbSource = "supabase";
@@ -362,6 +391,8 @@ export async function getDatabaseInfo(): Promise<{
   connected: boolean;
   /** Set when a Supabase connection was attempted and failed. */
   lastError?: { message: string; urlMasked: string; at: string };
+  /** Set when the connection succeeded but migrations could not be applied. */
+  migrationError?: { message: string; at: string };
   /** True when the fallback is ephemeral, so nothing written here survives. */
   ephemeralFallback: boolean;
   message: string;
@@ -375,9 +406,10 @@ export async function getDatabaseInfo(): Promise<{
       envFrom,
       connected: true,
       ephemeralFallback: false,
-      message: envFrom
-        ? `Connected to Supabase PostgreSQL database (URL from ${envFrom}).`
-        : "Connected to Supabase PostgreSQL database.",
+      migrationError: globalRef.__migrationError__,
+      message: `Connected to Supabase PostgreSQL database${envFrom ? ` (URL from ${envFrom})` : ""}.${
+        globalRef.__migrationError__ ? ` Migrations could not be applied: ${globalRef.__migrationError__.message}` : ""
+      }`,
     };
   }
   const lastError = globalRef.__lastDbError__;

@@ -67,9 +67,37 @@ export function cleanEnvUrl(value: string | undefined | null): string | undefine
     // Hand-written URLs often carry a raw password; encoding here means a
     // password containing `@ # / :` connects instead of silently mis-parsing.
     // Idempotent, so an already-encoded URL is untouched.
-    return encodePostgresCredentials(trimmed);
+    return sanitizeForNodePostgres(encodePostgresCredentials(trimmed));
   }
   return undefined;
+}
+
+/**
+ * Parameters that belong to a different client, not to node-postgres.
+ *
+ * `POSTGRES_PRISMA_URL` is the Vercel Supabase integration's Prisma-flavoured
+ * URL — the same pooler, plus `?pgbouncer=true`, which Prisma needs and `pg`
+ * must never see. Forwarding a client's private parameter to the server is a
+ * way for a connection string that looks perfectly correct to fail at startup.
+ */
+const FOREIGN_URL_PARAMS = ["pgbouncer", "connection_limit", "pool_timeout", "schema"];
+
+/**
+ * Drop other clients' parameters from a connection string.
+ *
+ * Operates on the query string only — never through `new URL()`, which would
+ * re-encode (and so corrupt) a raw password in the authority.
+ */
+export function sanitizeForNodePostgres(url: string): string {
+  const q = url.indexOf("?");
+  if (q === -1) return url;
+  const base = url.slice(0, q);
+  const kept = url
+    .slice(q + 1)
+    .split("&")
+    .filter(Boolean)
+    .filter((pair) => !FOREIGN_URL_PARAMS.includes(pair.split("=")[0].toLowerCase()));
+  return kept.length > 0 ? `${base}?${kept.join("&")}` : base;
 }
 
 /** The first usable URL in priority order, with the variable it came from. */
