@@ -47,6 +47,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     workbenchMode,
     setIsSupabaseDbModalOpen,
     dbInfo,
+    buildInfo,
     handleSaveToLocalDb,
     isSavingDb,
     setShowCertificate,
@@ -142,6 +143,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
         workbenchMode={workbenchMode}
         setIsSupabaseDbModalOpen={setIsSupabaseDbModalOpen}
         dbInfo={dbInfo}
+        buildInfo={buildInfo}
         handleSaveToLocalDb={handleSaveToLocalDb}
         isSavingDb={isSavingDb}
         fileInputRef={fileInputRef}

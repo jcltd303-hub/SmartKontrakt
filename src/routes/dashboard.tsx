@@ -5,9 +5,9 @@ import { ArrowLeft, ShieldAlert } from "lucide-react";
 
 export const Route = createFileRoute("/dashboard")({
   loader: async () => {
-    let scans: Awaited<ReturnType<typeof listScans>> = [];
+    let scans: Awaited<ReturnType<typeof listScans>>["summaries"] = [];
     try {
-      scans = await listScans();
+      scans = (await listScans()).summaries;
     } catch {
       scans = [];
     }

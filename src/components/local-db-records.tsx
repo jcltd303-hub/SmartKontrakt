@@ -6,7 +6,10 @@ import {
   saveComprehensiveScanFn,
   getDatabaseStatusFn,
   getScansStatsFn,
+  getDatabaseSizeFn,
+  type ScansListPayload,
 } from "@/lib/scans.functions";
+import { DB_FREE_TIER_CAP_BYTES, dbSizeLevel, dbSizePercentOfCap, formatDbBytes } from "@/lib/db-size";
 import type { ScanSummary, StoredScan } from "@/lib/audit/persist.server";
 import { SUPPORTED_CHAINS } from "@/lib/audit/address-fetcher";
 import { balanceLabel, nativeSymbol } from "@/lib/audit/balance";
@@ -60,6 +63,13 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
   // would undercount once the table grows past one page).
   const [stats, setStats] = useState<{ total: number; critical: number; high: number; ragIndexed: number } | null>(null);
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
+  // Surfaced query failure (#2): message + the identity of the database the
+  // app is actually reading. Null = last load was fine (possibly genuinely
+  // empty — that renders as an empty archive, not an error).
+  const [recordsError, setRecordsError] = useState<{ message: string; db: ScansListPayload["db"] } | null>(null);
+  // Database size guardrail (#3). Null = not loaded yet / fn unreachable;
+  // totalBytes null inside = the read itself failed (fail soft).
+  const [dbSize, setDbSize] = useState<Awaited<ReturnType<typeof getDatabaseSizeFn>> | null>(null);
   const [dbStatus, setDbStatus] = useState<{ isSupabase: boolean; label: string }>({
     isSupabase: true,
     label: "Supabase PostgreSQL (Live)",
@@ -69,11 +79,25 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
     setIsLoading(true);
     try {
       const data = await listScans({ data: { limit: 60, offset: 0 } });
-      setRecords(data);
+      setRecords(data.summaries);
+      // #2: a failed query surfaces as a banner (message + DB identity)
+      // instead of the old silent empty list. Genuinely empty arrives with
+      // error: null and renders as an empty archive.
+      setRecordsError(data.error ? { message: data.error, db: data.db } : null);
       try {
-        setStats(await getScansStatsFn());
+        const s = await getScansStatsFn();
+        if (s.error) {
+          setRecordsError((prev) => prev ?? { message: s.error, db: s.db });
+        } else {
+          setStats(s.stats);
+        }
       } catch {
         // stats stay null — totals fall back to loaded records
+      }
+      try {
+        setDbSize(await getDatabaseSizeFn());
+      } catch {
+        setDbSize(null); // guardrail is best-effort; renders "size unavailable"
       }
       try {
         const status = await getDatabaseStatusFn();
@@ -85,7 +109,8 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
         // fallback
       }
     } catch (err) {
-      console.warn("[kiln] Failed to fetch Supabase DB records:", err);
+      // Transport-level failure: the server fn itself was unreachable.
+      setRecordsError({ message: err instanceof Error ? err.message : String(err), db: null });
     } finally {
       setIsLoading(false);
     }
@@ -96,10 +121,14 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
     setIsLoadingMore(true);
     try {
       const page = await listScans({ data: { limit: 60, offset: records.length } });
-      if (page.length > 0) {
+      if (page.error) {
+        setRecordsError({ message: page.error, db: page.db });
+        return;
+      }
+      if (page.summaries.length > 0) {
         setRecords((prev) => {
           const seen = new Set(prev.map((r) => r.id));
-          return [...prev, ...page.filter((r) => !seen.has(r.id))];
+          return [...prev, ...page.summaries.filter((r) => !seen.has(r.id))];
         });
       }
     } catch (err) {
@@ -335,7 +364,54 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
             <div className="text-lg font-bold text-emerald-400 mt-0.5">{ragIndexedCount} / {totalAudits}</div>
           </button>
         </div>
+
+        {/* Database size guardrail (#3): total vs the 500 MB free-tier cap,
+            amber above 400 MB, red above 475 MB. Fail soft: an unreadable
+            size renders "size unavailable", never an error state. */}
+        <div className="mt-4 pt-3 border-t border-[#3a3428]/60 font-mono text-[11px] flex flex-wrap items-center gap-x-4 gap-y-1 relative z-10">
+          <span className="text-[10px] text-[#746c60] uppercase tracking-wider">Database Size</span>
+          {dbSize === null || dbSize.totalBytes === null ? (
+            <span className="text-[#a39886]">size unavailable{dbSize?.error ? ` — ${dbSize.error}` : ""}</span>
+          ) : (
+            <>
+              <span
+                className={
+                  dbSizeLevel(dbSize.totalBytes) === "critical"
+                    ? "text-red-400 font-bold"
+                    : dbSizeLevel(dbSize.totalBytes) === "warn"
+                      ? "text-amber-400 font-bold"
+                      : "text-[#a39886]"
+                }
+                title={dbSize.error ?? undefined}
+              >
+                {formatDbBytes(dbSize.totalBytes)} of {formatDbBytes(DB_FREE_TIER_CAP_BYTES)} free-tier cap ({dbSizePercentOfCap(dbSize.totalBytes)}%)
+              </span>
+              {dbSize.tables.slice(0, 5).map((t) => (
+                <span key={t.name} className="text-[#746c60]">
+                  {t.name} <span className="text-[#a39886]">{formatDbBytes(t.bytes)}</span>
+                </span>
+              ))}
+            </>
+          )}
+        </div>
       </div>
+
+      {recordsError && (
+        <div className="p-3 bg-red-950/70 border border-red-800 text-red-300 text-xs font-mono rounded-xl flex items-start gap-2 animate-fadeIn">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <div className="font-bold">Records query failed — showing nothing rather than inventing an empty archive.</div>
+            <div className="mt-0.5 break-words">{recordsError.message}</div>
+            {recordsError.db && !recordsError.db.error && (
+              <div className="mt-0.5 text-red-400/90">
+                Reading from {recordsError.db.user}@{recordsError.db.host}:{recordsError.db.port}/{recordsError.db.database} — if
+                that is the wrong project, fix it in Supabase Config.
+              </div>
+            )}
+            {recordsError.db?.error && <div className="mt-0.5 text-red-400/90">{recordsError.db.error}</div>}
+          </div>
+        </div>
+      )}
 
       {actionNotice && (
         <div className="p-3 bg-emerald-950/70 border border-emerald-800 text-emerald-300 text-xs font-mono rounded-xl animate-fadeIn">

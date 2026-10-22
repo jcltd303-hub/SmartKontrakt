@@ -21,6 +21,7 @@ type WorkbenchHeaderProps = Pick<
   | "workbenchMode"
   | "setIsSupabaseDbModalOpen"
   | "dbInfo"
+  | "buildInfo"
   | "handleSaveToLocalDb"
   | "isSavingDb"
   | "fileInputRef"
@@ -35,6 +36,7 @@ export function WorkbenchHeader({
   workbenchMode,
   setIsSupabaseDbModalOpen,
   dbInfo,
+  buildInfo,
   handleSaveToLocalDb,
   isSavingDb,
   fileInputRef,
@@ -160,6 +162,15 @@ export function WorkbenchHeader({
               {dbInfo.error
                 ? "DB: not configured — set DATABASE_URL in Vercel"
                 : `DB: ${dbInfo.user}@${dbInfo.host}`}
+            </span>
+          )}
+          {buildInfo && (
+            <span
+              className="text-[11px] font-mono text-[#746c60] truncate"
+              title={`Deployed build ${buildInfo.sha} · loaded ${buildInfo.builtAt}${buildInfo.analyzerVersion ? ` · analyzer ${buildInfo.analyzerVersion}` : ""}`}
+            >
+              build {buildInfo.shortSha}
+              {buildInfo.analyzerVersion ? ` · analyzer ${buildInfo.analyzerVersion}` : ""}
             </span>
           )}
 

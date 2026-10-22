@@ -21,7 +21,7 @@
     "generate:fallbacks": "node scripts/generate-poc-fallbacks-ts.mjs",
     "check:fallbacks": "node scripts/compile-poc-fallbacks.mjs",
     "check:fixtures": "node scripts/run-poc-fixtures.mjs",
-    "test": "node --experimental-strip-types --test scripts/*.test.mjs && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/preview-path-prefix.test.ts src/lib/pg-url.test.ts src/lib/audit/*.test.ts src/lib/audit/smartpoc/*.test.ts src/lib/supabase.test.ts src/lib/supabase-db.test.ts src/lib/poc-runs.test.ts src/lib/audit/poc-wrap.test.ts && npm run check:detectors",
+    "test": "node --experimental-strip-types --test scripts/*.test.mjs && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/preview-path-prefix.test.ts src/lib/pg-url.test.ts src/lib/db-size.test.ts src/lib/build-info.test.ts src/lib/audit/*.test.ts src/lib/audit/smartpoc/*.test.ts src/lib/supabase.test.ts src/lib/supabase-db.test.ts src/lib/poc-runs.test.ts src/lib/audit/poc-wrap.test.ts && npm run check:detectors",
     "benchmark:batch": "node --experimental-strip-types scripts/benchmark-batch.ts",
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write ."

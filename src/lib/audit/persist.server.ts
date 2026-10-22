@@ -1,5 +1,23 @@
 import { writeAuditBatch } from "./bulk-persist.server";
 import { getSql } from "@/lib/db";
+import type { Sql } from "../sql-client.ts";
+import {
+  queryDatabaseSize,
+  queryScanSummaries,
+  queryScansStats,
+  summaryFromRow,
+  type DatabaseSizeResult,
+  type ScanSummariesResult,
+  type ScansStatsResult,
+} from "./scan-archive.server";
+
+export type {
+  DatabaseSizeResult,
+  DbSizeTable,
+  ScanSummariesResult,
+  ScansStats,
+  ScansStatsResult,
+} from "./scan-archive.server";
 import { analyzeInput } from "./engine";
 import type { Finding, Inventory, PocResult, Report, Severity } from "./types";
 import type { ProxyAnalysis } from "./proxy-resolver";
@@ -114,101 +132,49 @@ type FindingRow = {
   poc_code?: string | null;
 };
 
-function summaryFrom(row: ScanRow): ScanSummary {
-  let hasProxy = false;
-  if (row.proxy_info_json) {
-    try {
-      const p = JSON.parse(row.proxy_info_json);
-      hasProxy = Boolean(p?.isProxy);
-    } catch {
-      hasProxy = false;
-    }
-  }
 
-  let probesCount = 0;
-  if (row.probes_json) {
-    try {
-      const pr = JSON.parse(row.probes_json);
-      probesCount = Array.isArray(pr) ? pr.length : 0;
-    } catch {
-      probesCount = 0;
-    }
-  }
-
-  return {
-    id: row.id,
-    label: row.label,
-    inputKind: row.input_kind,
-    contractName: row.contract_name,
-    targetAddress: row.target_address ?? null,
-    chainId: row.chain_id ?? "ethereum",
-    riskScore: row.risk_score,
-    criticalCount: row.critical_count,
-    highCount: row.high_count,
-    mediumCount: row.medium_count,
-    lowCount: row.low_count,
-    infoCount: row.info_count,
-    balanceWei: row.balance_wei ?? null,
-    valueUsd: row.value_usd === null || row.value_usd === undefined ? null : Number(row.value_usd),
-    certHash: row.cert_hash ?? null,
-    isRagIndexed: Boolean(row.is_rag_indexed),
-    sourceOrigin: row.source_origin ?? "workbench",
-    hasProxy,
-    probesCount,
-    createdAt: row.created_at,
-    unparsed: row.unparsed ?? false,
-    analyzerVersion: row.analyzer_version ?? null,
-  };
-}
-
-export async function listScanSummaries(opts?: { limit?: number; offset?: number }): Promise<ScanSummary[]> {
-  // Paginated: the Records tab used to hard-cap at 60 with no way to see
-  // the rest, so a 43k-address run looked like 60 rows. Defaults keep
-  // every existing caller (route loader, history) on the first page.
-  // Values are clamped to integers; the sql tag parameterizes them.
-  const limit = Math.min(Math.max(Math.floor(opts?.limit ?? 60), 1), 500);
-  const offset = Math.max(Math.floor(opts?.offset ?? 0), 0);
+export async function listScanSummaries(opts?: { limit?: number; offset?: number }): Promise<ScanSummariesResult> {
+  // Error contract (2026-10-22, improvement #2): a failed query returns
+  // { summaries: [], error } instead of the old silent [] — the Records tab
+  // renders the error with the effective DB identity, so a wrong-project
+  // misconfiguration can never again masquerade as an empty archive. The
+  // query itself lives in scan-archive.server.ts (Sql injected, testable).
+  let sql: Sql;
   try {
-    const sql = await getSql();
-    const rows = await sql<ScanRow>`
-      select id, label, input_kind, contract_name, target_address, chain_id,
-             proxy_info_json, probes_json, cert_hash, source_origin, is_rag_indexed,
-             risk_score, critical_count, high_count, medium_count, low_count, info_count,
-             balance_wei, value_usd, unparsed, analyzer_version,
-             created_at::text as created_at
-      from contract_scans
-      order by created_at desc
-      limit ${limit} offset ${offset}
-    `;
-    return rows.map(summaryFrom);
+    sql = await getSql();
   } catch (err) {
-    console.warn("[kiln] DB scans table not ready or empty:", err);
-    return [];
+    console.warn("[kiln] DB unavailable for scan list:", err);
+    return { summaries: [], error: err instanceof Error ? err.message : String(err) };
   }
+  return queryScanSummaries(sql, opts);
 }
 
-/** True totals for the stat cards (not per-page sums). */
-export async function getScansStats(): Promise<{ total: number; critical: number; high: number; ragIndexed: number }> {
-  const zero = { total: 0, critical: 0, high: 0, ragIndexed: 0 };
+/** True totals for the stat cards (not per-page sums). Same error
+ *  contract as listScanSummaries: failures surface, never silent zeros. */
+export async function getScansStats(): Promise<ScansStatsResult> {
+  let sql: Sql;
   try {
-    const sql = await getSql();
-    const rows = await sql<{ total: string; critical: string; high: string; rag_indexed: string }>`
-      select count(*) as total,
-             coalesce(sum(critical_count), 0) as critical,
-             coalesce(sum(high_count), 0) as high,
-             coalesce(sum(case when is_rag_indexed then 1 else 0 end), 0) as rag_indexed
-      from contract_scans`;
-    const r = rows[0];
-    if (!r) return zero;
-    const num = (v: string | undefined) => {
-      const n = Number.parseInt(v ?? "0", 10);
-      return Number.isFinite(n) ? n : 0;
+    sql = await getSql();
+  } catch (err) {
+    console.warn("[kiln] DB unavailable for scan stats:", err);
+    return {
+      stats: { total: 0, critical: 0, high: 0, ragIndexed: 0 },
+      error: err instanceof Error ? err.message : String(err),
     };
-    return { total: num(r.total), critical: num(r.critical), high: num(r.high), ragIndexed: num(r.rag_indexed) };
-  } catch (err) {
-    console.warn("[kiln] DB scans stats failed:", err);
-    return zero;
   }
+  return queryScansStats(sql);
+}
+
+/** Database size guardrail (improvement #3): fail soft — a size read
+ *  failure returns totalBytes null + error and never throws. */
+export async function getDatabaseSize(): Promise<DatabaseSizeResult> {
+  let sql: Sql;
+  try {
+    sql = await getSql();
+  } catch (err) {
+    return { totalBytes: null, tables: [], error: err instanceof Error ? err.message : String(err) };
+  }
+  return queryDatabaseSize(sql);
 }
 
 export async function loadScan(id: string): Promise<StoredScan | null> {
@@ -337,7 +303,7 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
   }
 
   return {
-    ...summaryFrom(row),
+    ...summaryFromRow(row),
     body: payloads[0]?.body ?? "",
     report,
     proxyInfo,

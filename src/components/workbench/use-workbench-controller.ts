@@ -24,6 +24,7 @@ import { probeContractInterfaces, type CallProbeResult } from "@/lib/audit/simul
 import type { Finding, PocResult, Report } from "@/lib/audit/types";
 import { savePocRun, type PocRunResult } from "@/lib/poc-runs";
 import {
+  getBuildInfoFn,
   getDbInfo,
   getScan,
   queryRagKnowledgebaseFn,
@@ -124,6 +125,27 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
       .catch(() => {
         // getDbInfo returns { error } instead of throwing; a transport
         // failure just leaves the label hidden.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  // Deployed build stamp (#6): short SHA + analyzer version in the header,
+  // so a stale cached bundle is visible instead of guessed at.
+  const [buildInfo, setBuildInfo] = useState<{
+    sha: string;
+    shortSha: string;
+    builtAt: string;
+    analyzerVersion: string | null;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void getBuildInfoFn()
+      .then((info) => {
+        if (!cancelled) setBuildInfo(info);
+      })
+      .catch(() => {
+        // Stamp is informational; a failed fetch just leaves it hidden.
       });
     return () => {
       cancelled = true;
@@ -1070,6 +1092,7 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     workbenchMode,
     setIsSupabaseDbModalOpen,
     dbInfo,
+    buildInfo,
     handleSaveToLocalDb,
     isSavingDb,
     setShowCertificate,

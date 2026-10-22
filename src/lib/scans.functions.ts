@@ -3,21 +3,78 @@ import type { PocResult, Report } from "./audit/types";
 import type { ProxyAnalysis } from "./audit/proxy-resolver";
 import type { CallProbeResult } from "./audit/simulator";
 import type { AiSecurityReview } from "./audit/ai-review.server";
+import type { ScanSummary } from "./audit/persist.server";
+import type { BuildInfo } from "./build-info";
 
 const MAX_CHARS = 120_000;
 
+/** Effective DB identity (host/user/database, NEVER the password). */
+export type DbIdentity = {
+  host: string | null;
+  port: string | null;
+  user: string | null;
+  database: string | null;
+  error: string | null;
+};
+
+async function loadDbIdentity(): Promise<DbIdentity> {
+  try {
+    const { getActiveDatabaseUrl } = await import("./db");
+    const url = new URL(getActiveDatabaseUrl());
+    return {
+      host: url.hostname,
+      port: url.port,
+      user: decodeURIComponent(url.username),
+      database: decodeURIComponent(url.pathname.replace(/^\//, "")),
+      error: null,
+    };
+  } catch (err) {
+    return {
+      host: null,
+      port: null,
+      user: null,
+      database: null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Records list payload (2026-10-22, improvement #2): a failed query is
+ * surfaced as { error, db } — the Records tab renders a banner with the
+ * actual message and the database the app is REALLY reading — instead of
+ * the old silent [] that made a wrong-project config look like an empty
+ * archive. `db` is attached only when there is an error to explain.
+ */
+export type ScansListPayload = {
+  summaries: ScanSummary[];
+  error: string | null;
+  db: DbIdentity | null;
+};
+
 export const listScans = createServerFn({ method: "GET" })
   .validator((input?: { limit?: number; offset?: number }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data }): Promise<ScansListPayload> => {
     const opts = (data ?? {}) as { limit?: number; offset?: number };
     const { listScanSummaries } = await import("./audit/persist.server");
-    return listScanSummaries(opts);
+    const result = await listScanSummaries(opts);
+    return {
+      summaries: result.summaries,
+      error: result.error,
+      db: result.error ? await loadDbIdentity() : null,
+    };
   });
 
-/** True totals for the Records stat cards (not per-page sums). */
+/** True totals for the Records stat cards (not per-page sums). Same
+ *  surfacing contract as listScans. */
 export const getScansStatsFn = createServerFn({ method: "GET" }).handler(async () => {
   const { getScansStats } = await import("./audit/persist.server");
-  return getScansStats();
+  const result = await getScansStats();
+  return {
+    stats: result.stats,
+    error: result.error,
+    db: result.error ? await loadDbIdentity() : null,
+  };
 });
 
 /**
@@ -27,26 +84,27 @@ export const getScansStatsFn = createServerFn({ method: "GET" }).handler(async (
  * When no database is configured, returns { error } instead of throwing,
  * so the UI can show the fix instead of crashing.
  */
-export const getDbInfo = createServerFn({ method: "GET" }).handler(async () => {
-  try {
-    const { getActiveDatabaseUrl } = await import("./db");
-    const url = new URL(getActiveDatabaseUrl());
-    return {
-      host: url.hostname,
-      port: url.port,
-      user: decodeURIComponent(url.username),
-      database: decodeURIComponent(url.pathname.replace(/^\//, "")),
-      error: null as string | null,
-    };
-  } catch (err) {
-    return {
-      host: null as string | null,
-      port: null as string | null,
-      user: null as string | null,
-      database: null as string | null,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
+export const getDbInfo = createServerFn({ method: "GET" }).handler(async () => loadDbIdentity());
+
+/**
+ * Database size guardrail (improvement #3): total size + largest tables.
+ * Fails soft by contract — { totalBytes: null, error } on any failure —
+ * so the Records tab shows "size unavailable" instead of breaking.
+ */
+export const getDatabaseSizeFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { getDatabaseSize } = await import("./audit/persist.server");
+  return getDatabaseSize();
+});
+
+/**
+ * Build stamp (improvement #6): the deployed commit (VERCEL_GIT_COMMIT_SHA,
+ * "dev" when unset) + the current analyzer stamp, rendered in the header so
+ * a stale bundle is visible at a glance. No user-set env vars required.
+ */
+export const getBuildInfoFn = createServerFn({ method: "GET" }).handler(async (): Promise<BuildInfo> => {
+  const { resolveBuildInfo } = await import("./build-info");
+  const { analyzerStamp } = await import("./audit/analyzer-version");
+  return resolveBuildInfo(process.env, analyzerStamp());
 });
 
 export const getScan = createServerFn({ method: "GET" })

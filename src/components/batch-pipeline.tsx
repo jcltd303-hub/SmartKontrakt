@@ -546,7 +546,7 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
 
       // 1. Load directly from Supabase PostgreSQL archive
       try {
-        const storedScans = await listScans();
+        const storedScans = (await listScans()).summaries;
         if (storedScans && storedScans.length > 0) {
           const map = new Map<string, BatchItem>();
           queueStore.items.forEach((p) => map.set(`${p.chainId}:${p.address.toLowerCase()}`, p));

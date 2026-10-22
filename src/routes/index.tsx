@@ -5,7 +5,10 @@ import { listScans } from "@/lib/scans.functions";
 export const Route = createFileRoute("/")({
   loader: async () => {
     try {
-      return await listScans();
+      // Payload shape since #2: { summaries, error, db }. The landing page
+      // only needs the list; the Records tab owns error surfacing.
+      const result = await listScans();
+      return result.summaries;
     } catch {
       return [];
     }
