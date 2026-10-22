@@ -185,11 +185,16 @@ export const deleteRagChunkFn = createServerFn({ method: "POST" })
   });
 
 export const getDatabaseStatusFn = createServerFn({ method: "GET" }).handler(async () => {
-  const { loadSupabaseDbConfig, buildSupabasePostgresUrl, maskPostgresUrl } = await import("./supabase-db.server");
-  const { getDatabaseInfo } = await import("./db");
+  const { loadSupabaseDbConfig, buildSupabasePostgresUrl, maskPostgresUrl, configFileWritable } =
+    await import("./supabase-db.server");
+  const { getDatabaseInfo, resolveDatabaseUrlDetailed, databaseEnvProbes } = await import("./db");
   const cfg = loadSupabaseDbConfig();
   const dbInfo = await getDatabaseInfo();
   const builtUrl = buildSupabasePostgresUrl(cfg);
+  // The environment is the source of truth on a hosted deployment: it is the
+  // only channel the Supabase integration can write to, and the config file
+  // cannot even be created there.
+  const envSource = resolveDatabaseUrlDetailed();
 
   return {
     config: {
@@ -206,7 +211,19 @@ export const getDatabaseStatusFn = createServerFn({ method: "GET" }).handler(asy
       // Provide whether password is configured
       hasPassword: Boolean(cfg.password),
     },
-    activeUrlMasked: builtUrl ? maskPostgresUrl(builtUrl) : (dbInfo.databaseUrlMasked || ""),
+    env: {
+      configured: Boolean(envSource),
+      from: envSource?.from ?? "",
+      maskedUrl: envSource ? maskPostgresUrl(envSource.url) : "",
+      // Names and presence only — never a value.
+      vars: databaseEnvProbes(),
+    },
+    configFileWritable: configFileWritable(),
+    activeUrlMasked: envSource
+      ? maskPostgresUrl(envSource.url)
+      : builtUrl
+        ? maskPostgresUrl(builtUrl)
+        : dbInfo.databaseUrlMasked || "",
     dbInfo,
   };
 });
@@ -251,11 +268,31 @@ export const testDatabaseConnectionFn = createServerFn({ method: "POST" })
       });
     }
 
+    // Nothing typed: fall back to the environment, which is what the Supabase
+    // integration populates. Without this, "Test connection" reported
+    // "specify a project reference" on a deployment that was already wired up.
+    let source = targetUrl ? "input" : "";
     if (!targetUrl) {
-      return { ok: false, message: "Please specify a Supabase Project Reference ID or full connection string." };
+      const { resolveDatabaseUrlDetailed } = await import("./db");
+      const envSource = resolveDatabaseUrlDetailed();
+      if (envSource) {
+        targetUrl = envSource.url;
+        source = envSource.from;
+      }
     }
 
-    return testPostgresConnection(targetUrl);
+    if (!targetUrl) {
+      const { DATABASE_ENV_VARS } = await import("./db-env");
+      return {
+        ok: false,
+        message:
+          "No connection string to test. Enter a project reference, or set one of these environment variables on your host: " +
+          DATABASE_ENV_VARS.map((v) => v.name).join(", ") +
+          " (the Vercel Supabase integration sets POSTGRES_URL).",
+      };
+    }
+
+    return { ...(await testPostgresConnection(targetUrl)), source };
   });
 
 export const saveDatabaseConfigFn = createServerFn({ method: "POST" })
@@ -284,8 +321,19 @@ export const saveDatabaseConfigFn = createServerFn({ method: "POST" })
       buildSupabasePostgresUrl,
       testPostgresConnection,
       applyMigrationsToPostgres,
+      configFileWritable,
     } = await import("./supabase-db.server");
-    const { switchDatabase } = await import("./db");
+    const { switchDatabase, resolveDatabaseUrlDetailed } = await import("./db");
+
+    if (!configFileWritable()) {
+      const envSource = resolveDatabaseUrlDetailed();
+      throw new Error(
+        "This deployment's filesystem is read-only, so a saved Supabase configuration cannot persist here. " +
+          (envSource
+            ? `The database URL is already supplied by the environment (${envSource.from}) and is used automatically — nothing needs saving.`
+            : "Set the Supabase integration's environment variables on your host (POSTGRES_URL, POSTGRES_PRISMA_URL or POSTGRES_URL_NON_POOLING) and redeploy."),
+      );
+    }
 
     const saved = saveSupabaseDbConfig({
       projectName: data.projectName || "SmartKontrakt",

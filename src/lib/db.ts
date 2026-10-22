@@ -1,7 +1,12 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 import { createSqlClient, type Sql } from "./sql-client";
 import { EMBEDDED_MIGRATIONS } from "./migrations-sql";
-import { encodePostgresCredentials, looksLikePlaceholder } from "./pg-url.ts";
+import {
+  DATABASE_ENV_VARS,
+  databaseEnvInventory,
+  resolveDatabaseUrl,
+  resolveDirectDatabaseUrl,
+} from "./db-env.ts";
 import {
   loadSupabaseDbConfig,
   buildSupabasePostgresUrl,
@@ -13,42 +18,40 @@ export type { Sql } from "./sql-client";
 /** Supported database backends: Supabase PostgreSQL (primary) or local embedded PGLite (fallback / offline). */
 export type DbSource = "supabase" | "local";
 
-// An empty/whitespace value (an easy misconfig in deploy UIs) must mean
-// "unset" — otherwise production would silently fail.
-function cleanPostgresUrl(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  if (!trimmed) return undefined;
-  // Reject unreplaced templates/placeholders
-  if (trimmed.includes("<") || trimmed.includes(">") || looksLikePlaceholder(trimmed)) return undefined;
-  if (trimmed.startsWith("postgresql://") || trimmed.startsWith("postgres://")) {
-    // A DATABASE_URL in the environment is usually hand-written, so its
-    // credentials may be raw. Normalising here means a password with `@ # / :`
-    // connects instead of silently mis-parsing. Idempotent, so an already
-    // encoded URL is untouched.
-    return encodePostgresCredentials(trimmed);
-  }
-  return undefined;
+// Cleaning (trim, empty/placeholder rejection, credential encoding) lives in
+// db-env.ts, so the status surface, the tests and this module all apply exactly
+// the same rules. An empty value in a deploy UI must mean "unset" — otherwise
+// production silently falls back to an ephemeral database.
+
+/**
+ * Resolve the server database URL from the environment, with provenance.
+ *
+ * The Vercel Supabase integration injects POSTGRES_URL / POSTGRES_PRISMA_URL /
+ * POSTGRES_URL_NON_POOLING and never DATABASE_URL, so a deployment wired up
+ * through the integration read as unconfigured. The candidate list and the
+ * order live in db-env.ts; this reports which name actually supplied the URL so
+ * a status surface can say so instead of leaving it to guesswork.
+ */
+export function resolveDatabaseUrlDetailed(): { url: string; from: string } | undefined {
+  if (typeof process === "undefined") return undefined;
+  return resolveDatabaseUrl(process.env);
+}
+
+export function resolveDatabaseUrlFromEnv(): string | undefined {
+  return resolveDatabaseUrlDetailed()?.url;
 }
 
 /**
- * Resolve the server database URL from the environment.
- *
- * Priority:
- * 1. DATABASE_URL — explicit override.
- * 2. Vercel Supabase integration vars (in serverless-preferred order):
- *    POSTGRES_PRISMA_URL (pooler + pgbouncer), POSTGRES_URL (pooler),
- *    POSTGRES_URL_NON_POOLING (direct).
+ * Which database variables this host provides — names, roles and presence only,
+ * never a value. This is what answers "I set up the integration, why is it not
+ * connecting?".
  */
-export function resolveDatabaseUrlFromEnv(): string | undefined {
-  if (typeof process === "undefined") return undefined;
-  const env = process.env;
-  return (
-    cleanPostgresUrl(env.DATABASE_URL) ??
-    cleanPostgresUrl(env.POSTGRES_PRISMA_URL) ??
-    cleanPostgresUrl(env.POSTGRES_URL) ??
-    cleanPostgresUrl(env.POSTGRES_URL_NON_POOLING)
-  );
+export function databaseEnvProbes(): { name: string; role: string; present: boolean }[] {
+  if (typeof process === "undefined") return [];
+  return databaseEnvInventory(process.env);
 }
+
+export { DATABASE_ENV_VARS };
 
 const databaseUrl = resolveDatabaseUrlFromEnv();
 
@@ -92,6 +95,13 @@ const globalRef = globalThis as typeof globalThis & {
   __pgliteSqlPromise__?: Promise<Sql>;
   __pgliteInstance__?: any;
   __activeDatabaseUrl__?: string;
+  /**
+   * Why the last Supabase attempt failed, if it did. The fallback to embedded
+   * PGLite is silent by design (the app keeps working), but on a serverless
+   * host PGLite is ephemeral — so an unreported fallback looks exactly like
+   * working connectivity while writing every row into the void.
+   */
+  __lastDbError__?: { message: string; urlMasked: string; at: string };
 };
 
 let sqlPromise: Promise<Sql> | null = null;
@@ -172,12 +182,51 @@ async function createPgliteSql(): Promise<Sql> {
   return globalRef.__pgliteSqlPromise__;
 }
 
+/** node-postgres takes `ssl` explicitly, so drop any inline sslmode. */
+function stripSslmode(url: string): string {
+  return url.replace(/([?&])sslmode=[^&]*(&|$)/, "$1").replace(/[?&]$/, "");
+}
+
+type QueryRunner = { query: (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> };
+
+/** Every pending migration, recorded in _migrations as it lands. */
+async function applyMigrationsOver(client: QueryRunner): Promise<number> {
+  await client.query(
+    "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+  );
+  const doneRows = await client.query("SELECT name FROM _migrations");
+  const done = doneRows.rows.map((r) => String(r.name));
+
+  const migrationsByName: Record<string, string> = { ...EMBEDDED_MIGRATIONS };
+  if (typeof import.meta.glob === "function") {
+    const globbed = import.meta.glob("/migrations/*.sql", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    for (const [key, value] of Object.entries(globbed)) {
+      migrationsByName[key.split("/").pop() ?? key] = value;
+    }
+  }
+
+  const pending = pendingMigrations(Object.keys(migrationsByName), done);
+  for (const { name, path: mPath } of pending) {
+    await client.query("BEGIN");
+    try {
+      await client.query(migrationsByName[mPath]);
+      await client.query("INSERT INTO _migrations (name) VALUES ($1)", [name]);
+      await client.query("COMMIT");
+    } catch (mErr) {
+      await client.query("ROLLBACK");
+      throw mErr;
+    }
+  }
+  return pending.length;
+}
+
 function createSupabaseSql(customUrl?: string): Promise<Sql> {
   const rawTargetUrl = customUrl || getActiveDatabaseUrl();
-  // Strip any inline sslmode parameter so node-postgres uses the explicit ssl configuration
-  const targetUrl = rawTargetUrl
-    ? rawTargetUrl.replace(/([?&])sslmode=[^&]*(&|$)/, "$1").replace(/[?&]$/, "")
-    : rawTargetUrl;
+  const targetUrl = rawTargetUrl ? stripSslmode(rawTargetUrl) : rawTargetUrl;
 
   globalRef.__pgSqlPromise__ ??= (async () => {
     // node-postgres (`pg`) with Supabase pooler SSL configuration
@@ -200,40 +249,38 @@ function createSupabaseSql(customUrl?: string): Promise<Sql> {
       console.warn("[db] Supabase idle connection note:", err.message);
     });
 
-    // Ensure migrations are auto-applied on the target Supabase PostgreSQL database
-    const client = await pool.connect();
-    try {
-      await client.query(
-        "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
-      );
-      const doneRows = await client.query<{ name: string }>("SELECT name FROM _migrations");
-      const done = doneRows.rows.map((r) => r.name);
-
-      const migrationsByName: Record<string, string> = { ...EMBEDDED_MIGRATIONS };
-      if (typeof import.meta.glob === "function") {
-        const globbed = import.meta.glob("/migrations/*.sql", {
-          query: "?raw",
-          import: "default",
-          eager: true,
-        }) as Record<string, string>;
-        for (const [key, value] of Object.entries(globbed)) {
-          migrationsByName[key.split("/").pop() ?? key] = value;
-        }
-      }
-      const pending = pendingMigrations(Object.keys(migrationsByName), done);
-      for (const { name, path: mPath } of pending) {
-        await client.query("BEGIN");
+    // Migrations run over a DIRECT connection when the host publishes one. A
+    // transaction-mode pooler (pgbouncer, port 6543) can reject or mis-scope
+    // multi-statement DDL, and a migration failure here takes the whole
+    // connection down with it — the app then fell back to ephemeral local
+    // storage and reported it as "Supabase unreachable".
+    const direct = typeof process === "undefined" ? undefined : resolveDirectDatabaseUrl(process.env);
+    if (direct && direct.url !== targetUrl) {
+      const migrationPool = new Pool({
+        connectionString: stripSslmode(direct.url),
+        ssl: { rejectUnauthorized: false },
+        max: 1,
+        connectionTimeoutMillis: 15_000,
+      });
+      try {
+        const migClient = await migrationPool.connect();
         try {
-          await client.query(migrationsByName[mPath]);
-          await client.query("INSERT INTO _migrations (name) VALUES ($1)", [name]);
-          await client.query("COMMIT");
-        } catch (mErr) {
-          await client.query("ROLLBACK");
-          throw mErr;
+          const applied = await applyMigrationsOver(migClient);
+          if (applied > 0) console.log(`[db] applied ${applied} migration(s) over ${direct.from} (direct)`);
+        } finally {
+          migClient.release();
         }
+      } finally {
+        await migrationPool.end().catch(() => undefined);
       }
-    } finally {
-      client.release();
+    } else {
+      const client = await pool.connect();
+      try {
+        const applied = await applyMigrationsOver(client);
+        if (applied > 0) console.log(`[db] applied ${applied} migration(s)`);
+      } finally {
+        client.release();
+      }
     }
 
     activeDbSource = "supabase";
@@ -287,10 +334,16 @@ async function createSql(): Promise<Sql> {
       // Quick verification to ensure remote host responds
       await sql`SELECT 1`;
       activeDbSource = "supabase";
+      globalRef.__lastDbError__ = undefined;
       return sql;
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Recorded, not just logged: on a serverless host the PGLite fallback is
+      // ephemeral, so a silent fallback writes every row into the void while
+      // looking like working connectivity.
+      globalRef.__lastDbError__ = { message, urlMasked: maskPostgresUrl(url), at: new Date().toISOString() };
       console.warn(
-        `[db] Supabase connection to ${maskPostgresUrl(url)} failed (${err instanceof Error ? err.message : String(err)}). Seamlessly falling back to embedded local database.`,
+        `[db] Supabase connection to ${maskPostgresUrl(url)} failed (${message}). Falling back to embedded local database, which does NOT persist on a serverless host.`,
       );
       globalRef.__pgSqlPromise__ = undefined;
     }
@@ -304,24 +357,48 @@ async function createSql(): Promise<Sql> {
 export async function getDatabaseInfo(): Promise<{
   source: DbSource;
   databaseUrlMasked?: string;
+  /** Which environment variable supplied the URL, when one did. */
+  envFrom?: string;
   connected: boolean;
+  /** Set when a Supabase connection was attempted and failed. */
+  lastError?: { message: string; urlMasked: string; at: string };
+  /** True when the fallback is ephemeral, so nothing written here survives. */
+  ephemeralFallback: boolean;
   message: string;
 }> {
   const activeUrl = getActiveDatabaseUrl();
+  const envFrom = resolveDatabaseUrlDetailed()?.from;
   if (activeUrl && activeDbSource === "supabase") {
     return {
       source: "supabase",
       databaseUrlMasked: maskPostgresUrl(activeUrl),
+      envFrom,
       connected: true,
-      message: "Connected to Supabase PostgreSQL database.",
+      ephemeralFallback: false,
+      message: envFrom
+        ? `Connected to Supabase PostgreSQL database (URL from ${envFrom}).`
+        : "Connected to Supabase PostgreSQL database.",
     };
   }
+  const lastError = globalRef.__lastDbError__;
+  const isServerless = Boolean(
+    typeof process !== "undefined" && (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME),
+  );
   return {
     source: "local",
+    envFrom,
+    lastError,
     connected: true,
+    // On a serverless host the embedded database lives in the instance and is
+    // gone on the next request.
+    ephemeralFallback: isServerless,
     message: activeUrl
-      ? "Embedded local database active (Supabase connection currently inactive/unreachable)."
-      : "Embedded local database active. Connect your live Supabase PostgreSQL in Settings.",
+      ? `Embedded local database active — the Supabase connection to ${maskPostgresUrl(activeUrl)} failed${lastError ? `: ${lastError.message}` : ""}.`
+      : envFrom
+        ? `Embedded local database active. ${envFrom} is set but did not yield a usable URL.`
+        : "Embedded local database active. No database URL found in the environment — checked " +
+          DATABASE_ENV_VARS.map((v) => v.name).join(", ") +
+          ".",
   };
 }
 
