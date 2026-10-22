@@ -12,7 +12,11 @@
  * for a machine that has Foundry (e.g. the Termux backend host).
  *
  * Each harness is compiled alone, because every file declares `contract PoC is
- * Test` — compiling them together would collide on the contract name.
+ * Test`, and compiling them one at a time keeps a failure attributable to one
+ * file. Run by CI (`.github/workflows/ci.yml`, the `fallbacks` job).
+ *
+ * Needs solc. CI lets forge download it; offline, point `FOUNDRY_SOLC` at a
+ * local binary.
  */
 import { mkdtempSync, rmSync, cpSync, writeFileSync, readdirSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,8 +48,17 @@ try {
     join(project, "foundry.toml"),
     '[profile.default]\nsrc = "src"\ntest = "test"\nlibs = ["lib"]\n',
   );
-  console.log("installing forge-std into the temp project…");
-  run("forge", ["install", "foundry-rs/forge-std", "--no-commit"], project);
+  // Clone rather than `forge install`: the temp project is not a git repository,
+  // and `forge install` shells out to git submodules, which fails with
+  // "fatal: not a git repository" — so this script could never run anywhere,
+  // including CI. A plain clone needs no repo.
+  console.log("fetching forge-std into the temp project…");
+  mkdirSync(join(project, "lib"), { recursive: true });
+  run("git", [
+    "clone", "--depth", "1", "-q",
+    "https://github.com/foundry-rs/forge-std",
+    join(project, "lib", "forge-std"),
+  ], project);
 
   for (const file of files) {
     cpSync(join(SRC, file), join(project, "test", "Exploit.t.sol"));

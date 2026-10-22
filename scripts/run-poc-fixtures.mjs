@@ -13,7 +13,7 @@
  *
  * Not part of `npm test` — the CI image carries no Foundry toolchain.
  */
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -37,8 +37,16 @@ if (fixtures.length === 0) {
 
 try {
   if (!existsSync(join(DIR, "lib", "forge-std"))) {
-    console.log("installing forge-std into foundry/poc-fixtures…");
-    execFileSync("forge", ["install", "foundry-rs/forge-std", "--no-commit"], { cwd: DIR, stdio: "inherit" });
+    // Clone, not `forge install`: this ran in a repository whose submodule state
+    // is not guaranteed, and `forge install` needs a git repository to attach a
+    // submodule to. `lib/` is gitignored, so a plain clone is enough.
+    console.log("fetching forge-std into foundry/poc-fixtures…");
+    mkdirSync(join(DIR, "lib"), { recursive: true });
+    execFileSync(
+      "git",
+      ["clone", "--depth", "1", "-q", "https://github.com/foundry-rs/forge-std", join(DIR, "lib", "forge-std")],
+      { cwd: DIR, stdio: "inherit" },
+    );
   }
   console.log(`running ${fixtures.length} fixture file(s): ${fixtures.join(", ")}`);
   execFileSync("forge", ["test", "-vv"], { cwd: DIR, stdio: "inherit" });
