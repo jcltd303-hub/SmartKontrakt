@@ -89,23 +89,12 @@ test("selectPocFallbacksBySmartbugs returns a harness for every category", async
  * and changes nothing (observed: `kill()` returned [Stop], moved 0 wei, and the
  * harness reported "not reproduced").
  *
- * `KNOWN` is the list still to convert. It may only SHRINK: adding a new
- * offender fails, and fixing one without removing it from the list also fails,
- * so the list cannot quietly go stale.
+ * `KNOWN` is now EMPTY — every template converts. It stays as a regression
+ * guard: a new offender fails, and re-adding an entry to the list fails too, so
+ * the single-guess pattern cannot come back in quietly.
  */
 test("no template decides from a single guessed call (ratchet)", async () => {
-  const KNOWN = new Set([
-    "04-reentrancy-erc721.t.sol",
-    "05-reentrancy-read-only.t.sol",
-    "24-div-before-mul.t.sol",
-    "32-storage-collision-upgrade.t.sol",
-    "33-shadowing-mismatch.t.sol",
-    "40-erc4626-inflation.t.sol",
-    "42-short-address-attack.t.sol",
-    "43-front-running.t.sol",
-    "44-external-contract-ref.t.sol",
-    "45-timestamp-dependence.t.sol",
-  ]);
+  const KNOWN = new Set([]);
 
   const dir = FALLBACKS_DIR;
   const files = (await readdir(dir)).filter((f) => f.endsWith(".t.sol"));

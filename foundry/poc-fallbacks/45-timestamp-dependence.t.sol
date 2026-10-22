@@ -43,23 +43,70 @@ contract PoC is Test {
         assertGt(target.code.length, 0, "target has no code at this fork block");
     }
 
+    /// Read a bool at `t`, warp to `t + 1 days`, read again. `found` is false
+    /// when the reader does not exist; `flipped` is the reproduction.
+    function _flips(bytes memory data) internal returns (bool found, bool flipped) {
+        uint256 t0 = block.timestamp;
+        vm.warp(t0);
+        (bool ok, bytes memory ret) = target.staticcall(data);
+        if (!ok || ret.length < 32) return (false, false);
+        bool before = abi.decode(ret, (bool));
+
+        vm.warp(t0 + 1 days);
+        (ok, ret) = target.staticcall(data);
+        if (!ok || ret.length < 32) return (false, false);
+        bool afterWarp = abi.decode(ret, (bool));
+
+        vm.warp(t0);
+        return (true, before != afterWarp);
+    }
+
     function test_exploit() public {
-        // The observable the gate controls, read at the forked block time.
-        bool gatedBefore = IVictim(target).isSaleFinished();
+        // The gate view is a GUESS on an unverified target, and a single wrong
+        // name reports "not reproduced" for a vulnerability that exists under
+        // another. Reproduced = block.timestamp ALONE flips the gated state.
+        bool found;
+        bool flipped;
+        bool reproduced;
 
-        // A block producer nudges the timestamp within the allowed drift. A
-        // gate that is a pure function of block.timestamp moves with it; a
-        // gate bound to a trusted clock does not.
-        vm.warp(block.timestamp + 1 days);
-        bool gatedAfter = IVictim(target).isSaleFinished();
+        (found, flipped) = _flips(abi.encodeWithSignature("isSaleFinished()"));
+        console.log("tried isSaleFinished()", found ? (flipped ? "flips" : "stable") : "absent");
+        if (found && flipped) reproduced = true;
 
-        console.log("time-gated state before warp:", gatedBefore);
-        console.log("time-gated state after warp: ", gatedAfter);
+        if (!reproduced) {
+            (found, flipped) = _flips(abi.encodeWithSignature("saleEnded()"));
+            console.log("tried saleEnded()", found ? (flipped ? "flips" : "stable") : "absent");
+            if (found && flipped) reproduced = true;
+        }
+        if (!reproduced) {
+            (found, flipped) = _flips(abi.encodeWithSignature("isFinished()"));
+            console.log("tried isFinished()", found ? (flipped ? "flips" : "stable") : "absent");
+            if (found && flipped) reproduced = true;
+        }
+        if (!reproduced) {
+            (found, flipped) = _flips(abi.encodeWithSignature("hasEnded()"));
+            console.log("tried hasEnded()", found ? (flipped ? "flips" : "stable") : "absent");
+            if (found && flipped) reproduced = true;
+        }
+        if (!reproduced) {
+            (found, flipped) = _flips(abi.encodeWithSignature("ended()"));
+            console.log("tried ended()", found ? (flipped ? "flips" : "stable") : "absent");
+            if (found && flipped) reproduced = true;
+        }
+        if (!reproduced) {
+            (found, flipped) = _flips(abi.encodeWithSignature("isOpen()"));
+            console.log("tried isOpen()", found ? (flipped ? "flips" : "stable") : "absent");
+            if (found && flipped) reproduced = true;
+        }
+        if (!reproduced) {
+            (found, flipped) = _flips(abi.encodeWithSignature("saleClosed()"));
+            console.log("tried saleClosed()", found ? (flipped ? "flips" : "stable") : "absent");
+            if (found && flipped) reproduced = true;
+        }
 
-        // Reproduced when block.timestamp ALONE flips the gated state.
         assertTrue(
-            gatedBefore != gatedAfter,
-            "exploit did not reproduce: the gate does not move with block.timestamp"
+            reproduced,
+            "no time-gated view moved with block.timestamp alone. Tried isSaleFinished(), saleEnded(), isFinished(), hasEnded(), ended(), isOpen(), saleClosed(). This does NOT establish safety: the gate may be named differently, or bound to a clock a producer cannot steer."
         );
     }
 }
