@@ -37,7 +37,7 @@ import { runDeepAgentRound } from "../src/lib/audit/deep-agent.server.ts";
 // and the helper only reads localStorage inside getBackendUrl(), which
 // this module never calls.
 import { runPocWithRpcRetries } from "../src/lib/audit/foundry-backend.ts";
-import { fourbyteResultsFromReport, type FourbyteResults } from "../src/lib/audit/fourbyte.ts";
+import { type FourbyteResults } from "../src/lib/audit/fourbyte.ts";
 // SmartPoC pipeline (arXiv:2511.12993): the GRE-Engine (generate-repair-execute)
 // and Action-State Differential Verification replace the old single-repair step.
 import {

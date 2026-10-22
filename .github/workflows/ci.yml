@@ -29,12 +29,10 @@ jobs:
       - name: Test
         run: npm test
 
-      # Lint runs last and does NOT gate the build yet: the repository has a
-      # pre-existing backlog of warnings (unused vars, hook dependency arrays,
-      # fast-refresh exports) that is a separate cleanup. Remove
-      # `continue-on-error` once that backlog is cleared and lint should block.
+      # Lint gates the build. The pre-existing backlog is cleared, and the
+      # script runs with --max-warnings 0, so a new warning fails here rather
+      # than accumulating unnoticed.
       - name: Lint
-        continue-on-error: true
         run: npm run lint
 
   # The only place the PoC templates and the fixture corpus are actually

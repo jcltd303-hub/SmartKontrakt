@@ -166,7 +166,13 @@ export async function writeAuditBatch(
   return { savedCount: ids.length, ids };
 }
 
-export async function replaceRagChunks(sql: Sql, ids: string[], chunks: ReturnType<typeof buildReportRagChunks>): Promise<void> {
+// Params are prefixed `_` because this is deliberately a no-op: they are kept
+// only so the exported signature does not change for its callers.
+export async function replaceRagChunks(
+  _sql: Sql,
+  _ids: string[],
+  _chunks: ReturnType<typeof buildReportRagChunks>,
+): Promise<void> {
   // RAG eliminated 2026-10-21 (storage): indexing writes are OFF. This is an
   // intentional no-op, kept exported for compatibility — no save path may
   // write rag_knowledge_chunks. Records are the source of truth.

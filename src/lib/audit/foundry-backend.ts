@@ -2,7 +2,7 @@ import type { PocResult } from "./types";
 import { sha3_256 } from "js-sha3";
 import { wrapPocSnippet } from "./poc-wrap.ts";
 import { nativeSymbol } from "./balance.ts";
-import { fetchAddressValue, isZeroValue, describeValue } from "./value.ts";
+import { fetchAddressValue, isZeroValue } from "./value.ts";
 
 /**
  * Forge compile-error detector for PoC logs. Compile failures are the

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Copy, Check, Download, FlaskConical } from "lucide-react";
+import { downloadFile } from "@/lib/download-file";
 
 /**
  * FoundryExport — download the AI-generated Foundry exploit test as a
@@ -18,19 +19,6 @@ interface FoundryExportProps {
   contractAddress?: string;
   /** Display name for the contract, for the README header. */
   contractName?: string;
-}
-
-export function downloadFile(filename: string, content: string) {
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // Revoke on the next tick so the download has started.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function buildPocReadme(contractName: string, contractAddress: string): string {

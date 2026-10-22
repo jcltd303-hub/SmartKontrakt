@@ -41,7 +41,7 @@ interface CfgViewerProps {
   disassembly: string;
 }
 
-export function parseCfgBlocks(disassembly: string): CfgBlock[] {
+function parseCfgBlocks(disassembly: string): CfgBlock[] {
   if (!disassembly || !disassembly.trim()) return [];
 
   const lines = disassembly.split("\n").filter((l) => Boolean(l.trim()));

@@ -1,4 +1,4 @@
-import type { Finding, Report, Severity } from "./types.ts";
+import type { Finding, Report } from "./types.ts";
 import type { ProxyAnalysis } from "./proxy-resolver.ts";
 import type { CallProbeResult } from "./simulator.ts";
 import { resolveContractDisplayName } from "./simulator.ts";

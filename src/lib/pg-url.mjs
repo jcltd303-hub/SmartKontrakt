@@ -68,7 +68,7 @@ function encodeCredential(value) {
  * @returns {number} index of the delimiter, or -1
  */
 function credentialDelimiter(rest) {
-  const host = /^[A-Za-z0-9][A-Za-z0-9.\-]*(:\d{1,5})?$/;
+  const host = /^[A-Za-z0-9][A-Za-z0-9.-]*(:\d{1,5})?$/;
   let at = rest.indexOf("@");
   while (at !== -1) {
     const slash = rest.indexOf("/", at);

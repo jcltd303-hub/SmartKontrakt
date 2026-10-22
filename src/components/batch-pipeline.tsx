@@ -726,6 +726,10 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
 
   // Filtered queue items
   const filteredQueue = useMemo(() => {
+    // queueRevision is a cache-bust, not a redundant dep: the queue is mutated
+    // in place on status updates, so its array identity does not change and
+    // this memo would serve a stale list. Referencing it keeps that explicit.
+    void queueRevision;
     if (!filterQuery.trim()) return queue;
     const q = filterQuery.toLowerCase().trim();
     return queue.filter(
@@ -742,6 +746,7 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
 
   // Sliced items for the current page only
   const paginatedQueue = useMemo(() => {
+    void queueRevision;
     const start = (safeCurrentPage - 1) * pageSize;
     return filteredQueue.slice(start, start + pageSize);
   }, [filteredQueue, queueRevision, safeCurrentPage, pageSize]);

@@ -1,5 +1,5 @@
 import { classifyPocEvidence } from "@/lib/audit/poc-evidence";
-import { downloadFile } from "@/components/foundry-export";
+import { downloadFile } from "@/lib/download-file";
 import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit/address-fetcher";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
 import { requestAiReview, requestDeepAgentRound, requestPocRepair } from "@/lib/audit/ai.functions";
