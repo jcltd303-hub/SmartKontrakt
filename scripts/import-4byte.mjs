@@ -1,5 +1,11 @@
 #!/usr/bin/env node
 /**
+ * DEPRECATED (2026-10-22): bulk import is retired. 4byte resolution
+ * is on-demand — bytecode analysis pulls just the selectors/topics
+ * it encounters from the 4byte.directory API and caches only those
+ * (src/lib/audit/fourbyte.ts, createOnDemandFourbyteLookup). Kept
+ * for historical reference / a deliberate full re-seed only.
+ *
  * Import the 4byte.directory function-selector + event-signature
  * databases into Supabase.
  *

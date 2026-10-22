@@ -1,17 +1,24 @@
 /**
  * 4byte.directory resolution: function selectors (4-byte) and event
- * topics (32-byte) against the Supabase tables imported by
- * scripts/import-4byte.mjs (migrations 0005 + 0006).
+ * topics (32-byte), resolved ON DEMAND (2026-10-22).
+ *
+ * The bulk-import model is retired: the full dataset (~1.18M function
+ * + ~278k event signatures) cost 130 MB of Supabase storage for a
+ * lookup any single audit only touches a few dozen keys of. Now,
+ * when bytecode analysis encounters a selector/topic it doesn't know,
+ * just that signature is pulled from the 4byte.directory API at that
+ * moment (createOnDemandFourbyteLookup), and the two tables
+ * (migrations 0005 + 0006, schema unchanged) serve as a CACHE of what
+ * was actually pulled. A missing cache table or a dead upstream
+ * degrades to "unknown", never to a failed audit.
  *
  * The sync bundled list in ./selectors.ts stays the fast path for the
  * ~100 common signatures — analyzeBytecode fills those inline. This
- * module resolves everything else: unknown selectors get their
- * signature from the DB, and PUSH32 immediates are matched against
- * known event topics.
+ * module resolves everything else.
  *
  * Callers with no DB (the browser workbench) do NOT call this module —
  * they use the resolveFourbyte server fn (fourbyte.functions.ts),
- * which runs the DB lookup server-side and returns plain maps.
+ * which runs the on-demand lookup server-side and returns plain maps.
  */
 import type { Report } from "./types";
 import type { Sql } from "../sql-client";
@@ -59,6 +66,172 @@ export function createDbFourbyteLookup(sql: Sql): FourbyteLookup {
       }
       return out;
     },
+  };
+}
+
+/** Upstream 4byte.directory API base (verified live 2026-10-22). */
+const FOURBYTE_API_BASE = "https://www.4byte.directory/api/v1";
+/** Per-request upstream timeout — enrichment must never stall an audit. */
+const UPSTREAM_TIMEOUT_MS = 5_000;
+/** Bounded parallelism for batch upstream pulls. */
+const UPSTREAM_CONCURRENCY = 8;
+/** How long a negative upstream result stays memoized (ms). Successes
+ * are memoized for the life of the process; negatives expire so a
+ * transient outage cannot poison a long-lived worker. */
+const NEGATIVE_MEMO_MS = 60_000;
+
+/** Minimal fetch shape — injectable for tests. */
+export type FourbyteFetchLike = (
+  url: string,
+  init?: { signal?: AbortSignal },
+) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+
+/** Per-process memo of upstream pulls: `s:<hex>` / `e:<hex>` -> promise. */
+const upstreamMemo = new Map<string, Promise<string[] | null>>();
+
+/** Test/ops helper: drop every memoized upstream pull. */
+export function clearFourbyteUpstreamMemo(): void {
+  upstreamMemo.clear();
+}
+
+/**
+ * One upstream pull. The API returns `{ count, results: [{ id,
+ * text_signature, hex_signature, ... }] }` NEWEST first — the
+ * canonical registration for a selector is the LOWEST id (e.g.
+ * transfer(address,uint256) is id 145 among six 0xa9059cbb rows), so
+ * results are re-sorted ascending before use. Returns null on ANY
+ * failure (HTTP error, timeout, bad JSON, no registrations).
+ */
+async function pullFromUpstream(
+  kind: "signatures" | "event-signatures",
+  hex: string,
+  fetchImpl: FourbyteFetchLike,
+): Promise<string[] | null> {
+  const memoKey = `${kind === "signatures" ? "s" : "e"}:${hex}`;
+  const hit = upstreamMemo.get(memoKey);
+  if (hit) return hit;
+  const p = (async (): Promise<string[] | null> => {
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), UPSTREAM_TIMEOUT_MS);
+      try {
+        const res = await fetchImpl(`${FOURBYTE_API_BASE}/${kind}/?hex_signature=${hex}`, {
+          signal: ctl.signal,
+        });
+        if (!res.ok) return null;
+        const body = (await res.json()) as { results?: unknown };
+        const rows = Array.isArray(body?.results) ? body.results : [];
+        const parsed: { id: number; sig: string }[] = [];
+        for (const r of rows) {
+          const row = r as { id?: unknown; text_signature?: unknown };
+          if (typeof row?.id === "number" && typeof row?.text_signature === "string") {
+            parsed.push({ id: row.id, sig: row.text_signature });
+          }
+        }
+        if (parsed.length === 0) return null;
+        parsed.sort((a, b) => a.id - b.id);
+        return [...new Set(parsed.map((x) => x.sig))];
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      return null;
+    }
+  })();
+  upstreamMemo.set(memoKey, p);
+  if ((await p) === null) {
+    const t = setTimeout(() => upstreamMemo.delete(memoKey), NEGATIVE_MEMO_MS);
+    (t as unknown as { unref?: () => void }).unref?.();
+  }
+  return p;
+}
+
+/** Best-effort cache write of pulled signatures — never throws. */
+async function cachePulled(
+  sql: Sql,
+  kind: "signatures" | "event-signatures",
+  hex: string,
+  sigs: string[],
+): Promise<void> {
+  try {
+    for (const sig of sigs) {
+      if (kind === "signatures") {
+        await sql`insert into fourbyte_signatures (selector, signature) values (${hex}, ${sig}) on conflict do nothing`;
+      } else {
+        await sql`insert into fourbyte_event_signatures (topic, signature) values (${hex}, ${sig}) on conflict do nothing`;
+      }
+    }
+  } catch {
+    // Cache is an optimization: a failed write (incl. a dropped
+    // table) never fails the lookup that already has the answer.
+  }
+}
+
+/**
+ * On-demand lookup — the resolution path since 2026-10-22.
+ *
+ * Same FourbyteLookup interface as createDbFourbyteLookup, so every
+ * caller keeps working:
+ *   1. Cache check in fourbyte_signatures / fourbyte_event_signatures
+ *      (the tables are a cache of previously pulled rows now, not a
+ *      preloaded dataset). A cache hit never touches the network, and
+ *      a missing/broken cache is treated as an empty one.
+ *   2. Cache misses pull just those keys from the 4byte.directory
+ *      API (per-process memoized, concurrency-bounded, 5s timeout,
+ *      canonical = lowest registration id) and best-effort insert
+ *      what came back into the cache.
+ *   3. Any upstream failure resolves as "unknown" (key absent) —
+ *      never a throw.
+ *
+ * `sql` may be null: then every lookup is cache-less (live pull,
+ * no caching) — used when the DB itself is unreachable.
+ */
+export function createOnDemandFourbyteLookup(
+  sql?: Sql | null,
+  opts?: { fetchImpl?: FourbyteFetchLike },
+): FourbyteLookup {
+  const fetchImpl: FourbyteFetchLike =
+    opts?.fetchImpl ?? ((url, init) => fetch(url, init));
+  const cache = sql ? createDbFourbyteLookup(sql) : null;
+
+  const resolveBatch = async (
+    kind: "signatures" | "event-signatures",
+    keys: string[],
+  ): Promise<Map<string, string[]>> => {
+    const out = new Map<string, string[]>();
+    const uniq = [...new Set(keys.map((k) => k.toLowerCase()))].slice(0, MAX_KEYS);
+    if (uniq.length === 0) return out;
+    if (cache) {
+      try {
+        const cached =
+          kind === "signatures" ? await cache.selectors(uniq) : await cache.topics(uniq);
+        for (const [k, v] of cached) if (v.length > 0) out.set(k, v);
+      } catch {
+        // Missing table / DB down: cache-less for this batch.
+      }
+    }
+    const misses = uniq.filter((k) => !out.has(k));
+    let idx = 0;
+    const lanes = Array.from(
+      { length: Math.min(UPSTREAM_CONCURRENCY, misses.length) },
+      async () => {
+        while (idx < misses.length) {
+          const hex = misses[idx++]!;
+          const sigs = await pullFromUpstream(kind, hex, fetchImpl);
+          if (sigs && sigs.length > 0) {
+            out.set(hex, sigs);
+            if (sql) await cachePulled(sql, kind, hex, sigs);
+          }
+        }
+      },
+    );
+    await Promise.all(lanes);
+    return out;
+  };
+
+  return {
+    selectors: (keys) => resolveBatch("signatures", keys),
+    topics: (keys) => resolveBatch("event-signatures", keys),
   };
 }
 

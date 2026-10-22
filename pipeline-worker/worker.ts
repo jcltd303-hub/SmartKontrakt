@@ -133,7 +133,7 @@ const { secondPass } = await import("../src/lib/audit/persist.server.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
 const { getSql } = await import("../src/lib/db.ts");
-const { createDbFourbyteLookup, fourbyteResultsFromReport } = await import("../src/lib/audit/fourbyte.ts");
+const { createOnDemandFourbyteLookup, fourbyteResultsFromReport } = await import("../src/lib/audit/fourbyte.ts");
 // Deep Agent loop (pipeline-worker/deep-agent.ts) — same propose ->
 // fork-PoC -> reward -> deeper loop as the workbench, gated to flagged
 // addresses. Loaded after .env so OPENROUTER_API_KEY is visible.
@@ -299,14 +299,16 @@ setInterval(() => {
 async function runLoop(): Promise<void> {
   const ctx = runCtx;
   if (!ctx) return;
-  // 4byte resolution for this run (one lookup, reused per item). If the
-  // DB is unreachable the run already fails fast at startup, so a
-  // lookup-creation failure here just means no enrichment.
-  let fourbyte: Awaited<ReturnType<typeof createDbFourbyteLookup>> | undefined;
+  // 4byte resolution for this run (one on-demand lookup, reused per
+  // item): cache tables first, live 4byte.directory pulls for misses.
+  // If the DB is unreachable the run already fails fast at startup,
+  // so a getSql failure here falls back to a cache-less lookup
+  // (live pulls, no caching) instead of no enrichment.
+  let fourbyte: Awaited<ReturnType<typeof createOnDemandFourbyteLookup>> | undefined;
   try {
-    fourbyte = createDbFourbyteLookup(await getSql());
+    fourbyte = createOnDemandFourbyteLookup(await getSql());
   } catch {
-    fourbyte = undefined;
+    fourbyte = createOnDemandFourbyteLookup(null);
   }
   try {
     while (ctx.index < ctx.items.length) {

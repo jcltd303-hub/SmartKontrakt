@@ -2,10 +2,13 @@ import { createServerFn } from "@tanstack/react-start";
 import type { FourbyteResults } from "./fourbyte";
 
 /**
- * Resolve 4byte selectors + event topics server-side (DB tables from
- * migrations 0005 + 0006). The browser workbench cannot query Supabase
- * directly, so it calls this after analyzeAddress and merges the result
- * with applyFourbyteResults. The worker uses createDbFourbyteLookup
+ * Resolve 4byte selectors + event topics server-side, ON DEMAND
+ * (2026-10-22): the fourbyte_signatures / fourbyte_event_signatures
+ * tables are a cache of previously pulled rows; misses are fetched
+ * live from the 4byte.directory API and cached (createOnDemandFourbyteLookup).
+ * The browser workbench cannot query Supabase or the API directly, so
+ * it calls this after analyzeAddress and merges the result with
+ * applyFourbyteResults. The worker uses the same on-demand lookup
  * directly inside analyzeAddress instead.
  */
 export const resolveFourbyte = createServerFn({ method: "POST" })
@@ -37,9 +40,17 @@ export const resolveFourbyte = createServerFn({ method: "POST" })
   })
   .handler(async ({ data }): Promise<FourbyteResults> => {
     const { getSql } = await import("../db");
-    const { createDbFourbyteLookup } = await import("./fourbyte");
-    const sql = await getSql();
-    const lookup = createDbFourbyteLookup(sql);
+    const { createOnDemandFourbyteLookup } = await import("./fourbyte");
+    // The tables are a cache, not a prerequisite: if the DB is
+    // unreachable (or the cache tables were dropped), resolve live
+    // from the 4byte directory API without caching.
+    let sql: Awaited<ReturnType<typeof getSql>> | null = null;
+    try {
+      sql = await getSql();
+    } catch {
+      sql = null;
+    }
+    const lookup = createOnDemandFourbyteLookup(sql);
     const [sel, top] = await Promise.all([
       lookup.selectors(data.selectors),
       lookup.topics(data.topics),
