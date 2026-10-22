@@ -36,3 +36,30 @@ jobs:
       - name: Lint
         continue-on-error: true
         run: npm run lint
+
+  # The only place the PoC templates and the fixture corpus are actually
+  # COMPILED. The unit suite is structural, so a template that cannot compile
+  # passes it — `19-signature-malleability` shipped with invalid `0x123...`
+  # literals and nothing noticed. These two checks are what would have caught it.
+  fallbacks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      # Downloads forge/cast/anvil and lets forge fetch solc itself.
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Foundry version
+        run: forge --version
+
+      # No `npm install`: both scripts use only Node built-ins.
+      - name: Compile every fallback harness (46)
+        run: npm run check:fallbacks
+
+      - name: Run the fixture corpus (29 ports, differential)
+        run: npm run check:fixtures
