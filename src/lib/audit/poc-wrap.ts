@@ -20,8 +20,8 @@
 // Parameter filling: the wrapper NEVER returns null just because the
 // constructor or entry has parameters. Unknown-but-fillable params get
 // defaults (fail-closed ONLY for genuinely unwrappable shapes: no
-// contract defs, interfaces-only, `PoC` name collision, or a
-// param type outside the fill table):
+// contract defs, interfaces-only, or a param type outside the fill
+// table):
 //   address params are filled NAME-AWARE (Round 2 — Round 1's blanket
 //   address -> target was wrong for Jer's Drain snippet, where the
 //   second address is the payout recipient, not the victim):
@@ -50,6 +50,15 @@
 // wrong); an ERROR with no tests run is not. When defaults are used,
 // WrappedPoc.note names them so the UI can show what was guessed.
 //
+// Round 4 — nulls are diagnostic, and a `PoC`-named attack contract is
+// RENAMED, not rejected: `wrapPocSnippetWithReason` returns a one-line
+// human-readable reason for every null, so a silent null can never
+// again hide why the raw snippet was sent. And a snippet whose attack
+// contract is itself named `PoC` (the most likely null path Round 3
+// introduced) gets its `PoC` code tokens renamed to `PoCAttack`
+// instead of returning null — `PoC` is reserved for the appended test
+// contract, and the rename is named in WrappedPoc.note.
+//
 // Pure string builder. Zero imports. No Solidity parser — detection
 // runs on a length-preserving comment/string-stripped copy so indices
 // line up with the original snippet.
@@ -63,6 +72,13 @@ export type WrappedPoc = {
   entry: string;
   /** Null when no defaults were used; otherwise names the filled params. */
   note: string | null;
+};
+
+/** Result of {@link wrapPocSnippetWithReason}: the wrap plus, on null, why. */
+export type WrapResult = {
+  wrapped: WrappedPoc | null;
+  /** One-line human-readable cause when `wrapped` is null, else null. */
+  reason: string | null;
 };
 
 /** Entry-function names, first match in this order wins. */
@@ -162,20 +178,46 @@ function findContracts(stripped: string): ContractInfo[] {
 
 type FnInfo = { name: string; params: string; headerAfterParams: string };
 
+/** Scan from the `(` at openIdx to its matching `)`, or -1 when unbalanced. */
+function findMatchingParen(text: string, openIdx: number): number {
+  let depth = 0;
+  for (let i = openIdx; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
 function findFunctions(body: string): FnInfo[] {
   const out: FnInfo[] = [];
-  const re = /function\s+(\w+)\s*\(([^)]*)\)\s*([^{;]*)/g;
+  const re = /function\s+(\w+)\s*\(/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(body)) !== null) {
-    out.push({ name: m[1], params: m[2], headerAfterParams: m[3] });
+    // Balanced-paren scan: the param list may itself contain parens
+    // (e.g. mapping(address => uint256)), so `[^)]*` would truncate it.
+    const openIdx = m.index + m[0].length - 1;
+    const closeIdx = findMatchingParen(body, openIdx);
+    if (closeIdx < 0) continue;
+    const params = body.slice(openIdx + 1, closeIdx);
+    const rest = body.slice(closeIdx + 1);
+    const headerEnd = rest.search(/[{;]/);
+    const headerAfterParams = headerEnd < 0 ? rest : rest.slice(0, headerEnd);
+    out.push({ name: m[1], params, headerAfterParams });
   }
   return out;
 }
 
 /** Raw constructor parameter list of the first constructor, or null when absent. */
 function findConstructorParams(body: string): string | null {
-  const m = /constructor\s*\(([^)]*)\)/.exec(body);
-  return m ? m[1] : null;
+  const m = /constructor\s*\(/.exec(body);
+  if (!m) return null;
+  const openIdx = m.index + m[0].length - 1;
+  const closeIdx = findMatchingParen(body, openIdx);
+  if (closeIdx < 0) return null;
+  return body.slice(openIdx + 1, closeIdx);
 }
 
 function splitTopLevelArgs(text: string): string[] {
@@ -196,12 +238,33 @@ function splitTopLevelArgs(text: string): string[] {
   return out;
 }
 
-/** The Solidity type of one parameter string (e.g. "address payable", "uint256[]"), or null. */
-function paramType(param: string): string | null {
+/**
+ * Split one parameter string into its type + name. The type is
+ * everything before the name token, so parenthesized types stay whole
+ * (e.g. `mapping(address => uint256) m` -> type
+ * `mapping(address => uint256)`, name `m`). A trailing data-location
+ * keyword with no name (`string memory`) is dropped from the type;
+ * `payable` stays part of the type for `address payable`.
+ * Returns type null only for an empty parameter string.
+ */
+function splitParam(param: string): { type: string | null; name: string | null } {
   const tokens = param.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return null;
-  if (tokens[0] === "address" && tokens[1] === "payable") return "address payable";
-  return tokens[0];
+  if (tokens.length === 0) return { type: null, name: null };
+  let name: string | null = null;
+  let typeTokens = tokens;
+  const last = tokens[tokens.length - 1];
+  if (tokens.length >= 2 && last !== "memory" && last !== "calldata" && last !== "storage" && last !== "payable") {
+    name = last;
+    typeTokens = tokens.slice(0, -1);
+  }
+  // Drop a trailing data-location keyword that is not part of the type.
+  while (
+    typeTokens.length > 1 &&
+    ["memory", "calldata", "storage"].includes(typeTokens[typeTokens.length - 1])
+  ) {
+    typeTokens = typeTokens.slice(0, -1);
+  }
+  return { type: typeTokens.join(" "), name };
 }
 
 /** Fill for a scalar (non-array) type, or null when outside the fill table. */
@@ -229,15 +292,33 @@ function fillForType(type: string): string | null {
 
 /**
  * Fill one parameter list. Returns the filled arg list + the type list
- * (for the note), or null when any param is unfillable (fail closed).
+ * (for the note), or the offending type when any param is unfillable
+ * (fail closed — the caller turns it into a diagnostic reason).
  */
-/** Parameter name (last token, unless it is a data-location keyword), or null when unnamed. */
-function paramName(param: string): string | null {
-  const tokens = param.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length < 2) return null;
-  const last = tokens[tokens.length - 1];
-  if (last === "memory" || last === "calldata" || last === "storage" || last === "payable") return null;
-  return last;
+function fillParamList(paramList: string): { args: string; types: string } | { badType: string } {
+  const trimmed = paramList.trim();
+  if (!trimmed) return { args: "", types: "" };
+  const params = splitTopLevelArgs(trimmed)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const fills: string[] = [];
+  const types: string[] = [];
+  let addressCount = 0;
+  for (const p of params) {
+    const { type, name } = splitParam(p);
+    if (type === null) return { badType: "(empty)" };
+    let fill: string | null;
+    if (type === "address" || type === "address payable") {
+      fill = fillForAddress(name, type, addressCount === 0);
+      addressCount++;
+    } else {
+      fill = fillForType(type);
+    }
+    if (fill === null) return { badType: type };
+    fills.push(fill);
+    types.push(type);
+  }
+  return { args: fills.join(", "), types: types.join(", ") };
 }
 
 /**
@@ -264,53 +345,71 @@ function fillForAddress(name: string | null, type: string, isFirstAddress: boole
   return isFirstAddress ? wrapPayable("target") : wrapPayable("address(attacker)");
 }
 
-function fillParamList(paramList: string): { args: string; types: string } | null {
-  const trimmed = paramList.trim();
-  if (!trimmed) return { args: "", types: "" };
-  const params = splitTopLevelArgs(trimmed)
-    .map((p) => p.trim())
-    .filter(Boolean);
-  const fills: string[] = [];
-  const types: string[] = [];
-  let addressCount = 0;
-  for (const p of params) {
-    const type = paramType(p);
-    if (type === null) return null;
-    let fill: string | null;
-    if (type === "address" || type === "address payable") {
-      fill = fillForAddress(paramName(p), type, addressCount === 0);
-      addressCount++;
-    } else {
-      fill = fillForType(type);
-    }
-    if (fill === null) return null;
-    fills.push(fill);
-    types.push(type);
+/**
+ * Rename every `PoC` code token in `snippet` to `PoCAttack`, returning
+ * the renamed snippet. Matches are found on the length-preserving
+ * comment/string-stripped copy (so comments and string literals are
+ * never touched) and applied to the verbatim snippet RIGHT-TO-LEFT so
+ * earlier indices stay valid.
+ */
+function renamePoCToPoCAttack(snippet: string, stripped: string): string {
+  const re = /\bPoC\b/g;
+  const indices: number[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(stripped)) !== null) indices.push(m.index);
+  let out = snippet;
+  for (let i = indices.length - 1; i >= 0; i--) {
+    const idx = indices[i];
+    out = out.slice(0, idx) + "PoCAttack" + out.slice(idx + 3);
   }
-  return { args: fills.join(", "), types: types.join(", ") };
+  return out;
 }
 
 /**
- * Wrap a PoC snippet into a runnable Foundry test file.
- * Returns null only for genuinely unwrappable shapes (fail closed —
- * the caller falls back to running the raw snippet, which errors with
- * a clear note): no contract defs, interfaces-only, `PoC` name
- * collision, or a param type outside the fill table.
+ * Wrap a PoC snippet into a runnable Foundry test file, with a
+ * diagnostic reason on failure. `wrapped` is null only for genuinely
+ * unwrappable shapes (fail closed — the caller falls back to running
+ * the raw snippet, which errors with a clear note): no contract defs,
+ * interfaces-only, or a param type outside the fill table. A snippet
+ * whose attack contract is named `PoC` is RENAMED to `PoCAttack`
+ * (see below), never rejected.
+ * Every null carries a one-line reason — never a silent null.
  */
-export function wrapPocSnippet(snippet: string): WrappedPoc | null {
-  if (!snippet || !snippet.trim()) return null;
-  const stripped = stripNonCode(snippet);
+export function wrapPocSnippetWithReason(snippet: string): WrapResult {
+  const fail = (reason: string): WrapResult => ({ wrapped: null, reason });
+  if (!snippet || !snippet.trim()) return fail("empty snippet");
+  let stripped = stripNonCode(snippet);
   // Pass-through: already a runnable Foundry test (contract inherits
-  // Test and defines a test_ function). Return it unchanged.
+  // Test and defines a test_ function). Return it unchanged — this
+  // runs FIRST, so a Test already named PoC is never renamed.
   const isTest = /\bcontract\s+\w+\s+is\s+[^{]*\bTest\b/.test(stripped);
   const hasTestFn = /function\s+test_\w*\s*\(/.test(stripped);
   if (isTest && hasTestFn) {
-    return { testFile: snippet, attackContract: "<existing>", entry: "<existing>", note: null };
+    return {
+      wrapped: { testFile: snippet, attackContract: "<existing>", entry: "<existing>", note: null },
+      reason: null,
+    };
+  }
+  // `PoC` is reserved for the appended test contract. If the snippet
+  // defines a (non-Test) contract named `PoC`, rename its `PoC` code
+  // tokens to `PoCAttack` instead of returning null.
+  let working = snippet;
+  let renamed = false;
+  if (/\bPoC\b/.test(stripped)) {
+    if (/\bPoCAttack\b/.test(stripped)) {
+      return fail("snippet defines contracts named both PoC and PoCAttack; cannot rename safely");
+    }
+    working = renamePoCToPoCAttack(snippet, stripped);
+    stripped = stripNonCode(working);
+    renamed = true;
   }
   const contracts = findContracts(stripped);
-  if (contracts.length === 0) return null;
-  // The appended test contract would collide with this name.
-  if (contracts.some((c) => c.name === "PoC")) return null;
+  if (contracts.length === 0) {
+    if (/\binterface\s+\w+/.test(stripped)) {
+      return fail("no contract definitions found (interfaces only — the snippet defines no contract)");
+    }
+    return fail("no contract definitions found");
+  }
   // Attack contract = first contract (source order) with the
   // highest-priority entry function.
   let attack: ContractInfo | null = null;
@@ -340,24 +439,35 @@ export function wrapPocSnippet(snippet: string): WrappedPoc | null {
       if (attack) break;
     }
   }
-  if (!attack || !entry) return null;
+  if (!attack || !entry) {
+    return fail(
+      "no entry function found (looked for attack/exploit/executeAttack/execute/seizeAndDrain/seize/poc/hack/run/drain/pwn/go, or a name starting with attack/exploit/execute/drain/seize/pwn/take)",
+    );
+  }
   // Fill constructor + entry params from the fill table (never null
   // just for having params — a FAIL with guessed args is informative).
   const ctorFilled = fillParamList(findConstructorParams(attack.body) ?? "");
-  if (ctorFilled === null) return null;
+  if ("badType" in ctorFilled) {
+    return fail(`constructor param type ${ctorFilled.badType} is not fillable`);
+  }
   const entryFilled = fillParamList(entry.params);
-  if (entryFilled === null) return null;
-  const noteParts: string[] = [];
-  if (ctorFilled.types) noteParts.push(`constructor (${ctorFilled.types}) -> (${ctorFilled.args})`);
-  if (entryFilled.types) noteParts.push(`entry ${entry.name}(${entryFilled.types}) -> ${entry.name}(${entryFilled.args})`);
-  const note = noteParts.length ? `Wrapped with defaults: ${noteParts.join("; ")}` : null;
+  if ("badType" in entryFilled) {
+    return fail(`entry param type ${entryFilled.badType} is not fillable`);
+  }
+  const defaultsParts: string[] = [];
+  if (ctorFilled.types) defaultsParts.push(`constructor (${ctorFilled.types}) -> (${ctorFilled.args})`);
+  if (entryFilled.types) defaultsParts.push(`entry ${entry.name}(${entryFilled.types}) -> ${entry.name}(${entryFilled.args})`);
+  const noteBits: string[] = [];
+  if (renamed) noteBits.push("renamed attack contract PoC -> PoCAttack (PoC is reserved for the test contract)");
+  if (defaultsParts.length) noteBits.push(`Wrapped with defaults: ${defaultsParts.join("; ")}`);
+  const note = noteBits.length ? noteBits.join("; ") : null;
   const payable = /\bpayable\b/.test(entry.headerAfterParams);
   const call = `attacker.${entry.name}${payable ? "{value: 1 ether}" : ""}(${entryFilled.args});`;
   const deploy = `new ${attack.name}(${ctorFilled.args})`;
   const prefix: string[] = [];
-  if (!/SPDX-License-Identifier/.test(snippet)) prefix.push("// SPDX-License-Identifier: MIT");
-  if (!/pragma\s+solidity/.test(snippet)) prefix.push("pragma solidity ^0.8.0;");
-  if (!/forge-std\/Test\.sol/.test(snippet)) prefix.push('import "forge-std/Test.sol";');
+  if (!/SPDX-License-Identifier/.test(working)) prefix.push("// SPDX-License-Identifier: MIT");
+  if (!/pragma\s+solidity/.test(working)) prefix.push("pragma solidity ^0.8.0;");
+  if (!/forge-std\/Test\.sol/.test(working)) prefix.push('import "forge-std/Test.sol";');
   const header = prefix.length ? prefix.join("\n") + "\n" : "";
   const testContract = [
     "",
@@ -376,5 +486,13 @@ export function wrapPocSnippet(snippet: string): WrappedPoc | null {
     "}",
     "",
   ].join("\n");
-  return { testFile: header + snippet + testContract, attackContract: attack.name, entry: entry.name, note };
+  return {
+    wrapped: { testFile: header + working + testContract, attackContract: attack.name, entry: entry.name, note },
+    reason: null,
+  };
+}
+
+/** Thin wrapper for callers that only need the wrap (or null). */
+export function wrapPocSnippet(snippet: string): WrappedPoc | null {
+  return wrapPocSnippetWithReason(snippet).wrapped;
 }

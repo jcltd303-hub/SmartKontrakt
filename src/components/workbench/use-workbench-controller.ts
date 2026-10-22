@@ -16,7 +16,7 @@ import { applyFourbyteResults, fourbyteResultsFromReport } from "@/lib/audit/fou
 import { resolveFourbyte } from "@/lib/audit/fourbyte.functions";
 import type { ScanSummary, StoredScan } from "@/lib/audit/persist.server";
 import { selectPocFallbacks } from "@/lib/audit/poc-fallbacks";
-import { wrapPocSnippet } from "@/lib/audit/poc-wrap";
+import { wrapPocSnippetWithReason } from "@/lib/audit/poc-wrap";
 import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
 import type { RagChunk } from "@/lib/audit/rag.server";
 import { type Sample } from "@/lib/audit/samples";
@@ -492,10 +492,10 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
   };
 
   // --- Per-finding PoC runs (Run button on each finding's Attack Contract
-  // block). The displayed snippet is wrapped by wrapPocSnippet into a
-  // runnable Foundry Test before it is passed to runPocOnBackend; when
-  // wrapping fails (null), the raw snippet is sent and forge reports
-  // zero tests ran, which maps to "error", NEVER "passed"
+  // block). The displayed snippet is wrapped by wrapPocSnippetWithReason
+  // into a runnable Foundry Test before it is passed to runPocOnBackend;
+  // when wrapping fails (null), the diagnostic reason is shown up front
+  // in the output, and zero tests ran maps to "error", NEVER "passed"
   // (the old false-PASS lesson — forge exits 0 on no match).
   const POC_OUTPUT_CAP = 4000;
   const NO_TESTS_RE = /no tests (match|found)|ran 0 tests|0 passed;\s*0 failed/i;
@@ -550,7 +550,8 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
   };
   const handleRunFindingPoc = async (finding: Finding) => {
     let source = finding.exploitSolidity ?? "";
-    let wrapped = wrapPocSnippet(source);
+    let wrapOutcome = wrapPocSnippetWithReason(source);
+    let wrapped = wrapOutcome.wrapped;
     if (!wrapped) {
       const isTest = /\bcontract\s+\w+\s+is\s+[^{]*\bTest\b/.test(source);
       const hasTestFn = /function\s+test_\w*\s*\(|function\s+testPoc\s*\(/.test(source);
@@ -558,10 +559,18 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
         const fallbacks = selectPocFallbacks([finding], 1);
         if (fallbacks.length > 0 && fallbacks[0]?.source) {
           source = fallbacks[0].source;
-          wrapped = wrapPocSnippet(source);
+          wrapOutcome = wrapPocSnippetWithReason(source);
+          wrapped = wrapOutcome.wrapped;
         }
       }
     }
+    // Why wrapping failed (null when it succeeded) — shown up front in
+    // the output below instead of a silent null.
+    const wrapReason = wrapOutcome.reason;
+    const wrapDiag =
+      !wrapped && wrapReason
+        ? `Wrapper could not wrap this snippet: ${wrapReason}. Sent the raw snippet instead.`
+        : null;
     const testCode = wrapped ? wrapped.testFile : source;
     if (!source.trim() || findingPocRunLockRef.current) return;
     findingPocRunLockRef.current = true;
@@ -589,7 +598,7 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
               chainId: SUPPORTED_CHAINS.find((c) => c.id === singleAddressChain)?.chainId ?? 1,
               exitCode: null,
               output:
-                "This finding's PoC is a conceptual guideline or pseudocode, not an automated Solidity attack contract or test harness. Use the 'Interactive Audit & PoC' tab or 'AI Security Review' to construct and run an exploit against this target.",
+                `${wrapDiag ? `${wrapDiag}\n` : ""}This finding's PoC is a conceptual guideline or pseudocode, not an automated Solidity attack contract or test harness. Use the 'Interactive Audit & PoC' tab or 'AI Security Review' to construct and run an exploit against this target.`,
               truncated: false,
             },
             save: "idle",
@@ -648,8 +657,10 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
           : (poc.logs ?? "");
       // When the wrapper filled default args, say so up front — the
       // guessed args may be wrong, and a FAIL with defaults is
-      // informative. Truncation is computed on the combined text.
-      const displayLogs = `Finding input SHA3-256: ${pocInputDigest(source)}\n${wrapped?.note ? `${wrapped.note}\n` : ""}${fullLogs}`;
+      // informative. When wrapping failed, say WHY up front instead
+      // of a silent null. Truncation is computed on the combined text.
+      const wrapLine = wrapDiag ?? wrapped?.note ?? null;
+      const displayLogs = `Finding input SHA3-256: ${pocInputDigest(source)}\n${wrapLine ? `${wrapLine}\n` : ""}${fullLogs}`;
       const truncated = displayLogs.length > POC_OUTPUT_CAP;
       const result: PocRunResult = {
         id: runId,
