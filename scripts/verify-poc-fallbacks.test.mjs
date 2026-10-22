@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { lintErrors } from "./single-guess-lint.mjs";
 
 // Resolve relative to THIS file. The previous absolute `/app/applet/...` path
 // was a build-sandbox leftover and could never work anywhere else.
@@ -80,40 +81,25 @@ test("selectPocFallbacksBySmartbugs returns a harness for every category", async
 
 
 /**
- * The ratchet: a template must not decide its verdict from ONE guessed entry
- * point, and must not assert a bare call success as the exploit.
+ * Every shape in which a harness can reach a verdict it has not earned — the
+ * single-guess lint, which owns the rules now:
  *
- * A single guess cannot tell "the vulnerability does not exist" from "the entry
- * point is called something else", and judging by whether a call returned is
- * wrong on its own — a no-op or already-guarded function returns successfully
- * and changes nothing (observed: `kill()` returned [Stop], moved 0 wei, and the
- * harness reported "not reproduced").
+ *   a single guessed call with no alternatives · a call-success assertion ·
+ *   an adapt precondition · a stub · a skipped test · a vacuous catch · an
+ *   always-pass assertion · an early return that empties the verdict · no
+ *   assertion at all · an undisclosed failure message · a lone delegatecall
  *
- * `KNOWN` is now EMPTY — every template converts. It stays as a regression
- * guard: a new offender fails, and re-adding an entry to the list fails too, so
- * the single-guess pattern cannot come back in quietly.
+ * The lint carries a synthetic positive AND negative for every rule
+ * (single-guess-lint.test.mjs), because a rule that silently does not fire is
+ * false confidence in exactly the direction that hides real findings — the
+ * first version of this ratchet knew five shapes and missed a whole template.
  */
-test("no template decides from a single guessed call (ratchet)", async () => {
-  const KNOWN = new Set([]);
-
-  const dir = FALLBACKS_DIR;
-  const files = (await readdir(dir)).filter((f) => f.endsWith(".t.sol"));
+test("no template reaches a verdict it has not earned", async () => {
+  const files = (await readdir(FALLBACKS_DIR)).filter((f) => f.endsWith(".t.sol")).sort();
   const offenders = [];
   for (const file of files) {
-    const src = await readFile(join(dir, file), "utf8");
-    const why = [];
-    if (/require\(\s*\w+\s*,\s*"[^"]*adapt/i.test(src)) why.push("adapt-guess");
-    if (src.includes("TEMPLATE_NOT_ADAPTED")) why.push("stub");
-    if (/assertTrue\(\s*ok\b/.test(src)) why.push("call-success");
-    if (src.includes("vm.skip(")) why.push("skipped");
-    if (/\bI\w+\(target\)\.\w+\(/.test(src) && !/_(attempt|tryEntry|tryDestroy)/.test(src)) {
-      why.push("typed-single-guess");
-    }
-    if (why.length > 0) offenders.push(file);
+    const errs = lintErrors(await readFile(join(FALLBACKS_DIR, file), "utf8"));
+    if (errs.length > 0) offenders.push(`${file}: ${errs.map((e) => e.shape).join(", ")}`);
   }
-
-  const added = offenders.filter((f) => !KNOWN.has(f));
-  assert.deepEqual(added, [], `new single-guess templates — convert them instead of adding to KNOWN: ${added.join(", ")}`);
-  const fixed = [...KNOWN].filter((f) => !offenders.includes(f));
-  assert.deepEqual(fixed, [], `these are converted now — remove them from KNOWN: ${fixed.join(", ")}`);
+  assert.deepEqual(offenders, [], `templates with an unearned verdict:\n${offenders.join("\n")}`);
 });

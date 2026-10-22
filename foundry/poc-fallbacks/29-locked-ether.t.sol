@@ -99,10 +99,10 @@ contract PoC is Test {
             string.concat(
                 "NOT locked: value moved via ",
                 exit_,
-                " -- an exit exists, so this is not a locked-ether finding"
+                " -- an exit exists, so this is not a locked-ether finding. Tried withdraw(), claim(), refund(), release(), rescue(), emergencyWithdraw(), selfdestruct()"
             )
         );
-        assertGt(target.balance, 0, "no ETH present -- locked-ether cannot be judged");
+        assertGt(target.balance, 0, "no ETH present -- locked-ether cannot be judged. Tried withdraw(), claim(), refund(), release(), rescue(), emergencyWithdraw(), selfdestruct(). This does NOT establish safety.");
         console.log("locked ether reproduced: 1 ether accepted and NO candidate moved it");
     }
 }
