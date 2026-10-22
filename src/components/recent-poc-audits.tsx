@@ -1,7 +1,7 @@
 import { PocEvidenceBadge } from "@/components/poc-evidence-badge";
 import { findingPocEvidence } from "@/lib/audit/poc-evidence";
 import { SUPPORTED_CHAINS } from "@/lib/audit/address-fetcher";
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   ShieldAlert,
   Play,
@@ -96,7 +96,9 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [feedbackNotice, setFeedbackNotice] = useState<string | null>(null);
 
-  const fetchFindings = async () => {
+  // Memoised so the effect below can depend on the function itself rather than
+  // re-running on every render (or silently capturing a stale severityFilter).
+  const fetchFindings = useCallback(async () => {
     setIsLoading(true);
     try {
       const data = await getRecentHighSeverityFindingsFn({
@@ -109,9 +111,9 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [severityFilter]);
 
-  const checkBackend = async () => {
+  const checkBackend = useCallback(async () => {
     setIsCheckingBackend(true);
     try {
       const h = await checkFoundryBackend(backendUrl);
@@ -121,12 +123,12 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
     } finally {
       setIsCheckingBackend(false);
     }
-  };
+  }, [backendUrl]);
 
   useEffect(() => {
     fetchFindings();
     checkBackend();
-  }, [severityFilter]);
+  }, [fetchFindings, checkBackend]);
 
   const copyToClipboard = (text: string, key: string) => {
     navigator.clipboard.writeText(text);

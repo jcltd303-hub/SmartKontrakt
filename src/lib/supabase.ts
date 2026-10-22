@@ -155,7 +155,6 @@ export async function saveBatchItemToSupabase(item: BatchItem, cfg: SupabaseConf
 export async function loadBatchFromSupabase(cfg: SupabaseConfig): Promise<BatchItem[]> {
   if (!cfg.enabled || !cfg.url || !cfg.anonKey) return [];
 
-  const cleanUrl = cfg.url.replace(/\/+$/, "");
   try {
     const res = await fetch(`${supabaseEndpoint(cfg)}?select=id,address,label,chain_id,status,risk_score,findings_count,critical_count,high_count,error,bytecode_size,completed_at&order=completed_at.desc&limit=50`, {
       method: "GET",
