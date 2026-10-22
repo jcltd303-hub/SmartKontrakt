@@ -46,7 +46,7 @@ import type { BatchItem } from "../src/lib/audit/address-fetcher.ts";
 import { valueCacheStats } from "../src/lib/audit/value.ts";
 import { encodePostgresCredentials } from "../src/lib/pg-url.ts";
 import { analyzerStamp } from "../src/lib/audit/analyzer-version.ts";
-import { assertFreshnessSchema, savedScanVersions, scanFreshness } from "../src/lib/audit/scan-freshness.server.ts";
+import { assertFreshnessSchema, savedScanVersions, scanFreshness, shouldSkipInRun } from "../src/lib/audit/scan-freshness.server.ts";
 import type { ComprehensiveRecordInput } from "../src/lib/audit/persist.server.ts";
 
 // ---------------------------------------------------------------- .env ----
@@ -174,6 +174,8 @@ type Status = {
   completed: number;
   failed: number;
   skipped: number;
+  /** Skipped mid-run by the in-run dedupe (twin in the file, or saved concurrently after /start). Included in `skipped`. */
+  skippedDupes: number;
   /** Saved by an older analyzer — re-analyzed on this run. */
   stale: number;
   /** Freshness policy for this run: stale (default) | all | none. */
@@ -201,6 +203,7 @@ let status: Status = {
   completed: 0,
   failed: 0,
   skipped: 0,
+  skippedDupes: 0,
   stale: 0,
   refresh: "stale",
   current: null,
@@ -222,6 +225,12 @@ let status: Status = {
 
 let runCtx: { items: BatchItem[]; index: number } | null = null;
 let runPromise: Promise<void> | null = null;
+// In-run dedupe: (chain, address) keys that have completed (saved or
+// skipped) during THIS run. The /start skip check cannot see a twin
+// later in the same file (nothing is saved yet when it runs, and saves
+// flush in batches), so the loop tracks what it has already done.
+// Cleared on every /start; survives pause/resume with runCtx.
+const runSeen = new Set<string>();
 let pauseRequested = false;
 let stopRequested = false;
 const pending: ComprehensiveRecordInput[] = [];
@@ -310,6 +319,15 @@ async function runLoop(): Promise<void> {
   } catch {
     fourbyte = createOnDemandFourbyteLookup(null);
   }
+  // In-run dedupe re-checks use this handle; null (DB unreachable at
+  // loop start) disables the re-check for the run — fail-open, the
+  // seen-set still applies.
+  let dedupeSql: Awaited<ReturnType<typeof getSql>> | null = null;
+  try {
+    dedupeSql = await getSql();
+  } catch {
+    dedupeSql = null;
+  }
   try {
     while (ctx.index < ctx.items.length) {
       if (stopRequested || pauseRequested) break;
@@ -317,6 +335,39 @@ async function runLoop(): Promise<void> {
       if (item.status === "skipped") {
         ctx.index++;
         continue;
+      }
+      // In-run dedupe — the two holes the /start check cannot close:
+      // (a) the same (chain, address) twice in one file: the start check
+      //     ran before anything was saved, and saves flush in batches,
+      //     so the first copy is not in the DB when its twin is reached;
+      // (b) a row saved concurrently after /start (e.g. the browser
+      //     pipeline writing to the same tables mid-run).
+      // Skipped items settle exactly like start-time skips (status
+      // "skipped", counted, index advanced), so a resume never
+      // resurrects them. Fail-open throughout: shouldSkipInRun never
+      // throws, and a failed item is NOT added to the seen set, so a
+      // later twin still gets its own attempt.
+      const itemKey = `${item.chainId}:${item.address.toLowerCase()}`;
+      if (runSeen.has(itemKey)) {
+        item.status = "skipped";
+        status.skipped++;
+        status.skippedDupes++;
+        console.log(`[worker] skipping ${item.address}: already processed in this run (duplicate in file)`);
+        ctx.index++;
+        writeStatusFile();
+        continue;
+      }
+      if (dedupeSql && status.refresh !== "all") {
+        if (await shouldSkipInRun(dedupeSql, item, status.refresh)) {
+          runSeen.add(itemKey);
+          item.status = "skipped";
+          status.skipped++;
+          status.skippedDupes++;
+          console.log(`[worker] skipping ${item.address}: saved after this run started`);
+          ctx.index++;
+          writeStatusFile();
+          continue;
+        }
       }
       status.current = item.address;
       const scanId = randomUUID();
@@ -456,6 +507,7 @@ async function runLoop(): Promise<void> {
       if (pendingSince === null) pendingSince = Date.now();
 
       item.status = "completed";
+      runSeen.add(itemKey);
       status.completed++;
       ctx.index++;
       if (status.completed % 100 === 0) {
@@ -504,7 +556,7 @@ async function runLoop(): Promise<void> {
       runCtx = null;
       status.state = "idle";
       console.log(
-        `[worker] run finished: ${status.completed} completed, ${status.failed} failed, ${status.skipped} skipped`,
+        `[worker] run finished: ${status.completed} completed, ${status.failed} failed, ${status.skipped} skipped (${status.skippedDupes} in-run duplicates)`,
       );
     }
     pauseRequested = false;
@@ -662,6 +714,7 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     completed: 0,
     failed: 0,
     skipped,
+    skippedDupes: 0,
     stale,
     refresh,
     current: null,
@@ -681,6 +734,7 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     deepAgentBackendDown: false,
   };
   runCtx = { items, index: 0 };
+  runSeen.clear();
   pauseRequested = false;
   stopRequested = false;
   runPromise = runLoop().catch((err) => {

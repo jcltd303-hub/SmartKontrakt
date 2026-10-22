@@ -63,6 +63,40 @@ export async function scanFreshness(
 }
 
 /**
+ * Per-item re-check for a run already in flight (the pipeline worker's
+ * in-run dedupe): has THIS (chain, address) become skippable since the
+ * run started? The /start check cannot see rows saved after it ran — a
+ * twin earlier in the same file whose batch has since flushed, or another
+ * writer (the browser pipeline) saving the same address mid-run.
+ *
+ * The policy mapping mirrors /start exactly:
+ *   refresh=all   — never skip (the run asked to re-analyze everything)
+ *   refresh=none  — any saved row counts as done
+ *   refresh=stale — skip only a row saved by the CURRENT analyzer;
+ *                   a stale (or pre-stamp NULL) row is re-analyzed
+ *
+ * Never throws: any failure (DB down, schema drift) returns false so the
+ * caller proceeds with the analysis — a dedupe check must never stall
+ * or kill a run.
+ */
+export async function shouldSkipInRun(
+  sql: Sql,
+  wanted: { chainId: string; address: string },
+  refresh: string,
+  current: string = analyzerStamp(),
+): Promise<boolean> {
+  if (refresh === "all") return false;
+  try {
+    const { current: currentSet, stale: staleSet } = await savedScanVersions(sql, [wanted], current);
+    const key = `${wanted.chainId}:${wanted.address.toLowerCase()}`;
+    if (refresh === "none") return currentSet.has(key) || staleSet.has(key);
+    return currentSet.has(key);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Preflight: the freshness skip reads `analyzer_version` and every save writes
  * it, so migration 0014 must be applied first. Fail with the fix rather than a
  * raw "column analyzer_version does not exist" from deep inside a flush.
