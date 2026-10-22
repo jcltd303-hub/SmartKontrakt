@@ -13,7 +13,7 @@
  *
  * Not part of `npm test` — the CI image carries no Foundry toolchain.
  */
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
