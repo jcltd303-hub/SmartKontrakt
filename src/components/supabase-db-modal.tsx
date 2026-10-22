@@ -45,6 +45,20 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
   const [customUrl, setCustomUrl] = useState<string>("");
   const [isActive, setIsActive] = useState<boolean>(false);
   const [activeUrlMasked, setActiveUrlMasked] = useState<string>("");
+  // What the host's environment actually provides. On a deployment wired up
+  // through the Supabase integration this is the ONLY thing that configures the
+  // database, and it is invisible unless it is shown.
+  const [envInfo, setEnvInfo] = useState<{
+    configured: boolean;
+    from: string;
+    vars: { name: string; role: string; present: boolean }[];
+  } | null>(null);
+  const [configFileWritable, setConfigFileWritable] = useState<boolean>(true);
+  const [dbInfo, setDbInfo] = useState<{
+    envFrom?: string;
+    ephemeralFallback?: boolean;
+    lastError?: { message: string; urlMasked: string; at: string };
+  } | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
 
   const [isTesting, setIsTesting] = useState<boolean>(false);
@@ -64,8 +78,13 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
         setMode((res.config.mode as "pooler" | "direct" | "custom") || "pooler");
         setRegion(res.config.region || "us-east-1");
         setCustomUrl(res.config.customUrl || "");
-        setIsActive(Boolean(res.config.active));
+        // An environment URL means the database IS configured, even though no
+        // config file exists — which is the normal state on a hosted deploy.
+        setIsActive(Boolean(res.config.active) || Boolean(res.env?.configured));
       }
+      if (res?.env) setEnvInfo(res.env);
+      if (typeof res?.configFileWritable === "boolean") setConfigFileWritable(res.configFileWritable);
+      if (res?.dbInfo) setDbInfo(res.dbInfo);
       if (res?.activeUrlMasked) {
         setActiveUrlMasked(res.activeUrlMasked);
       }
@@ -275,6 +294,47 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
           >
             Refresh Pool
           </button>
+        </div>
+
+        {/* Environment / integration status */}
+        <div className="p-3 rounded-xl bg-[#12110e] border border-[#3a3428] flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] text-[#746c60] uppercase tracking-wider">Environment</div>
+            <div className="text-[10px] text-[#a39886]">
+              {envInfo?.configured
+                ? `Database URL from ${envInfo.from}`
+                : "No database URL in the environment"}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {(envInfo?.vars ?? []).map((v) => (
+              <span
+                key={v.name}
+                title={v.role}
+                className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                  v.present
+                    ? "border-emerald-800/60 bg-emerald-950/30 text-emerald-400"
+                    : "border-[#3a3428] bg-[#181611] text-[#746c60]"
+                }`}
+              >
+                {v.present ? "set" : "unset"} {v.name}
+              </span>
+            ))}
+          </div>
+          {dbInfo?.lastError ? (
+            <div className="text-[10px] text-amber-400">
+              Supabase connection failed ({dbInfo.lastError.message}) — serving from the embedded database.
+              {dbInfo.ephemeralFallback
+                ? " On this host that database is ephemeral: nothing written here survives."
+                : ""}
+            </div>
+          ) : null}
+          {!configFileWritable ? (
+            <div className="text-[10px] text-[#a39886]">
+              This filesystem is read-only, so a saved configuration cannot persist here — the environment
+              variables above are used automatically instead.
+            </div>
+          ) : null}
         </div>
 
         {/* Configuration Form */}

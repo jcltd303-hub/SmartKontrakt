@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
@@ -60,6 +60,25 @@ function getConfigFilePath(): string {
 export function hasSupabaseDbConfig(): boolean {
   try {
     return existsSync(getConfigFilePath());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a saved config can actually persist on this host.
+ *
+ * A serverless deployment's working directory is read-only, so the save path
+ * below reported success while writing nothing: the UI said "connected", and
+ * every later request still found no config and quietly served from the
+ * ephemeral embedded database. Probing the write is the only honest answer.
+ */
+export function configFileWritable(): boolean {
+  try {
+    const probe = `${getConfigFilePath()}.probe`;
+    writeFileSync(probe, "probe", "utf-8");
+    rmSync(probe, { force: true });
+    return true;
   } catch {
     return false;
   }
