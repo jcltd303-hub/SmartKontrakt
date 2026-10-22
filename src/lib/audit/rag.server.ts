@@ -311,39 +311,15 @@ function scoreChunk(query: string, chunk: RagChunk): { score: number; highlight:
 }
 
 /**
- * Ensure canonical knowledge advisories exist in the local database.
+ * Canonical knowledge advisories.
  *
- * Seeded at most once per process (`ensureCanonicalRagSeeded`) rather than on
- * every read: the six rows are `on conflict do nothing`, so a repeated seed is
- * pure write churn against a read path.
+ * RAG eliminated 2026-10-21 (storage): seeding writes are OFF — this is an
+ * intentional no-op. Reads use the in-memory CANONICAL_KNOWLEDGE_ADVISORIES
+ * list as their fallback instead of rows in the dropped table.
  */
 export async function seedCanonicalRagKnowledge(): Promise<void> {
-  const sql = await getSql();
-  for (const item of CANONICAL_KNOWLEDGE_ADVISORIES) {
-    // Seed the full-text vector too, so a seeded advisory is searchable through
-    // the same FTS path as report chunks (migration 0009).
-    const searchText = [
-      item.title, item.content, item.keywords.join(", "),
-      item.detector, item.swc, item.contractName,
-    ].filter(Boolean).join(" ");
-    try {
-      await sql`
-        insert into rag_knowledge_chunks (
-          id, scan_id, category, title, content, severity, swc, detector,
-          contract_name, target_address, chain_id, keywords, vector_data, metadata_json,
-          search_vector
-        ) values (
-          ${item.id}, ${null}, ${item.category}, ${item.title}, ${item.content},
-          ${item.severity}, ${item.swc}, ${item.detector}, ${item.contractName},
-          ${item.targetAddress}, ${item.chainId}, ${item.keywords.join(", ")}, ${null},
-          ${JSON.stringify(item.metadata)}, to_tsvector('english'::regconfig, ${searchText})
-        )
-        on conflict (id) do nothing
-      `;
-    } catch {
-      // Table might not exist or already seeded
-    }
-  }
+  // RAG eliminated 2026-10-21 (storage): no seeding writes.
+  return;
 }
 
 /**

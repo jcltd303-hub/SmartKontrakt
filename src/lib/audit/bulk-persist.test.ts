@@ -39,20 +39,21 @@ async function database() {
   return { pg, sql, queryCount: () => queries };
 }
 
-test("bulk writes replace dossiers atomically and replay without duplicate RAG chunks", async () => {
+test("bulk writes replace dossiers atomically on replay and never write RAG chunks", async () => {
   const { pg, sql, queryCount } = await database();
   try {
     const items = [record("one"), record("two")];
     await writeAuditBatch(sql, items);
-    assert.ok(queryCount() <= 6, "one bulk statement per table, independent of row count");
+    assert.ok(queryCount() <= 4, "one bulk statement per table, independent of row count");
     await writeAuditBatch(sql, items);
     assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from contract_scans")).rows[0].n, 2);
     assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from findings")).rows[0].n, 4);
-    assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from rag_knowledge_chunks")).rows[0].n, 6);
+    assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from rag_knowledge_chunks")).rows[0].n, 0);
+    assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from contract_scans where is_rag_indexed")).rows[0].n, 0);
     items[0].report.findings = [];
     await writeAuditBatch(sql, [items[0]]);
     assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from findings where scan_id='one'")).rows[0].n, 0);
-    assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from rag_knowledge_chunks where scan_id='one'")).rows[0].n, 1);
+    assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from rag_knowledge_chunks where scan_id='one'")).rows[0].n, 0);
     items[0].indexToRag = false;
     await writeAuditBatch(sql, [items[0]]);
     assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from rag_knowledge_chunks where scan_id='one'")).rows[0].n, 0);

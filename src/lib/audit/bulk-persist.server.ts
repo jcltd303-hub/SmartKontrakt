@@ -29,8 +29,8 @@ export function validateAuditBatch(records: unknown, maxBytes: number = MAX_BATC
 }
 
 /**
- * Six bulk statements in one transaction; a retry replaces the same dossier and
- * RAG rows. `opts.maxBytes` overrides the batch payload cap — the single-record
+ * Four bulk statements in one transaction; a retry replaces the same dossier.
+ * `opts.maxBytes` overrides the batch payload cap — the single-record
  * save path passes `Infinity`, since one dossier is bounded by its own
  * construction, not by the batch limit.
  */
@@ -58,7 +58,8 @@ export async function writeAuditBatch(
       ai_review_json: r.aiReview ? JSON.stringify(r.aiReview) : null,
       triage_states_json: r.triageStates ? JSON.stringify(r.triageStates) : null,
       cert_hash: r.certHash ?? null, source_origin: r.sourceOrigin ?? "pipeline",
-      is_rag_indexed: r.indexToRag !== false, risk_score: r.report.riskScore,
+      // RAG eliminated 2026-10-21 (storage): new saves are never RAG-indexed.
+      is_rag_indexed: false, risk_score: r.report.riskScore,
       critical_count: counts.critical, high_count: counts.high, medium_count: counts.medium,
       low_count: counts.low, info_count: counts.info, summary: r.report.summary,
       inventory_json: JSON.stringify(r.report.inventory),
@@ -94,10 +95,9 @@ export async function writeAuditBatch(
     poc_status: f.pocStatus ?? null, poc_output: f.pocOutput ?? null,
     poc_duration_ms: f.pocDurationMs ?? null, poc_run_at: f.pocRunAt ?? null, poc_code: f.pocCode ?? null,
   })));
-  const chunks = records.flatMap((r) => r.indexToRag === false ? [] : buildReportRagChunks({
-    scanId: r.id!, report: r.report, targetAddress: r.targetAddress, chainId: r.chainId,
-    proxyInfo: r.proxyInfo, probes: r.probes, aiReview: r.aiReview,
-  }));
+  // RAG eliminated 2026-10-21 (storage): chunks are no longer built or
+  // written on save — contract_scans records are the source of truth.
+  // The `indexToRag` input flag is ignored (kept for caller compatibility).
 
   await sql.transaction(async (tx) => {
     await tx.query(`
@@ -162,29 +162,13 @@ export async function writeAuditBatch(
       location_line=excluded.location_line, snippet=excluded.snippet,
       poc_status=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_status, findings.poc_status) else excluded.poc_status end, poc_output=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_output, findings.poc_output) else excluded.poc_output end,
       poc_duration_ms=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_duration_ms, findings.poc_duration_ms) else excluded.poc_duration_ms end, poc_run_at=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_run_at, findings.poc_run_at) else excluded.poc_run_at end, poc_code=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_code, findings.poc_code) else excluded.poc_code end`, [JSON.stringify(findings)]);
-    await replaceRagChunks(tx, ids, chunks);
   });
   return { savedCount: ids.length, ids };
 }
 
 export async function replaceRagChunks(sql: Sql, ids: string[], chunks: ReturnType<typeof buildReportRagChunks>): Promise<void> {
-  await sql.query("delete from rag_knowledge_chunks where scan_id = any($1::text[])", [ids]);
-  // `search_vector` is derived in SQL from the text columns so full-text search
-  // (migration 0009) stays in sync without a trigger or a second round trip.
-  await sql.query(`insert into rag_knowledge_chunks (
-    id, scan_id, category, title, content, severity, swc, detector, contract_name,
-    target_address, chain_id, keywords, vector_data, metadata_json, search_vector
-  ) select
-    r.id, r.scan_id, r.category, r.title, r.content, r.severity, r.swc, r.detector,
-    r.contract_name, r.target_address, r.chain_id, r.keywords, r.vector_data, r.metadata_json,
-    to_tsvector('english'::regconfig,
-      coalesce(r.title, '') || ' ' || coalesce(r.content, '') || ' ' ||
-      coalesce(r.keywords, '') || ' ' || coalesce(r.detector, '') || ' ' ||
-      coalesce(r.swc, '') || ' ' || coalesce(r.contract_name, ''))
-  from jsonb_to_recordset($1::jsonb) as r(
-    id text, scan_id text, category text, title text, content text, severity text, swc text,
-    detector text, contract_name text, target_address text, chain_id text, keywords text,
-    vector_data text, metadata_json text
-  )`, [JSON.stringify(chunks)]);
+  // RAG eliminated 2026-10-21 (storage): indexing writes are OFF. This is an
+  // intentional no-op, kept exported for compatibility — no save path may
+  // write rag_knowledge_chunks. Records are the source of truth.
+  return;
 }
-
