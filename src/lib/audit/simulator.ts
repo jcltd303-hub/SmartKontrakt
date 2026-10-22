@@ -149,6 +149,52 @@ export async function probeContractInterfaces(address: string, chainId = "ethere
 }
 
 /**
+ * Latest block number on the chain, or null when no RPC answers.
+ * Same rotation / limiter / retry discipline as executeEthCall — the
+ * live-state probes (live-state.ts) stamp their report with it so a
+ * reader knows exactly which chain height the values were read at.
+ */
+export async function fetchLatestBlockNumber(chainId = "ethereum"): Promise<number | null> {
+  const chain = SUPPORTED_CHAINS.find((c) => c.id === chainId) ?? SUPPORTED_CHAINS[0]!;
+
+  for (const rpcUrl of chain.rpcUrls) {
+    try {
+      const res = await withRetry(async () => {
+        await rpcLimiter.acquire();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4000);
+        try {
+          return await fetch(rpcUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              method: "eth_blockNumber",
+              params: [],
+              id: 1,
+            }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+      }, { retries: 1, baseDelayMs: 1500 });
+      if (!res.ok) continue;
+
+      const data = (await res.json()) as { result?: string };
+      if (typeof data.result === "string") {
+        const n = parseInt(data.result, 16);
+        if (Number.isFinite(n)) return n;
+      }
+    } catch {
+      // try next RPC
+    }
+  }
+
+  return null;
+}
+
+/**
  * The on-chain name() probe value, sanitized (Item 1). Returns null when
  * the probe did not succeed, returned nothing printable, or returned
  * something that is not a name (an address, a >120-char blob, control

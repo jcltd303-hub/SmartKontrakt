@@ -4,6 +4,7 @@ import { analyzeBytecode } from "./bytecode.ts";
 import { rpcLimiter, sourcifyLimiter, withRetry } from "./rate-limit.ts";
 import { fetchAddressValue } from "./value.ts";
 import { gatherAbi } from "./abi.ts";
+import { gatherLiveState } from "./live-state.ts";
 import { enrichReportFourbyte, type FourbyteLookup } from "./fourbyte.ts";
 
 export type SupportedChain = {
@@ -584,6 +585,25 @@ export async function analyzeAddress(
     // enriches via the resolveFourbyte server fn instead).
     if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
     await attachValueAndAbi(report);
+    // Live-state evidence (2026-10-22): for verified-source audits with
+    // at least one high/critical finding, probe the contract's decisive
+    // getters (paused / owner / trading flags / fees / limits) over RPC
+    // and attach the LIVE values to the inventory — the adjudication
+    // counterpart to source-argued closures (constructor defaults and
+    // initial values can differ from live mutable state). Evidence
+    // only: findings are NOT re-scored. Never throws; skipped silently
+    // when the contract exposes no decisive getters.
+    if (report.findings.some((f) => f.severity === "critical" || f.severity === "high")) {
+      try {
+        const liveState = await gatherLiveState(address, chain.id, {
+          source: sourcifyMatch.source,
+          abi: report.inventory.abi,
+        });
+        if (liveState) report.inventory.liveState = liveState;
+      } catch {
+        // evidence is best-effort — the audit stands without it
+      }
+    }
     return {
       report,
       rawBody: sourcifyMatch.source,

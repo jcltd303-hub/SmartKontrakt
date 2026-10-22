@@ -1,4 +1,5 @@
 import type { AddressValue } from "./value.ts";
+import type { LiveStateReport } from "./live-state.ts";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -117,6 +118,16 @@ export type Inventory = {
   abi?: AbiItem[] | null;
   /** Where the ABI came from: "sourcify" | "etherscan" | "heuristic" | "input". */
   abiSource?: string | null;
+  /**
+   * Live decisive-state reads (paused / owner / trading flags / fees /
+   * limits — live-state.ts), probed over public RPC at analysis time.
+   * Attached only for verified-source analyses with at least one high
+   * or critical finding: adjudication evidence to check source-argued
+   * closures (constructor defaults, initial values) against LIVE
+   * values. Persists via inventory_json like balance/value/abi.
+   * Null/absent when not probed or no decisive getters exist.
+   */
+  liveState?: LiveStateReport | null;
 };
 
 export type Report = {
