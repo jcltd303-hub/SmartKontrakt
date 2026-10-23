@@ -27,6 +27,7 @@ import type { AiSecurityReview } from "./ai-review.server";
 import { postChatWithModelFallback, resolveOpenRouterConfig, stripThinkBlocks } from "./ai-review.server";
 import { openRouterLimiter, withRetry } from "./rate-limit";
 import { pocRunKey } from "./poc-run-key.ts";
+import { findingPocProvenance } from "./poc-outcome.ts";
 import {
   dedupeRecentFindings,
   isAuditorDisposition,
@@ -146,6 +147,7 @@ type FindingRow = {
   poc_duration_ms?: number | null;
   poc_run_at?: string | null;
   poc_code?: string | null;
+  corroborated?: boolean | null;
 };
 
 
@@ -268,7 +270,8 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
   const findingRows = await sql<FindingRow>`
     select id, ord, severity, swc, title, confidence, detector, summary, walkthrough,
            exploit_solidity, remediation_solidity, location_fn, location_line, snippet,
-           poc_status, poc_output, poc_duration_ms, poc_run_at::text as poc_run_at, poc_code
+           poc_status, poc_output, poc_duration_ms, poc_run_at::text as poc_run_at, poc_code,
+           corroborated
     from findings
     where scan_id = ${id}
     order by ord asc
@@ -295,11 +298,19 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
     locationFn: f.location_fn,
     locationLine: f.location_line,
     snippet: f.snippet,
+    corroborated: f.corroborated ?? null,
     pocStatus: f.poc_status ?? null,
     pocOutput: f.poc_output ?? null,
     pocDurationMs: f.poc_duration_ms ?? null,
     pocRunAt: f.poc_run_at ?? null,
     pocCode: f.poc_code ?? null,
+    // G8: provenance derived at read time from the stored run columns,
+    // so rows saved before the field existed report it too.
+    pocEvidence: findingPocProvenance({
+      pocStatus: f.poc_status,
+      pocOutput: f.poc_output,
+      pocCode: f.poc_code,
+    }),
   }));
   const aiStatus = row.ai_status === "ok" || row.ai_status === "error" ? row.ai_status : "unavailable";
   // Item 3: the stored column is authoritative; the derivation covers rows
@@ -615,7 +626,7 @@ export async function getRecentHighSeverityFindings(opts?: {
         select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
-               f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
+               f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code, f.corroborated,
                d.disposition as disposition, d.note as disposition_note, d.updated_at::text as disposition_updated_at,
                s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
@@ -642,7 +653,7 @@ export async function getRecentHighSeverityFindings(opts?: {
         select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
-               f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
+               f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code, f.corroborated,
                d.disposition as disposition, d.note as disposition_note, d.updated_at::text as disposition_updated_at,
                s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
@@ -669,7 +680,7 @@ export async function getRecentHighSeverityFindings(opts?: {
         select f.id, f.scan_id, f.ord, f.severity, f.swc, f.title, f.confidence, f.detector,
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
-               f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
+               f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code, f.corroborated,
                d.disposition as disposition, d.note as disposition_note, d.updated_at::text as disposition_updated_at,
                s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
@@ -705,11 +716,18 @@ export async function getRecentHighSeverityFindings(opts?: {
       locationFn: f.location_fn,
       locationLine: f.location_line,
       snippet: f.snippet,
+      corroborated: f.corroborated ?? null,
       pocStatus: f.poc_status ?? null,
       pocOutput: f.poc_output ?? null,
       pocDurationMs: f.poc_duration_ms ?? null,
       pocRunAt: f.poc_run_at ?? null,
       pocCode: f.poc_code ?? null,
+      // G8: read-time provenance derivation, same as loadScan.
+      pocEvidence: findingPocProvenance({
+        pocStatus: f.poc_status,
+        pocOutput: f.poc_output,
+        pocCode: f.poc_code,
+      }),
       scanLabel: f.scan_label,
       contractName: f.contract_name,
       targetAddress: f.target_address,

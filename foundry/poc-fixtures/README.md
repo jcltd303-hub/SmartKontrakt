@@ -69,6 +69,15 @@ access control (9), arithmetic (3), unchecked low-level calls (2), denial of
 service (3), bad randomness (2), front running (2), time manipulation (1), short
 addresses (1).
 
+One further port is NOT a dataset port: `TokenRescue` (with
+`TokenRescueFixed`), a modelled port of fallback template
+`46-token-rescue.t.sol`, whose index.json provenance is "modelled" — no
+SmartBugs contract exists for the unauthenticated-rescue pattern, so the
+port declares itself modelled in its header (naming the template it
+ports) rather than claiming a dataset path. The verifier accepts
+exactly these two provenance kinds and rejects a port that claims
+neither.
+
 ## Running
 
 ```sh

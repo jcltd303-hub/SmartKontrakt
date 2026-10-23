@@ -17,6 +17,7 @@
 import { wrapPocSnippetWithReason } from "./poc-wrap.ts";
 import { selectPocFallbacks } from "./poc-fallbacks.ts";
 import type { AiSecurityReview } from "./ai-review.server.ts";
+import type { PocOrigin } from "./poc-evidence.ts";
 import type { Finding } from "./types.ts";
 
 /** The auditor's verdict on one finding. Written only by a human. */
@@ -51,20 +52,68 @@ export type FindingDisposition = {
 export type PocVerdict = "passed" | "failed" | "error" | "no_tests" | "skipped" | "unadapted";
 
 /**
- * Verdict → SUGGESTED disposition. The mapping is deliberately literal:
- * a reproduced exploit suggests the finding is real; a clean
- * not-reproduced run suggests a false positive; anything that is not a
- * verdict at all (infra error, timeout, backend down, no run) suggests
- * "needs more info" — an error must never masquerade as evidence either
- * way. "no_tests", "skipped" and "unadapted" land in the same place for
- * the same reason: generation produced no executable tests, the target
- * holds no value at stake, or the harness was a template scaffold whose
- * TODO constants were never filled — none is evidence about the bug.
- * The human still has to tap to make it of record.
+ * Does a run's output disclose what the PoC actually TRIED? Two shapes
+ * count, both already in the recorded output of real runs:
+ * - the fallback templates' failure text, which names the selectors /
+ *   entry points attempted ("…did not reproduce… Tried withdraw(),
+ *   claim(), …"); a run whose code quotes that disclosure (an adapted
+ *   template, a generated PoC modeled on one) carries it too;
+ * - forge's own failure lines ([FAIL: …] testName()) — a generated
+ *   PoC's attempt log: which test ran and how its assertions failed;
+ * - forge's result summary evidencing executed-and-failed tests
+ *   ("0 passed; 1 failed" / "Suite result: FAILED") — the tail of the
+ *   same attempt log, and the shape the backend's capped output
+ *   always retains.
+ * An empty or content-free output discloses nothing, however the run
+ * was classified — a "failed" verdict whose output was lost is not
+ * evidence about what was attempted.
  */
-export function suggestDispositionForVerdict(verdict: PocVerdict | null): AuditorDisposition {
+export function pocOutputDisclosesAttempt(output: string | null | undefined): boolean {
+  if (!output || !output.trim()) return false;
+  if (/\bTried\b/.test(output)) return true;
+  if (/\[FAIL[:\]]/.test(output)) return true;
+  if (/did not reproduce/i.test(output)) return true;
+  if (/\d+ passed;\s*[1-9]\d* failed/.test(output)) return true;
+  if (/Suite result:\s*FAILED/i.test(output)) return true;
+  return false;
+}
+
+/**
+ * Verdict → SUGGESTED disposition. The mapping is deliberately literal:
+ * a reproduced exploit suggests the finding is real; anything that is
+ * not a verdict at all (infra error, timeout, backend down, no run)
+ * suggests "needs more info" — an error must never masquerade as
+ * evidence either way. "no_tests", "skipped" and "unadapted" land in
+ * the same place for the same reason: generation produced no
+ * executable tests, the target holds no value at stake, or the harness
+ * was a template scaffold whose TODO constants were never filled —
+ * none is evidence about the bug.
+ *
+ * "failed" is the one conditional mapping (G6). A not-reproduced run
+ * suggests "false positive" ONLY when the attempt was worth believing:
+ * the executed PoC was target-tailored (origin "generated" in
+ * poc-evidence.ts's vocabulary — the finding's own snippet or an
+ * LLM-written PoC, NOT a library template) AND the run output
+ * discloses what was tried (pocOutputDisclosesAttempt). A library
+ * template's failure only proves the template's generic shapes did
+ * not fit this target — its own failure text says exactly that ("the
+ * payout may be named differently…") — so it suggests "needs more
+ * info", like every other non-verdict. Callers that cannot supply the
+ * evidence get the conservative mapping. The human still has to tap
+ * to make any of this of record.
+ */
+export function suggestDispositionForVerdict(
+  verdict: PocVerdict | null,
+  evidence?: { origin?: PocOrigin | null; output?: string | null },
+): AuditorDisposition {
   if (verdict === "passed") return "confirmed";
-  if (verdict === "failed") return "false_positive";
+  if (
+    verdict === "failed" &&
+    evidence?.origin === "generated" &&
+    pocOutputDisclosesAttempt(evidence.output)
+  ) {
+    return "false_positive";
+  }
   return "needs_more_info";
 }
 
@@ -147,8 +196,12 @@ export function planAdjudication(input: {
  */
 export function prepareFindingPoc(
   finding: Pick<Finding, "exploitSolidity" | "severity" | "detector">,
-): { source: string; testCode: string; note: string | null } | null {
+): { source: string; testCode: string; note: string | null; origin: PocOrigin } | null {
   let source = finding.exploitSolidity ?? "";
+  // Origin (poc-evidence.ts's vocabulary): code that came from the
+  // finding itself is finding-specific — "generated"; only the
+  // library-fallback branch below produces a "template".
+  let origin: PocOrigin = "generated";
   let outcome = wrapPocSnippetWithReason(source);
   if (!outcome.wrapped) {
     const isTest = /\bcontract\s+\w+\s+is\s+[^{]*\bTest\b/.test(source);
@@ -160,13 +213,14 @@ export function prepareFindingPoc(
       );
       if (fallbacks.length > 0 && fallbacks[0]?.source) {
         source = fallbacks[0].source;
+        origin = "template";
         outcome = wrapPocSnippetWithReason(source);
       }
     }
   }
   if (!source.trim()) return null;
   if (outcome.wrapped) {
-    return { source, testCode: outcome.wrapped.testFile, note: outcome.wrapped.note ?? null };
+    return { source, testCode: outcome.wrapped.testFile, note: outcome.wrapped.note ?? null, origin };
   }
   // Unwrapped but a complete test already: runnable as-is. Anything else
   // (a bare attack contract the wrapper rejected, pseudocode) is not
@@ -174,7 +228,7 @@ export function prepareFindingPoc(
   // backend a guaranteed zero-test "run".
   const isTest = /\bcontract\s+\w+\s+is\s+[^{]*\bTest\b/.test(source);
   const hasTestFn = /function\s+test_\w*\s*\(|function\s+testPoc\s*\(/.test(source);
-  if (isTest && hasTestFn) return { source, testCode: source, note: outcome.reason ?? null };
+  if (isTest && hasTestFn) return { source, testCode: source, note: outcome.reason ?? null, origin };
   return null;
 }
 
@@ -271,22 +325,123 @@ const DISASSEMBLY_LINE_RE = /^\s*>?\s*[0-9a-f]{4}\s{2}[A-Z][A-Z0-9]*(\s|$)/m;
 // A source-level call site: an actual call expression in source text.
 const SOURCE_CALLSITE_RE = /(delegatecall|callcode|selfdestruct|\.call)\s*[({]/;
 
+// ---------------------------------------------------------------------
+// Source-side corroboration (G3). The escape hatch above has two
+// branches, and the audit proved both dead for the findings that need
+// them: nothing in the codebase ever stamps finding.corroborated, and
+// the snippet heuristic requires a source-shaped snippet in a non-
+// "runtime" location — while presence findings BY CONSTRUCTION carry
+// locationFn "runtime" and a disassembly-window snippet (bytecode.ts's
+// snippetFor). The contract's SOURCE, when a caller holds it, is the
+// evidence that actually decides: a concrete call site for the flagged
+// construct. The per-family patterns below mirror what detect.ts's
+// source-level detectors accept as the construct — no looser:
+// - delegatecall family: detect.ts extracts member calls named
+//   delegatecall/callcode; the source call site is `.delegatecall(` /
+//   `.callcode(`.
+// - selfdestruct family: detect.ts fires on /\bselfdestruct\s*\(|
+//   \bsuicide\s*\(/ verbatim.
+// - ORIGIN: the construct is a tx.origin reference (detect.ts's
+//   tx-origin family keys on the reference itself).
+// - TIMESTAMP: block.timestamp / now (detect.ts's BLOCK_DATA clock set).
+// - CREATE2: an assembly create2( call or the `new C{salt: …}` form —
+//   the two ways source expresses the opcode.
+// - CALL+SSTORE shape: a low-level `.call(` / `.call{` site (detect.ts's
+//   low-level call extraction; SOURCE_CALLSITE_RE's call arm).
+// ---------------------------------------------------------------------
+
+/** The source call-site pattern for one presence family. */
+type PresenceFamily = { name: string; pattern: RegExp };
+
+const DELEGATECALL_FAMILY: PresenceFamily = {
+  name: "delegatecall",
+  pattern: /\.(?:delegatecall|callcode)\s*\(/,
+};
+const SELFDESTRUCT_FAMILY: PresenceFamily = {
+  name: "selfdestruct",
+  pattern: /\b(?:selfdestruct|suicide)\s*\(/,
+};
+const ORIGIN_FAMILY: PresenceFamily = { name: "tx.origin", pattern: /\btx\.origin\b/ };
+const TIMESTAMP_FAMILY: PresenceFamily = {
+  name: "timestamp",
+  pattern: /block\.timestamp|\bnow\b/,
+};
+const CREATE2_FAMILY: PresenceFamily = {
+  name: "create2",
+  pattern: /\bcreate2\s*\(|\{\s*salt\s*:/,
+};
+const CALL_FAMILY: PresenceFamily = { name: "call", pattern: /\.call\s*[({]/ };
+
+/** Which presence family a finding belongs to, resolved the same way
+ *  isPresenceOnlyFinding identifies it: detector first, then the
+ *  title arms of PRESENCE_TITLE_RE. Null when the finding is not a
+ *  presence-family finding at all. */
+function presenceFamilyOf(finding: { detector: string; title: string }): PresenceFamily | null {
+  if (finding.detector === "bytecode-delegatecall" || finding.detector === "bytecode-callcode") {
+    return DELEGATECALL_FAMILY;
+  }
+  if (finding.detector === "bytecode-selfdestruct") return SELFDESTRUCT_FAMILY;
+  const title = finding.title.trim();
+  if (/executes foreign code in this contract's storage/.test(title)) return DELEGATECALL_FAMILY;
+  if (/is reachable in the bytecode/.test(title)) return SELFDESTRUCT_FAMILY;
+  if (/^ORIGIN \(tx\.origin\) is used$/.test(title)) return ORIGIN_FAMILY;
+  if (/^TIMESTAMP is read$/.test(title)) return TIMESTAMP_FAMILY;
+  if (/^CREATE2 is present$/.test(title)) return CREATE2_FAMILY;
+  if (/^Both CALL and SSTORE are present$/.test(title)) return CALL_FAMILY;
+  return null;
+}
+
+/**
+ * True when `source` (the contract's own Solidity) contains a concrete
+ * call site for the construct a presence-only finding flags. This is
+ * the ONLY question the source answers: a call site for a DIFFERENT
+ * construct does not corroborate, and a source with no call site
+ * leaves the presence exclusion exactly as it was.
+ */
+export function sourceCorroboratesPresence(
+  finding: { detector: string; title: string },
+  source: string | null | undefined,
+): boolean {
+  if (!source || !source.trim()) return false;
+  if (!isPresenceOnlyFinding(finding)) return false;
+  const family = presenceFamilyOf(finding);
+  if (!family) return false;
+  return family.pattern.test(source);
+}
+
 /**
  * Corroboration that takes a presence-family finding OUT of the
  * presence-only class ("the bytes clearly depict vuln"):
  * - an explicit corroboration marker on the record, when one exists
  *   (preferred — the FP-patterns work may stamp one); or
+ * - the contract's own source, when the caller supplies it, carrying a
+ *   concrete call site for the flagged construct (sourceCorroborates-
+ *   Presence) — the branch that works for bytecode-shaped records,
+ *   whose own snippet is a disassembly window; or
  * - a source-level location: a real function name (bytecode findings
  *   carry locationFn "runtime") whose snippet is source text showing a
  *   concrete call site, not a disassembly window.
  */
-export function hasVulnCorroboration(finding: {
-  locationFn?: string | null;
-  snippet?: string | null;
-  corroborated?: unknown;
-}): boolean {
+export function hasVulnCorroboration(
+  finding: {
+    detector?: string;
+    title?: string;
+    locationFn?: string | null;
+    snippet?: string | null;
+    corroborated?: unknown;
+  },
+  source?: string | null,
+): boolean {
   if (finding.corroborated === true) return true;
   if (typeof finding.corroborated === "string" && finding.corroborated.trim()) return true;
+  if (
+    source &&
+    finding.detector !== undefined &&
+    finding.title !== undefined &&
+    sourceCorroboratesPresence({ detector: finding.detector, title: finding.title }, source)
+  ) {
+    return true;
+  }
   const fn = finding.locationFn?.trim();
   const snippet = finding.snippet ?? "";
   if (!fn || fn === "runtime" || !snippet.trim()) return false;
@@ -304,10 +459,14 @@ export function pocAuditEligibility(
     corroborated?: unknown;
   },
   scope: PocAuditScope,
+  /** The analyzed contract's own source, when the caller holds it —
+   *  the G3 corroboration evidence for bytecode-shaped records.
+   *  Omitted/null keeps the pre-G3 behavior exactly. */
+  source?: string | null,
 ): { eligible: boolean; exclusion: PocAuditExclusion | null } {
   // Presence is checked first, at every severity: an uncorroborated
   // presence-only "critical" is still not actually critical.
-  if (isPresenceOnlyFinding(finding) && !hasVulnCorroboration(finding)) {
+  if (isPresenceOnlyFinding(finding) && !hasVulnCorroboration(finding, source)) {
     return { eligible: false, exclusion: "presence_only" };
   }
   if (finding.severity === "critical") return { eligible: true, exclusion: null };
@@ -335,12 +494,21 @@ export function partitionPocAuditFindings<
 >(
   rows: readonly T[],
   scope: PocAuditScope,
+  /** G3 corroboration evidence, when the caller holds source text:
+   *  either one source for every row, or a per-row resolver (rows in
+   *  a feed can come from different scans). Omitted/null keeps the
+   *  pre-G3 behavior exactly. */
+  sourceFor?: string | ((row: T) => string | null | undefined) | null,
 ): { eligible: T[]; presenceOnlyExcluded: T[]; belowScope: T[] } {
   const eligible: T[] = [];
   const presenceOnlyExcluded: T[] = [];
   const belowScope: T[] = [];
+  const resolveSource =
+    typeof sourceFor === "function"
+      ? sourceFor
+      : () => sourceFor ?? undefined;
   for (const row of rows) {
-    const verdict = pocAuditEligibility(row, scope);
+    const verdict = pocAuditEligibility(row, scope, resolveSource(row));
     if (verdict.eligible) eligible.push(row);
     else if (verdict.exclusion === "presence_only") presenceOnlyExcluded.push(row);
     else belowScope.push(row);

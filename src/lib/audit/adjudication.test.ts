@@ -10,14 +10,61 @@ import {
   partitionPocAuditFindings,
   planAdjudication,
   pocAuditEligibility,
+  pocOutputDisclosesAttempt,
   prepareFindingPoc,
+  sourceCorroboratesPresence,
   suggestDispositionForVerdict,
 } from "./adjudication.ts";
 
 describe("suggestDispositionForVerdict", () => {
-  it("maps terminal verdicts to suggestions", () => {
+  it("maps a reproduced verdict to confirmed", () => {
     assert.equal(suggestDispositionForVerdict("passed"), "confirmed");
-    assert.equal(suggestDispositionForVerdict("failed"), "false_positive");
+  });
+
+  // G6 changed this mapping: "failed" used to suggest false_positive
+  // unconditionally. A not-reproduced run is only worth that suggestion
+  // when the attempt was target-tailored AND its output discloses what
+  // was tried — the cases below pin each side of the condition.
+  it("a bare failed verdict (no provenance supplied) suggests needs_more_info, not false_positive", () => {
+    assert.equal(suggestDispositionForVerdict("failed"), "needs_more_info");
+    assert.equal(suggestDispositionForVerdict("failed", {}), "needs_more_info");
+    assert.equal(suggestDispositionForVerdict("failed", { origin: null, output: null }), "needs_more_info");
+  });
+
+  it("failed + generated PoC + an output that discloses the attempt suggests false_positive", () => {
+    const forgeLog = "Ran 1 test for test/Exploit.t.sol:PoC\n[FAIL: assertion failed] test_drain() (gas: 12345)";
+    assert.equal(
+      suggestDispositionForVerdict("failed", { origin: "generated", output: forgeLog }),
+      "false_positive",
+    );
+    const triedLog = "exploit did not reproduce: balance unchanged. Tried withdraw(), claim().";
+    assert.equal(
+      suggestDispositionForVerdict("failed", { origin: "generated", output: triedLog }),
+      "false_positive",
+    );
+  });
+
+  it("failed + library template suggests needs_more_info even when its output discloses the attempt", () => {
+    // The template's own disclosure is the generic shape list it tried;
+    // its failure text says the real entry point may be named
+    // differently — that is not evidence the finding is false.
+    const templateLog =
+      "no payout selector moved ETH out of the target. Tried withdraw(), claim(), drain(). This does NOT establish safety.";
+    assert.equal(
+      suggestDispositionForVerdict("failed", { origin: "template", output: templateLog }),
+      "needs_more_info",
+    );
+  });
+
+  it("failed + generated PoC + an output that discloses nothing suggests needs_more_info", () => {
+    assert.equal(
+      suggestDispositionForVerdict("failed", { origin: "generated", output: "" }),
+      "needs_more_info",
+    );
+    assert.equal(
+      suggestDispositionForVerdict("failed", { origin: "generated", output: "run finished" }),
+      "needs_more_info",
+    );
   });
 
   it("maps non-verdicts to needs_more_info — an error is not evidence", () => {
@@ -31,6 +78,27 @@ describe("suggestDispositionForVerdict", () => {
     // outcome kinds, distinct from "error", with the same suggestion.
     assert.equal(suggestDispositionForVerdict("no_tests"), "needs_more_info");
     assert.equal(suggestDispositionForVerdict("skipped"), "needs_more_info");
+  });
+});
+
+describe("pocOutputDisclosesAttempt (G6)", () => {
+  it("recognizes the templates' tried-selectors disclosure and forge failure lines", () => {
+    assert.equal(pocOutputDisclosesAttempt("Tried withdraw(), claim(), drain()"), true);
+    assert.equal(pocOutputDisclosesAttempt("[FAIL: revert] test_exploit() (gas: 1)"), true);
+    assert.equal(pocOutputDisclosesAttempt("exploit did not reproduce: drained <= deposit"), true);
+    // Forge's result summary — the tail of the same attempt log.
+    assert.equal(pocOutputDisclosesAttempt("0 passed; 1 failed"), true);
+    assert.equal(pocOutputDisclosesAttempt("Suite result: FAILED. 0 passed; 2 failed; 0 skipped"), true);
+    // A passing/all-skipped summary evidences no failed attempt.
+    assert.equal(pocOutputDisclosesAttempt("1 passed; 0 failed"), false);
+  });
+
+  it("empty or content-free output discloses nothing", () => {
+    assert.equal(pocOutputDisclosesAttempt(null), false);
+    assert.equal(pocOutputDisclosesAttempt(undefined), false);
+    assert.equal(pocOutputDisclosesAttempt(""), false);
+    assert.equal(pocOutputDisclosesAttempt("   \n"), false);
+    assert.equal(pocOutputDisclosesAttempt("Suite result: ok"), false);
   });
 });
 
@@ -135,6 +203,8 @@ contract PoC is Test {
     const prepared = prepareFindingPoc({ exploitSolidity: test, severity: "critical", detector: "custom" });
     assert.ok(prepared);
     assert.equal(prepared.testCode, test);
+    // The finding's own code is finding-specific: origin "generated" (G6).
+    assert.equal(prepared.origin, "generated");
   });
 
   it("wraps an attack-contract snippet into a runnable PoC test", () => {
@@ -145,6 +215,7 @@ contract PoC is Test {
     assert.ok(prepared);
     assert.ok(prepared.testCode.includes("contract PoC is Test"));
     assert.equal(prepared.source, snippet);
+    assert.equal(prepared.origin, "generated");
   });
 
   it("falls back to the detector-class template when the finding has no snippet", () => {
@@ -152,6 +223,8 @@ contract PoC is Test {
     assert.ok(prepared);
     assert.ok(prepared.testCode.includes("contract PoC is Test"));
     assert.ok(prepared.source.length > 0);
+    // The library fallback is the one "template"-origin preparation (G6).
+    assert.equal(prepared.origin, "template");
   });
 });
 
@@ -353,5 +426,114 @@ describe("actually-critical eligibility (presence-only rule)", () => {
     assert.equal(wide.eligible.length, 3); // sourceHigh joins
     assert.equal(wide.presenceOnlyExcluded.length, 2);
     assert.equal(wide.belowScope.length, 0);
+  });
+});
+
+describe("source corroboration (G3) — the presence escape hatch, revived", () => {
+  // The exact shape bytecode.ts emits for a presence finding: locationFn
+  // "runtime", a disassembly-window snippet. Before G3 this record could
+  // NEVER be corroborated: nothing stamps the marker, and the snippet
+  // heuristic rejects disassembly by construction.
+  const disasmSnippet = "  00a0  PUSH1 0x00\n> 00a3  DELEGATECALL\n  00a4  ISZERO";
+  const presenceDelegatecall = {
+    severity: "critical",
+    detector: "bytecode-delegatecall",
+    title: "DELEGATECALL executes foreign code in this contract's storage",
+    locationFn: "runtime",
+    snippet: disasmSnippet,
+  };
+  const delegatecallSource = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+contract Vault {
+    function upgradeTo(address impl, bytes calldata data) external {
+        (bool ok, ) = impl.delegatecall(data);
+        require(ok);
+    }
+}`;
+  const plainSource = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+contract Plain {
+    function pay(address to, uint256 amount) external {
+        payable(to).transfer(amount);
+    }
+}`;
+
+  it("(a) presence finding + source carrying the call site → corroborated and eligible", () => {
+    assert.equal(hasVulnCorroboration(presenceDelegatecall, delegatecallSource), true);
+    assert.deepEqual(pocAuditEligibility(presenceDelegatecall, "critical", delegatecallSource), {
+      eligible: true,
+      exclusion: null,
+    });
+  });
+
+  it("(b) presence finding + source with NO call site for the construct → still excluded", () => {
+    assert.equal(hasVulnCorroboration(presenceDelegatecall, plainSource), false);
+    assert.deepEqual(pocAuditEligibility(presenceDelegatecall, "critical", plainSource), {
+      eligible: false,
+      exclusion: "presence_only",
+    });
+  });
+
+  it("(c) regression: disassembly-window record + separate source with the call site → eligible through the partition", () => {
+    // The real miss, shaped exactly: the stored record's own evidence
+    // is a disassembly window; the corroborating evidence lives in the
+    // contract's source, supplied per-row by the caller.
+    const withSource = partitionPocAuditFindings([presenceDelegatecall], "critical", () => delegatecallSource);
+    assert.equal(withSource.eligible.length, 1);
+    assert.equal(withSource.presenceOnlyExcluded.length, 0);
+    // The same record with no source supplied keeps the pre-G3 verdict.
+    const without = partitionPocAuditFindings([presenceDelegatecall], "critical");
+    assert.equal(without.eligible.length, 0);
+    assert.equal(without.presenceOnlyExcluded.length, 1);
+    // And a shared (non-resolver) source argument works for single-scan rows.
+    const shared = partitionPocAuditFindings([presenceDelegatecall], "critical", delegatecallSource);
+    assert.equal(shared.eligible.length, 1);
+  });
+
+  it("the per-family patterns mirror the source detectors — and only their own family corroborates", () => {
+    const selfdestructFinding = { detector: "bytecode-selfdestruct", title: "SELFDESTRUCT is reachable in the bytecode" };
+    assert.equal(
+      sourceCorroboratesPresence(selfdestructFinding, "function close() external { selfdestruct(payable(msg.sender)); }"),
+      true,
+    );
+    // A delegatecall site does NOT corroborate a selfdestruct finding.
+    assert.equal(sourceCorroboratesPresence(selfdestructFinding, delegatecallSource), false);
+
+    const originFinding = { detector: "bytecode-origin", title: "ORIGIN (tx.origin) is used" };
+    assert.equal(
+      sourceCorroboratesPresence(originFinding, "require(msg.sender == tx.origin, \"eoa\");"),
+      true,
+    );
+
+    const timestampFinding = { detector: "bytecode-timestamp", title: "TIMESTAMP is read" };
+    assert.equal(
+      sourceCorroboratesPresence(timestampFinding, "require(block.timestamp >= unlockTime);"),
+      true,
+    );
+
+    const create2Finding = { detector: "bytecode-create2", title: "CREATE2 is present" };
+    assert.equal(
+      sourceCorroboratesPresence(create2Finding, "Token t = new Token{salt: salt}(arg);"),
+      true,
+    );
+    assert.equal(
+      sourceCorroboratesPresence(create2Finding, "assembly { let a := create2(0, ptr, len, s) }"),
+      true,
+    );
+
+    const callShapeFinding = { detector: "bytecode-reentrancy-shape", title: "Both CALL and SSTORE are present" };
+    assert.equal(
+      sourceCorroboratesPresence(callShapeFinding, "(bool ok, ) = target.call{value: amount}(\"\");"),
+      true,
+    );
+
+    // A non-presence finding is never "corroborated" by this path.
+    assert.equal(
+      sourceCorroboratesPresence({ detector: "reentrancy", title: "Reentrancy" }, delegatecallSource),
+      false,
+    );
+    // No source (or an empty one) corroborates nothing.
+    assert.equal(sourceCorroboratesPresence(presenceDelegatecall, null), false);
+    assert.equal(sourceCorroboratesPresence(presenceDelegatecall, "  "), false);
   });
 });

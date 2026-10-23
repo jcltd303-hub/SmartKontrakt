@@ -1,0 +1,21 @@
+-- Migration 0016: corroboration marker on findings.
+--
+-- G3 (corroboration revival): a bytecode-presence-only finding
+-- (DELEGATECALL / CALLCODE / SELFDESTRUCT opcode presence and the
+-- ORIGIN / TIMESTAMP / CREATE2 / CALL+SSTORE presence titles) is
+-- excluded from the PoC queues unless something corroborates it.
+-- hasVulnCorroboration (src/lib/audit/adjudication.ts) reads an
+-- explicit marker on the finding record first — but until now no
+-- column existed for any writer to stamp one into, so the marker
+-- branch was dead code and the only other branch (a source-shaped
+-- snippet) can never fire for bytecode findings, whose snippets are
+-- disassembly windows by construction.
+--
+-- This column is the marker's home. Boolean, NULL on every row that
+-- predates it — NULL reads as uncorroborated, which is exactly the
+-- state those rows are in — and written by the persist paths from
+-- the Finding record's corroborated field. Stamping happens where a
+-- producer holds both the finding and source-level evidence; the
+-- eligibility read path also accepts source text supplied at call
+-- time, so this column is the durable form, not the only form.
+alter table findings add column if not exists corroborated boolean;

@@ -98,9 +98,17 @@ describe("runAdjudicationChain", () => {
 
   it("reuses the review and the stored run for the same digest — no OpenRouter call, no backend run, no save", async () => {
     const digest = pocRunKey("scan-1:0", TEST_SNIPPET).digest;
+    // G6: the stored output is a realistic forge failure record. The
+    // reused run executed the finding's OWN test snippet (origin
+    // "generated" — the digest matched the candidate), and its output
+    // discloses the attempt, so a failed verdict still suggests
+    // false_positive on the reuse path. (Was the placeholder "stored
+    // logs", which under G6 discloses nothing and would — correctly —
+    // suggest needs_more_info instead.)
+    const storedOutput = "[FAIL: assertion failed] test_exploit() (gas: 12345)\nSuite result: FAILED. 0 passed; 1 failed";
     const { deps, calls } = makeDeps({
       listRuns: async () => [
-        { id: "poc:scan-1:0:x", status: "failed", sourceDigest: digest, output: "stored logs", durationMs: 7, createdAt: "2026-10-23T00:00:00Z" },
+        { id: "poc:scan-1:0:x", status: "failed", sourceDigest: digest, output: storedOutput, durationMs: 7, createdAt: "2026-10-23T00:00:00Z" },
       ],
     });
     const outcome = await runAdjudicationChain(
@@ -112,7 +120,7 @@ describe("runAdjudicationChain", () => {
     assert.equal(outcome.reviewStep, "reused");
     assert.equal(outcome.verdict, "failed");
     assert.equal(outcome.suggestion, "false_positive");
-    assert.equal(outcome.output, "stored logs");
+    assert.equal(outcome.output, storedOutput);
     assert.equal(calls.ai, 0);
     assert.equal(calls.run, 0);
     assert.equal(calls.save, 0);

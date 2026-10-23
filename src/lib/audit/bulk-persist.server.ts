@@ -94,6 +94,14 @@ export async function writeAuditBatch(
     location_line: f.locationLine, snippet: f.snippet,
     poc_status: f.pocStatus ?? null, poc_output: f.pocOutput ?? null,
     poc_duration_ms: f.pocDurationMs ?? null, poc_run_at: f.pocRunAt ?? null, poc_code: f.pocCode ?? null,
+    // Migration 0016 (G3): the corroboration marker persists as a
+    // boolean — the Finding field also accepts a non-empty note
+    // string, which stamps true (the note itself is not stored).
+    corroborated:
+      f.corroborated === true ||
+      (typeof f.corroborated === "string" && f.corroborated.trim() !== "")
+        ? true
+        : null,
   })));
   // RAG eliminated 2026-10-21 (storage): chunks are no longer built or
   // written on save — contract_scans records are the source of truth.
@@ -148,12 +156,13 @@ export async function writeAuditBatch(
     await tx.query(`insert into findings (
       id, scan_id, ord, severity, swc, title, confidence, detector, summary, walkthrough,
       exploit_solidity, remediation_solidity, location_fn, location_line, snippet,
-      poc_status, poc_output, poc_duration_ms, poc_run_at, poc_code
+      poc_status, poc_output, poc_duration_ms, poc_run_at, poc_code, corroborated
     ) select * from jsonb_to_recordset($1::jsonb) as r(
       id text, scan_id text, ord integer, severity text, swc text, title text, confidence text,
       detector text, summary text, walkthrough text, exploit_solidity text,
       remediation_solidity text, location_fn text, location_line integer, snippet text,
-      poc_status text, poc_output text, poc_duration_ms integer, poc_run_at timestamptz, poc_code text
+      poc_status text, poc_output text, poc_duration_ms integer, poc_run_at timestamptz, poc_code text,
+      corroborated boolean
     ) on conflict (id) do update set
       ord=excluded.ord, severity=excluded.severity, swc=excluded.swc, title=excluded.title,
       confidence=excluded.confidence, detector=excluded.detector, summary=excluded.summary,
@@ -161,7 +170,7 @@ export async function writeAuditBatch(
       remediation_solidity=excluded.remediation_solidity, location_fn=excluded.location_fn,
       location_line=excluded.location_line, snippet=excluded.snippet,
       poc_status=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_status, findings.poc_status) else excluded.poc_status end, poc_output=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_output, findings.poc_output) else excluded.poc_output end,
-      poc_duration_ms=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_duration_ms, findings.poc_duration_ms) else excluded.poc_duration_ms end, poc_run_at=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_run_at, findings.poc_run_at) else excluded.poc_run_at end, poc_code=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_code, findings.poc_code) else excluded.poc_code end`, [JSON.stringify(findings)]);
+      poc_duration_ms=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_duration_ms, findings.poc_duration_ms) else excluded.poc_duration_ms end, poc_run_at=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_run_at, findings.poc_run_at) else excluded.poc_run_at end, poc_code=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_code, findings.poc_code) else excluded.poc_code end, corroborated=coalesce(excluded.corroborated, findings.corroborated)`, [JSON.stringify(findings)]);
   });
   return { savedCount: ids.length, ids };
 }

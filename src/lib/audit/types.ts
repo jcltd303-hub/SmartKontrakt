@@ -1,5 +1,6 @@
 import type { AddressValue } from "./value.ts";
 import type { LiveStateReport } from "./live-state.ts";
+import type { PocProvenance } from "./poc-outcome.ts";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -32,11 +33,25 @@ export type Finding = {
   locationFn: string | null;
   locationLine: number | null;
   snippet: string;
+  /** Corroboration marker for presence-only findings (G3): true (or a
+   *  non-empty note) when evidence beyond opcode presence ties the
+   *  flagged construct to a concrete source-level call site — the state
+   *  hasVulnCorroboration (adjudication.ts) promotes the finding with.
+   *  Persisted as findings.corroborated (migration 0016); absent/null
+   *  on records analyzed before the marker existed. */
+  corroborated?: boolean | string | null;
   pocStatus?: string | null;
   pocOutput?: string | null;
   pocDurationMs?: number | null;
   pocRunAt?: string | null;
   pocCode?: string | null;
+  /** PoC provenance (G8): where the executed code came from (library
+   *  template vs generated) and the verdict it produced, in
+   *  poc-outcome.ts's vocabulary. Derived at read time by
+   *  findingPocProvenance (poc-outcome.ts) for every stored row — old
+   *  rows included — and attached by the archive loaders; absent/null
+   *  when the finding has never been run. */
+  pocEvidence?: PocProvenance | null;
 };
 
 export type SelectorHit = {

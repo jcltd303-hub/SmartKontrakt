@@ -40,6 +40,7 @@ import {
   unadaptedTemplateOutput,
 } from "./poc-outcome.ts";
 import type { AiSecurityReview } from "./ai-review.server.ts";
+import type { PocOrigin } from "./poc-evidence.ts";
 import type { Finding } from "./types.ts";
 
 /** A stored finding_poc_runs row, reduced to what the chain needs. */
@@ -369,7 +370,13 @@ export async function runAdjudicationChain(
     return finish({
       kind: "suggested",
       verdict,
-      suggestion: suggestDispositionForVerdict(verdict),
+      // G6: the reuse digest matched the candidate PoC, so the stored
+      // run executed the very code prepared here — its origin is the
+      // candidate's, and its stored output is the attempt record.
+      suggestion: suggestDispositionForVerdict(verdict, {
+        origin: prepared.origin,
+        output: stored?.output ?? null,
+      }),
       output: stored?.output ?? null,
       testCode: prepared.testCode,
       reviewStep,
@@ -513,6 +520,11 @@ export async function runAdjudicationChain(
   progress("Running the PoC on the Foundry backend…");
   step("harness", "running");
   let testCode = gate.testCode;
+  // G6 provenance for the suggestion: the executed code's origin. The
+  // generation gate replacing the prepared code makes it generated
+  // whatever it started as; a compile repair does the same below.
+  let executedOrigin: PocOrigin =
+    gate.testCode !== prepared.testCode ? "generated" : prepared.origin;
   let verdict: PocVerdict;
   let logs: string;
   let durationMs = 0;
@@ -544,6 +556,7 @@ export async function runAdjudicationChain(
         });
         if (fixed && fixed.trim() && fixed !== testCode) {
           testCode = fixed;
+          executedOrigin = "generated"; // the repair rewrote the code (G6)
           poc = await deps.runPoc({
             address: ctx.targetAddress,
             chainId: ctx.chainId ?? undefined,
@@ -595,10 +608,16 @@ export async function runAdjudicationChain(
   }
   step("saved", steps.saved);
 
+  // G6: a failed verdict suggests false_positive only for a
+  // target-tailored (generated) PoC whose output discloses the attempt.
+  const suggestion = suggestDispositionForVerdict(verdict, {
+    origin: executedOrigin,
+    output: displayLogs,
+  });
   const outcome = finish({
     kind: "suggested",
     verdict,
-    suggestion: suggestDispositionForVerdict(verdict),
+    suggestion,
     output: displayLogs,
     testCode,
     reviewStep,
@@ -608,7 +627,9 @@ export async function runAdjudicationChain(
       verdict === "passed"
         ? "PoC reproduced on the fork — suggesting Confirmed."
         : verdict === "failed"
-          ? "PoC did not reproduce on the fork — suggesting False positive."
+          ? suggestion === "false_positive"
+            ? "PoC did not reproduce on the fork — suggesting False positive."
+            : "PoC did not reproduce on the fork, but the attempt was a library template or its output does not disclose what was tried — not evidence enough for a false positive — suggesting Needs info."
           : verdict === "no_tests"
             ? "The executed PoC evidenced zero tests, so there is no verdict — suggesting Needs info."
             : verdict === "unadapted"

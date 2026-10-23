@@ -5,8 +5,10 @@ import {
   countExecutableTestFunctions,
   effectivePocStatus,
   ensureExecutablePocTests,
+  findingPocProvenance,
   hasSkipSentinel,
   hasZeroTestEvidence,
+  pocOriginOfExecutedCode,
   savedStatusFromRun,
   hasUnadaptedEvidence,
   unadaptedTemplateCheck,
@@ -348,5 +350,64 @@ describe("unadapted reclassification — savedStatusFromRun / effectivePocStatus
     assert.equal(effectivePocStatus("error", abortLogs), "unadapted");
     assert.equal(effectivePocStatus("failed", "0 passed; 1 failed"), "failed");
     assert.equal(effectivePocStatus("error", "All RPC providers failed"), "error");
+  });
+});
+
+describe("findingPocProvenance (G8) — origin + verdict travel on the Finding", () => {
+  it("a finding saved from a template run reads back origin=template with its verdict", () => {
+    // The chain saves a library template VERBATIM as the finding's
+    // poc_code (templates are complete Test contracts), so the stored
+    // code itself identifies the run as a template run.
+    const provenance = findingPocProvenance({
+      pocStatus: "failed",
+      pocOutput: "0 passed; 1 failed",
+      pocCode: POC_FALLBACK_TEMPLATES["06-open-drain.t.sol"],
+    });
+    assert.deepEqual(provenance, { origin: "template", verdict: "failed" });
+  });
+
+  it("a finding saved from a generated run reads back origin=generated", () => {
+    const generated = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+import {Test} from "forge-std/Test.sol";
+contract PoC is Test {
+    function test_drain() public { assertTrue(true); }
+}`;
+    const provenance = findingPocProvenance({
+      pocStatus: "passed",
+      pocOutput: "1 passed; 0 failed",
+      pocCode: generated,
+    });
+    assert.deepEqual(provenance, { origin: "generated", verdict: "passed" });
+  });
+
+  it("old-vocabulary rows reclassify at read time (error + zero-test output → no_tests)", () => {
+    const provenance = findingPocProvenance({
+      pocStatus: "error",
+      pocOutput: "Suite result: FAILED. 0 passed; 0 failed; ran 0 tests",
+      pocCode: null,
+    });
+    assert.deepEqual(provenance, { origin: "template", verdict: "no_tests" });
+  });
+
+  it("a TODO-abort output reclassifies a stored failed verdict to unadapted", () => {
+    const provenance = findingPocProvenance({
+      pocStatus: "failed",
+      pocOutput: 'Error: set TOKEN to the ERC777 token address',
+      pocCode: POC_FALLBACK_TEMPLATES["03-reentrancy-erc777.t.sol"],
+    });
+    assert.deepEqual(provenance, { origin: "template", verdict: "unadapted" });
+  });
+
+  it("a never-run finding has no provenance", () => {
+    assert.equal(findingPocProvenance({ pocStatus: null, pocOutput: null, pocCode: null }), null);
+    assert.equal(findingPocProvenance({}), null);
+  });
+
+  it("pocOriginOfExecutedCode: template source verbatim → template; anything else → generated", () => {
+    assert.equal(pocOriginOfExecutedCode(POC_FALLBACK_TEMPLATES["46-token-rescue.t.sol"]), "template");
+    assert.equal(pocOriginOfExecutedCode("contract Mine is Test { }"), "generated");
+    assert.equal(pocOriginOfExecutedCode(null), "template"); // code-less rows take the house fallback
+    assert.equal(pocOriginOfExecutedCode(""), "template");
   });
 });

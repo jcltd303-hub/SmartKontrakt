@@ -36,8 +36,23 @@ test("every fixture port carries provenance and preserves the vulnerable orderin
   for (const file of files) {
     const src = await readFile(join(srcDir, file), "utf8");
     assert.match(src, /PROVENANCE/, `${file}: no provenance header`);
-    assert.match(src, /smartbugs\/smartbugs-curated/, `${file}: provenance must name the dataset`);
-    assert.match(src, /dataset\/[a-z_]+\/[A-Za-z0-9_]+\.sol/, `${file}: provenance must name the dataset path`);
+    // Two honest provenance kinds. Dataset ports name the dataset and
+    // the dataset path. MODELLED ports (for templates whose index.json
+    // provenance is "modelled" — no SmartBugs source exists for them)
+    // must say so explicitly and name the fallback template they port;
+    // claiming a dataset path for one would fabricate the grounding
+    // this test exists to protect. (Added with the TokenRescue port —
+    // template 46-token-rescue is modelled, so its port is too.)
+    const isDatasetPort =
+      /smartbugs\/smartbugs-curated/.test(src) && /dataset\/[a-z_]+\/[A-Za-z0-9_]+\.sol/.test(src);
+    const isModelledPort =
+      /Modelled:\s+no dataset source/.test(src) &&
+      /poc-fallbacks\/\d+-[a-z0-9-]+\.t\.sol/.test(src) &&
+      !/dataset\/[a-z_]+\/[A-Za-z0-9_]+\.sol/.test(src);
+    assert.ok(
+      isDatasetPort || isModelledPort,
+      `${file}: provenance must name the dataset + dataset path, or declare itself modelled and name its fallback template`,
+    );
     assert.match(src, /pragma solidity \^?0\.8/, `${file}: ports must be migrated to >= 0.8`);
   }
 });

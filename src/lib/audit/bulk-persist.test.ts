@@ -26,6 +26,10 @@ async function database() {
     "0012_value_at_risk.sql",
     "0013_poc_run_idempotency.sql",
     "0014_analyzer_version.sql",
+    // 0016: writeAuditBatch writes findings.corroborated — the harness
+    // schema must carry the column or every bulk write fails on it.
+    // (0015 is dispositions-only; nothing under test here reads it.)
+    "0016_finding_corroborated.sql",
   ]) {
     await pg.exec(await readFile(new URL(`../../../migrations/${f}`, import.meta.url), "utf8"));
   }

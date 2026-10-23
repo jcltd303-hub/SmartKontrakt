@@ -39,6 +39,7 @@ import {
   POC_FALLBACK_TEMPLATES,
   POC_FALLBACK_TODO_REQUIREMENTS,
 } from "./poc-fallbacks.ts";
+import type { PocOrigin } from "./poc-evidence.ts";
 
 /** The statuses a run can be SAVED under (findings.poc_status /
  *  finding_poc_runs.status). The transport-level "backend_unreachable"
@@ -151,6 +152,69 @@ export function effectivePocStatus(
     if (hasSkipSentinel(output)) return "skipped";
   }
   return status;
+}
+
+// ---------------------------------------------------------------------
+// PoC provenance on the Finding (G8). The Finding record has always
+// carried pocStatus / pocOutput / pocCode, but not WHERE the executed
+// code came from (origin, owned by poc-evidence.ts) nor the verdict in
+// this module's vocabulary — so every consumer re-derived both, or
+// guessed. PocProvenance is the pair, and findingPocProvenance derives
+// it for ANY stored row, old ones included:
+//
+// - verdict: effectivePocStatus over the stored status + output, so
+//   old-vocabulary rows reclassify on read exactly like the counters.
+// - origin: judged from the saved executed code itself. A run through
+//   prepareFindingPoc saves a library template VERBATIM (templates are
+//   complete Test contracts, passed through unchanged), so code that
+//   contains a catalog template's source IS a template run; anything
+//   else with saved code is finding-specific (wrapped snippet or
+//   LLM-generated) — 'generated', the same line findingPocEvidence
+//   draws. No saved code reads as 'template', matching its fallback
+//   for code-less rows. (A generated PoC that embeds a template
+//   verbatim reads as 'template' — it was one, whatever produced it.)
+// ---------------------------------------------------------------------
+
+export type PocProvenance = {
+  origin: PocOrigin;
+  verdict: SavedPocStatus | null;
+};
+
+const SAVED_POC_STATUS_SET: ReadonlySet<string> = new Set<SavedPocStatus>([
+  "passed",
+  "failed",
+  "error",
+  "no_tests",
+  "skipped",
+  "unadapted",
+]);
+
+/** Origin of executed PoC code, judged against the shipped catalog. */
+export function pocOriginOfExecutedCode(code: string | null | undefined): PocOrigin {
+  if (!code || !code.trim()) return "template";
+  for (const source of Object.values(POC_FALLBACK_TEMPLATES)) {
+    if (source && code.includes(source)) return "template";
+  }
+  return "generated";
+}
+
+/**
+ * Provenance for a finding's recorded run, or null when the finding
+ * has never been run (no stored status). Pure derivation — safe to
+ * call at read time for every row a loader returns.
+ */
+export function findingPocProvenance(finding: {
+  pocStatus?: string | null;
+  pocOutput?: string | null;
+  pocCode?: string | null;
+}): PocProvenance | null {
+  if (!finding.pocStatus) return null;
+  const effective = effectivePocStatus(finding.pocStatus, finding.pocOutput);
+  const verdict =
+    effective && SAVED_POC_STATUS_SET.has(effective)
+      ? (effective as SavedPocStatus)
+      : null;
+  return { origin: pocOriginOfExecutedCode(finding.pocCode), verdict };
 }
 
 // ---------------------------------------------------------------------
