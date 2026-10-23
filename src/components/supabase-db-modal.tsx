@@ -18,7 +18,7 @@ import {
   Eye,
   EyeOff,
 } from "lucide-react";
-import { encodePostgresCredentials } from "@/lib/pg-url";
+import { encodePostgresCredentials, extractSupabaseProjectRef, poolerHostRegion } from "@/lib/pg-url";
 
 interface SupabaseDbModalProps {
   isOpen: boolean;
@@ -102,25 +102,42 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
 
   if (!isOpen) return null;
 
-  // Clean ref: remove protocol, domain suffix
-  const cleanRef = projectRef.trim().replace(/^https?:\/\//i, "").replace(/\.supabase\.co.*$/i, "").replace(/\/.*$/, "");
+  // The reference is EXTRACTED and validated by the shared helper, never
+  // string-trimmed into shape: the cleanup chain this replaces reduced a
+  // pasted `postgresql://…` connection string to its scheme word, and this
+  // preview (and the server builder) composed the pooler user
+  // `postgres.postgresql` from it. Extraction finds the real 20-character
+  // reference — bare, in a project or dashboard URL, or in a full
+  // connection string — or yields nothing, and then the field is in error
+  // and nothing is generated from it. Handlers below send `cleanRef`, the
+  // validated reference, so what is previewed is what is tested and saved.
+  const cleanRef = extractSupabaseProjectRef(projectRef) ?? "";
+  const refInvalid = mode !== "custom" && projectRef.trim() !== "" && !cleanRef;
 
   // Credentials are percent-encoded so the copied URL matches what the server
   // builds and what the driver will parse: a raw @ # / : or space in the
   // password would silently re-parse the host instead of failing.
   const encPw = encodeURIComponent(password);
 
+  // Preview precedence mirrors buildSupabasePostgresUrl on the server
+  // exactly, so the URI shown here is the URI that will be tested and
+  // activated: a reference (when one validates) derives the user and wins
+  // over the stored host/user; the stored host is reused only when it names
+  // the selected region (it carries the aws-0/aws-1 provider index); the
+  // stored host/user pair is the fallback when there is no reference at all.
   const previewConnectionUrl =
     mode === "custom"
       ? encodePostgresCredentials(customUrl)
+      : cleanRef
+      ? mode === "direct"
+        ? `postgresql://postgres:${encPw}@db.${cleanRef}.supabase.co:5432/postgres`
+        : `postgresql://postgres.${cleanRef}:${encPw}@${
+            poolerHostRegion(host) === region ? host : `aws-0-${region}.pooler.supabase.com`
+          }:${port || 6543}/${database || "postgres"}`
       : host && user
       ? `postgresql://${encodeURIComponent(user)}:${encPw}@${host}:${port}/${database}`
       : mode === "direct"
-      ? cleanRef
-        ? `postgresql://postgres:${encPw}@db.${cleanRef}.supabase.co:5432/postgres`
-        : `postgresql://postgres:${encPw}@db.[YOUR-PROJECT-REF].supabase.co:5432/postgres`
-      : cleanRef
-      ? `postgresql://postgres.${cleanRef}:${encPw}@aws-0-${region}.pooler.supabase.com:6543/postgres`
+      ? `postgresql://postgres:${encPw}@db.[YOUR-PROJECT-REF].supabase.co:5432/postgres`
       : `postgresql://postgres.[YOUR-PROJECT-REF]:${encPw}@aws-0-${region}.pooler.supabase.com:6543/postgres`;
 
   const copyConnectionUrl = () => {
@@ -415,6 +432,18 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
               Find your Project Reference ID in your Supabase dashboard URL:{" "}
               <code className="text-[#e8a54b]">supabase.com/dashboard/project/&lt;your-ref&gt;</code> or under Project Settings &rarr; General.
             </p>
+            {refInvalid ? (
+              <p className="text-[10px] text-red-400 mt-1 font-sans">
+                No valid project reference in that input — expected the 20-character reference, a project or
+                dashboard URL, or a full connection string containing one. Nothing will be generated, tested,
+                or saved from it as-is.
+              </p>
+            ) : cleanRef && cleanRef !== projectRef.trim() ? (
+              <p className="text-[10px] text-emerald-400 mt-1 font-sans">
+                Detected project reference: <code className="text-[#e8a54b]">{cleanRef}</code> — this is the
+                reference that will be tested and saved.
+              </p>
+            ) : null}
           </div>
 
           {/* Connection Mode Selection */}
@@ -498,7 +527,9 @@ export function SupabaseDbModal({ isOpen, onClose, onDatabaseChanged }: Supabase
               </button>
             </div>
             <div className="text-[11px] text-[#a39886] break-all font-mono select-all bg-[#1c1a16] p-2 rounded border border-[#3a3428]/60">
-              {previewConnectionUrl}
+              {refInvalid
+                ? "Fix the project reference above — with no valid reference there is no connection URI to generate."
+                : previewConnectionUrl}
             </div>
           </div>
 

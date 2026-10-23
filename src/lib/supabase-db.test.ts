@@ -9,7 +9,7 @@ import {
 test("buildSupabasePostgresUrl properly URL-encodes special characters in password", () => {
   const url = buildSupabasePostgresUrl({
     projectName: "SmartKontrakt",
-    projectRef: "abcdefghijklmnop",
+    projectRef: "abcdefghijklmnopqrst",
     password: "test+password&only",
     region: "us-east-1",
     mode: "pooler",
@@ -17,7 +17,7 @@ test("buildSupabasePostgresUrl properly URL-encodes special characters in passwo
   });
 
   // Verify pooler URL format
-  assert.match(url, /^postgresql:\/\/postgres\.abcdefghijklmnop:test%2Bpassword%26only@aws-0-us-east-1\.pooler\.supabase\.com:6543\/postgres$/);
+  assert.match(url, /^postgresql:\/\/postgres\.abcdefghijklmnopqrst:test%2Bpassword%26only@aws-0-us-east-1\.pooler\.supabase\.com:6543\/postgres$/);
   // Verify + is encoded as %2B and & is encoded as %26
   assert.ok(url.includes("test%2Bpassword%26only"));
   assert.ok(!url.includes("&only@")); // unencoded & would break connection string parameters
@@ -26,20 +26,20 @@ test("buildSupabasePostgresUrl properly URL-encodes special characters in passwo
 test("buildSupabasePostgresUrl builds direct 5432 connection URL", () => {
   const url = buildSupabasePostgresUrl({
     projectName: "SmartKontrakt",
-    projectRef: "abcdefghijklmnop",
+    projectRef: "abcdefghijklmnopqrst",
     password: "test+password&only",
     region: "us-east-1",
     mode: "direct",
     active: true,
   });
 
-  assert.equal(url, "postgresql://postgres:test%2Bpassword%26only@db.abcdefghijklmnop.supabase.co:5432/postgres");
+  assert.equal(url, "postgresql://postgres:test%2Bpassword%26only@db.abcdefghijklmnopqrst.supabase.co:5432/postgres");
 });
 
 test("buildSupabasePostgresUrl cleans projectRef containing full URLs", () => {
   const url = buildSupabasePostgresUrl({
     projectName: "SmartKontrakt",
-    projectRef: "https://myprojectref12345.supabase.co/rest/v1",
+    projectRef: "https://myprojectref12345678.supabase.co/rest/v1",
     password: "test+password&only",
     region: "eu-central-1",
     mode: "pooler",
@@ -48,7 +48,7 @@ test("buildSupabasePostgresUrl cleans projectRef containing full URLs", () => {
 
   assert.equal(
     url,
-    "postgresql://postgres.myprojectref12345:test%2Bpassword%26only@aws-0-eu-central-1.pooler.supabase.com:6543/postgres"
+    "postgresql://postgres.myprojectref12345678:test%2Bpassword%26only@aws-0-eu-central-1.pooler.supabase.com:6543/postgres"
   );
 });
 
@@ -192,4 +192,53 @@ test("with no reference, an explicit host/user is still honoured", () => {
     active: true,
   });
   assert.equal(url, "postgresql://someone:pw@db.internal.example:5432/appdb");
+});
+
+// --- regression: a pasted connection string must not become postgres.postgresql ---
+
+test("a projectRef holding a full pooler URL yields that URL's project, not the scheme", () => {
+  const url = buildSupabasePostgresUrl({
+    ...DEFAULT_SUPABASE_DB_CONFIG,
+    projectRef: "postgresql://postgres.wvknnljtrsjghfbhylqn:secretpw@aws-0-us-east-1.pooler.supabase.com:6543/postgres",
+    password: "secretpw",
+    region: "us-east-1",
+    mode: "pooler",
+    active: true,
+  });
+  assert.equal(
+    url,
+    "postgresql://postgres.wvknnljtrsjghfbhylqn:secretpw@aws-0-us-east-1.pooler.supabase.com:6543/postgres",
+  );
+  assert.ok(!url.includes("postgres.postgresql"), `the scheme must never become the user: ${url}`);
+});
+
+test("a projectRef holding a dashboard URL yields that project", () => {
+  const url = buildSupabasePostgresUrl({
+    ...DEFAULT_SUPABASE_DB_CONFIG,
+    projectRef: "https://supabase.com/dashboard/project/wvknnljtrsjghfbhylqn",
+    password: "pw",
+    region: "us-east-1",
+    mode: "pooler",
+    active: true,
+  });
+  assert.equal(
+    url,
+    "postgresql://postgres.wvknnljtrsjghfbhylqn:pw@aws-0-us-east-1.pooler.supabase.com:6543/postgres",
+  );
+});
+
+test("a projectRef with no valid reference in it builds no URL at all", () => {
+  // "postgresql:" is the exact value the old chain produced and saved; a
+  // config carrying it must fail honestly, not generate postgres.postgresql.
+  assert.equal(
+    buildSupabasePostgresUrl({
+      ...DEFAULT_SUPABASE_DB_CONFIG,
+      projectRef: "postgresql:",
+      password: "pw",
+      region: "us-east-1",
+      mode: "pooler",
+      active: true,
+    }),
+    "",
+  );
 });

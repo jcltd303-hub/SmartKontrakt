@@ -57,3 +57,52 @@ test("unreplaced placeholders are recognised", () => {
   assert.equal(looksLikePlaceholder("postgresql://postgres:<password>@host/db"), true);
   assert.equal(looksLikePlaceholder("postgresql://postgres:realpw@host/db"), false);
 });
+
+// --- project reference extraction (the postgres.postgresql regression) ---
+
+import { extractSupabaseProjectRef, isSupabaseProjectRef, supabasePoolerUser } from "./pg-url.ts";
+
+const REF = "wvknnljtrsjghfbhylqn";
+
+test("a project reference is exactly 20 lowercase alphanumerics", () => {
+  assert.equal(isSupabaseProjectRef(REF), true);
+  assert.equal(isSupabaseProjectRef("postgresql"), false);
+  assert.equal(isSupabaseProjectRef("wvknnljtrsjghfbhylq"), false, "19 chars is not a reference");
+  assert.equal(isSupabaseProjectRef("WVKNLLJTRSJGHFBHYLQN"), false, "uppercase is not a reference");
+});
+
+test("extractSupabaseProjectRef finds the reference in every pasted shape", () => {
+  const cases: [string, string | null][] = [
+    [REF, REF],
+    [`postgres.${REF}`, REF],
+    [`https://${REF}.supabase.co`, REF],
+    [`https://${REF}.supabase.co/rest/v1`, REF],
+    [`https://supabase.com/dashboard/project/${REF}`, REF],
+    // THE TRAP: a full pooler connection string pasted into the reference
+    // field. The old cleanup chain reduced this to the scheme word and the
+    // modal generated the user "postgres.postgresql".
+    [`postgresql://postgres.${REF}:secretpw@aws-0-us-east-1.pooler.supabase.com:6543/postgres`, REF],
+    [`postgres://postgres.${REF}:p%40ss@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require`, REF],
+    // Direct URL: bare `postgres` user, the reference lives in the host.
+    [`postgresql://postgres:secretpw@db.${REF}.supabase.co:5432/postgres`, REF],
+    // No reference anywhere: a pooler host encodes region only, and a bare
+    // user is just "postgres" — there is nothing to extract.
+    [`postgresql://postgres:secretpw@aws-0-us-east-1.pooler.supabase.com:6543/postgres`, null],
+    // The garbage the bug SAVED into configs: never a reference.
+    ["postgresql:", null],
+    ["postgresql", null],
+    ["postgres:", null],
+    ["[YOUR-PROJECT-REF]", null],
+    ["not-a-reference", null],
+    ["", null],
+  ];
+  for (const [input, want] of cases) {
+    assert.equal(extractSupabaseProjectRef(input), want, `input: ${input}`);
+  }
+});
+
+test("supabasePoolerUser only ever emits a validated reference", () => {
+  assert.equal(supabasePoolerUser(REF), `postgres.${REF}`);
+  assert.equal(supabasePoolerUser("postgresql"), null);
+  assert.equal(supabasePoolerUser(""), null);
+});

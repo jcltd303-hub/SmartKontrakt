@@ -2,7 +2,9 @@ import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
-import { encodePostgresCredentials } from "./pg-url.ts";
+import { encodePostgresCredentials, extractSupabaseProjectRef, poolerHostRegion } from "./pg-url.ts";
+
+export { extractSupabaseProjectRef } from "./pg-url.ts";
 
 export type SupabaseDbConfig = {
   projectName: string;
@@ -41,12 +43,6 @@ export const DEFAULT_SUPABASE_DB_CONFIG: SupabaseDbConfig = {
   mode: "pooler",
   active: false,
 };
-
-/** The region a Supabase pooler hostname encodes (`aws-1-us-west-2.pooler.supabase.com` -> `us-west-2`). */
-function poolerHostRegion(host: string): string | null {
-  const match = /^aws-\d+-([a-z0-9-]+)\.pooler\.supabase\.com$/i.exec(host.trim());
-  return match ? match[1] : null;
-}
 
 function getConfigFilePath(): string {
   return join(process.cwd(), CONFIG_FILE);
@@ -90,10 +86,19 @@ export function loadSupabaseDbConfig(): SupabaseDbConfig {
     if (existsSync(path)) {
       const raw = readFileSync(path, "utf-8");
       const parsed = JSON.parse(raw);
-      return {
+      const cfg: SupabaseDbConfig = {
         ...DEFAULT_SUPABASE_DB_CONFIG,
         ...parsed,
       };
+      // Canonicalise the reference on load: a config saved while the field
+      // held a pasted URL (or written by another tool) carries that whole
+      // string, and every consumer would re-derive a different "reference"
+      // from it. When a valid reference is extractable, the bare reference
+      // is the config's reference. When none is, the value is left as-is so
+      // the modal can show it and flag it as invalid.
+      const ref = extractSupabaseProjectRef(cfg.projectRef);
+      if (ref) cfg.projectRef = ref;
+      return cfg;
     }
   } catch (err) {
     console.warn("[supabase-db] Error reading config file:", err);
@@ -129,11 +134,14 @@ export function buildSupabasePostgresUrl(cfg: SupabaseDbConfig): string {
   if (!cfg.password) return "";
   const encPw = encodeURIComponent(cfg.password);
 
-  const cleanRef = (cfg.projectRef || "")
-    .trim()
-    .replace(/^https?:\/\//i, "")
-    .replace(/\.supabase\.co.*$/i, "")
-    .replace(/\/.*$/, "");
+  // The reference is EXTRACTED and validated by the shared helper, never
+  // string-trimmed into shape. The cleanup chain this replaces reduced a
+  // pasted `postgresql://…` connection string to its scheme word and this
+  // builder then composed the pooler user `postgres.postgresql` — a tenant
+  // that cannot exist. Extraction finds the real 20-character reference in
+  // a bare ref, a project/dashboard URL, or a full connection string, and
+  // yields nothing otherwise, in which case no ref-based URL is built.
+  const cleanRef = extractSupabaseProjectRef(cfg.projectRef || "") ?? "";
 
   // THE PROJECT REFERENCE WINS over a stored host/user.
   //

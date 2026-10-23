@@ -116,3 +116,85 @@ export function encodePostgresCredentials(url) {
 export function looksLikePlaceholder(url) {
   return /<[^>]*>/.test(url) || /\[your[-_ ]?password\]/i.test(url);
 }
+
+/**
+ * A Supabase project reference is exactly 20 lowercase alphanumerics. It is
+ * the tenant key of every pooler connection: the pooler username IS
+ * `postgres.<ref>`, so a wrong token does not degrade the connection, it
+ * points it at a tenant that does not exist.
+ */
+const PROJECT_REF_PATTERN = /^[a-z0-9]{20}$/;
+
+/**
+ * @param {unknown} value
+ * @returns {boolean} true when `value` is a plausible project reference.
+ */
+export function isSupabaseProjectRef(value) {
+  return typeof value === "string" && PROJECT_REF_PATTERN.test(value);
+}
+
+/**
+ * Extract a validated project reference from whatever was pasted: the bare
+ * reference, a `postgres.<ref>` pooler username, a project URL
+ * (`https://<ref>.supabase.co`), a dashboard URL
+ * (`https://supabase.com/dashboard/project/<ref>`), or a full connection
+ * string (the reference then lives in the username, or in a `db.<ref>` direct
+ * host — a pooler host encodes only the region, so a bare `postgres` user
+ * with a pooler host yields NOTHING).
+ *
+ * Returns null when no plausible reference is present. Never returns a
+ * fragment of the input's syntax: the string-cleanup chain this replaces
+ * (strip `https://`, strip `.supabase.co…`, strip `/…`) reduced a pasted
+ * `postgresql://…` URL to the scheme word, and the builders composed the
+ * pooler user `postgres.postgresql` from it — a tenant that cannot exist,
+ * presented as a generated connection string.
+ *
+ * @param {unknown} input
+ * @returns {string | null}
+ */
+export function extractSupabaseProjectRef(input) {
+  if (typeof input !== "string") return null;
+  const text = input.trim().toLowerCase();
+  if (!text) return null;
+  if (PROJECT_REF_PATTERN.test(text)) return text;
+
+  // Dashboard URL: .../project/<ref>
+  const fromPath = /\/project\/([a-z0-9]{20})(?=$|[^a-z0-9])/.exec(text);
+  if (fromPath) return fromPath[1];
+
+  // Pooler/direct username: postgres.<ref>
+  const fromUser = /(?:^|[^a-z0-9])postgres\.([a-z0-9]{20})(?=$|[^a-z0-9])/.exec(text);
+  if (fromUser) return fromUser[1];
+
+  // Project host: <ref>.supabase.co or db.<ref>.supabase.co
+  const fromHost = /(?:^|[^a-z0-9])([a-z0-9]{20})\.supabase\.co(?=$|[^a-z0-9])/.exec(text);
+  if (fromHost) return fromHost[1];
+
+  return null;
+}
+
+/**
+ * The pooler username for a reference — `postgres.<ref>` — or null when the
+ * reference is not valid. Builders must use the validated value (or refuse
+ * to build), never interpolate an unvalidated token.
+ *
+ * @param {unknown} ref
+ * @returns {string | null}
+ */
+export function supabasePoolerUser(ref) {
+  return isSupabaseProjectRef(ref) ? `postgres.${ref}` : null;
+}
+
+/**
+ * The region a Supabase pooler hostname encodes
+ * (`aws-1-us-west-2.pooler.supabase.com` -> `us-west-2`), or null when the
+ * host is not a pooler host.
+ *
+ * @param {unknown} host
+ * @returns {string | null}
+ */
+export function poolerHostRegion(host) {
+  if (typeof host !== "string") return null;
+  const match = /^aws-\d+-([a-z0-9-]+)\.pooler\.supabase\.com$/i.exec(host.trim());
+  return match ? match[1] : null;
+}

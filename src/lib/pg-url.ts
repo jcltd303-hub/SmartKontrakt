@@ -12,4 +12,12 @@
  * migrator. See the `.mjs` for why credentials must be encoded and why the
  * normaliser has to be idempotent.
  */
-export { encodePostgresCredentials, isPercentEncoded, looksLikePlaceholder } from "./pg-url.mjs";
+export {
+  encodePostgresCredentials,
+  extractSupabaseProjectRef,
+  isPercentEncoded,
+  isSupabaseProjectRef,
+  looksLikePlaceholder,
+  poolerHostRegion,
+  supabasePoolerUser,
+} from "./pg-url.mjs";

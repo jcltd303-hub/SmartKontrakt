@@ -349,11 +349,29 @@ export const testDatabaseConnectionFn = createServerFn({ method: "POST" })
       loadSupabaseDbConfig,
       buildSupabasePostgresUrl,
       testPostgresConnection,
+      extractSupabaseProjectRef,
     } = await import("./supabase-db.server");
 
     let targetUrl = data.url?.trim() || "";
     if (!targetUrl && (data.projectRef || data.host)) {
       const cfg = loadSupabaseDbConfig();
+      // A reference field that contains no valid reference must fail HERE,
+      // with the reason, rather than generate a URL for a tenant that does
+      // not exist (the `postgres.postgresql` failure). An explicit host is
+      // the one legitimate fallback, so it excuses the bad reference.
+      const effectiveRef = (data.projectRef || cfg.projectRef || "").trim();
+      if (
+        effectiveRef &&
+        (data.mode || cfg.mode) !== "custom" &&
+        !extractSupabaseProjectRef(effectiveRef) &&
+        !(data.host || cfg.host)
+      ) {
+        return {
+          ok: false as const,
+          message:
+            "The project reference given contains no valid Supabase project reference (the 20-character ID in your dashboard URL). Paste the reference itself, the project URL, or the full pooler connection string.",
+        };
+      }
       targetUrl = buildSupabasePostgresUrl({
         ...cfg,
         projectRef: data.projectRef || cfg.projectRef,
@@ -421,6 +439,7 @@ export const saveDatabaseConfigFn = createServerFn({ method: "POST" })
       testPostgresConnection,
       applyMigrationsToPostgres,
       configFileWritable,
+      extractSupabaseProjectRef,
     } = await import("./supabase-db.server");
     const { switchDatabase, resolveDatabaseUrlDetailed } = await import("./db");
 
@@ -434,9 +453,26 @@ export const saveDatabaseConfigFn = createServerFn({ method: "POST" })
       );
     }
 
+    // Canonicalise the reference before it is saved: the field accepts a
+    // pasted URL or connection string, but the config stores the bare
+    // 20-character reference — a stored paste is what round-tripped garbage
+    // (down to the literal value "postgresql:") through every later open of
+    // the dialog. A value with no valid reference in it is refused unless an
+    // explicit host carries the connection instead.
+    let projectRefToSave = data.projectRef;
+    if ((data.mode || "pooler") !== "custom" && typeof data.projectRef === "string" && data.projectRef.trim()) {
+      const extracted = extractSupabaseProjectRef(data.projectRef);
+      if (!extracted && !data.host) {
+        throw new Error(
+          "The project reference given contains no valid Supabase project reference (the 20-character ID in your dashboard URL). Paste the reference itself, the project URL, or the full pooler connection string.",
+        );
+      }
+      if (extracted) projectRefToSave = extracted;
+    }
+
     const saved = saveSupabaseDbConfig({
       projectName: data.projectName || "SmartKontrakt",
-      projectRef: data.projectRef,
+      projectRef: projectRefToSave,
       password: data.password,
       host: data.host,
       port: data.port,
