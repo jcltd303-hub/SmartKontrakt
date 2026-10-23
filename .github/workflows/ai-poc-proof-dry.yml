@@ -1,0 +1,58 @@
+name: AI-PoC proof (dry)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly at 07:17 UTC (off the hour, away from the cron rush).
+    - cron: "17 7 * * *"
+
+# Key-free verification of the PoC template layer: the repo's three
+# verifiers plus the ai-poc-proof suite in --dry-run mode, where the
+# fallback template stands in for the AI-generated PoC and no LLM is
+# called. No secrets are used or needed; live mode stays manual.
+#
+# KNOWN STATE: the dry suite currently passes 44/47 types. Types 34, 35
+# and 41 fail identically on main — pre-existing debt from the template
+# gating (verdict-integrity batch) outrunning the suite's manifest
+# adaptations. Until that debt is fixed this job is EXPECTED to go red
+# on those three types. That failure is the alarm, not noise: nothing
+# in this workflow masks a suite failure or forces a step green.
+jobs:
+  proof-dry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      # Pinned to the Foundry release the proof suite was measured
+      # against (see the header of scripts/ai-poc-proof/run.mjs).
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.5
+
+      - name: Foundry version
+        run: forge --version && anvil --version
+
+      # Same as ci.yml: the committed lockfile lags package.json, so
+      # `npm ci` refuses to run. `npm install` resolves package.json
+      # directly; switch this to `npm ci` once the lockfile is refreshed.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Compile every fallback harness
+        run: npm run check:fallbacks
+
+      - name: Run the fixture corpus (differential)
+        run: npm run check:fixtures
+
+      - name: Detector self-check
+        run: npm run check:detectors
+
+      - name: AI-PoC proof suite (dry run, no LLM)
+        run: node scripts/ai-poc-proof/run.mjs --dry-run
