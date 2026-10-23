@@ -54,6 +54,11 @@ import {
   savedStatusFromRun,
   type SavedPocStatus,
 } from "@/lib/audit/poc-outcome";
+import {
+  createRepairBodyResolver,
+  pocAuditReviewPayload,
+  type RepairBodyResolution,
+} from "@/lib/audit/poc-audit-llm";
 import { wrapPocSnippet } from "@/lib/audit/poc-wrap";
 import { balanceLabel, nativeSymbol } from "@/lib/audit/balance";
 import {
@@ -189,6 +194,18 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   const [queueProgress, setQueueProgress] = useState<{ current: number; total: number; currentTitle?: string } | null>(null);
   const abortQueueRef = useRef<boolean>(false);
 
+  // Full-body source for the direct path's LLM repair/generation calls
+  // (workbench parity — see poc-audit-llm.ts). One resolver per page
+  // session: its per-scanId cache means AUDIT ALL loads a scan's body
+  // once, however many of its findings run.
+  const repairBodyResolverRef = useRef<ReturnType<typeof createRepairBodyResolver> | null>(null);
+  if (!repairBodyResolverRef.current) {
+    repairBodyResolverRef.current = createRepairBodyResolver(async (scanId) => {
+      const stored = await getScan({ data: { id: scanId } });
+      return stored?.body ?? null;
+    });
+  }
+
   // Expanded details for inspection
   const [expandedFindingId, setExpandedFindingId] = useState<string | null>(null);
   const [activeCodeTab, setActiveCodeTab] = useState<Record<string, "exploit" | "logs">>({});
@@ -269,6 +286,29 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
       testCode = wrapped.testFile;
     }
 
+    // LLM calls in this path (generation gate + compile repair) receive
+    // the parent scan's FULL stored body — the same context the
+    // workbench hands the identical repair prompt (poc-audit-llm.ts).
+    // Resolved lazily, only when a call actually happens, and cached
+    // per scan by the resolver. If the stored body cannot be loaded the
+    // resolver falls back to the finding snippet and says why; that
+    // note goes on the run record (snippetFallbackNote), never silent.
+    let repairBodyPromise: Promise<RepairBodyResolution> | null = null;
+    const getRepairBody = (): Promise<RepairBodyResolution> => {
+      if (!repairBodyPromise) {
+        repairBodyPromise = repairBodyResolverRef.current!.resolve(
+          finding.scanId,
+          finding.snippet || finding.exploitSolidity,
+        );
+      }
+      return repairBodyPromise;
+    };
+    const snippetFallbackNote = async (): Promise<string | null> => {
+      if (!repairBodyPromise) return null;
+      const resolved = await repairBodyPromise;
+      return resolved.source === "snippet" ? (resolved.note ?? null) : null;
+    };
+
     // Generation gate (shared with the adjudication chain — poc-outcome.ts):
     // a PoC with no executable test function can only produce a hollow
     // tests=0 run. One LLM generation attempt; if it still has none, save
@@ -285,7 +325,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
           contractName: finding.contractName || finding.scanLabel || "PoCTarget",
           originalCode: testCode,
           errorLogs: instruction,
-          body: finding.snippet || finding.exploitSolidity,
+          body: (await getRepairBody()).body,
         },
       });
       return repaired?.fixedCode ?? null;
@@ -293,7 +333,8 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
     testCode = gate.testCode;
     if (gate.testCount === 0) {
       const finishedAt = new Date().toISOString();
-      const displayLogs = `Finding input SHA3-256: ${pocInputDigest(finding.exploitSolidity)}\n${wrapped?.note ? `${wrapped.note}\n` : ""}[SmartPoC] Not run — the prepared PoC contains no executable test function, so forge would run 0 tests. ${gate.generationNote ?? ""} Saved as no_tests: a generation gap, not an error and not a verdict on the finding.`;
+      const bodyNote = await snippetFallbackNote();
+      const displayLogs = `Finding input SHA3-256: ${pocInputDigest(finding.exploitSolidity)}\n${wrapped?.note ? `${wrapped.note}\n` : ""}${bodyNote ? `${bodyNote}\n` : ""}[SmartPoC] Not run — the prepared PoC contains no executable test function, so forge would run 0 tests. ${gate.generationNote ?? ""} Saved as no_tests: a generation gap, not an error and not a verdict on the finding.`;
       try {
         await saveFindingPocResultFn({
           data: {
@@ -365,7 +406,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
               contractName: finding.contractName || finding.scanLabel || "PoCTarget",
               originalCode: testCode,
               errorLogs: poc.logs ?? "",
-              body: finding.snippet || finding.exploitSolidity,
+              body: (await getRepairBody()).body,
             },
           });
           if (repaired && repaired.fixedCode) {
@@ -398,7 +439,8 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
       const finishedAt = new Date().toISOString();
       const status = mapStatus(poc);
       const rawLogs = poc.logs ?? "";
-      const displayLogs = `Finding input SHA3-256: ${pocInputDigest(finding.exploitSolidity)}\n${wrapped?.note ? `${wrapped.note}\n` : ""}${rawLogs}`;
+      const bodyNote = await snippetFallbackNote();
+      const displayLogs = `Finding input SHA3-256: ${pocInputDigest(finding.exploitSolidity)}\n${wrapped?.note ? `${wrapped.note}\n` : ""}${bodyNote ? `${bodyNote}\n` : ""}${rawLogs}`;
       const durationMs = poc.durationMs ?? 0;
       const runId = generateRunId();
 
@@ -626,7 +668,15 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
         {
           requestAiReview: async ({ contractName, body, findings: scanFindings }) => {
             const review = await requestAiReview({
-              data: { contractName, body, findings: scanFindings },
+              // Workbench parity: the same fourbyte context, derived
+              // from the stored scan's report with the same helper the
+              // workbench runs over its live report (poc-audit-llm.ts).
+              data: pocAuditReviewPayload({
+                contractName,
+                body,
+                findings: scanFindings,
+                storedReport: stored.report,
+              }),
             });
             return review ?? null;
           },
@@ -649,14 +699,11 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
               },
             });
           },
-          listRuns: async (findingId) => {
-            const rows = await getFindingPocRunsFn({ data: { findingId } });
-            return rows.map((r) => ({
-              sourceDigest: r.sourceDigest,
-              status: r.status,
-              output: r.output,
-            }));
-          },
+          // The server fn already returns full AdjudicationRunRecord
+          // rows (id/status/sourceDigest/output/durationMs/createdAt) —
+          // pass them through like the workbench does instead of
+          // re-mapping to a subset the dep type rejects.
+          listRuns: async (findingId) => getFindingPocRunsFn({ data: { findingId } }),
           runPoc: async ({ address, chainId, testCode }) => {
             const poc = await runPocWithRpcRetries(backendUrl, {
               address,
