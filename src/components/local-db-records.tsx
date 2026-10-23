@@ -104,7 +104,11 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
       try {
         const s = await getScansStatsFn();
         if (s.error) {
-          setRecordsError((prev) => prev ?? { message: s.error, db: s.db });
+          // Capture the narrowed string before the updater: property
+          // narrowing on s.error does not survive into the closure, where
+          // it widens back to string | null and breaks the state type.
+          const statsError: string = s.error;
+          setRecordsError((prev) => prev ?? { message: statsError, db: s.db });
           // Stats failed independently of the list: leave stats null so
           // the cards render "—" (unknown), never the other query's zeros.
           setStats(null);

