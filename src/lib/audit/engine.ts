@@ -210,16 +210,23 @@ function formatVer(v: number): string {
 }
 
 function regexFallback(text: string): Finding[] {
+  // Fix 34: these are raw text hits on input that did NOT parse — the
+  // record is unparsed, so nothing was analyzed and nothing here is a
+  // finding. They used to be high, which put pseudo-findings from
+  // unparsed pastes into critical/high counts and the PoC queue (251
+  // stored "selfdestruct appears in unparsed source" highs). They are
+  // info now: a note that the keyword exists in the text, tied to the
+  // unparsed state, and nothing more.
   const findings: Finding[] = [];
   const add = (f: Omit<Finding, "id">) => findings.push({ ...f, id: `r${findings.length + 1}` });
   if (/tx\.origin/.test(text)) {
     add({
-      severity: "high",
+      severity: "info",
       swc: "SWC-115",
       title: "tx.origin appears in unparsed source",
       confidence: "medium",
       detector: "tx-origin",
-      summary: "The parser could not build an AST, but the text contains tx.origin.",
+      summary: "Unparsed input: the parser could not build an AST, so nothing was analyzed. The raw text contains tx.origin — a text hit only, not an analyzed finding. Re-run once the input parses so the use can be placed inside a function and judged there.",
       walkthrough: "1. tx.origin is the signer, not the caller.\n2. Fix the syntax and re-run so Kiln can place the finding inside a function.",
       exploitSolidity: "",
       remediationSolidity: "require(msg.sender == owner);",
@@ -230,12 +237,12 @@ function regexFallback(text: string): Finding[] {
   }
   if (/delegatecall/.test(text)) {
     add({
-      severity: "high",
+      severity: "info",
       swc: "SWC-112",
       title: "delegatecall appears in unparsed source",
       confidence: "medium",
       detector: "delegatecall",
-      summary: "The text contains delegatecall. The parser did not recover a function body, so the target is unverified.",
+      summary: "Unparsed input: the text contains delegatecall, but the parser did not recover a function body, so the target is unverified — a text hit only, not an analyzed finding. Re-run once the input parses.",
       walkthrough: "1. Delegatecall shares storage with the caller.\n2. Repair the syntax and re-run.",
       exploitSolidity: "",
       remediationSolidity: "",
@@ -246,12 +253,12 @@ function regexFallback(text: string): Finding[] {
   }
   if (/selfdestruct|suicide/.test(text)) {
     add({
-      severity: "high",
+      severity: "info",
       swc: "SWC-106",
       title: "selfdestruct appears in unparsed source",
       confidence: "medium",
       detector: "selfdestruct",
-      summary: "The text mentions selfdestruct but did not parse.",
+      summary: "Unparsed input: the text mentions selfdestruct but did not parse, so no guard could be checked — a text hit only, not an analyzed finding. Re-run once the input parses.",
       walkthrough: "1. Confirm it is guarded by msg.sender.\n2. Re-run after the file parses.",
       exploitSolidity: "",
       remediationSolidity: "",

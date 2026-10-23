@@ -522,6 +522,36 @@ function delegateTargetIsConstrained(fnSrc: string, targetParam: string): boolea
  * check is still flagged. This replaces the old usesCredit exemption,
  * which exempted any function that merely mentioned a balance mapping.
  */
+/** Upgrade entry points whose whole job is to point a proxy at a new
+ * implementation. On a proxy-shaped contract this is the standard
+ * surface, not an anomaly (Fix 36). */
+const PROXY_UPGRADE_FNS = new Set(["upgradeTo", "upgradeToAndCall", "setImplementation", "_setImplementation"]);
+
+/**
+ * True when the contract ITSELF is a proxy — as opposed to an
+ * upgradeable implementation. Initializable / UUPSUpgradeable bases
+ * live in the implementation, so an "upgradeable" base alone does NOT
+ * count. Signals, any one sufficient:
+ * - the name says proxy (TransparentUpgradeableProxy,
+ *   InitializableAdminUpgradeabilityProxy, ERC1967Proxy, ...);
+ * - a base is a proxy base (Proxy, ERC1967Proxy,
+ *   BaseAdminUpgradeabilityProxy, ...);
+ * - a fallback that delegatecalls, together with the EIP-1967
+ *   implementation slot constant or an implementation state variable
+ *   (the dispatch shape).
+ */
+function isProxyShape(contract: ContractModel): boolean {
+  if (/proxy/i.test(contract.name)) return true;
+  if (contract.bases.some((b) => /proxy|erc1967/i.test(b))) return true;
+  const hasFallbackDelegatecall = contract.functions.some((f) => f.isFallback && /delegatecall/.test(f.source));
+  if (!hasFallbackDelegatecall) return false;
+  const hasImplSlot = contract.functions.some((f) =>
+    f.source.includes("360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"),
+  );
+  const hasImplVar = contract.stateVars.some((v) => /^(implementation|_implementation|impl)$/i.test(v.name));
+  return hasImplSlot || hasImplVar;
+}
+
 /**
  * Source of fn plus every internal function it transitively calls (via
  * the direct call graph). Payout bounds and debits often live in an
@@ -1230,14 +1260,33 @@ function scanContract(
       }
     }
     if (consumer === null) continue;
+    // Fix 35: a demonstrated consumer earns high only when it can move
+    // value on the stale read. When the in-window consumer is itself a
+    // view/pure function — the named-getter family from the archive
+    // poll (round_(), uniswapV2Pair(), balances(), plyr_(), kLast(),
+    // depositLock(), numOfShares(): ~102 critical/high rows, none
+    // reproduced) — it merely RETURNS the stale value; nothing in the
+    // window settles, pays out, or prices off it in a state-changing
+    // path. That is low, and the summary names what would corroborate
+    // high. The writer reading its own var in-window (self-read) is a
+    // state-changing consumption and stays high. A consumer that
+    // cannot be resolved in this contract (inherited) cannot be shown
+    // to move value either, so it takes the low path.
+    const consumerModel = consumerFn ? contract.functions.find((f) => f.name === consumerFn) : undefined;
+    const getterOnlyConsumer =
+      consumerFn !== null &&
+      consumerFn !== info.fn &&
+      (consumerModel === undefined || consumerModel.mutability === "view" || consumerModel.mutability === "pure");
     {
       push(make({
-        severity: "high",
+        severity: getterOnlyConsumer ? "low" : "high",
         swc: "SWC-107",
         title: `Read-only reentrancy on ${varName}()`,
         confidence: "medium",
         detector: "read-only-reentrancy",
-        summary: `${info.fn} calls out before ${varName} is updated, and ${varName} is a public getter. The stale value is consumed in-contract: ${consumer}.`,
+        summary: getterOnlyConsumer
+          ? `${info.fn} calls out before ${varName} is updated, and ${varName} is a public getter. The stale value is consumed in-contract: ${consumer}. Downgraded to low: the in-window consumer (${consumerFn}) is ${consumerModel ? "view/pure — it only returns the value" : "not resolvable in this contract — no value-moving use could be shown"}, so nothing in the window settles, pays out, or prices off the stale read in a state-changing path. This rises to high when a state-changing function in the window consumes the stale value to move value — a settle, mint, borrow, or payout computed from it.`
+          : `${info.fn} calls out before ${varName} is updated, and ${varName} is a public getter. The stale value is consumed in-contract: ${consumer}.`,
         walkthrough: [
           `1. ${info.fn} transfers control at line ${info.call.line} via ${info.call.kind}.`,
           `2. ${varName} still holds the pre-call value, because the write happens at line ${info.writeLine}, after the call returns.`,
@@ -1478,6 +1527,30 @@ require(ok, "transfer failed");`,
           walkthrough: delegateWalk(fn.name, call),
           exploitSolidity: "",
           remediationSolidity: `Keep the allowlist + timelock, and keep the function access-controlled.`,
+          locationFn: fn.name,
+          locationLine: call.line,
+          snippet: snippet(parsed, call.line + delta, delta),
+        }));
+      } else if (authed && PROXY_UPGRADE_FNS.has(fn.name) && isProxyShape(contract)) {
+        // Fix 36: the standard proxy upgrade surface. upgradeTo /
+        // upgradeToAndCall / _setImplementation on a proxy-shaped
+        // contract delegatecall the new implementation BY DESIGN —
+        // that is the proxy pattern, not an anomaly. With access
+        // control on the entry point, no arbitrary caller can redirect
+        // execution; the poll found 44+ of these at critical/high with
+        // 0 reproduced. An upgrade function with NO access-control
+        // evidence falls through to the generic branch below and keeps
+        // its critical — that shape is genuinely open.
+        push(make({
+          severity: "info",
+          swc: "SWC-112",
+          title: `${fn.name} is the standard proxy upgrade path (access-controlled)`,
+          confidence: "high",
+          detector: "delegatecall",
+          summary: `${contract.name} is a proxy-shaped contract and ${fn.name} is its upgrade entry point: delegatecalling the new implementation is the mechanism, and the function is access-controlled, so no arbitrary caller can redirect execution to an arbitrary contract. The residual risk is governance trust in whoever holds the upgrade key — audit that key's custody, not this function's shape.`,
+          walkthrough: delegateWalk(fn.name, call),
+          exploitSolidity: "",
+          remediationSolidity: `Keep the upgrade entry access-controlled (onlyOwner / onlyAdmin / a ProxyAdmin), and prefer a timelock on upgrades.`,
           locationFn: fn.name,
           locationLine: call.line,
           snippet: snippet(parsed, call.line + delta, delta),
@@ -2526,7 +2599,37 @@ function scanSimple(
   const initName = /^init(ialize)?$/.test(fn.name);
   // A revert-only initialize (StarkWare Proxy) cannot be called
   // successfully by anyone — skip the unprotected-initializer flag.
-  if (initName && !alwaysReverts(src) && !authed && !fn.modifiers.some((m) => /initializer|reinitializer/i.test(m)) && !/require\s*\(\s*!?\s*initialized/.test(src)) {
+  // Fix 36: the same flag conditions on a PROXY-shaped contract are a
+  // category error, not a critical. The initializer an attacker would
+  // front-run lives in the IMPLEMENTATION (its setup replaces the
+  // constructor there); the proxy's own initialize (the OZ
+  // AdminUpgradeabilityProxy shape) is the deploy-time binding of
+  // logic/admin, and whether it already ran is chain state, not source
+  // shape. Suppress the critical on proxies and note where the check
+  // belongs; an implementation's own unprotected initialize (non-proxy
+  // contract) keeps the critical in the branch below.
+  if (initName && !alwaysReverts(src) && !authed && !fn.modifiers.some((m) => /initializer|reinitializer/i.test(m)) && !/require\s*\(\s*!?\s*initialized/.test(src) && isProxyShape(contract)) {
+    push(make({
+      severity: "info",
+      swc: null,
+      title: `${fn.name} is on a proxy contract — the initializer check belongs to the implementation`,
+      confidence: "high",
+      detector: "unprotected-initializer",
+      summary: `${contract.name} is a proxy-shaped contract, so an unprotected-initialize flag here aims at the wrong contract. The setup that replaces a constructor — and that an attacker would front-run — is the implementation's initialize, which is audited on the implementation contract. The proxy's own initialize is the deploy-time binding of logic/admin (already-run is on-chain state, not visible in source). No critical is raised against the proxy itself.`,
+      walkthrough: [
+        `1. ${fn.name} sits on ${contract.name}, a proxy: calls to it are the deploy-time setup path, not the implementation's setup.`,
+        "2. Audit the implementation contract's initialize for the one-shot guard (initializer modifier / initialized flag / _disableInitializers in its constructor).",
+        "3. Confirm on-chain that the proxy's implementation slot is already set — a deployed, initialized proxy cannot be re-initialized through this path.",
+      ].join("\n"),
+      exploitSolidity: "",
+      remediationSolidity: `// In the IMPLEMENTATION: lock the logic contract itself.
+constructor() { _disableInitializers(); }
+function initialize(address _oracle) external initializer { oracle = _oracle; }`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  } else if (initName && !alwaysReverts(src) && !authed && !fn.modifiers.some((m) => /initializer|reinitializer/i.test(m)) && !/require\s*\(\s*!?\s*initialized/.test(src)) {
     push(make({
       severity: "critical",
       swc: null,

@@ -271,15 +271,21 @@ export function analyzeBytecode(raw: string): BytecodeReport {
     const pc = ins.find((i) => i.name === "SELFDESTRUCT")?.pc ?? 0;
     findings.push(
       finding({
-        severity: "high",
+        // Fix 33: opcode PRESENCE is not a vulnerability. This finding
+        // used to be high on presence alone (205 critical/high rows in
+        // the archive poll, 0 ever reproduced). Ungated reachability is
+        // what earns severity, and bytecode presence does not prove it
+        // — the source-level selfdestruct detector carries that when
+        // source is available.
+        severity: "low",
         swc: "SWC-106",
         title: "SELFDESTRUCT is reachable in the bytecode",
         confidence: "high",
         detector: "bytecode-selfdestruct",
-        summary: `The runtime executes SELFDESTRUCT ${self} time${self === 1 ? "" : "s"}. Without source, Kiln cannot prove an access check dominates it. Anyone who can satisfy the preceding branch can delete the contract and send the balance away.`,
+        summary: `Presence only: the runtime contains SELFDESTRUCT ${self} time${self === 1 ? "" : "s"}. Presence is not a vulnerability — a destroy path is normally gated in source this analysis cannot see, and since EIP-6780 the opcode mostly just sweeps the balance. Without source, Kiln cannot prove an access check dominates it, nor that an arbitrary caller can reach it; treat this as a pointer to check the guard, not as a confirmed kill switch.`,
         walkthrough: [
-          "1. SELFDESTRUCT (0xff) sends the contract's entire balance to the address on the stack and removes the code from the state.",
-          "2. The instruction is present in this bytecode, so some execution path can reach it. A dispatcher that compares CALLER to a stored owner would usually show SLOAD + EQ + JUMPI before it — confirm that pattern actually guards this pc.",
+          "1. SELFDESTRUCT (0xff) sends the contract's entire balance to the address on the stack and, in the creating transaction, removes the code from the state.",
+          "2. The instruction is present in this bytecode. Presence is not reachability: whether an arbitrary caller can reach it depends on the branch guards before it, which need source or an execution trace to prove. A dispatcher that compares CALLER to a stored owner would usually show SLOAD + EQ + JUMPI before it — confirm that pattern actually guards this pc.",
           "3. After destruction, later calls to the address fail, and a CREATE2 redeploy at the same address can resurrect different code (metamorphic contract).",
         ].join("\n"),
         exploitSolidity: `// Reconstruction from the opcode. Not recovered source.
@@ -313,12 +319,20 @@ function destroy(address payable to) external {
     const pc = ins.find((i) => i.name === op)?.pc ?? 0;
     findings.push(
       finding({
-        severity: "high",
+        // Fix 33: opcode PRESENCE is not a vulnerability. This was the
+        // archive's single largest critical/high class (2,494 rows for
+        // DELEGATECALL alone, 0 reproduced in ~126 terminal runs):
+        // every standard proxy and every library user contains the
+        // opcode. Severity is earned by a caller-supplied or writable
+        // target, which the source-level delegatecall detector proves
+        // when source is available — that finding carries the severity;
+        // this one stays a low presence note.
+        severity: "low",
         swc: "SWC-112",
         title: `${op} executes foreign code in this contract's storage`,
         confidence: "high",
         detector: deleg > 0 ? "bytecode-delegatecall" : "bytecode-callcode",
-        summary: `${op} appears ${deleg + callcode} time${deleg + callcode === 1 ? "" : "s"}. The callee runs with this contract's storage, balance, and msg.sender. If the target address is caller-controlled, storage can be overwritten arbitrarily.`,
+        summary: `Presence only: ${op} appears ${deleg + callcode} time${deleg + callcode === 1 ? "" : "s"} in this runtime. Presence is not a vulnerability — the callee runs with this contract's storage, balance, and msg.sender, which is exactly how standard proxies and library calls are supposed to work. It becomes an exploit when the target address is caller-supplied or writable, and bytecode presence alone cannot show that; if the target is caller-controlled, storage can be overwritten arbitrarily.`,
         walkthrough: [
           `1. ${op} keeps the caller's storage and msg.sender, unlike CALL.`,
           "2. A writable target (an argument, or a slot the caller can set) means the attacker deploys code that SSTOREs over owner, balances, or an implementation pointer.",
@@ -549,12 +563,16 @@ require(keccak256(initCode) == expected, "init code");`,
     if (v > 0 && v < 8_000) {
       findings.push(
         finding({
-          severity: "high",
+          // Fix 32: severity is low, matching the source-side
+          // old-compiler note. The poll behind this batch found the
+          // metadata/compiler family stored at critical/high ~1,300
+          // times; the version alone exploits nothing.
+          severity: "low",
           swc: "SWC-101",
           title: `Metadata reports solc ${meta.compiler}`,
           confidence: "high",
           detector: "bytecode-metadata",
-          summary: "Compilers before 0.8.0 do not revert on overflow. Arithmetic in this bytecode is unchecked unless the source used SafeMath.",
+          summary: "Compilers before 0.8.0 do not revert on overflow. Arithmetic in this bytecode is unchecked unless the source used SafeMath. This is a toolchain-hygiene note, not a vulnerability: the version alone exploits nothing — unchecked arithmetic is covered by its own findings.",
           walkthrough: ["1. The CBOR metadata suffix ends with the solc version as three bytes.", `2. Decoded version ${meta.compiler} is older than 0.8.0.`, "3. Balance updates that add msg.value can wrap."].join("\n"),
           exploitSolidity: `// On 0.7 and earlier, type(uint256).max + 1 == 0.
 // A credit of type(uint256).max - 1 plus a 2-wei deposit wraps to 1.`,

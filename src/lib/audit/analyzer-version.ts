@@ -42,8 +42,17 @@ import {
  *
  * 2026-10-21.1 — scoring model redo (dominance-first), balance guard,
  *                value-at-risk, ABI gathering, SmartPoC, SmartBugs alignment.
+ * 2026-10-23.1 — FP-pattern batch from the live-archive poll (Fixes
+ *                32-36): solc-metadata + opcode-presence findings
+ *                demoted (bytecode DELEGATECALL/SELFDESTRUCT/CALLCODE
+ *                presence and compiler-version notes are low, never
+ *                critical/high), unparsed regex hits are info,
+ *                read-only reentrancy with a getter-only consumer is
+ *                low, and the standard proxy upgrade/initialize
+ *                surface no longer raises criticals. Same inputs now
+ *                produce different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-10-21.1";
+export const ANALYZER_BASELINE = "2026-10-23.1";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {
