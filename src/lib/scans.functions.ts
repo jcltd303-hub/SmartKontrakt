@@ -8,25 +8,44 @@ import type { BuildInfo } from "./build-info";
 
 const MAX_CHARS = 120_000;
 
-/** Effective DB identity (host/user/database, NEVER the password). */
+/** Effective DB identity (host/user/database, NEVER the password) plus the
+ *  EFFECTIVE connection state. Both come from getDbConnectionState() — the
+ *  same resolution getSql() performs — so the identity the UI shows is the
+ *  configured target together with whether it actually connected (the Oct
+ *  2026 Records masquerade: stale password → auth failure → silent embedded
+ *  substitute → healthy-looking zeros under the configured project's name).
+ *  The substitute is removed: failed and unconfigured are error states,
+ *  and `error` carries the classified failure / the unconfigured notice so
+ *  surfaces like the workbench header can render them verbatim. */
 export type DbIdentity = {
   host: string | null;
   port: string | null;
   user: string | null;
   database: string | null;
+  /** remote = configured DB connected and serving; failed = DB configured
+   *  but the connection failed; unconfigured = no DB configured. */
+  state: "remote" | "failed" | "unconfigured";
+  /** The classified connection failure when state is failed; a
+   *  "no database configured" notice when unconfigured; null when remote. */
   error: string | null;
 };
 
 async function loadDbIdentity(): Promise<DbIdentity> {
   try {
-    const { getActiveDatabaseUrl } = await import("./db");
-    const url = new URL(getActiveDatabaseUrl());
+    const { getDbConnectionState } = await import("./db");
+    const conn = await getDbConnectionState();
     return {
-      host: url.hostname,
-      port: url.port,
-      user: decodeURIComponent(url.username),
-      database: decodeURIComponent(url.pathname.replace(/^\//, "")),
-      error: null,
+      host: conn.configured?.host ?? null,
+      port: conn.configured?.port ?? null,
+      user: conn.configured?.user ?? null,
+      database: conn.configured?.database ?? null,
+      state: conn.state,
+      error:
+        conn.state === "failed"
+          ? conn.error
+          : conn.state === "unconfigured"
+            ? "No database configured — set DATABASE_URL (or POSTGRES_URL via the Supabase integration) on the host."
+            : null,
     };
   } catch (err) {
     return {
@@ -34,21 +53,30 @@ async function loadDbIdentity(): Promise<DbIdentity> {
       port: null,
       user: null,
       database: null,
+      state: "unconfigured",
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
 /**
- * Records list payload (2026-10-22, improvement #2): a failed query is
- * surfaced as { error, db } — the Records tab renders a banner with the
- * actual message and the database the app is REALLY reading — instead of
- * the old silent [] that made a wrong-project config look like an empty
- * archive. `db` is attached only when there is an error to explain.
+ * Records list payload (2026-10-22, improvement #2 + no-fallback rework):
+ * a failed query is surfaced as { error, db } — the Records tab renders a
+ * banner with the actual message and the configured database identity —
+ * instead of the old silent [] that made a wrong-project config look like
+ * an empty archive. `warning` carries partial-data notices (schema drift);
+ * `dbState`/`dbError` carry the effective connection state. `db` (the
+ * identity object) is attached whenever there is anything to explain —
+ * an error, a warning, or a non-remote state — and is null on a clean
+ * remote read, including a genuinely empty archive (error null, state
+ * remote: the UI renders "archive is empty", not a failure).
  */
 export type ScansListPayload = {
   summaries: ScanSummary[];
   error: string | null;
+  warning: string | null;
+  dbState: "remote" | "failed" | "unconfigured";
+  dbError: string | null;
   db: DbIdentity | null;
 };
 
@@ -58,22 +86,31 @@ export const listScans = createServerFn({ method: "GET" })
     const opts = (data ?? {}) as { limit?: number; offset?: number };
     const { listScanSummaries } = await import("./audit/persist.server");
     const result = await listScanSummaries(opts);
+    const needsDb = Boolean(result.error || result.warning || result.dbState !== "remote");
     return {
       summaries: result.summaries,
       error: result.error,
-      db: result.error ? await loadDbIdentity() : null,
+      warning: result.warning,
+      dbState: result.dbState,
+      dbError: result.dbError,
+      db: needsDb ? await loadDbIdentity() : null,
     };
   });
 
 /** True totals for the Records stat cards (not per-page sums). Same
- *  surfacing contract as listScans. */
+ *  surfacing contract as listScans: stats and list fail independently —
+ *  one bad query never zeroes the other. */
 export const getScansStatsFn = createServerFn({ method: "GET" }).handler(async () => {
   const { getScansStats } = await import("./audit/persist.server");
   const result = await getScansStats();
+  const needsDb = Boolean(result.error || result.warning || result.dbState !== "remote");
   return {
     stats: result.stats,
     error: result.error,
-    db: result.error ? await loadDbIdentity() : null,
+    warning: result.warning,
+    dbState: result.dbState,
+    dbError: result.dbError,
+    db: needsDb ? await loadDbIdentity() : null,
   };
 });
 
@@ -93,7 +130,11 @@ export const getDbInfo = createServerFn({ method: "GET" }).handler(async () => l
  */
 export const getDatabaseSizeFn = createServerFn({ method: "GET" }).handler(async () => {
   const { getDatabaseSize } = await import("./audit/persist.server");
-  return getDatabaseSize();
+  const result = await getDatabaseSize();
+  return {
+    ...result,
+    db: result.error || result.dbState !== "remote" ? await loadDbIdentity() : null,
+  };
 });
 
 /**

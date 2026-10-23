@@ -86,20 +86,103 @@ export function summaryFromRow(row: ScanSummaryRow): ScanSummary {
   };
 }
 
-export type ScanSummariesResult = { summaries: ScanSummary[]; error: string | null };
+/** Effective store for an archive payload: "remote" is the only state in
+ *  which the numbers describe the configured database. Set by the query
+ *  functions to "remote"; the persist wrappers override it from
+ *  getDbConnectionState() when the configured connection FAILED or nothing
+ *  is configured — in both cases the payload carries an error, never
+ *  fabricated zeros (the embedded fallback is removed; there is no
+ *  substitute store whose zeros could be reported). */
+export type ArchiveDbState = "remote" | "failed" | "unconfigured";
+
+export type ScanSummariesResult = {
+  summaries: ScanSummary[];
+  error: string | null;
+  warning: string | null;
+  dbState: ArchiveDbState;
+  /** Classified connection failure (password-free) when dbState is failed. */
+  dbError: string | null;
+};
 
 export type ScansStats = { total: number; critical: number; high: number; ragIndexed: number };
 
-export type ScansStatsResult = { stats: ScansStats; error: string | null };
+export type ScansStatsResult = { stats: ScansStats; error: string | null; warning: string | null; dbState: ArchiveDbState; dbError: string | null };
 
 export type DbSizeTable = { name: string; bytes: number };
 
 /** totalBytes is null when the size could not be read at all (fail soft —
  *  the guardrail is informational and must never break Records). */
-export type DatabaseSizeResult = { totalBytes: number | null; tables: DbSizeTable[]; error: string | null };
+export type DatabaseSizeResult = { totalBytes: number | null; tables: DbSizeTable[]; error: string | null; dbState: ArchiveDbState; dbError: string | null };
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Column sets for the summaries select, oldest-schema first principles: a
+ * worker-grown archive can predate the migrations that added the newer
+ * columns (unparsed 0007, balance 0011, value_at_risk 0012,
+ * analyzer_version 0014). One missing column must not zero the whole list —
+ * queryScanSummaries degrades to the columns that exist and says so via the
+ * result warning instead.
+ */
+const ESSENTIAL_SUMMARY_COLUMNS = [
+  "id",
+  "label",
+  "input_kind",
+  "contract_name",
+  "risk_score",
+  "critical_count",
+  "high_count",
+  "medium_count",
+  "low_count",
+  "info_count",
+  "created_at",
+] as const;
+
+const OPTIONAL_SUMMARY_COLUMNS = [
+  "target_address",
+  "chain_id",
+  "proxy_info_json",
+  "probes_json",
+  "cert_hash",
+  "source_origin",
+  "is_rag_indexed",
+  "balance_wei",
+  "value_usd",
+  "unparsed",
+  "analyzer_version",
+] as const;
+
+/** Canonical render order for the summaries select (matches summaryFromRow). */
+const SUMMARY_COLUMN_ORDER = [
+  "id",
+  "label",
+  "input_kind",
+  "contract_name",
+  "target_address",
+  "chain_id",
+  "proxy_info_json",
+  "probes_json",
+  "cert_hash",
+  "source_origin",
+  "is_rag_indexed",
+  "risk_score",
+  "critical_count",
+  "high_count",
+  "medium_count",
+  "low_count",
+  "info_count",
+  "balance_wei",
+  "value_usd",
+  "unparsed",
+  "analyzer_version",
+  "created_at",
+] as const;
+
+function isMissingColumnError(err: unknown): boolean {
+  const msg = errorMessage(err);
+  return /does not exist/i.test(msg) && /column/i.test(msg) || /undefined column/i.test(msg);
 }
 
 /**
@@ -125,36 +208,93 @@ export async function queryScanSummaries(
       order by created_at desc
       limit ${limit} offset ${offset}
     `;
-    return { summaries: rows.map(summaryFromRow), error: null };
+    return { summaries: rows.map(summaryFromRow), error: null, warning: null, dbState: "remote", dbError: null };
   } catch (err) {
-    console.warn("[kiln] DB scans query failed:", err);
-    return { summaries: [], error: errorMessage(err) };
+    if (!isMissingColumnError(err)) {
+      console.warn("[kiln] DB scans query failed:", err);
+      return { summaries: [], error: errorMessage(err), warning: null, dbState: "remote", dbError: null };
+    }
+    // Schema drift: the archive predates one or more selected columns.
+    // Introspect what contract_scans actually has and retry with the
+    // intersection — partial rows beat a fake-empty archive. The missing
+    // columns are named in the warning so the state is visible, and
+    // summaryFromRow already null-tolerates every absent field.
+    try {
+      const cols = await sql<{ column_name: string }>`
+        select column_name from information_schema.columns
+        where table_schema = 'public' and table_name = 'contract_scans'
+      `;
+      const present = new Set(cols.map((c) => c.column_name));
+      const missingEssential = ESSENTIAL_SUMMARY_COLUMNS.filter((c) => !present.has(c));
+      if (missingEssential.length > 0) {
+        console.warn("[kiln] DB scans query failed:", err);
+        return { summaries: [], error: errorMessage(err), warning: null, dbState: "remote", dbError: null };
+      }
+      const missing = OPTIONAL_SUMMARY_COLUMNS.filter((c) => !present.has(c));
+      const selected = SUMMARY_COLUMN_ORDER.filter((c) => present.has(c));
+      const selectList = selected
+        .map((c) => (c === "created_at" ? "created_at::text as created_at" : c))
+        .join(", ");
+      const rows = await sql.query<ScanSummaryRow>(
+        `select ${selectList} from contract_scans order by created_at desc limit $1 offset $2`,
+        [limit, offset],
+      );
+      return {
+        summaries: rows.map(summaryFromRow),
+        error: null,
+        dbState: "remote",
+        dbError: null,
+        warning:
+          `Archive schema is older than this build: contract_scans is missing ${missing.join(", ")} — ` +
+          `showing partial rows. Run the app migrations against this database to restore the full record view.`,
+      };
+    } catch {
+      console.warn("[kiln] DB scans query failed:", err);
+      return { summaries: [], error: errorMessage(err), warning: null, dbState: "remote", dbError: null };
+    }
   }
 }
 
-/** True totals for the Records stat cards (not per-page sums). */
+/** True totals for the Records stat cards (not per-page sums). The headline
+ *  counts and the RAG count are SEPARATE queries: is_rag_indexed is a
+ *  legacy column a drifted archive may lack, and its failure must not zero
+ *  the totals — it degrades to ragIndexed 0 + a warning instead. */
 export async function queryScansStats(sql: Sql): Promise<ScansStatsResult> {
   const zero: ScansStats = { total: 0, critical: 0, high: 0, ragIndexed: 0 };
+  const num = (v: string | undefined) => {
+    const n = Number.parseInt(v ?? "0", 10);
+    return Number.isFinite(n) ? n : 0;
+  };
+  let base: ScansStats;
   try {
-    const rows = await sql<{ total: string; critical: string; high: string; rag_indexed: string }>`
+    const rows = await sql<{ total: string; critical: string; high: string }>`
       select count(*) as total,
              coalesce(sum(critical_count), 0) as critical,
-             coalesce(sum(high_count), 0) as high,
-             coalesce(sum(case when is_rag_indexed then 1 else 0 end), 0) as rag_indexed
+             coalesce(sum(high_count), 0) as high
       from contract_scans`;
     const r = rows[0];
-    if (!r) return { stats: zero, error: null };
-    const num = (v: string | undefined) => {
-      const n = Number.parseInt(v ?? "0", 10);
-      return Number.isFinite(n) ? n : 0;
-    };
-    return {
-      stats: { total: num(r.total), critical: num(r.critical), high: num(r.high), ragIndexed: num(r.rag_indexed) },
-      error: null,
-    };
+    base = r
+      ? { total: num(r.total), critical: num(r.critical), high: num(r.high), ragIndexed: 0 }
+      : { ...zero };
   } catch (err) {
     console.warn("[kiln] DB scans stats failed:", err);
-    return { stats: zero, error: errorMessage(err) };
+    return { stats: zero, error: errorMessage(err), warning: null, dbState: "remote", dbError: null };
+  }
+  try {
+    const rows = await sql<{ rag_indexed: string }>`
+      select coalesce(sum(case when is_rag_indexed then 1 else 0 end), 0) as rag_indexed
+      from contract_scans`;
+    base.ragIndexed = rows[0] ? num(rows[0].rag_indexed) : 0;
+    return { stats: base, error: null, warning: null, dbState: "remote", dbError: null };
+  } catch (err) {
+    console.warn("[kiln] DB scans RAG count failed:", err);
+    return {
+      stats: base,
+      error: null,
+      dbState: "remote",
+      dbError: null,
+      warning: `Could not read the RAG index count (${errorMessage(err)}) — totals are unaffected.`,
+    };
   }
 }
 
@@ -176,7 +316,7 @@ export async function queryDatabaseSize(sql: Sql): Promise<DatabaseSizeResult> {
     if (totalBytes === null) error = "pg_database_size returned no row";
   } catch (err) {
     console.warn("[kiln] DB size read failed:", err);
-    return { totalBytes: null, tables: [], error: errorMessage(err) };
+    return { totalBytes: null, tables: [], error: errorMessage(err), dbState: "remote", dbError: null };
   }
   let tables: DbSizeTable[] = [];
   try {
@@ -197,5 +337,5 @@ export async function queryDatabaseSize(sql: Sql): Promise<DatabaseSizeResult> {
     console.warn("[kiln] DB table sizes read failed:", err);
     error = errorMessage(err);
   }
-  return { totalBytes, tables, error };
+  return { totalBytes, tables, error, dbState: "remote", dbError: null };
 }

@@ -109,11 +109,15 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
   const [dbSavedNotice, setDbSavedNotice] = useState<string | null>(null);
   // Which database the app is actually reading (from getDbInfo). Rendered
   // in the header so a wrong-project mismatch is visible at a glance.
+  // `state` is the effective connection state: a configured-but-failed
+  // database renders as FAILED with its configured identity — never as
+  // "not configured" (the old header conflated the two via `error`).
   const [dbInfo, setDbInfo] = useState<{
     host: string | null;
     port: string | null;
     user: string | null;
     database: string | null;
+    state: "remote" | "failed" | "unconfigured";
     error: string | null;
   } | null>(null);
   useEffect(() => {

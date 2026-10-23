@@ -139,3 +139,91 @@ test("queryDatabaseSize keeps the total when only the per-table breakdown fails"
   assert.deepEqual(result.tables, []);
   assert.ok(result.error && result.error.includes("pg_class"), `error was: ${result.error}`);
 });
+
+// --- No-fallback / degrade contract (2026-10-22 rework) ---------------------
+
+test("an empty archive is an EXPLICIT empty: no error, no warning, state remote", async () => {
+  // Genuinely empty must stay distinguishable from failure: the payload
+  // says "remote + zero rows", which the UI renders as an empty archive
+  // naming the database — never conflated with a failed read.
+  const listSql = fakeSql(async () => []);
+  const list = await queryScanSummaries(listSql);
+  assert.equal(list.error, null);
+  assert.equal(list.warning, null);
+  assert.equal(list.dbState, "remote");
+  assert.deepEqual(list.summaries, []);
+
+  const statsSql = fakeSql(async (text) =>
+    text.includes("is_rag_indexed") ? [{ rag_indexed: "0" }] : [{ total: "0", critical: "0", high: "0" }],
+  );
+  const stats = await queryScansStats(statsSql);
+  assert.equal(stats.error, null);
+  assert.equal(stats.dbState, "remote");
+  assert.deepEqual(stats.stats, { total: 0, critical: 0, high: 0, ragIndexed: 0 });
+});
+
+test("missing drift columns degrade the summaries read instead of zeroing it", async () => {
+  // The archive predates migrations 0012/0014: value_usd and
+  // analyzer_version are absent. The full select throws; the reader must
+  // introspect, retry with the columns that exist, return partial rows
+  // (absent fields nulled), and name the missing columns in the warning.
+  const PRESENT = [
+    "id", "label", "input_kind", "contract_name", "target_address", "chain_id",
+    "proxy_info_json", "probes_json", "cert_hash", "source_origin", "is_rag_indexed",
+    "risk_score", "critical_count", "high_count", "medium_count", "low_count",
+    "info_count", "balance_wei", "unparsed", "created_at",
+  ];
+  const partialRow = { ...ROW } as Record<string, unknown>;
+  delete partialRow.analyzer_version;
+  delete partialRow.value_usd;
+  const sql = fakeSql(async (text) => {
+    if (text.includes("information_schema")) return PRESENT.map((c) => ({ column_name: c }));
+    if (text.includes("analyzer_version")) throw new Error('column "analyzer_version" does not exist');
+    return [partialRow];
+  });
+  const { summaries, error, warning } = await queryScanSummaries(sql);
+  assert.equal(error, null);
+  assert.equal(summaries.length, 1);
+  assert.equal(summaries[0]!.analyzerVersion, null);
+  assert.equal(summaries[0]!.valueUsd, null);
+  assert.ok(warning && warning.includes("analyzer_version"), `warning was: ${warning}`);
+  assert.ok(warning && warning.includes("value_usd"), `warning was: ${warning}`);
+});
+
+test("stats and list fail independently — one bad query never zeroes the other", async () => {
+  // Stats broken, list healthy: list data intact.
+  const goodList = fakeSql(async () => [ROW]);
+  const list = await queryScanSummaries(goodList);
+  assert.equal(list.error, null);
+  assert.equal(list.summaries.length, 1);
+  const badStats = fakeSql(async () => {
+    throw new Error("stats relation gone");
+  });
+  const statsFail = await queryScansStats(badStats);
+  assert.ok(statsFail.error && statsFail.error.includes("stats relation gone"));
+
+  // List broken, stats healthy: stats intact.
+  const badList = fakeSql(async () => {
+    throw new Error("list relation gone");
+  });
+  const listFail = await queryScanSummaries(badList);
+  assert.deepEqual(listFail.summaries, []);
+  assert.ok(listFail.error && listFail.error.includes("list relation gone"));
+  const goodStats = fakeSql(async (text) =>
+    text.includes("is_rag_indexed") ? [{ rag_indexed: "7" }] : [{ total: "9", critical: "1", high: "2" }],
+  );
+  const stats = await queryScansStats(goodStats);
+  assert.equal(stats.error, null);
+  assert.deepEqual(stats.stats, { total: 9, critical: 1, high: 2, ragIndexed: 7 });
+});
+
+test("a failed RAG count degrades to a warning — headline totals stay intact", async () => {
+  const sql = fakeSql(async (text) => {
+    if (text.includes("is_rag_indexed")) throw new Error('column "is_rag_indexed" does not exist');
+    return [{ total: "8931", critical: "18", high: "2974" }];
+  });
+  const { stats, error, warning } = await queryScansStats(sql);
+  assert.equal(error, null);
+  assert.deepEqual(stats, { total: 8931, critical: 18, high: 2974, ragIndexed: 0 });
+  assert.ok(warning && warning.includes("RAG"), `warning was: ${warning}`);
+});

@@ -132,7 +132,7 @@ const { withRetry } = await import("../src/lib/audit/rate-limit.ts");
 const { secondPass } = await import("../src/lib/audit/persist.server.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
-const { getSql } = await import("../src/lib/db.ts");
+const { getSql, getDbConnectionState } = await import("../src/lib/db.ts");
 const { createOnDemandFourbyteLookup, fourbyteResultsFromReport } = await import("../src/lib/audit/fourbyte.ts");
 // Deep Agent loop (pipeline-worker/deep-agent.ts) — same propose ->
 // fork-PoC -> reward -> deeper loop as the workbench, gated to flagged
@@ -310,22 +310,32 @@ async function runLoop(): Promise<void> {
   if (!ctx) return;
   // 4byte resolution for this run (one on-demand lookup, reused per
   // item): cache tables first, live 4byte.directory pulls for misses.
-  // If the DB is unreachable the run already fails fast at startup,
-  // so a getSql failure here falls back to a cache-less lookup
-  // (live pulls, no caching) instead of no enrichment.
+  // A getSql failure here is logged, NOT silent: since the no-fallback
+  // rework getSql throws when the configured DB is unreachable, and the
+  // run itself cannot save anything in that state — every flush fails
+  // and parks the run with the error in /status. The cache-less lookup
+  // below is an ENRICHMENT degradation only (live API pulls, no cache
+  // reads/writes): it is not a substitute store — no scan data is read
+  // from or written to any local database, because there isn't one.
   let fourbyte: Awaited<ReturnType<typeof createOnDemandFourbyteLookup>> | undefined;
   try {
     fourbyte = createOnDemandFourbyteLookup(await getSql());
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[worker] 4byte cache unavailable (DB unreachable): ${err instanceof Error ? err.message : String(err)} — continuing cache-less; saves will fail until the DB is back`,
+    );
     fourbyte = createOnDemandFourbyteLookup(null);
   }
   // In-run dedupe re-checks use this handle; null (DB unreachable at
   // loop start) disables the re-check for the run — fail-open, the
-  // seen-set still applies.
+  // seen-set still applies. Logged for the same reason as above.
   let dedupeSql: Awaited<ReturnType<typeof getSql>> | null = null;
   try {
     dedupeSql = await getSql();
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[worker] in-run dedupe re-check disabled (DB unreachable): ${err instanceof Error ? err.message : String(err)}`,
+    );
     dedupeSql = null;
   }
   try {
@@ -772,10 +782,24 @@ function describeDatabase(): { host: string; port: string; user: string; databas
 async function handleStatus(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   let dbScans: number | null = null;
   let dbError: string | null = null;
+  // Effective connection state from the same resolution getSql performs.
+  // Since the no-fallback rework there is no local substitute: "failed"
+  // means the configured DB is unreachable and NOTHING is being read from
+  // or written to any other store; "unconfigured" means no DATABASE_URL.
+  let dbState: "remote" | "failed" | "unconfigured" = "unconfigured";
+  let dbStateError: string | null = null;
+  try {
+    const conn = await getDbConnectionState();
+    dbState = conn.state;
+    dbStateError = conn.state === "failed" ? conn.error : null;
+  } catch (err) {
+    dbState = "failed";
+    dbStateError = err instanceof Error ? err.message : String(err);
+  }
   const dbProblem = databaseUrlProblem(process.env.DATABASE_URL);
   if (dbProblem) {
     dbError = dbProblem;
-  } else {
+  } else if (dbState === "remote") {
     try {
       const sql = await getSql();
       const rows = await sql<{ n: string }>`SELECT count(*) AS n FROM contract_scans`;
@@ -784,8 +808,12 @@ async function handleStatus(req: http.IncomingMessage, res: http.ServerResponse)
     } catch (err) {
       dbError = err instanceof Error ? err.message : String(err);
     }
+  } else if (dbState === "failed") {
+    // The count is unknown — null, with the failure in dbError. Reporting
+    // 0 here would repeat the Records masquerade in the monitor.
+    dbError = dbStateError;
   }
-  sendJson(res, 200, { ...status, pending: pending.length, db: describeDatabase(), dbScans, dbError });
+  sendJson(res, 200, { ...status, pending: pending.length, db: describeDatabase(), dbScans, dbError, dbState, dbStateError });
 }
 
 const server = http.createServer((req, res) => {
@@ -905,6 +933,23 @@ server.listen(PORT, HOST, () => {
   console.log(`[worker] SmartKontrakt pipeline worker listening on http://${HOST}:${PORT} (loopback only)`);
   const db = describeDatabase();
   if (db) console.log(`[worker] database: ${db.user}@${db.host}:${db.port}/${db.database}`);
+  // Boot probe: prove the configured connection actually works, loudly.
+  // There is no local substitute to degrade to — a failed probe means
+  // runs cannot start (handleStart's freshness check throws) and saves
+  // cannot land; /status carries the same state for the monitor.
+  void getDbConnectionState()
+    .then((conn) => {
+      if (conn.state === "remote") {
+        console.log("[worker] database connection: OK (remote)");
+      } else if (conn.state === "failed") {
+        console.warn(`[worker] database connection: FAILED — ${conn.error ?? "unknown error"} No fallback is in use; fix DATABASE_URL in pipeline-worker/.env.`);
+      } else {
+        console.warn("[worker] database connection: NOT CONFIGURED — set DATABASE_URL in pipeline-worker/.env before starting a run.");
+      }
+    })
+    .catch((err) => {
+      console.warn(`[worker] database connection probe failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
   console.log(
     `[worker] DATABASE_URL ${process.env.DATABASE_URL ? "set" : "MISSING — set it in pipeline-worker/.env before starting a run"}${process.env.DATABASE_URL && databaseUrlProblem(process.env.DATABASE_URL) ? ` — WARNING: ${databaseUrlProblem(process.env.DATABASE_URL)}` : ""}`,
   );

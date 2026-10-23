@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   DATABASE_ENV_VARS,
   DIRECT_ENV_VARS,
+  classifyDbState,
   cleanEnvUrl,
   databaseEnvInventory,
   resolveDatabaseUrl,
@@ -111,4 +112,50 @@ test("cleanEnvUrl applies that strip, so the Prisma URL resolves pg-safe", () =>
   const r = resolveDatabaseUrl({ POSTGRES_PRISMA_URL: "postgresql://u:p@h:6543/db?pgbouncer=true" });
   assert.equal(r?.from, "POSTGRES_PRISMA_URL");
   assert.ok(!r?.url.includes("pgbouncer"), `pgbouncer survived: ${r?.url}`);
+});
+
+// --- classifyDbState: the no-fallback state vocabulary ---------------------
+// There is no "fallback" state anymore: the embedded substitute was
+// removed, so a configured database is either serving (remote), failed
+// (error state), or absent (unconfigured). These cases pin that contract.
+
+test("classifyDbState: no URL is unconfigured, with no identity and no error", () => {
+  assert.deepEqual(classifyDbState("", false, undefined), {
+    state: "unconfigured",
+    error: null,
+    configured: null,
+  });
+});
+
+test("classifyDbState: a connected configured URL is remote and parses the identity", () => {
+  const s = classifyDbState(POOLED, true, undefined);
+  assert.equal(s.state, "remote");
+  assert.equal(s.error, null);
+  assert.deepEqual(s.configured, {
+    host: "aws-1-us-east-1.pooler.supabase.com",
+    port: "6543",
+    user: "postgres.abcdefghij",
+    database: "postgres",
+  });
+});
+
+test("classifyDbState: configured but not connected is FAILED with the classified error", () => {
+  const s = classifyDbState(POOLED, false, { message: "The database rejected the password in the URL from DATABASE_URL." });
+  assert.equal(s.state, "failed");
+  assert.ok(s.error && s.error.includes("rejected the password"), `error was: ${s.error}`);
+  // The identity is still the CONFIGURED target that failed — surfaces
+  // name it so the operator knows which project to fix.
+  assert.equal(s.configured?.host, "aws-1-us-east-1.pooler.supabase.com");
+});
+
+test("classifyDbState: failed without a recorded error still carries a failure message", () => {
+  const s = classifyDbState(POOLED, false, undefined);
+  assert.equal(s.state, "failed");
+  assert.ok(s.error && s.error.length > 0);
+});
+
+test("classifyDbState: percent-encoded userinfo is decoded in the identity, password never surfaces", () => {
+  const s = classifyDbState("postgresql://postgres%2Eabcdefghij:secretpw@db.example.com:6543/postgres", false, { message: "x" });
+  assert.equal(s.configured?.user, "postgres.abcdefghij");
+  assert.ok(!JSON.stringify(s).includes("secretpw"));
 });

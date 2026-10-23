@@ -1,5 +1,5 @@
 import { writeAuditBatch } from "./bulk-persist.server";
-import { getSql } from "@/lib/db";
+import { getSql, getDbConnectionState, type DbConnectionState } from "@/lib/db";
 import type { Sql } from "../sql-client.ts";
 import {
   queryDatabaseSize,
@@ -12,6 +12,7 @@ import {
 } from "./scan-archive.server";
 
 export type {
+  ArchiveDbState,
   DatabaseSizeResult,
   DbSizeTable,
   ScanSummariesResult,
@@ -133,48 +134,103 @@ type FindingRow = {
 };
 
 
+/**
+ * The silent-zero trap this module must never fall back into (Oct 2026):
+ * the configured B connection was failing with "password authentication
+ * failed" (stale secret) and db.ts silently substituted an embedded
+ * PGLite database, so every archive query "succeeded" against the void
+ * and Records rendered TOTAL AUDITS 0 over a database holding 8,931
+ * scans — while the identity surfaces named the configured project.
+ *
+ * The substitute is REMOVED: getSql() now THROWS when a configured
+ * database cannot be reached, and throws "no database configured" when
+ * nothing is configured. These wrappers translate that throw into the
+ * payload contract (error + dbState + dbError, never bare zeros) via
+ * getDbConnectionState() — the same resolution getSql performs — so the
+ * Records tab renders the failure with the configured identity instead
+ * of an empty archive. Genuinely-empty arrives as state "remote" with
+ * error null and real zero counts.
+ */
+function failedArchiveError(conn: DbConnectionState): string {
+  const id = conn.configured
+    ? `${conn.configured.user}@${conn.configured.host}:${conn.configured.port}/${conn.configured.database}`
+    : "the configured database";
+  return (
+    `The configured database (${id}) could not be reached: ${conn.error ?? "connection failed"}. ` +
+    `No fallback database is in use, so the archive cannot be read. Fix the database ` +
+    `credentials/connection (Supabase Config) to restore the real archive.`
+  );
+}
+
+const UNCONFIGURED_ARCHIVE_ERROR =
+  "No database configured — Records has no archive to read. Set the database URL on the host " +
+  "(the Vercel Supabase integration injects POSTGRES_URL) or activate one in Supabase Config.";
+
+/**
+ * Resolve the archive Sql handle, or the error payload fields for the
+ * failed/unconfigured states. Returns { sql } only in state "remote".
+ */
+async function archiveSql(): Promise<
+  | { sql: Sql; conn: DbConnectionState }
+  | { sql: null; conn: DbConnectionState; error: string }
+> {
+  const conn = await getDbConnectionState();
+  if (conn.state === "failed") return { sql: null, conn, error: failedArchiveError(conn) };
+  if (conn.state === "unconfigured") return { sql: null, conn, error: UNCONFIGURED_ARCHIVE_ERROR };
+  try {
+    return { sql: await getSql(), conn };
+  } catch (err) {
+    // getDbConnectionState just verified the connection, so this is a
+    // race (connection dropped between the two calls) — still an error
+    // payload, never zeros.
+    const message = err instanceof Error ? err.message : String(err);
+    return { sql: null, conn: { ...conn, state: "failed", error: message }, error: message };
+  }
+}
+
 export async function listScanSummaries(opts?: { limit?: number; offset?: number }): Promise<ScanSummariesResult> {
   // Error contract (2026-10-22, improvement #2): a failed query returns
   // { summaries: [], error } instead of the old silent [] — the Records tab
   // renders the error with the effective DB identity, so a wrong-project
   // misconfiguration can never again masquerade as an empty archive. The
   // query itself lives in scan-archive.server.ts (Sql injected, testable).
-  let sql: Sql;
-  try {
-    sql = await getSql();
-  } catch (err) {
-    console.warn("[kiln] DB unavailable for scan list:", err);
-    return { summaries: [], error: err instanceof Error ? err.message : String(err) };
+  const a = await archiveSql();
+  if (!a.sql) {
+    return { summaries: [], error: a.error, warning: null, dbState: a.conn.state, dbError: a.conn.error };
   }
-  return queryScanSummaries(sql, opts);
+  const res = await queryScanSummaries(a.sql, opts);
+  return { ...res, dbState: a.conn.state };
 }
 
 /** True totals for the stat cards (not per-page sums). Same error
- *  contract as listScanSummaries: failures surface, never silent zeros. */
+ *  contract as listScanSummaries: failures surface, never silent zeros.
+ *  The zero stats object only ever accompanies a non-null error. */
 export async function getScansStats(): Promise<ScansStatsResult> {
-  let sql: Sql;
-  try {
-    sql = await getSql();
-  } catch (err) {
-    console.warn("[kiln] DB unavailable for scan stats:", err);
+  const a = await archiveSql();
+  if (!a.sql) {
     return {
       stats: { total: 0, critical: 0, high: 0, ragIndexed: 0 },
-      error: err instanceof Error ? err.message : String(err),
+      error: a.error,
+      warning: null,
+      dbState: a.conn.state,
+      dbError: a.conn.error,
     };
   }
-  return queryScansStats(sql);
+  const res = await queryScansStats(a.sql);
+  return { ...res, dbState: a.conn.state };
 }
 
 /** Database size guardrail (improvement #3): fail soft — a size read
- *  failure returns totalBytes null + error and never throws. */
+ *  failure returns totalBytes null + error and never throws. A failed or
+ *  unconfigured connection reports THAT as the error; there is no
+ *  substitute store whose size could be shown instead. */
 export async function getDatabaseSize(): Promise<DatabaseSizeResult> {
-  let sql: Sql;
-  try {
-    sql = await getSql();
-  } catch (err) {
-    return { totalBytes: null, tables: [], error: err instanceof Error ? err.message : String(err) };
+  const a = await archiveSql();
+  if (!a.sql) {
+    return { totalBytes: null, tables: [], error: a.error, dbState: a.conn.state, dbError: a.conn.error };
   }
-  return queryDatabaseSize(sql);
+  const res = await queryDatabaseSize(a.sql);
+  return { ...res, dbState: a.conn.state };
 }
 
 export async function loadScan(id: string): Promise<StoredScan | null> {
@@ -512,6 +568,14 @@ export async function getRecentHighSeverityFindings(opts?: {
   const filter = opts?.severityFilter ?? "all";
 
   try {
+    // No-fallback rule: a failed/unconfigured database must surface as an
+    // error (the server fn rejects, the dashboard shows it), never as the
+    // empty list this function's catch returns for ordinary query errors —
+    // an empty high-severity list over an unreachable archive is the same
+    // masquerade as Records' zeros.
+    const conn = await getDbConnectionState();
+    if (conn.state === "failed") throw new Error(failedArchiveError(conn));
+    if (conn.state === "unconfigured") throw new Error(UNCONFIGURED_ARCHIVE_ERROR);
     const sql = await getSql();
     let rows;
     if (filter === "critical") {
@@ -611,6 +675,10 @@ export async function getRecentHighSeverityFindings(opts?: {
       scanCreatedAt: f.scan_created_at,
     }));
   } catch (err) {
+    // The no-fallback gate errors thrown above must propagate, not be
+    // flattened into the empty list below.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("No fallback database is in use") || msg.startsWith("No database configured")) throw err;
     console.warn("[kiln] getRecentHighSeverityFindings failed:", err);
     return [];
   }

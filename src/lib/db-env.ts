@@ -130,3 +130,64 @@ export function databaseEnvInventory(env: Record<string, string | undefined>): E
     present: Boolean(cleanEnvUrl(env[name])),
   }));
 }
+
+/**
+ * The effective database state — the distinction whose absence produced the
+ * Records masquerade (Oct 2026): a CONFIGURED database whose connection
+ * failed (classically a stale password: the pooler answers and refuses the
+ * credentials) made db.ts silently substitute an embedded local database.
+ * Queries against the substitute SUCCEEDED and returned empty results, so
+ * every layer above saw a healthy, empty archive — while the identity
+ * surfaces kept naming the configured project.
+ *
+ * The substitute is REMOVED (Jer, 2026-10-22: "No fallback duh"). There is
+ * no embedded store anymore: a configured database that cannot be reached
+ * is an ERROR, and no configuration at all is an explicit unconfigured
+ * state — neither produces data. "remote" is the only state in which
+ * numbers describe the configured database:
+ *
+ *   remote       — the configured URL connected and is serving queries
+ *   failed       — a URL is configured but the connection failed (error
+ *                  carries the classified failure); reads/writes throw
+ *   unconfigured — no URL at all; reads/writes throw "no database
+ *                  configured" instead of inventing a local archive
+ *
+ * Pure (URL + observed outcome in, state out) so it is testable without a
+ * database; db.ts supplies the runtime values. The configured identity is
+ * parsed from the URL — host/port/user/database only, NEVER the password.
+ */
+export type DbStateKind = "remote" | "failed" | "unconfigured";
+
+export type DbConnectionState = {
+  state: DbStateKind;
+  /** Classified connection failure (password-free) when state is failed. */
+  error: string | null;
+  /** The configured database's identity, when a URL is configured. */
+  configured: { host: string | null; port: string | null; user: string | null; database: string | null } | null;
+};
+
+export function classifyDbState(
+  activeUrl: string,
+  connected: boolean,
+  lastError?: { message: string } | null,
+): DbConnectionState {
+  if (!activeUrl) return { state: "unconfigured", error: null, configured: null };
+  let configured: DbConnectionState["configured"] = null;
+  try {
+    const url = new URL(activeUrl);
+    configured = {
+      host: url.hostname || null,
+      port: url.port || null,
+      user: url.username ? decodeURIComponent(url.username) : null,
+      database: url.pathname ? decodeURIComponent(url.pathname.replace(/^\//, "")) || null : null,
+    };
+  } catch {
+    configured = null;
+  }
+  if (connected) return { state: "remote", error: null, configured };
+  return {
+    state: "failed",
+    error: lastError?.message ?? "The configured database connection failed.",
+    configured,
+  };
+}

@@ -4,9 +4,12 @@ import { EMBEDDED_MIGRATIONS } from "./migrations-sql";
 import { describeDbError } from "./db-error.ts";
 import {
   DATABASE_ENV_VARS,
+  classifyDbState,
   databaseEnvInventory,
   resolveDatabaseUrl,
   resolveDirectDatabaseUrl,
+  type DbConnectionState,
+  type DbStateKind,
 } from "./db-env.ts";
 import {
   loadSupabaseDbConfig,
@@ -16,8 +19,17 @@ import {
 } from "./supabase-db.server";
 export type { Sql } from "./sql-client";
 
-/** Supported database backends: Supabase PostgreSQL (primary) or local embedded PGLite (fallback / offline). */
-export type DbSource = "supabase" | "local";
+/**
+ * Which store is serving — there is exactly ONE store now: the configured
+ * Supabase PostgreSQL database. The embedded PGlite substitute was REMOVED
+ * (Jer, 2026-10-22: "No fallback duh"): it made a failed configured
+ * connection (stale password) look like a healthy, empty archive, because
+ * queries against the substitute succeeded and returned zeros. A
+ * configured-but-unreachable database is "failed" and an absent
+ * configuration is "unconfigured" — both are explicit errors everywhere,
+ * never a silent switch to another store.
+ */
+export type DbSource = "supabase" | "failed" | "unconfigured";
 
 // Cleaning (trim, empty/placeholder rejection, credential encoding) lives in
 // db-env.ts, so the status surface, the tests and this module all apply exactly
@@ -83,24 +95,31 @@ export function getActiveDatabaseUrl(): string {
   return "";
 }
 
-let activeDbSource: DbSource = "supabase";
-
-export const dbSource: DbSource = "supabase";
+let activeDbSource: DbSource = "unconfigured";
 
 export function getActiveDbSource(): DbSource {
   return activeDbSource;
 }
 
+/**
+ * Why the last Supabase connection attempt failed (classified, password-free),
+ * or undefined when the last attempt succeeded / none was made. Archive reads
+ * surface this as the error instead of presenting fabricated zeros.
+ */
+export function getLastDbError(): { message: string; urlMasked: string; at: string } | undefined {
+  return globalRef.__lastDbError__;
+}
+
+export type { DbConnectionState } from "./db-env.ts";
+
 const globalRef = globalThis as typeof globalThis & {
   __pgSqlPromise__?: Promise<Sql>;
-  __pgliteSqlPromise__?: Promise<Sql>;
-  __pgliteInstance__?: any;
   __activeDatabaseUrl__?: string;
   /**
-   * Why the last Supabase attempt failed, if it did. The fallback to embedded
-   * PGLite is silent by design (the app keeps working), but on a serverless
-   * host PGLite is ephemeral — so an unreported fallback looks exactly like
-   * working connectivity while writing every row into the void.
+   * Why the last Supabase attempt failed, if it did. There is NO fallback
+   * anymore: this error is what getSql() throws and what every surface
+   * reports, instead of a substitute store silently absorbing reads and
+   * writes and returning zeros.
    */
   __lastDbError__?: { message: string; urlMasked: string; at: string };
   /** Set when migrations could not be applied, without the connection failing. */
@@ -116,73 +135,13 @@ const identity = (v: string) => v;
 
 export function resetDatabasePool(): void {
   globalRef.__pgSqlPromise__ = undefined;
-  globalRef.__pgliteSqlPromise__ = undefined;
   sqlPromise = null;
 }
 
 export function switchDatabase(url: string | null): void {
   globalRef.__activeDatabaseUrl__ = url || undefined;
+  globalRef.__lastDbError__ = undefined;
   resetDatabasePool();
-}
-
-/**
- * Creates the local embedded PGLite database instance and applies all migrations.
- */
-async function createPgliteSql(): Promise<Sql> {
-  if (globalRef.__pgliteSqlPromise__) return globalRef.__pgliteSqlPromise__;
-
-  globalRef.__pgliteSqlPromise__ = (async () => {
-    const { PGlite } = await import("@electric-sql/pglite");
-    const pg = new PGlite();
-    await pg.waitReady;
-
-    // Apply migrations to PGLite
-    await pg.exec(
-      "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
-    );
-    const doneRows = await pg.query<{ name: string }>("SELECT name FROM _migrations");
-    const done = doneRows.rows.map((r) => r.name);
-
-    const migrationsByName: Record<string, string> = { ...EMBEDDED_MIGRATIONS };
-    if (typeof import.meta.glob === "function") {
-      const globbed = import.meta.glob("/migrations/*.sql", {
-        query: "?raw",
-        import: "default",
-        eager: true,
-      }) as Record<string, string>;
-      for (const [key, value] of Object.entries(globbed)) {
-        migrationsByName[key.split("/").pop() ?? key] = value;
-      }
-    }
-
-    const pending = pendingMigrations(Object.keys(migrationsByName), done);
-    for (const { name, path: mPath } of pending) {
-      const sqlContent = migrationsByName[mPath];
-      if (sqlContent) {
-        await pg.exec(sqlContent);
-        await pg.query("INSERT INTO _migrations (name) VALUES ($1)", [name]);
-      }
-    }
-
-    globalRef.__pgliteInstance__ = pg;
-    activeDbSource = "local";
-
-    return createSqlClient(
-      async <T>(text: string, params: unknown[]) => {
-        const res = await pg.query<T>(text, params);
-        return res.rows;
-      },
-      (work) =>
-        pg.transaction((tx) =>
-          work(async <T>(text: string, params: unknown[]) => {
-            const res = await tx.query<T>(text, params);
-            return res.rows;
-          }),
-        ),
-    );
-  })();
-
-  return globalRef.__pgliteSqlPromise__;
 }
 
 /** node-postgres takes `ssl` explicitly, so drop any inline sslmode. */
@@ -257,13 +216,13 @@ function createSupabaseSql(customUrl?: string): Promise<Sql> {
     // Two things go wrong here in practice, and neither means the database is
     // unusable: Supabase's direct host is IPv6-only unless the IPv4 add-on is
     // bought, and a serverless function cannot reach IPv6 at all; and a
-    // transaction-mode pooler can reject multi-statement DDL. Previously either
-    // failure threw out of here, and the caller downgraded the whole app to the
-    // embedded database — which on a serverless host is EPHEMERAL, so every row
-    // was written into the void while the app reported nothing wrong.
+    // transaction-mode pooler can reject multi-statement DDL.
     //
-    // So: try the direct connection briefly, fall back to the pooled one, and
-    // if both fail, record it and keep the connection.
+    // So: try the direct connection briefly, retry migrations on the pooled
+    // one, and if both fail, record it and keep the connection. If the
+    // database itself is unreachable (bad credentials, dead host), the
+    // caller's verification query fails and getSql() throws — there is no
+    // substitute store to downgrade to.
     const failMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
     let applied = 0;
     try {
@@ -312,11 +271,9 @@ function createSupabaseSql(customUrl?: string): Promise<Sql> {
         at: new Date().toISOString(),
       };
       console.warn(
-        `[db] could not apply migrations (${failMsg(mErr)}). Keeping the Supabase connection on the existing schema rather than falling back to ephemeral local storage.`,
+        `[db] could not apply migrations (${failMsg(mErr)}). Keeping the Supabase connection on the existing schema.`,
       );
     }
-
-    activeDbSource = "supabase";
 
     return createSqlClient(
       async <T>(text: string, params: unknown[]) => {
@@ -361,53 +318,88 @@ async function createSql(): Promise<Sql> {
     );
   }
   const url = getActiveDatabaseUrl();
-  if (url) {
-    try {
-      const sql = await createSupabaseSql(url);
-      // Quick verification to ensure remote host responds
-      await sql`SELECT 1`;
-      activeDbSource = "supabase";
-      globalRef.__lastDbError__ = undefined;
-      return sql;
-    } catch (err) {
-      // Classified, not echoed: "password authentication failed" reads like a
-      // connectivity problem and is not one, and that misreading is expensive.
-      const message = describeDbError(err, { from: resolveDatabaseUrlDetailed()?.from });
-      // Recorded, not just logged: on a serverless host the PGLite fallback is
-      // ephemeral, so a silent fallback writes every row into the void while
-      // looking like working connectivity.
-      globalRef.__lastDbError__ = { message, urlMasked: maskPostgresUrl(url), at: new Date().toISOString() };
-      console.warn(
-        `[db] Supabase connection to ${maskPostgresUrl(url)} failed (${message}). Falling back to embedded local database, which does NOT persist on a serverless host.`,
-      );
-      globalRef.__pgSqlPromise__ = undefined;
-    }
+  if (!url) {
+    // Unconfigured is an explicit state, NOT a license to invent a local
+    // archive: throwing here is what keeps "no database configured" from
+    // ever rendering as an empty Records tab.
+    activeDbSource = "unconfigured";
+    throw new Error(
+      "No database configured: no usable URL from " +
+        DATABASE_ENV_VARS.map((v) => v.name).join(", ") +
+        " and no active saved Supabase configuration. Set the database URL " +
+        "(the Vercel Supabase integration injects POSTGRES_URL) or activate " +
+        "one in Supabase Config. There is no local fallback database.",
+    );
   }
+  try {
+    const sql = await createSupabaseSql(url);
+    // Quick verification to ensure remote host responds
+    await sql`SELECT 1`;
+    activeDbSource = "supabase";
+    globalRef.__lastDbError__ = undefined;
+    return sql;
+  } catch (err) {
+    // Classified, not echoed: "password authentication failed" reads like a
+    // connectivity problem and is not one, and that misreading is expensive.
+    const message = describeDbError(err, { from: resolveDatabaseUrlDetailed()?.from });
+    globalRef.__lastDbError__ = { message, urlMasked: maskPostgresUrl(url), at: new Date().toISOString() };
+    activeDbSource = "failed";
+    globalRef.__pgSqlPromise__ = undefined;
+    // NO FALLBACK. The configured database failed; the outcome is this
+    // error. Substituting an embedded store here is what made Records
+    // render TOTAL AUDITS 0 over an archive of 8,931 scans (Oct 2026):
+    // every query "succeeded" against the substitute and the UI showed
+    // the configured project's name over the substitute's empty tables.
+    throw new Error(
+      `Database connection failed for ${maskPostgresUrl(url)}: ${message} ` +
+        `No fallback database is in use — reads and writes fail until the configured database is reachable.`,
+    );
+  }
+}
 
-  // Fall back gracefully to embedded PGLite
-  activeDbSource = "local";
-  return createPgliteSql();
+/**
+ * The EFFECTIVE database state, from the same resolution getSql() performs:
+ * forces the (memoized) connection attempt, then classifies the outcome —
+ * the configured remote connected, the configured remote FAILED (error
+ * carries the classified failure), or nothing is configured at all.
+ * Identity surfaces and archive reads share this so the app can never
+ * again display the configured project's name over fabricated zeros.
+ */
+export async function getDbConnectionState(): Promise<DbConnectionState> {
+  const url = getActiveDatabaseUrl();
+  if (!url) return classifyDbState("", false, undefined);
+  try {
+    await getSql();
+    return classifyDbState(url, true, undefined);
+  } catch {
+    return classifyDbState(url, false, globalRef.__lastDbError__);
+  }
 }
 
 export async function getDatabaseInfo(): Promise<{
   source: DbSource;
+  /** The effective state — the field surfaces should key on. */
+  state: DbStateKind;
   databaseUrlMasked?: string;
   /** Which environment variable supplied the URL, when one did. */
   envFrom?: string;
+  /** True ONLY when the configured remote actually connected. */
   connected: boolean;
   /** Set when a Supabase connection was attempted and failed. */
   lastError?: { message: string; urlMasked: string; at: string };
   /** Set when the connection succeeded but migrations could not be applied. */
   migrationError?: { message: string; at: string };
-  /** True when the fallback is ephemeral, so nothing written here survives. */
+  /** Always false — the embedded fallback is removed, nothing is ephemeral. */
   ephemeralFallback: boolean;
   message: string;
 }> {
   const activeUrl = getActiveDatabaseUrl();
   const envFrom = resolveDatabaseUrlDetailed()?.from;
-  if (activeUrl && activeDbSource === "supabase") {
+  const conn = await getDbConnectionState();
+  if (conn.state === "remote") {
     return {
       source: "supabase",
+      state: "remote",
       databaseUrlMasked: maskPostgresUrl(activeUrl),
       envFrom,
       connected: true,
@@ -418,25 +410,32 @@ export async function getDatabaseInfo(): Promise<{
       }`,
     };
   }
-  const lastError = globalRef.__lastDbError__;
-  const isServerless = Boolean(
-    typeof process !== "undefined" && (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME),
-  );
+  if (conn.state === "failed") {
+    const lastError = globalRef.__lastDbError__;
+    return {
+      source: "failed",
+      state: "failed",
+      databaseUrlMasked: maskPostgresUrl(activeUrl),
+      envFrom,
+      lastError,
+      connected: false,
+      ephemeralFallback: false,
+      message:
+        `Supabase connection FAILED for ${maskPostgresUrl(activeUrl)}: ${conn.error ?? "connection failed"}. ` +
+        `No fallback database is in use — the archive is unreachable until this is fixed.`,
+    };
+  }
   return {
-    source: "local",
+    source: "unconfigured",
+    state: "unconfigured",
     envFrom,
-    lastError,
-    connected: true,
-    // On a serverless host the embedded database lives in the instance and is
-    // gone on the next request.
-    ephemeralFallback: isServerless,
-    message: activeUrl
-      ? `Embedded local database active — the Supabase connection to ${maskPostgresUrl(activeUrl)} failed${lastError ? `: ${lastError.message}` : ""}.`
-      : envFrom
-        ? `Embedded local database active. ${envFrom} is set but did not yield a usable URL.`
-        : "Embedded local database active. No database URL found in the environment — checked " +
-          DATABASE_ENV_VARS.map((v) => v.name).join(", ") +
-          ".",
+    connected: false,
+    ephemeralFallback: false,
+    message: envFrom
+      ? `No database configured. ${envFrom} is set but did not yield a usable URL.`
+      : "No database configured. No database URL found in the environment — checked " +
+        DATABASE_ENV_VARS.map((v) => v.name).join(", ") +
+        ".",
   };
 }
 
@@ -453,16 +452,10 @@ export function getSql(): Promise<Sql> {
 }
 
 /**
- * Returns the underlying PGLite instance when local embedded DB is active.
- */
-export async function getPglite(): Promise<any> {
-  if (globalRef.__pgliteInstance__) return globalRef.__pgliteInstance__;
-  await getSql();
-  return globalRef.__pgliteInstance__;
-}
-
-/**
- * Finish DB bootstrap before the server handles traffic.
+ * Finish DB bootstrap before the server handles traffic. A bootstrap
+ * failure is logged, not hidden — and it no longer matters that this
+ * swallows the throw: every actual read/write calls getSql() itself and
+ * surfaces the same error at the call site.
  */
 export function ensureDbReady(): Promise<void> {
   return getSql()

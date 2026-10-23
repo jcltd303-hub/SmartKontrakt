@@ -153,15 +153,26 @@ export function WorkbenchHeader({
           </button>
           {dbInfo && (
             <span
-              className={`text-[11px] font-mono truncate ${dbInfo.error ? "text-red-400" : "text-[#a39886]"}`}
+              className={`text-[11px] font-mono truncate ${
+                dbInfo.state === "failed"
+                  ? "text-red-400"
+                  : dbInfo.state === "unconfigured"
+                    ? "text-amber-400"
+                    : "text-[#a39886]"
+              }`}
               title={
-                dbInfo.error ??
-                `Database the app is reading: ${dbInfo.user}@${dbInfo.host}:${dbInfo.port}/${dbInfo.database}`
+                dbInfo.state === "failed"
+                  ? `Configured database is UNREACHABLE: ${dbInfo.user}@${dbInfo.host}:${dbInfo.port}/${dbInfo.database} — ${dbInfo.error ?? "connection failed"} No fallback database is in use.`
+                  : dbInfo.state === "unconfigured"
+                    ? (dbInfo.error ?? "No database configured.")
+                    : `Database the app is reading: ${dbInfo.user}@${dbInfo.host}:${dbInfo.port}/${dbInfo.database}`
               }
             >
-              {dbInfo.error
-                ? "DB: not configured — set DATABASE_URL in Vercel"
-                : `DB: ${dbInfo.user}@${dbInfo.host}`}
+              {dbInfo.state === "failed"
+                ? `DB: connection FAILED — ${dbInfo.user}@${dbInfo.host}`
+                : dbInfo.state === "unconfigured"
+                  ? "DB: not configured — set DATABASE_URL in Vercel"
+                  : `DB: ${dbInfo.user}@${dbInfo.host}`}
             </span>
           )}
           {buildInfo && (

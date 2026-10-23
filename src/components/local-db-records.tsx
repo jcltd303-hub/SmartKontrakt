@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import {
   listScans,
   getScan,
+  getDbInfo,
   removeScan,
   saveComprehensiveScanFn,
   getDatabaseStatusFn,
@@ -70,10 +71,21 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
   // Database size guardrail (#3). Null = not loaded yet / fn unreachable;
   // totalBytes null inside = the read itself failed (fail soft).
   const [dbSize, setDbSize] = useState<Awaited<ReturnType<typeof getDatabaseSizeFn>> | null>(null);
-  const [dbStatus, setDbStatus] = useState<{ isSupabase: boolean; label: string }>({
-    isSupabase: true,
-    label: "Supabase PostgreSQL (Live)",
+  // Effective connection state, from getDatabaseStatusFn's dbInfo — the
+  // same getDbConnectionState() resolution the queries use. The badge and
+  // the header pill render THIS, never a hardcoded "Connected"/"Live":
+  // "failed" (configured DB unreachable — no fallback exists anymore) and
+  // "unconfigured" are first-class rendered states.
+  const [dbStatus, setDbStatus] = useState<{ kind: "remote" | "failed" | "unconfigured" | "unknown"; label: string }>({
+    kind: "unknown",
+    label: "Checking database…",
   });
+  // Partial-data warning (schema drift / degraded read): data is shown,
+  // but the archive is older than this build and the banner says so.
+  const [recordsWarning, setRecordsWarning] = useState<string | null>(null);
+  // Configured identity for the genuinely-empty rendering (state remote,
+  // zero rows): the empty archive names the database it is empty IN.
+  const [dbIdentityLabel, setDbIdentityLabel] = useState<string | null>(null);
 
   const fetchRecords = async () => {
     setIsLoading(true);
@@ -82,17 +94,28 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
       setRecords(data.summaries);
       // #2: a failed query surfaces as a banner (message + DB identity)
       // instead of the old silent empty list. Genuinely empty arrives with
-      // error: null and renders as an empty archive.
+      // error: null and renders as an empty archive. A partial read
+      // (schema drift) arrives with data + a warning banner.
       setRecordsError(data.error ? { message: data.error, db: data.db } : null);
+      setRecordsWarning(data.warning ?? null);
+      if (data.db) {
+        setDbIdentityLabel(`${data.db.user}@${data.db.host}:${data.db.port}/${data.db.database}`);
+      }
       try {
         const s = await getScansStatsFn();
         if (s.error) {
           setRecordsError((prev) => prev ?? { message: s.error, db: s.db });
+          // Stats failed independently of the list: leave stats null so
+          // the cards render "—" (unknown), never the other query's zeros.
+          setStats(null);
         } else {
           setStats(s.stats);
+          if (s.warning) setRecordsWarning((prev) => prev ?? s.warning);
         }
       } catch {
-        // stats stay null — totals fall back to loaded records
+        // stats stay null — cards render "—" while an error is showing,
+        // otherwise totals fall back to loaded records
+        setStats(null);
       }
       try {
         setDbSize(await getDatabaseSizeFn());
@@ -101,12 +124,37 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
       }
       try {
         const status = await getDatabaseStatusFn();
-        setDbStatus({
-          isSupabase: true,
-          label: status?.activeUrlMasked ? `Supabase (Live)` : "Supabase PostgreSQL",
-        });
+        const info = status?.dbInfo;
+        if (info?.state === "remote") {
+          setDbStatus({ kind: "remote", label: "Supabase PostgreSQL (Live)" });
+        } else if (info?.state === "failed") {
+          setDbStatus({ kind: "failed", label: "Database connection FAILED" });
+        } else if (info?.state === "unconfigured") {
+          setDbStatus({ kind: "unconfigured", label: "No database configured" });
+        } else if (info?.connected) {
+          setDbStatus({ kind: "remote", label: "Supabase PostgreSQL (Live)" });
+        }
       } catch {
-        // fallback
+        // status stays as-is; the records payloads carry their own state
+      }
+      try {
+        const info = await getDbInfo();
+        if (info) {
+          if (info.user && info.host) {
+            setDbIdentityLabel(`${info.user}@${info.host}:${info.port}/${info.database}`);
+          }
+          setDbStatus((prev) =>
+            prev.kind !== "unknown"
+              ? prev
+              : info.state === "failed"
+                ? { kind: "failed", label: "Database connection FAILED" }
+                : info.state === "unconfigured"
+                  ? { kind: "unconfigured", label: "No database configured" }
+                  : { kind: "remote", label: "Supabase PostgreSQL (Live)" },
+          );
+        }
+      } catch {
+        // identity label stays null; the empty state renders generically
       }
     } catch (err) {
       // Transport-level failure: the server fn itself was unreachable.
@@ -125,6 +173,7 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
         setRecordsError({ message: page.error, db: page.db });
         return;
       }
+      if (page.warning) setRecordsWarning(page.warning);
       if (page.summaries.length > 0) {
         setRecords((prev) => {
           const seen = new Set(prev.map((r) => r.id));
@@ -266,11 +315,14 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
 
   // Aggregated Stats — true totals from the server, not per-page sums.
   // (With pagination, summing only the loaded page would undercount.)
+  // When a query failed, the totals are UNKNOWN — the cards render "—",
+  // never a fabricated 0. A bare 0 for a failed read was the original bug.
+  const statsUnknown = recordsError !== null && stats === null;
   const totalAudits = stats?.total ?? records.length;
   const criticalFindings = stats?.critical ?? records.reduce((acc, r) => acc + r.criticalCount, 0);
   const highFindings = stats?.high ?? records.reduce((acc, r) => acc + r.highCount, 0);
   const ragIndexedCount = stats?.ragIndexed ?? records.filter((r) => r.isRagIndexed).length;
-  const hasMore = records.length < totalAudits;
+  const hasMore = !statsUnknown && records.length < totalAudits;
 
   return (
     <div className="flex flex-col gap-6 animate-fadeIn pb-12 font-sans">
@@ -287,8 +339,16 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
               <h2 className="text-xl font-bold font-mono tracking-tight text-[#f4efe6]">
                 Supabase Audit Dossiers & Archive
               </h2>
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border bg-emerald-950/60 text-emerald-400 border-emerald-700/60">
-                Supabase PostgreSQL (Live)
+              <span
+                className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
+                  dbStatus.kind === "failed"
+                    ? "bg-red-950/60 text-red-400 border-red-700/60"
+                    : dbStatus.kind === "unconfigured"
+                      ? "bg-amber-950/60 text-amber-400 border-amber-700/60"
+                      : "bg-emerald-950/60 text-emerald-400 border-emerald-700/60"
+                }`}
+              >
+                {dbStatus.label}
               </span>
             </div>
             <p className="text-xs text-[#a39886] mt-1.5 max-w-2xl leading-relaxed">
@@ -301,14 +361,24 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
             <button
               onClick={() => setIsDbModalOpen(true)}
               className={`px-3 py-1.5 rounded-lg border text-xs font-mono flex items-center gap-1.5 transition-colors ${
-                dbStatus.isSupabase
+                dbStatus.kind === "remote"
                   ? "bg-emerald-950/60 hover:bg-emerald-900/60 border-emerald-700/60 text-emerald-400"
-                  : "bg-[#26231c] hover:bg-[#3a3428] border-[#3a3428] text-[#e8a54b]"
+                  : dbStatus.kind === "failed"
+                    ? "bg-red-950/60 hover:bg-red-900/60 border-red-700/60 text-red-400"
+                    : "bg-[#26231c] hover:bg-[#3a3428] border-[#3a3428] text-[#e8a54b]"
               }`}
               title="Configure Supabase Database Connection & Credentials"
             >
               <Database className="w-3.5 h-3.5 text-[#e8a54b]" />
-              <span>{dbStatus.isSupabase ? "Supabase DB: Connected" : "Wire Supabase DB"}</span>
+              <span>
+                {dbStatus.kind === "remote"
+                  ? "Supabase DB: Connected"
+                  : dbStatus.kind === "failed"
+                    ? "Supabase DB: Connection FAILED"
+                    : dbStatus.kind === "unconfigured"
+                      ? "Wire Supabase DB"
+                      : "Supabase DB: …"}
+              </span>
             </button>
             <button
               onClick={fetchRecords}
@@ -342,15 +412,15 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 pt-5 border-t border-[#3a3428]/60 font-mono text-xs">
           <div className="bg-[#12110e]/70 p-3 rounded-xl border border-[#3a3428]/40">
             <div className="text-[10px] text-[#746c60] uppercase tracking-wider">Total Audits Stored</div>
-            <div className="text-lg font-bold text-[#e8a54b] mt-0.5">{totalAudits}</div>
+            <div className="text-lg font-bold text-[#e8a54b] mt-0.5">{statsUnknown ? "—" : totalAudits}</div>
           </div>
           <div className="bg-[#12110e]/70 p-3 rounded-xl border border-[#3a3428]/40">
             <div className="text-[10px] text-[#746c60] uppercase tracking-wider">Critical Vulns Logged</div>
-            <div className="text-lg font-bold text-red-400 mt-0.5">{criticalFindings}</div>
+            <div className="text-lg font-bold text-red-400 mt-0.5">{statsUnknown ? "—" : criticalFindings}</div>
           </div>
           <div className="bg-[#12110e]/70 p-3 rounded-xl border border-[#3a3428]/40">
             <div className="text-[10px] text-[#746c60] uppercase tracking-wider">High Vulns Logged</div>
-            <div className="text-lg font-bold text-orange-400 mt-0.5">{highFindings}</div>
+            <div className="text-lg font-bold text-orange-400 mt-0.5">{statsUnknown ? "—" : highFindings}</div>
           </div>
           <button
             onClick={onNavigateToRag}
@@ -361,7 +431,7 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
               <span>RAG KB Synced</span>
               <BookOpen className="w-3 h-3 text-[#e8a54b] group-hover:scale-110 transition-transform" />
             </div>
-            <div className="text-lg font-bold text-emerald-400 mt-0.5">{ragIndexedCount} / {totalAudits}</div>
+            <div className="text-lg font-bold text-emerald-400 mt-0.5">{statsUnknown ? "—" : `${ragIndexedCount} / ${totalAudits}`}</div>
           </button>
         </div>
 
@@ -400,15 +470,39 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
         <div className="p-3 bg-red-950/70 border border-red-800 text-red-300 text-xs font-mono rounded-xl flex items-start gap-2 animate-fadeIn">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
           <div className="min-w-0">
-            <div className="font-bold">Records query failed — showing nothing rather than inventing an empty archive.</div>
+            <div className="font-bold">
+              {recordsError.db?.state === "failed"
+                ? "Configured database unreachable — no fallback is in use; the archive is NOT being read."
+                : recordsError.db?.state === "unconfigured"
+                  ? "No database configured — Records has no archive to read."
+                  : "Records query failed — showing nothing rather than inventing an empty archive."}
+            </div>
             <div className="mt-0.5 break-words">{recordsError.message}</div>
-            {recordsError.db && !recordsError.db.error && (
+            {recordsError.db && recordsError.db.state === "failed" && (
+              <div className="mt-0.5 text-red-400/90">
+                Configured target: {recordsError.db.user}@{recordsError.db.host}:{recordsError.db.port}/{recordsError.db.database}
+                {recordsError.db.error ? ` — ${recordsError.db.error}` : ""}
+              </div>
+            )}
+            {recordsError.db && recordsError.db.state !== "failed" && !recordsError.db.error && (
               <div className="mt-0.5 text-red-400/90">
                 Reading from {recordsError.db.user}@{recordsError.db.host}:{recordsError.db.port}/{recordsError.db.database} — if
                 that is the wrong project, fix it in Supabase Config.
               </div>
             )}
-            {recordsError.db?.error && <div className="mt-0.5 text-red-400/90">{recordsError.db.error}</div>}
+            {recordsError.db?.state !== "failed" && recordsError.db?.error && (
+              <div className="mt-0.5 text-red-400/90">{recordsError.db.error}</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {recordsWarning && !recordsError && (
+        <div className="p-3 bg-amber-950/70 border border-amber-800 text-amber-300 text-xs font-mono rounded-xl flex items-start gap-2 animate-fadeIn">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <div className="font-bold">Partial archive data — read with a degraded schema.</div>
+            <div className="mt-0.5 break-words">{recordsWarning}</div>
           </div>
         </div>
       )}
@@ -515,12 +609,26 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
         {isLoading ? (
           <div className="p-12 text-center text-xs font-mono text-[#a39886] flex flex-col items-center justify-center gap-3">
             <Loader2 className="w-8 h-8 text-[#e8a54b] animate-spin" />
-            <span>Loading records from local database...</span>
+            <span>Loading records from database...</span>
           </div>
         ) : filtered.length === 0 ? (
           <div className="p-12 text-center text-xs font-mono text-[#a39886] flex flex-col items-center justify-center gap-3">
             <Database className="w-8 h-8 text-[#746c60]" />
-            <span>No audit records found matching your filters.</span>
+            {records.length === 0 &&
+            stats?.total === 0 &&
+            !recordsError &&
+            !searchQuery.trim() &&
+            chainFilter === "all" &&
+            riskFilter === "all" &&
+            valueFilter === "all" ? (
+              <span>
+                Archive is empty — 0 audits stored
+                {dbIdentityLabel ? ` in ${dbIdentityLabel}` : " in the configured database"}. This is a real
+                empty result from a connected database, not a connection failure.
+              </span>
+            ) : (
+              <span>No audit records found matching your filters.</span>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">

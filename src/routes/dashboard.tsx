@@ -14,14 +14,22 @@ export const Route = createFileRoute("/dashboard")({
 
     // One line of storage diagnosis, rendered server-side. It answers "is this
     // deployment actually on Supabase, and if not, why not" without opening a
-    // dialog — which also makes it readable by a plain page fetch.
+    // dialog — which also makes it readable by a plain page fetch. Keyed on
+    // the effective STATE, not the configured source: a configured database
+    // whose connection failed is FAILED (there is no embedded fallback
+    // anymore), and an absent configuration is its own state.
     let storage: { ok: boolean; label: string; detail: string } | null = null;
     try {
       const status = await getDatabaseStatusFn();
       const info = status.dbInfo;
       storage = {
-        ok: info.source === "supabase",
-        label: info.source === "supabase" ? "Supabase PostgreSQL" : "embedded local database (ephemeral)",
+        ok: info.state === "remote",
+        label:
+          info.state === "remote"
+            ? "Supabase PostgreSQL"
+            : info.state === "failed"
+              ? "Supabase connection FAILED — no fallback in use"
+              : "no database configured",
         detail: info.message,
       };
     } catch (err) {

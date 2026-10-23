@@ -38,6 +38,11 @@ type WorkerStatus = {
   db?: { host: string; port: string; user: string; database: string } | null;
   dbScans?: number | null;
   dbError?: string | null;
+  /** Effective connection state (absent on workers older than the
+   *  no-fallback rework). "failed" = configured DB unreachable and NO
+   *  local substitute in use; "unconfigured" = no DATABASE_URL. */
+  dbState?: "remote" | "failed" | "unconfigured";
+  dbStateError?: string | null;
 };
 
 const WORKER_KEY = "sk-pipeline-worker-url";
@@ -222,6 +227,22 @@ export function PipelineWorkerStatus({ active = true }: { active?: boolean }) {
             {status.startedAt ? `Started: ${new Date(status.startedAt).toLocaleString()} • ` : ""}
             {status.lastFlushAt ? `Last flush: ${new Date(status.lastFlushAt).toLocaleString()}` : "No flush yet"}
           </p>
+          {status.dbState === "failed" && (
+            <p className="text-[11px] text-red-400 bg-red-950/40 border border-red-900/60 rounded p-2 flex items-start gap-1">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                Worker database connection FAILED{status.db ? ` — ${status.db.user}@{status.db.host}:${status.db.port}/${status.db.database}` : ""}:{" "}
+                {status.dbStateError ?? status.dbError ?? "connection failed"}. No local substitute is in use — runs and saves
+                cannot reach the archive until the credentials/connection are fixed.
+              </span>
+            </p>
+          )}
+          {status.dbState === "unconfigured" && (
+            <p className="text-[11px] text-amber-300 bg-amber-950/30 border border-amber-900/50 rounded p-2 flex items-start gap-1">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>Worker has no database configured — set DATABASE_URL in pipeline-worker/.env.</span>
+            </p>
+          )}
           {status.db && (
             <p className="text-[11px] text-[#a39886]">
               DB: <span className="text-[#f4efe6]">{status.db.user}@{status.db.host}:{status.db.port}/{status.db.database}</span>
