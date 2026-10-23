@@ -103,6 +103,11 @@ async function requestPocOnBackend(
     rpcUrl?: string;
     rpcUrls?: string[];
     blockNumber?: number;
+    /** Optional ERC-20 the harness should judge (template 46's
+     *  POC_TOKEN). Forwarded only when it is a valid address; absent =
+     *  the backend leaves POC_TOKEN unset and the template defaults to
+     *  the target-as-its-own-token. */
+    tokenAddress?: string;
   },
 ): Promise<PocResult> {
   const started = Date.now();
@@ -126,6 +131,9 @@ async function requestPocOnBackend(
           ...(input.rpcUrl ? { rpcUrl: input.rpcUrl } : {}),
           ...(input.rpcUrls && input.rpcUrls.length > 0 ? { rpcUrls: input.rpcUrls } : {}),
           ...(input.blockNumber !== undefined ? { blockNumber: input.blockNumber } : {}),
+          ...(input.tokenAddress && ADDRESS_RE.test(input.tokenAddress)
+            ? { tokenAddress: input.tokenAddress }
+            : {}),
         }),
       },
       180_000, // covers the backend's 120s forge timeout + overhead
@@ -199,6 +207,9 @@ async function executeWithRpcRetries(
     retry?: boolean;
     repair?: (source: string, logs: string) => Promise<string>;
     onProgress?: (progress: RpcRetryProgress) => void;
+    /** Optional ERC-20 for the harness to judge (template 46's
+     *  POC_TOKEN) — forwarded to the backend on every attempt. */
+    tokenAddress?: string;
     /**
      * Pre-run guard (default on): value the target (native + ERC-20s, in USD) and
      * skip the run when the total is a CONFIRMED zero — nothing at stake. An
@@ -245,6 +256,7 @@ async function executeWithRpcRetries(
       rpcUrl: rpc,
       rpcUrls: [rpc],
       blockNumber: input.blockNumber,
+      tokenAddress: input.tokenAddress,
     });
     lastResult = res;
 

@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { runAdjudicationChain, type AdjudicationDeps } from "./adjudicate-chain.ts";
 import { pocRunKey } from "./poc-run-key.ts";
+import { POC_FALLBACK_TEMPLATES } from "./poc-fallbacks.ts";
 import type { Finding } from "./types.ts";
 
 const TEST_SNIPPET = `// SPDX-License-Identifier: MIT
@@ -422,5 +423,127 @@ describe("runAdjudicationChain step completeness", () => {
     assert.equal(outcome.steps.saved, "skipped");
     assert.equal(outcome.stoppedAt, "harness");
     assert.equal(outcome.complete, false);
+  });
+});
+
+describe("runAdjudicationChain — unadapted template pre-check (audit class C)", () => {
+  const AI_REVIEW = {
+    threatModelReport: "r",
+    foundryTestCode: "",
+    economicRiskSummary: "",
+    source: "openrouter" as const,
+  };
+  // An unwrappable prose snippet: prepareFindingPoc falls back to the
+  // detector's cap-1 library template, exactly like the live direct
+  // paths the audit flagged.
+  const PROSE = "Attack sketch: abuse the vulnerable entry point with a crafted call.";
+
+  const ROUTES: Array<{ detector: string; file: string; constants: string[] }> = [
+    { detector: "tx-origin", file: "09-tx-origin-phishing.t.sol", constants: ["OWNER"] },
+    { detector: "oracle-spot", file: "16-oracle-manipulation.t.sol", constants: ["ROUTER", "TOKEN_IN", "TOKEN_OUT", "WHALE"] },
+    { detector: "slippage", file: "17-slippage-sandwich.t.sol", constants: ["ROUTER", "TOKEN_IN", "TOKEN_OUT", "VICTIM", "WHALE"] },
+    { detector: "signature-replay", file: "18-signature-replay.t.sol", constants: ["MESSAGE_HASH"] },
+    { detector: "signature-malleability", file: "19-signature-malleability.t.sol", constants: ["MESSAGE_HASH"] },
+    { detector: "msg-value-loop", file: "22-msg-value-loop.t.sol", constants: ["PRICE"] },
+  ];
+
+  for (const route of ROUTES) {
+    it(`${route.detector}: as-shipped template saves as unadapted, backend never called`, async () => {
+      const { deps, calls, saved } = makeDeps();
+      const outcome = await runAdjudicationChain(
+        baseCtx({
+          aiReview: AI_REVIEW,
+          finding: makeFinding({ detector: route.detector, exploitSolidity: PROSE, snippet: "" }),
+          findings: [makeFinding({ detector: route.detector, exploitSolidity: PROSE, snippet: "" })],
+        }),
+        deps,
+      );
+      assert.equal(outcome.verdict, "unadapted", route.detector);
+      assert.equal(outcome.suggestion, "needs_more_info");
+      assert.equal(outcome.complete, true);
+      assert.equal(outcome.runStep, "skipped");
+      assert.equal(calls.run, 0, "backend must not be called");
+      assert.equal(calls.save, 1);
+      assert.equal(saved[0].status, "unadapted");
+      assert.ok(saved[0].output.includes(route.file), "output names the template");
+      for (const name of route.constants) {
+        assert.ok(saved[0].output.includes(name), `output names unfilled ${name}`);
+      }
+    });
+  }
+
+  it("an adapted template (TODOs filled) proceeds to the backend normally", async () => {
+    const adapted = POC_FALLBACK_TEMPLATES["22-msg-value-loop.t.sol"].replace(
+      "PRICE = 0;",
+      "PRICE = 0.05 ether;",
+    );
+    assert.notEqual(adapted, POC_FALLBACK_TEMPLATES["22-msg-value-loop.t.sol"]);
+    const { deps, calls, saved } = makeDeps();
+    const outcome = await runAdjudicationChain(
+      baseCtx({
+        aiReview: AI_REVIEW,
+        finding: makeFinding({ detector: "msg-value-loop", exploitSolidity: adapted, snippet: "" }),
+      }),
+      deps,
+    );
+    assert.equal(outcome.verdict, "passed");
+    assert.equal(calls.run, 1, "backend called for the adapted template");
+    assert.equal(saved[0].status, "passed");
+  });
+
+  it("a stored unadapted run for the same PoC is reused as a terminal outcome", async () => {
+    const templateSource = POC_FALLBACK_TEMPLATES["09-tx-origin-phishing.t.sol"];
+    const finding = makeFinding({ detector: "tx-origin", exploitSolidity: PROSE, snippet: "" });
+    const digest = pocRunKey(finding.id, templateSource).digest;
+    const { deps, calls } = makeDeps({
+      listRuns: async () => [
+        {
+          id: "poc:scan-1:0:y",
+          status: "unadapted",
+          sourceDigest: digest,
+          output: "[SmartPoC] Not run — unadapted fallback template 09-tx-origin-phishing.t.sol",
+          durationMs: 0,
+          createdAt: "2026-10-23T00:00:00Z",
+        },
+      ],
+    });
+    const outcome = await runAdjudicationChain(
+      baseCtx({ aiReview: AI_REVIEW, finding, findings: [finding] }),
+      deps,
+    );
+    assert.equal(outcome.verdict, "unadapted");
+    assert.equal(outcome.runStep, "reused");
+    assert.equal(calls.run, 0);
+    assert.equal(calls.save, 0);
+  });
+});
+
+describe("runAdjudicationChain — pocToken forwarding (audit class E1)", () => {
+  it("ctx.pocToken reaches the runPoc dep as tokenAddress", async () => {
+    let seenToken: string | undefined = "unset";
+    const { deps } = makeDeps({
+      runPoc: async (input) => {
+        seenToken = input.tokenAddress;
+        return { status: "passed", logs: "1 passed; 0 failed", durationMs: 5 };
+      },
+    });
+    const outcome = await runAdjudicationChain(
+      baseCtx({ pocToken: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }),
+      deps,
+    );
+    assert.equal(outcome.verdict, "passed");
+    assert.equal(seenToken, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+  });
+
+  it("without ctx.pocToken the dep receives no tokenAddress", async () => {
+    let seenToken: string | undefined = "unset";
+    const { deps } = makeDeps({
+      runPoc: async (input) => {
+        seenToken = input.tokenAddress;
+        return { status: "passed", logs: "1 passed; 0 failed", durationMs: 5 };
+      },
+    });
+    await runAdjudicationChain(baseCtx(), deps);
+    assert.equal(seenToken, undefined);
   });
 });

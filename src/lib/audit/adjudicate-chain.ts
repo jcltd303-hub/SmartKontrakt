@@ -36,6 +36,8 @@ import {
   effectivePocStatus,
   ensureExecutablePocTests,
   savedStatusFromRun,
+  unadaptedTemplateCheck,
+  unadaptedTemplateOutput,
 } from "./poc-outcome.ts";
 import type { AiSecurityReview } from "./ai-review.server.ts";
 import type { Finding } from "./types.ts";
@@ -73,6 +75,11 @@ export type AdjudicationContext = {
    *  stored disposition is still not touched — a redo lands on a fresh
    *  suggestion the human may accept or ignore. */
   force?: boolean;
+  /** The external ERC-20 the harness should judge when the stored
+   *  scan's valuation knows the target holds one (template 46's
+   *  POC_TOKEN — see externalTokenCandidate in poc-audit-llm.ts).
+   *  Optional: absent/null keeps the templates' own-token default. */
+  pocToken?: string | null;
 };
 
 export type AdjudicationDeps = {
@@ -89,6 +96,7 @@ export type AdjudicationDeps = {
     address: string;
     chainId?: string;
     testCode: string;
+    tokenAddress?: string;
   }) => Promise<{ status: string; logs: string; durationMs: number; executedSource?: string }>;
   repairPoc: (input: {
     contractName: string;
@@ -198,20 +206,29 @@ function verdictFromRunStatus(status: string, logs: string): PocVerdict {
 }
 
 function verdictFromStoredStatus(status: string, output?: string | null): PocVerdict {
-  // Stored rows predate the no_tests/skipped vocabulary (both were
-  // saved as "error"); effectivePocStatus reclassifies them on read
-  // when the stored output carries the evidence.
+  // Stored rows predate the no_tests/skipped/unadapted vocabulary
+  // (all were saved as "error" or "failed"); effectivePocStatus
+  // reclassifies them on read when the stored output carries the
+  // evidence.
   const eff = effectivePocStatus(status, output);
-  if (eff === "passed" || eff === "failed" || eff === "no_tests" || eff === "skipped") return eff;
+  if (
+    eff === "passed" ||
+    eff === "failed" ||
+    eff === "no_tests" ||
+    eff === "skipped" ||
+    eff === "unadapted"
+  )
+    return eff;
   return "error";
 }
 
 /**
  * Terminal-outcome completion override. Most outcomes derive `complete`
- * from the step states (any skipped step = incomplete), but two
+ * from the step states (any skipped step = incomplete), but three
  * outcomes are complete BY CONSTRUCTION even though the harness step
  * ends "skipped": the no_tests gate save (nothing executable existed
- * to run) and a value-guard skip (nothing at stake to test). In both,
+ * to run), a value-guard skip (nothing at stake to test) and the
+ * unadapted-template save (nothing adapted existed to run). In each,
  * the pipeline did everything applicable and persisted a first-class
  * outcome — marking them INCOMPLETE would present a deliberate,
  * recorded outcome as a pipeline stoppage, the same misclassification
@@ -379,6 +396,57 @@ export async function runAdjudicationChain(
     });
   }
 
+  // --- Unadapted-template pre-check ---------------------------------------
+  // A prepared PoC that IS a fallback template whose required TODO
+  // constants are still zero (an unprotected-initializer snippet that
+  // cannot wrap lands on template 09, whose OWNER ships address(0))
+  // would abort on the template's own require and file as a verdict it
+  // never earned. Save the outcome as 'unadapted' WITHOUT calling the
+  // backend — the same deliberate-non-run shape as the no_tests gate
+  // below. An adapted template (constants filled) fails this check and
+  // proceeds normally. The shared check lives in poc-outcome.ts; the
+  // PoC Audits page's direct path applies the identical check.
+  const todoCheck = unadaptedTemplateCheck(prepared.testCode);
+  if (todoCheck) {
+    steps.harness = "skipped"; // deliberately not executed — nothing adapted to execute
+    step("harness", "skipped");
+    const todoLogs = `Finding input SHA3-256: ${sha3_256(finding.exploitSolidity ?? "")}\n${
+      prepared.note ? `${prepared.note}\n` : ""
+    }${unadaptedTemplateOutput(todoCheck.file, todoCheck.unfilled)}`;
+    let saveError: string | null = null;
+    try {
+      await deps.saveRun({
+        findingId: finding.id,
+        scanId: ctx.scanId,
+        status: "unadapted",
+        source: prepared.testCode,
+        output: todoLogs,
+        durationMs: 0,
+        chainId: ctx.chainId,
+        targetAddress: ctx.targetAddress,
+      });
+      steps.saved = "done";
+    } catch (err) {
+      saveError = err instanceof Error ? err.message : String(err);
+      steps.saved = "failed";
+    }
+    step("saved", steps.saved);
+    const outcome = finish({
+      kind: "suggested",
+      verdict: "unadapted",
+      suggestion: suggestDispositionForVerdict("unadapted"),
+      output: todoLogs,
+      testCode: prepared.testCode,
+      reviewStep,
+      runStep: "skipped",
+      saveError,
+      message:
+        "The prepared PoC is an unadapted fallback template — its TODO constants were never filled, so it would abort on its own precondition. Saved as unadapted without calling the backend. Not evidence about the bug — suggesting Needs info.",
+    });
+    // Terminal outcome (see asTerminal) once the save landed.
+    return saveError ? outcome : asTerminal(outcome);
+  }
+
   // --- Generation gate ----------------------------------------------------
   // A prepared PoC with ZERO executable test functions can only produce
   // a hollow tests=0 run (forge matches nothing) — historically saved
@@ -458,6 +526,7 @@ export async function runAdjudicationChain(
       address: ctx.targetAddress,
       chainId: ctx.chainId ?? undefined,
       testCode,
+      ...(ctx.pocToken ? { tokenAddress: ctx.pocToken } : {}),
     });
     verdict = verdictFromRunStatus(poc.status, poc.logs ?? "");
     logs = poc.logs ?? "";
@@ -479,6 +548,7 @@ export async function runAdjudicationChain(
             address: ctx.targetAddress,
             chainId: ctx.chainId ?? undefined,
             testCode,
+            ...(ctx.pocToken ? { tokenAddress: ctx.pocToken } : {}),
           });
           verdict = verdictFromRunStatus(poc.status, poc.logs ?? "");
           logs = poc.logs ?? "";
@@ -541,7 +611,9 @@ export async function runAdjudicationChain(
           ? "PoC did not reproduce on the fork — suggesting False positive."
           : verdict === "no_tests"
             ? "The executed PoC evidenced zero tests, so there is no verdict — suggesting Needs info."
-            : verdict === "skipped"
+            : verdict === "unadapted"
+              ? "The executed PoC was an unadapted template scaffold — it aborted on its own TODO precondition, so there is no verdict — suggesting Needs info."
+              : verdict === "skipped"
               ? "The run was skipped — the target holds no value at stake, so nothing was tested. A skip is not evidence about the bug — suggesting Needs info."
               : "The run ended in an error, which is not evidence either way — suggesting Needs info.",
   });

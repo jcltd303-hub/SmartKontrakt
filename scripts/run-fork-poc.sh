@@ -163,7 +163,11 @@ for RPC_URL in "${RPC_CANDIDATES[@]}"; do
   # PASS` verdict is a false PASS when the test file is missing or has no
   # test functions. Capture output and fail loudly on zero matches.
   FORGE_STATUS=0
+  # POC_TOKEN passes through ONLY when set in the caller's environment
+  # (template 46 judges that token instead of the target-as-own-token);
+  # an empty value would break the template's vm.envOr address parse.
   POC_TARGET="$TARGET" POC_FORK_BLOCK="${BLOCK:-0}" POC_RPC_URL="$ANVIL_URL" \
+    ${POC_TOKEN:+POC_TOKEN="$POC_TOKEN"} \
     forge test --fork-url "$ANVIL_URL" --match-path "$TEST_FILE" -vvv >"$FORGE_LOG" 2>&1 || FORGE_STATUS=$?
   cat "$FORGE_LOG"
   stop_anvil

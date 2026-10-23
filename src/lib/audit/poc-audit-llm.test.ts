@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   createRepairBodyResolver,
+  externalTokenCandidate,
   fourbyteForStoredReport,
   pocAuditReviewPayload,
 } from "./poc-audit-llm.ts";
@@ -192,5 +193,63 @@ describe("createRepairBodyResolver — full stored body for the direct path", ()
       assert.equal(resolved.body, "snippet");
       assert.match(resolved.note ?? "", /No stored contract body/);
     }
+  });
+});
+
+describe("externalTokenCandidate — POC_TOKEN source (audit class E1)", () => {
+  const TARGET = "0x1111111111111111111111111111111111111111";
+  const TOK_A = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const TOK_B = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const holding = (partial: Record<string, unknown>) => ({
+    kind: "erc20",
+    address: TOK_A,
+    symbol: "T",
+    name: null,
+    decimals: 18,
+    raw: "1000",
+    amount: 1,
+    priceUsd: 1,
+    valueUsd: 10,
+    priceSource: null,
+    ...partial,
+  }) as never;
+  const reportWith = (holdings: unknown) =>
+    ({ inventory: { value: { holdings } } }) as unknown as Pick<Report, "inventory">;
+
+  it("picks the most valuable external ERC-20 holding", () => {
+    const report = reportWith([
+      holding({ address: TOK_A, valueUsd: 10 }),
+      holding({ address: TOK_B, valueUsd: 250 }),
+    ]);
+    assert.equal(externalTokenCandidate(report, TARGET), TOK_B);
+  });
+
+  it("skips the target itself, native holdings, and zero balances", () => {
+    const report = reportWith([
+      holding({ address: TARGET, valueUsd: 9999 }),
+      holding({ address: null, kind: "native", valueUsd: 8888 }),
+      holding({ address: TOK_A, raw: "0", valueUsd: 7777 }),
+      holding({ address: TOK_B, valueUsd: 5 }),
+    ]);
+    assert.equal(externalTokenCandidate(report, TARGET), TOK_B);
+  });
+
+  it("an unpriced holding (valueUsd null) still counts, ranked last", () => {
+    const report = reportWith([
+      holding({ address: TOK_A, valueUsd: null }),
+      holding({ address: TOK_B, valueUsd: 1 }),
+    ]);
+    assert.equal(externalTokenCandidate(report, TARGET), TOK_B);
+    assert.equal(externalTokenCandidate(reportWith([holding({ valueUsd: null })]), TARGET), TOK_A);
+  });
+
+  it("returns null without a valuation or qualifying holdings", () => {
+    assert.equal(externalTokenCandidate(null, TARGET), null);
+    assert.equal(externalTokenCandidate(reportWith([]), TARGET), null);
+    assert.equal(externalTokenCandidate(reportWith([holding({ address: TARGET })]), TARGET), null);
+    assert.equal(
+      externalTokenCandidate({ inventory: {} } as unknown as Pick<Report, "inventory">, TARGET),
+      null,
+    );
   });
 });

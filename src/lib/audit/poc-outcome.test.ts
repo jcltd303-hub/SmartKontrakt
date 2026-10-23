@@ -8,8 +8,17 @@ import {
   hasSkipSentinel,
   hasZeroTestEvidence,
   savedStatusFromRun,
+  hasUnadaptedEvidence,
+  unadaptedTemplateCheck,
+  unadaptedTemplateOutput,
+  TODO_ABORT_MARKERS,
+  UNADAPTED_SENTINEL,
   NO_TESTS_GENERATION_INSTRUCTION,
 } from "./poc-outcome.ts";
+import {
+  POC_FALLBACK_TEMPLATES,
+  POC_FALLBACK_TODO_REQUIREMENTS,
+} from "./poc-fallbacks.ts";
 
 describe("countExecutableTestFunctions", () => {
   it("counts zero for a template/attack snippet with no test function", () => {
@@ -221,5 +230,123 @@ describe("UI counter math over a fabricated mixed archive", () => {
     assert.deepEqual(buckets, { passed: 1, failed: 2, error: 2, no_tests: 2, skipped: 2, unrun: 2 });
     const sum = Object.values(buckets).reduce((a, b) => a + b, 0);
     assert.equal(sum, rows.length);
+  });
+});
+
+describe("unadaptedTemplateCheck — the TODO pre-check", () => {
+  const ALL_TODO: Record<string, string[]> = {
+    "03-reentrancy-erc777.t.sol": ["TOKEN"],
+    "04-reentrancy-erc721.t.sol": ["PRICE"],
+    "09-tx-origin-phishing.t.sol": ["OWNER"],
+    "16-oracle-manipulation.t.sol": ["ROUTER", "TOKEN_IN", "TOKEN_OUT", "WHALE"],
+    "17-slippage-sandwich.t.sol": ["ROUTER", "TOKEN_IN", "TOKEN_OUT", "VICTIM", "WHALE"],
+    "18-signature-replay.t.sol": ["MESSAGE_HASH"],
+    "19-signature-malleability.t.sol": ["MESSAGE_HASH"],
+    "22-msg-value-loop.t.sol": ["PRICE"],
+    "35-flash-loan-generic.t.sol": ["POOL", "ASSET"],
+    "36-merkle-double-claim.t.sol": ["proof", "AMOUNT"],
+    "37-approval-abuse.t.sol": ["TOKEN", "VICTIM", "SPENDER"],
+    "38-governance-flash-vote.t.sol": ["WHALE"],
+    "40-erc4626-inflation.t.sol": ["WHALE"],
+  };
+
+  it("flags every TODO-blocked template as shipped, naming exactly its declared constants", () => {
+    for (const [file, names] of Object.entries(ALL_TODO)) {
+      const hit = unadaptedTemplateCheck(POC_FALLBACK_TEMPLATES[file]);
+      assert.ok(hit, `${file} should be flagged unadapted as shipped`);
+      assert.equal(hit.file, file);
+      assert.deepEqual([...hit.unfilled].sort(), [...names].sort(), `${file} unfilled set`);
+    }
+  });
+
+  it("the generated TODO map and this test's expectation agree (13 templates)", () => {
+    assert.deepEqual(
+      Object.keys(POC_FALLBACK_TODO_REQUIREMENTS).sort(),
+      Object.keys(ALL_TODO).sort(),
+    );
+    for (const [file, names] of Object.entries(ALL_TODO)) {
+      assert.deepEqual([...POC_FALLBACK_TODO_REQUIREMENTS[file]].sort(), [...names].sort(), file);
+    }
+  });
+
+  it("an adapted template (constants filled) is NOT flagged", () => {
+    const t09 = POC_FALLBACK_TEMPLATES["09-tx-origin-phishing.t.sol"].replace(
+      "OWNER = address(0)",
+      "OWNER = address(0x1234567890AbcdEF1234567890aBcdef12345678)",
+    );
+    assert.notEqual(t09, POC_FALLBACK_TEMPLATES["09-tx-origin-phishing.t.sol"]);
+    assert.equal(unadaptedTemplateCheck(t09), null);
+
+    const t22 = POC_FALLBACK_TEMPLATES["22-msg-value-loop.t.sol"].replace(
+      "PRICE = 0;",
+      "PRICE = 0.05 ether;",
+    );
+    assert.notEqual(t22, POC_FALLBACK_TEMPLATES["22-msg-value-loop.t.sol"]);
+    assert.equal(unadaptedTemplateCheck(t22), null);
+  });
+
+  it("a partially adapted template names only the constants still unfilled", () => {
+    const t36 = POC_FALLBACK_TEMPLATES["36-merkle-double-claim.t.sol"].replace(
+      "AMOUNT = 0;",
+      "AMOUNT = 100 ether;",
+    );
+    assert.notEqual(t36, POC_FALLBACK_TEMPLATES["36-merkle-double-claim.t.sol"]);
+    const hit = unadaptedTemplateCheck(t36);
+    assert.ok(hit);
+    assert.equal(hit.file, "36-merkle-double-claim.t.sol");
+    assert.deepEqual(hit.unfilled, ["proof"]);
+  });
+
+  it("does not flag non-template sources or TODO-free templates", () => {
+    assert.equal(unadaptedTemplateCheck("contract Attack { function exploit() public {} }"), null);
+    assert.equal(unadaptedTemplateCheck(""), null);
+    assert.equal(unadaptedTemplateCheck(POC_FALLBACK_TEMPLATES["06-open-drain.t.sol"]), null);
+    assert.equal(unadaptedTemplateCheck(POC_FALLBACK_TEMPLATES["46-token-rescue.t.sol"]), null);
+  });
+
+  it("every TODO abort marker appears verbatim in a shipped template source", () => {
+    const allSources = Object.values(POC_FALLBACK_TEMPLATES).join("\n");
+    for (const marker of TODO_ABORT_MARKERS) {
+      assert.ok(allSources.includes(marker), `marker not in any template: ${marker}`);
+    }
+  });
+
+  it("the saved output text carries the sentinel and names file + constants", () => {
+    const out = unadaptedTemplateOutput("09-tx-origin-phishing.t.sol", ["OWNER"]);
+    assert.ok(out.includes(UNADAPTED_SENTINEL));
+    assert.ok(out.includes("09-tx-origin-phishing.t.sol"));
+    assert.ok(out.includes("OWNER"));
+    assert.ok(hasUnadaptedEvidence(out));
+  });
+});
+
+describe("unadapted reclassification — savedStatusFromRun / effectivePocStatus", () => {
+  const abortLogs =
+    "Finding input SHA3-256: x\n[SmartPoC | Foundry] target=0xa chain=ethereum tests=1\n[FAIL: revert: set OWNER to the trusted victim account] test_exploit()";
+
+  it("a failed run that aborted on a TODO precondition saves as unadapted", () => {
+    assert.equal(savedStatusFromRun({ status: "failed", logs: abortLogs }), "unadapted");
+  });
+
+  it("an error run carrying the pre-check output saves as unadapted", () => {
+    assert.equal(
+      savedStatusFromRun({ status: "error", logs: unadaptedTemplateOutput("22-msg-value-loop.t.sol", ["PRICE"]) }),
+      "unadapted",
+    );
+  });
+
+  it("a passed run is never reclassified, even with marker-like text", () => {
+    assert.equal(savedStatusFromRun({ status: "passed", logs: abortLogs }), "passed");
+  });
+
+  it("a plain failed run without TODO evidence stays failed", () => {
+    assert.equal(savedStatusFromRun({ status: "failed", logs: "0 passed; 1 failed" }), "failed");
+  });
+
+  it("stored failed/error rows with TODO-abort output read as unadapted", () => {
+    assert.equal(effectivePocStatus("failed", abortLogs), "unadapted");
+    assert.equal(effectivePocStatus("error", abortLogs), "unadapted");
+    assert.equal(effectivePocStatus("failed", "0 passed; 1 failed"), "failed");
+    assert.equal(effectivePocStatus("error", "All RPC providers failed"), "error");
   });
 });

@@ -202,10 +202,16 @@ function validateRun(body) {
   if (body.rpcUrls !== undefined) {
     if (!Array.isArray(body.rpcUrls)) return "rpcUrls must be an array of strings";
   }
+  if (
+    body.tokenAddress !== undefined &&
+    (typeof body.tokenAddress !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(body.tokenAddress))
+  ) {
+    return "tokenAddress must be 0x + 40 hex chars";
+  }
   return null;
 }
 
-async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls }) {
+async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls, tokenAddress }) {
   const started = Date.now();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "sk-poc-"));
   try {
@@ -278,6 +284,11 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls })
         POC_TARGET: address,
         POC_FORK_BLOCK: String(blockNumber ?? 0),
         POC_RPC_URL: candidate,
+        // POC_TOKEN only when the caller supplied one (validated as an
+        // address by validateRun): template 46 judges that token's
+        // balance instead of defaulting to the target-as-its-own-token.
+        // Absent = unset, never an empty string (envOr would parse "").
+        ...(tokenAddress ? { POC_TOKEN: tokenAddress } : {}),
         RPC_URL: candidate,
         MAINNET_RPC_URL: candidate,
         ARBITRUM_RPC_URL: candidate,
@@ -418,6 +429,7 @@ const server = http.createServer((req, res) => {
           blockNumber: body.blockNumber,
           rpcUrl,
           rpcUrls: body.rpcUrls,
+          tokenAddress: body.tokenAddress,
         });
         console.log(
           `[${new Date().toISOString()}] /run-poc address=${body.address} passed=${result.passed} ok=${result.ok} durationMs=${result.durationMs} rpc=${result.rpcUrl ?? "-"}${result.error ? ` error=${result.error}` : ""}`,

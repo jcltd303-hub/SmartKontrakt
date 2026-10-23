@@ -31,7 +31,7 @@
 // anon keys only) without importing it, so this module stays usable
 // from any client context.
 
-export type PocRunStatus = "passed" | "failed" | "error" | "timed_out" | "skipped" | "no_tests";
+export type PocRunStatus = "passed" | "failed" | "error" | "timed_out" | "skipped" | "no_tests" | "unadapted";
 
 export type PocRunResult = {
   /** UUID identifying this run. Stable across save retries. */
@@ -67,7 +67,7 @@ const MAX_SOURCE_CHARS = 120_000;
 const MAX_OUTPUT_CHARS = 1_000_000;
 const SAVE_TIMEOUT_MS = 30_000;
 
-const POC_RUN_STATUSES: ReadonlySet<string> = new Set(["passed", "failed", "error", "timed_out", "skipped", "no_tests"]);
+const POC_RUN_STATUSES: ReadonlySet<string> = new Set(["passed", "failed", "error", "timed_out", "skipped", "no_tests", "unadapted"]);
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 /**
@@ -95,7 +95,7 @@ export function validatePocRunResult(result: PocRunResult): void {
     throw new Error(`PoC run source exceeds the ${MAX_SOURCE_CHARS}-character limit; refusing to save rather than silently truncating.`);
   }
   if (typeof result.status !== "string" || !POC_RUN_STATUSES.has(result.status)) {
-    throw new Error("PoC run status must be one of passed, failed, error, timed_out, skipped, no_tests.");
+    throw new Error("PoC run status must be one of passed, failed, error, timed_out, skipped, no_tests, unadapted.");
   }
   const started = Date.parse(result.startedAt);
   const finished = Date.parse(result.finishedAt);

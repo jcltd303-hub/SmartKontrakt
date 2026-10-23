@@ -124,3 +124,42 @@ export function createRepairBodyResolver(loadStoredBody: StoredBodyLoader): {
     },
   };
 }
+
+/**
+ * The external token a token-rescue run (template 46) should judge for
+ * this target, from the stored scan's valuation (report.inventory
+ * .value.holdings — the analyzer's persisted holdings inventory).
+ *
+ * Template 46 reads POC_TOKEN: when set, it judges the target's
+ * balance of THAT token; unset, it can only test the target-as-its-
+ * own-token case. The candidate is the target's most valuable EXTERNAL
+ * ERC-20 holding: kind "erc20", a real address, not the target itself,
+ * and a non-zero raw balance. Greatest valueUsd wins; holdings without
+ * a USD value rank last (a known balance with no price still beats no
+ * candidate at all). Returns null when the stored report carries no
+ * valuation or no qualifying holding — the run then keeps the
+ * own-token default, unchanged.
+ */
+export function externalTokenCandidate(
+  report: Pick<Report, "inventory"> | null | undefined,
+  targetAddress: string | null | undefined,
+): string | null {
+  const holdings = report?.inventory?.value?.holdings;
+  if (!holdings || holdings.length === 0) return null;
+  const target = (targetAddress ?? "").toLowerCase();
+  let best: string | null = null;
+  let bestValue = Number.NEGATIVE_INFINITY;
+  for (const h of holdings) {
+    if (h.kind !== "erc20" || !h.address) continue;
+    if (target && h.address.toLowerCase() === target) continue;
+    if (!h.raw || h.raw === "0") continue;
+    // Unpriced holdings rank below every priced one (even $0) but
+    // still count when nothing priced exists.
+    const value = h.valueUsd ?? -1;
+    if (value > bestValue) {
+      bestValue = value;
+      best = h.address;
+    }
+  }
+  return best;
+}

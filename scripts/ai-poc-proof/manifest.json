@@ -1,6 +1,6 @@
 {
  "version": 1,
- "description": "AI-PoC proof suite manifest: one entry per fallback-library type in foundry/poc-fallbacks/index.json (46 on current main; the originating brief said 41 -- main gained 07b/42/43/44/45 and the suite covers every type the index lists). fixture = the vulnerable contract(s) the template runs against on a local anvil; adapt = literal find/replace pairs applied to the template source for the dry run (the TODO constants a human would fill in for a real target); placeholders {{addr:NAME}}, {{target}}, {{acct0..2}}, {{merkleRoot}}, {{tsPlus12h}} are resolved by run.mjs after deployment. In live mode no adaptations are applied: the AI gets the same fixture + finding through the app's real prompt path.",
+ "description": "AI-PoC proof suite manifest: one entry per fallback-library type in foundry/poc-fallbacks/index.json (47 on current main; the originating brief said 41 -- main gained 07b/42/43/44/45/46 and the suite covers every type the index lists). fixture = the vulnerable contract(s) the template runs against on a local anvil; adapt = literal find/replace pairs applied to the template source for the dry run (the TODO constants a human would fill in for a real target); placeholders {{addr:NAME}}, {{target}}, {{acct0..2}}, {{merkleRoot}}, {{tsPlus12h}} are resolved by run.mjs after deployment. In live mode no adaptations are applied: the AI gets the same fixture + finding through the app's real prompt path.",
  "types": [
   {
    "id": "01-reentrancy-classic",
@@ -1259,6 +1259,22 @@
      "value": "2ether"
     }
    ]
+  },
+  {
+   "id": "46-token-rescue",
+   "file": "46-token-rescue.t.sol",
+   "detector": "token-drain",
+   "scenario": "Unprotected ERC-20 rescue (token drain to a fixed recipient)",
+   "fixture": "46-token-rescue.sol",
+   "contractName": "RescueToken",
+   "flaw": "rescueERC20(address,uint256) has no access check: any caller can move the contract's entire ERC-20 balance to the fixed dev wallet. The fixture is its own token and holds its supply itself, the own-token case template 46 judges when POC_TOKEN is unset.",
+   "deployments": [
+    {
+     "name": "token",
+     "contract": "RescueToken"
+    }
+   ],
+   "target": "token"
   }
  ]
 }

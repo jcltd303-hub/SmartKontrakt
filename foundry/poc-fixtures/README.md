@@ -8,12 +8,39 @@ harness that must reproduce the known bug.
 Why both. A verbatim port alone cannot run against a stranger's target — wrong
 ABI, wrong storage layout — so it proves nothing about the target. A pattern
 alone cannot be *shown* to work: you cannot tell a harness that reproduces a bug
-from one that silently passes. Together they give a measurable claim: the fixture
-proves the pattern reproduces a **known** vulnerability, and the pattern is what
-scales to real targets. This is also how the literature measures itself —
+from one that silently passes. Together they give a measurable claim about the
+vulnerability **class**: the fixture proves the class reproduces on a **known**
+vulnerable contract (and does not fire on its fixed variant), and the pattern is
+what scales to real targets. This is also how the literature measures itself —
 SmartPoC reports confirmation precision/recall on the SmartBugs-Vul and
 FORGE-Vul benchmarks, and PoPoC keeps manually verified, containerized
 reproductions for the same reason.
+
+**Precision about what is proven here.** The harness paired with each port is a
+bespoke test written for that port — it is **not** the shipped fallback template
+from `foundry/poc-fallbacks/`, and `check:fixtures` executes **0 of the 47
+shipped templates**. What the shipped templates carry instead:
+
+- compile + structural verification (`npm run check:fallbacks`, plus the
+  generated-module unit tests);
+- end-to-end execution against purpose-built per-type fixtures by the
+  ai-poc-proof suite's dry run (`scripts/ai-poc-proof/`) — with the templates'
+  TODO constants adapted per its manifest, exactly as a human would adapt them
+  for a real target;
+- individual fork proofs where noted in a template's header (e.g. 06 and 46
+  against the FUUU field case).
+
+**The gap.** Executing the shipped templates *unmodified* against these ports
+is not wired. The ports' deployment setup (constructor args, funding, token and
+whale provisioning) lives inside each bespoke harness's test code, not in a
+machine-readable manifest the templates could be run from, and several
+templates judge state a port does not provide (DEX pairs, whale balances,
+external token holdings). Closing it takes: a per-template manifest mapping
+each dataset-backed template to its port + setup steps + env (`POC_TARGET`,
+`POC_TOKEN`, fork block), an anvil runner reusing the ai-poc-proof deployment
+machinery, and a per-template pass over the results — the TODO-gated templates
+would additionally need their manifest adaptations declared, and would be
+reported as adapted runs, not unmodified ones.
 
 ## The precision half
 

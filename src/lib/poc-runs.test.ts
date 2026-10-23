@@ -139,8 +139,16 @@ describe("savePocRun validation", () => {
   it("rejects a bad status", async () => {
     await assert.rejects(
       savePocRun(validResult({ status: "ok" as PocRunResult["status"] }), validConfig()),
-      /passed, failed, error, timed_out, skipped, no_tests/,
+      // "unadapted" joined the vocabulary with the TODO pre-check
+      // (poc-outcome.ts): an unadapted template scaffold is a saved
+      // outcome kind, distinct from a verdict and from an error.
+      /passed, failed, error, timed_out, skipped, no_tests, unadapted/,
     );
+  });
+
+  it("accepts the unadapted status", async () => {
+    await savePocRun(validResult({ status: "unadapted" }), validConfig());
+    assert.equal(calls.length, 1);
   });
 
   it("rejects oversize source and oversize output without truncating", async () => {

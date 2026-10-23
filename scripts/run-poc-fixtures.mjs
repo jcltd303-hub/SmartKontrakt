@@ -8,6 +8,13 @@
  * fixed variant. The second half is the precision check: a harness that fires
  * on patched code is a false positive.
  *
+ * Precision about scope: the harnesses here are bespoke tests written per
+ * port. This suite proves the vulnerability CLASSES reproduce (and do not
+ * fire on fixed code); it executes 0 of the shipped fallback templates in
+ * foundry/poc-fallbacks/. Those are compile-verified by check:fallbacks and
+ * executed end-to-end (TODO-adapted) by the ai-poc-proof dry run — see
+ * foundry/poc-fixtures/README.md for the exact claims and the open gap.
+ *
  * Requires `forge` on PATH:
  *   node scripts/run-poc-fixtures.mjs      (npm run check:fixtures)
  *

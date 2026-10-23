@@ -52,10 +52,13 @@ import {
   effectivePocStatus,
   ensureExecutablePocTests,
   savedStatusFromRun,
+  unadaptedTemplateCheck,
+  unadaptedTemplateOutput,
   type SavedPocStatus,
 } from "@/lib/audit/poc-outcome";
 import {
   createRepairBodyResolver,
+  externalTokenCandidate,
   pocAuditReviewPayload,
   type RepairBodyResolution,
 } from "@/lib/audit/poc-audit-llm";
@@ -163,7 +166,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   // from the actionable scope by default; the toggle includes them
   // deliberately.
   const [showPresenceOnly, setShowPresenceOnly] = useState<boolean>(false);
-  const [statusFilter, setStatusFilter] = useState<"all" | "passed" | "failed" | "error" | "no_tests" | "skipped" | "unrun">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "passed" | "failed" | "error" | "no_tests" | "unadapted" | "skipped" | "unrun">("all");
   
   // Execution state per finding
   const [executingMap, setExecutingMap] = useState<Record<string, {
@@ -371,6 +374,71 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
       return false;
     }
 
+    // Unadapted-template pre-check (shared with the adjudication chain
+    // — poc-outcome.ts): the prepared PoC IS a fallback template whose
+    // required TODO constants are still zero, so it would abort on its
+    // own precondition and file as a verdict it never earned. Save the
+    // outcome as "unadapted" WITHOUT calling the Foundry backend — the
+    // same deliberate-non-run shape as the no_tests gate above. An
+    // adapted template (constants filled) fails this check and runs.
+    const todoCheck = unadaptedTemplateCheck(testCode);
+    if (todoCheck) {
+      const finishedAt = new Date().toISOString();
+      const bodyNote = await snippetFallbackNote();
+      const displayLogs = `Finding input SHA3-256: ${pocInputDigest(finding.exploitSolidity)}\n${wrapped?.note ? `${wrapped.note}\n` : ""}${bodyNote ? `${bodyNote}\n` : ""}${unadaptedTemplateOutput(todoCheck.file, todoCheck.unfilled)}`;
+      try {
+        await saveFindingPocResultFn({
+          data: {
+            findingId: finding.id,
+            scanId: finding.scanId,
+            status: "unadapted",
+            source: testCode,
+            output: displayLogs,
+            durationMs: 0,
+            chainId: finding.chainId ?? "1",
+            targetAddress,
+            exitCode: null,
+            truncated: displayLogs.length > 50000,
+          },
+        });
+        setFindings((prev) =>
+          prev.map((f) =>
+            f.id === finding.id
+              ? { ...f, pocStatus: "unadapted", pocOutput: displayLogs, pocDurationMs: 0, pocRunAt: finishedAt, pocCode: testCode }
+              : f
+          )
+        );
+        setExecutingMap((prev) => ({
+          ...prev,
+          [finding.id]: { running: false, repairing: false, notice: "Unadapted template — saved as unadapted (backend not called)" },
+        }));
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        setExecutingMap((prev) => ({
+          ...prev,
+          [finding.id]: { running: false, repairing: false, notice: `Run error: ${errMsg}` },
+        }));
+      }
+      return false;
+    }
+
+    // POC_TOKEN for token-rescue harnesses (template 46 reads it):
+    // resolve the target's external-token candidate from the parent
+    // scan's stored valuation — lazily, only when the harness actually
+    // references POC_TOKEN, and never fatally (no candidate keeps the
+    // template's own-token default, unchanged).
+    let tokenAddress: string | undefined;
+    if (testCode.includes("POC_TOKEN")) {
+      try {
+        const storedScan = await getScan({ data: { id: finding.scanId } });
+        tokenAddress =
+          externalTokenCandidate(storedScan.report, targetAddress || storedScan.targetAddress) ??
+          undefined;
+      } catch {
+        tokenAddress = undefined;
+      }
+    }
+
     try {
       setExecutingMap((prev) => ({
         ...prev,
@@ -381,6 +449,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
         address: targetAddress,
         chainId: finding.chainId ?? "ethereum",
         testCode,
+        ...(tokenAddress ? { tokenAddress } : {}),
         onProgress: (p) => {
           setExecutingMap((prev) => ({
             ...prev,
@@ -419,6 +488,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
               address: targetAddress,
         chainId: finding.chainId ?? "ethereum",
               testCode,
+              ...(tokenAddress ? { tokenAddress } : {}),
               onProgress: (p) => {
                 setExecutingMap((prev) => ({
                   ...prev,
@@ -664,6 +734,12 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
           aiReview: stored.aiReview ?? null,
           disposition: dispositions[finding.id] ?? null,
           force,
+          // Template 46's POC_TOKEN: the target's most valuable external
+          // ERC-20 holding from the stored scan's valuation, when known.
+          pocToken: externalTokenCandidate(
+            stored.report,
+            finding.targetAddress ?? stored.targetAddress ?? null,
+          ),
         },
         {
           requestAiReview: async ({ contractName, body, findings: scanFindings }) => {
@@ -704,11 +780,12 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
           // pass them through like the workbench does instead of
           // re-mapping to a subset the dep type rejects.
           listRuns: async (findingId) => getFindingPocRunsFn({ data: { findingId } }),
-          runPoc: async ({ address, chainId, testCode }) => {
+          runPoc: async ({ address, chainId, testCode, tokenAddress }) => {
             const poc = await runPocWithRpcRetries(backendUrl, {
               address,
               chainId: chainId ?? "ethereum",
               testCode,
+              ...(tokenAddress ? { tokenAddress } : {}),
             });
             return {
               status: poc.status,
@@ -762,13 +839,15 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
       }));
 
       // Mirror the verdict onto the row, like a manual Run PoC does. The
-      // generation gate's no_tests outcome never executes (runStep
-      // "skipped") but IS saved — mirror it too when it completed, so the
-      // card shows the new status without a refresh.
+      // generation gate's no_tests outcome and the pre-check's
+      // unadapted outcome never execute (runStep "skipped") but ARE
+      // saved — mirror them too when they completed, so the card shows
+      // the new status without a refresh.
       if (
         (outcome.runStep === "executed" ||
           outcome.runStep === "reused" ||
-          (outcome.verdict === "no_tests" && outcome.complete)) &&
+          (outcome.verdict === "no_tests" && outcome.complete) ||
+          (outcome.verdict === "unadapted" && outcome.complete)) &&
         outcome.verdict
       ) {
         const verdict = outcome.verdict;
@@ -861,6 +940,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
     if (statusFilter === "failed" && effStatus !== "failed") return false;
     if (statusFilter === "error" && effStatus !== "error") return false;
     if (statusFilter === "no_tests" && effStatus !== "no_tests") return false;
+    if (statusFilter === "unadapted" && effStatus !== "unadapted") return false;
     if (statusFilter === "skipped" && effStatus !== "skipped") return false;
     if (statusFilter === "unrun" && f.pocStatus) return false;
 
@@ -887,6 +967,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   const unverifiedCount = findings.filter((f) => effectivePocStatus(f.pocStatus, f.pocOutput) === "failed").length;
   const errorCount = findings.filter((f) => effectivePocStatus(f.pocStatus, f.pocOutput) === "error").length;
   const noTestsCount = findings.filter((f) => effectivePocStatus(f.pocStatus, f.pocOutput) === "no_tests").length;
+  const unadaptedCount = findings.filter((f) => effectivePocStatus(f.pocStatus, f.pocOutput) === "unadapted").length;
   const skippedCount = findings.filter((f) => effectivePocStatus(f.pocStatus, f.pocOutput) === "skipped").length;
   const undisposedFiltered = filteredFindings.filter((f) => !dispositions[f.id]);
   const runningAdjudication = Object.values(adjudications).find((a) => a.running);
@@ -1104,6 +1185,14 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
           </div>
 
           <div className="bg-[#12110e] border border-[#2d281f] rounded-xl p-3">
+            <span className="text-[10px] font-mono uppercase text-[#746c60] block">Unadapted</span>
+            <div className="text-xl font-bold font-mono text-[#e8a54b] mt-1 flex items-center gap-1.5">
+              <FileCode className="w-4 h-4" />
+              {unadaptedCount}
+            </div>
+          </div>
+
+          <div className="bg-[#12110e] border border-[#2d281f] rounded-xl p-3">
             <span className="text-[10px] font-mono uppercase text-[#746c60] block">Skipped (no value)</span>
             <div className="text-xl font-bold font-mono text-[#a39886] mt-1 flex items-center gap-1.5">
               <AlertTriangle className="w-4 h-4" />
@@ -1161,6 +1250,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
               ["failed", "failed"],
               ["error", "error"],
               ["no_tests", "no tests"],
+              ["unadapted", "unadapted"],
               ["skipped", "skipped"],
               ["unrun", "unrun"],
             ] as const).map(([st, label]) => (

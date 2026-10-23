@@ -16,6 +16,12 @@ import { applyFourbyteResults, fourbyteResultsFromReport } from "@/lib/audit/fou
 import { resolveFourbyte } from "@/lib/audit/fourbyte.functions";
 import type { ScanSummary, StoredScan } from "@/lib/audit/persist.server";
 import { selectPocFallbacks } from "@/lib/audit/poc-fallbacks";
+import { externalTokenCandidate } from "@/lib/audit/poc-audit-llm";
+import {
+  hasUnadaptedEvidence,
+  unadaptedTemplateCheck,
+  unadaptedTemplateOutput,
+} from "@/lib/audit/poc-outcome";
 import { wrapPocSnippetWithReason } from "@/lib/audit/poc-wrap";
 import { detectProxyArchitecture, type ProxyAnalysis } from "@/lib/audit/proxy-resolver";
 import type { RagChunk } from "@/lib/audit/rag.server";
@@ -567,6 +573,9 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
           aiReview,
           disposition: findingDispositions[dbId] ?? null,
           force,
+          // Template 46's POC_TOKEN: the target's most valuable
+          // external ERC-20 holding from this report's valuation.
+          pocToken: externalTokenCandidate(report, singleAddress.trim() || null),
         },
         {
           requestAiReview: async ({ contractName, body, findings }) =>
@@ -601,11 +610,12 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
             });
           },
           listRuns: async (findingId) => getFindingPocRunsFn({ data: { findingId } }),
-          runPoc: async ({ address, chainId, testCode }) => {
+          runPoc: async ({ address, chainId, testCode, tokenAddress }) => {
             const poc = await runPocWithRpcRetries(getBackendUrl(), {
               address,
               chainId,
               testCode,
+              ...(tokenAddress ? { tokenAddress } : {}),
             });
             return {
               status: poc.status,
@@ -821,6 +831,9 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   };
   const mapFindingPocStatus = (poc: PocResult): PocRunResult["status"] => {
+    // A run that aborted on a template's TODO precondition is an
+    // unadapted scaffold — not a verdict, not an infra error.
+    if (hasUnadaptedEvidence(poc.logs)) return "unadapted";
     if (poc.status === "passed" && NO_TESTS_RE.test(poc.logs ?? "")) return "error";
     if (poc.status === "passed") return "passed";
     if (poc.status === "failed") return "failed";
@@ -946,7 +959,45 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
         }));
         return;
       }
-      const poc = await runPocWithRpcRetries(getBackendUrl(), { address: addr, testCode, chainId: singleAddressChain });
+      // Unadapted-template pre-check (shared with the adjudication
+      // chain and the PoC Audits page): the test about to run IS a
+      // fallback template whose required TODO constants are still
+      // zero — it would abort on its own precondition and file as a
+      // verdict it never earned. Save it as "unadapted" WITHOUT
+      // calling the backend.
+      const todoCheck = unadaptedTemplateCheck(testCode);
+      if (todoCheck) {
+        const result: PocRunResult = {
+          id: runId,
+          source: testCode,
+          status: "unadapted",
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          durationMs: 0,
+          chainId: SUPPORTED_CHAINS.find((c) => c.id === singleAddressChain)?.chainId ?? 1,
+          exitCode: null,
+          output: `Finding input SHA3-256: ${pocInputDigest(source)}\n${unadaptedTemplateOutput(todoCheck.file, todoCheck.unfilled)}`,
+          truncated: false,
+        };
+        setFindingPocRuns((prev) => ({
+          ...prev,
+          [finding.id]: { running: false, result, save: "idle", saveError: null },
+        }));
+        await attemptFindingPocSave(result, finding.id);
+        return;
+      }
+      // POC_TOKEN for token-rescue harnesses (template 46 reads it):
+      // the target's external-token candidate from this report's
+      // valuation, only when the harness references it.
+      const tokenAddress = testCode.includes("POC_TOKEN")
+        ? (externalTokenCandidate(report, addr) ?? undefined)
+        : undefined;
+      const poc = await runPocWithRpcRetries(getBackendUrl(), {
+        address: addr,
+        testCode,
+        chainId: singleAddressChain,
+        ...(tokenAddress ? { tokenAddress } : {}),
+      });
       // Release the run lock as soon as the backend call returns — the
       // save attempt below must not block other runs (it can take up to
       // the 30s save timeout on a failing endpoint). The finally still

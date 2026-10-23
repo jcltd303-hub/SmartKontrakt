@@ -8,7 +8,7 @@ three matching templates from the fallback PoC library
 workbench runs the result against a fork. The fallback templates
 themselves are forge-verified — but an **AI-generated** PoC had never run
 end-to-end. This suite closes that gap: **one proof per type** in
-`foundry/poc-fallbacks/index.json` (46 types on current main).
+`foundry/poc-fallbacks/index.json` (47 types on current main).
 
 ## What a proof is
 

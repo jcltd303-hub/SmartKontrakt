@@ -391,7 +391,9 @@ export function FindingsTab({
                                       ? "text-amber-400 font-bold"
                                       : finding.pocStatus === "no_tests"
                                         ? "text-[#e8a54b] font-bold"
-                                        : finding.pocStatus === "skipped"
+                                        : finding.pocStatus === "unadapted"
+                                          ? "text-[#e8a54b] font-bold"
+                                          : finding.pocStatus === "skipped"
                                           ? "text-[#a39886] font-bold"
                                           : "text-red-400 font-bold"
                                 }

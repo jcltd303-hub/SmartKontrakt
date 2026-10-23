@@ -2,7 +2,7 @@
 /**
  * AI-PoC proof suite — one end-to-end proof per fallback-library type.
  *
- * For each type in foundry/poc-fallbacks/index.json (46 on current
+ * For each type in foundry/poc-fallbacks/index.json (47 on current
  * main; the suite covers every type the index lists):
  *   1. deploy the type's vulnerable fixture (fixtures/*.sol, manifest.json)
  *      to a local anvil and run its setup steps;

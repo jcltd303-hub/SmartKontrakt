@@ -168,7 +168,7 @@ jobs and only one of them can run against a stranger's contract:
 | Layer | What it is | Why |
 | --- | --- | --- |
 | `foundry/poc-fallbacks/` | tailored **pattern** harnesses, wired to the target's real ABI | must run against any deployed target, whose ABI and storage layout differ from any dataset contract |
-| `foundry/poc-fixtures/` | verbatim, modernized **ports** of specific SmartBugs Curated contracts + the harness that reproduces them | ground truth: proves the pattern actually reproduces a known bug, and — run against a fixed variant — does not fire on patched code |
+| `foundry/poc-fixtures/` | verbatim, modernized **ports** of specific SmartBugs Curated contracts + a bespoke harness per port that reproduces its bug | ground truth for the vulnerability **classes**: proves each class reproduces on a known bug, and — run against a fixed variant — does not fire on patched code. (The harnesses are bespoke per port; this suite executes 0 of the shipped fallback templates — see `foundry/poc-fixtures/README.md`.) |
 
 This mirrors how the field measures itself: [Immunefi's PoC templates](https://github.com/immunefi-team/forge-poc-templates)
 are reusable *patterns* per vulnerability class precisely because "design

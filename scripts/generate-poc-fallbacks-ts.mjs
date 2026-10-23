@@ -48,6 +48,17 @@ const notPocable = [
   ...new Set((index.notPocable ?? []).flatMap((entry) => entry.detectors ?? [])),
 ].sort();
 
+// Per-template TODO preconditions (index.json `todo`): the names of the
+// template constants an adapter MUST fill before the harness can judge a
+// target. As shipped they hold zero values and the template aborts on its
+// own require before testing anything, so a direct-path run of the
+// unadapted template is a scaffold abort, not a verdict. The run paths
+// consult this map (via poc-outcome.ts) BEFORE spending a backend run.
+const todoRequirements = {};
+for (const f of index.fallbacks) {
+  if (Array.isArray(f.todo) && f.todo.length > 0) todoRequirements[f.file] = f.todo;
+}
+
 // Full catalog (file -> scenario + detectors + SmartBugs category) so the agent
 // knows which template shapes exist when it proposes a hypothesis for a new
 // detector. `smartbugs` is the DASP / SmartBugs-Curated category of the template
@@ -63,12 +74,48 @@ const catalog = index.fallbacks.map((f) => ({
   provenance: f.provenance ?? { kind: "modelled", category: f.smartbugs ?? "other", sources: [] },
 }));
 
-// SmartBugs category -> template file(s).
+// SmartBugs category -> template file(s), built from the DETECTOR side:
+// a template belongs to a category when one of its home detectors
+// (index.json `detectors`) belongs to that category in the SmartBugs
+// registry (src/lib/audit/smartbugs.ts SMARTBUGS_BY_DETECTOR). The old
+// build grouped by each template's own index `smartbugs` label, which
+// stranded templates whose label disagreed with their detectors'
+// categories (a DoS-class template labelled "other" never reached the
+// denial_of_service list an unmapped DoS detector inherits). A template
+// with detectors spanning categories appears in each of them; index
+// order is preserved inside every list. Templates with no home
+// detectors (37, catalog-only) join no category.
+//
+// The generator is plain node and cannot import the TS registry, so
+// the literal is extracted from the smartbugs.ts source and parsed
+// entry by entry. Fail loudly if the registry moves or shrinks — a
+// silent thin parse would quietly empty the category lists.
+const smartbugsSource = fs.readFileSync(
+  path.resolve(srcDir, "..", "..", "src", "lib", "audit", "smartbugs.ts"),
+  "utf8",
+);
+const registryMatch = smartbugsSource.match(/SMARTBUGS_BY_DETECTOR[^=]*=\s*\{([\s\S]*?)\n\};/);
+if (!registryMatch) {
+  throw new Error("generate-poc-fallbacks-ts: SMARTBUGS_BY_DETECTOR literal not found in src/lib/audit/smartbugs.ts");
+}
+const detectorCategory = {};
+for (const m of registryMatch[1].matchAll(/^\s*(?:"([^"]+)"|([A-Za-z0-9_-]+))\s*:\s*"([^"]+)"/gm)) {
+  detectorCategory[m[1] ?? m[2]] = m[3];
+}
+if (Object.keys(detectorCategory).length < 50) {
+  throw new Error(
+    `generate-poc-fallbacks-ts: only ${Object.keys(detectorCategory).length} SMARTBUGS_BY_DETECTOR entries parsed (< 50) — registry format changed?`,
+  );
+}
 const bySmartbugs = {};
 for (const f of index.fallbacks) {
-  const c = f.smartbugs ?? "other";
-  if (!bySmartbugs[c]) bySmartbugs[c] = [];
-  if (!bySmartbugs[c].includes(f.file)) bySmartbugs[c].push(f.file);
+  const cats = new Set(
+    (f.detectors ?? []).map((d) => detectorCategory[d]).filter((c) => typeof c === "string"),
+  );
+  for (const c of cats) {
+    if (!bySmartbugs[c]) bySmartbugs[c] = [];
+    if (!bySmartbugs[c].includes(f.file)) bySmartbugs[c].push(f.file);
+  }
 }
 
 const header = `// GENERATED — do not edit by hand.
@@ -99,6 +146,15 @@ export const POC_FALLBACK_BY_DETECTOR: Record<string, string[]> = ${JSON.stringi
  */
 export const POC_NOT_POCABLE_DETECTORS: string[] = ${JSON.stringify(notPocable, null, 2)};
 
+/**
+ * Fallback template file -> the TODO constants an adapter must fill
+ * before the harness can judge a target (index.json \`todo\`). Templates
+ * absent from this map run unadapted. A direct-path run whose constants
+ * are still zero is filed "unadapted" (poc-outcome.ts) — never as a
+ * verdict or an infra error.
+ */
+export const POC_FALLBACK_TODO_REQUIREMENTS: Record<string, string[]> = ${JSON.stringify(todoRequirements, null, 2)};
+
 /** Full fallback catalog: file -> scenario + detectors + category + provenance. */
 export const POC_FALLBACK_CATALOG: Array<{
   file: string;
@@ -108,7 +164,10 @@ export const POC_FALLBACK_CATALOG: Array<{
   provenance: { kind: "dataset" | "modelled"; category: string; sources: string[]; note?: string };
 }> = ${JSON.stringify(catalog, null, 2)};
 
-/** SmartBugs-Curated (DASP) category -> fallback template file(s). */
+/** SmartBugs-Curated (DASP) category -> fallback template file(s),
+ *  built from the detector side: a template is listed under every
+ *  category one of its home detectors belongs to in the SmartBugs
+ *  registry (SMARTBUGS_BY_DETECTOR). */
 export const POC_FALLBACK_BY_SMARTBUGS: Record<string, string[]> = ${JSON.stringify(bySmartbugs, null, 2)};
 
 const SEVERITY_RANK: Record<string, number> = {

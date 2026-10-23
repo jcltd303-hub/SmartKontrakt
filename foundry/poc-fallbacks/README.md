@@ -18,6 +18,20 @@ export ETH_RPC_URL="https://ethereum.publicnode.com"
 POC_TARGET=0x... ./scripts/run-fork-poc.sh 0x...
 ```
 
+## Verification — what is actually proven
+
+- **Compile + structure:** every template compiles (`npm run check:fallbacks`)
+  and the generated module's selection invariants are unit-tested.
+- **Vulnerability classes:** `npm run check:fixtures` proves each class
+  reproduces on a known SmartBugs port and does not fire on its fixed variant —
+  via bespoke per-port harnesses, **not** by executing these templates (it runs
+  0 of the 47). See `foundry/poc-fixtures/README.md` for the precise claims and
+  the open gap (templates executed unmodified against the ports is not wired).
+- **Template execution:** the ai-poc-proof suite (`scripts/ai-poc-proof/`)
+  dry-runs every template end-to-end against a purpose-built fixture per type,
+  with TODO constants adapted per its manifest; individual templates also carry
+  fork proofs where a header notes one (06, 46).
+
 ## Reading results
 
 | Result | Meaning |
@@ -42,7 +56,12 @@ POC_TARGET=0x... ./scripts/run-fork-poc.sh 0x...
   local copy of chain state. Nothing is broadcast, nothing is spent.
 - **No private keys.** Tests never ask for, accept, or use one.
 - **No secrets.** Only env vars are `POC_TARGET`, `POC_RPC_URL`,
-  `POC_FORK_BLOCK`, `ETH_RPC_URL` (public read-only endpoint).
+  `POC_FORK_BLOCK`, `ETH_RPC_URL` (public read-only endpoint), and —
+  for 46-token-rescue only — `POC_TOKEN` (the external token to judge;
+  unset = the target as its own token). The app supplies `POC_TOKEN`
+  from the scan's stored valuation when it knows the target's token
+  holdings (see `externalTokenCandidate`), and `run-fork-poc.sh`
+  passes it through when set.
 - Tests that prank an owner / whale prove a CAPABILITY (centralization,
   approval abuse) — they do not spend anyone's funds.
 

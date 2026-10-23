@@ -19,6 +19,11 @@
 // - "skipped" — a deliberate non-run: the pre-run value guard found the
 //   target holds no value at stake. Not an error, not a verdict, and
 //   not evidence about the bug either way.
+// - "unadapted" — a deliberate non-run: the PoC is a fallback-library
+//   template whose required TODO constants were never filled, so it
+//   would abort on its own precondition before judging the target.
+//   The pre-check below catches it BEFORE the backend; the TODO-abort
+//   require messages reclassify runs that were executed anyway.
 //
 // findings.poc_status and finding_poc_runs.status are plain text
 // columns (migrations 0004/0008 carry no CHECK constraint), so these
@@ -30,10 +35,15 @@
 // uses for stale severities), so counters tell the truth about the
 // existing archive without rewriting it.
 
+import {
+  POC_FALLBACK_TEMPLATES,
+  POC_FALLBACK_TODO_REQUIREMENTS,
+} from "./poc-fallbacks.ts";
+
 /** The statuses a run can be SAVED under (findings.poc_status /
  *  finding_poc_runs.status). The transport-level "backend_unreachable"
  *  is deliberately not one of them — it saves as "error". */
-export type SavedPocStatus = "passed" | "failed" | "error" | "no_tests" | "skipped";
+export type SavedPocStatus = "passed" | "failed" | "error" | "no_tests" | "skipped" | "unadapted";
 
 /** Forge's own "nothing ran" output shapes, plus the SmartPoC header's
  *  tests=0 marker. A run whose output carries any of these executed
@@ -55,6 +65,39 @@ export function hasSkipSentinel(output: string | null | undefined): boolean {
   return output.includes(SKIP_SENTINEL);
 }
 
+/** The TODO-precondition abort messages of the fallback templates whose
+ *  required constants ship zero (index.json `todo`). Each is the exact
+ *  require string in the shipped template — poc-outcome.test.ts pins
+ *  every entry against the template sources, so a template edit that
+ *  rewords its abort fails the test instead of silently un-matching
+ *  the archive's stored rows. A run whose output carries one of these
+ *  aborted on the scaffold's own precondition: it never judged the
+ *  target, whatever the transport status claims. */
+export const TODO_ABORT_MARKERS: readonly string[] = [
+  "set OWNER to the trusted victim account", // 09
+  "set ROUTER / tokens / WHALE", // 16
+  "set TOKEN_OUT / WHALE", // 16 (second entry point)
+  "set ROUTER / tokens / VICTIM / WHALE", // 17
+  "set MESSAGE_HASH to the target's signed message hash", // 18 + 19
+  "set PRICE to the per-item price", // 22
+  "set TOKEN to the ERC777 token address", // 03
+  "set PRICE to one NFT's mint price", // 04
+  "set AMOUNT + proof to a valid claim for the attacker", // 36
+  "set WHALE to a governance-token holder on this fork", // 38
+  "set WHALE to an asset holder on this fork", // 40
+  "set POOL / ASSET", // 35
+  "set TOKEN / VICTIM / SPENDER", // 37
+];
+
+/** The pre-check's own saved-output prefix (unadaptedTemplateOutput). */
+export const UNADAPTED_SENTINEL = "[SmartPoC] Not run — unadapted fallback template";
+
+export function hasUnadaptedEvidence(output: string | null | undefined): boolean {
+  if (!output) return false;
+  if (output.includes(UNADAPTED_SENTINEL)) return true;
+  return TODO_ABORT_MARKERS.some((marker) => output.includes(marker));
+}
+
 /**
  * Map a FRESH run result to the status it is saved under. The run's own
  * status field is authoritative here — a value-guard skip arrives as
@@ -66,6 +109,15 @@ export function savedStatusFromRun(run: { status: string; logs?: string | null }
   const logs = run.logs ?? "";
   if (run.status === "skipped") return "skipped";
   if (run.status === "no_tests") return "no_tests";
+  if (run.status === "unadapted") return "unadapted";
+  // A run that aborted on a template's TODO precondition never judged
+  // the target — it is an unadapted scaffold, not a failed verdict and
+  // not an infra error. (Checked before the zero-test rule: a setUp
+  // TODO abort can also evidence zero executed tests, and the TODO
+  // evidence is the more specific fact.)
+  if ((run.status === "failed" || run.status === "error") && hasUnadaptedEvidence(logs)) {
+    return "unadapted";
+  }
   if (run.status === "passed" || run.status === "failed") {
     return hasZeroTestEvidence(logs) ? "no_tests" : run.status;
   }
@@ -88,6 +140,12 @@ export function effectivePocStatus(
   output: string | null | undefined,
 ): string | null {
   if (!status) return status ?? null;
+  // Scaffold aborts were filed as "failed" (the require reverted a test)
+  // or "error" before the unadapted kind existed; the stored output's
+  // TODO-abort message reclassifies them on read.
+  if ((status === "error" || status === "failed") && hasUnadaptedEvidence(output)) {
+    return "unadapted";
+  }
   if (status === "error") {
     if (hasZeroTestEvidence(output)) return "no_tests";
     if (hasSkipSentinel(output)) return "skipped";
@@ -250,4 +308,134 @@ export async function ensureExecutablePocTests(
     generationAttempted: true,
     generationNote: "Generation attempt returned no source.",
   };
+}
+
+// ---------------------------------------------------------------------
+// The unadapted-template pre-check.
+//
+// Thirteen fallback templates ship with required TODO constants at
+// zero (index.json `todo`, emitted as POC_FALLBACK_TODO_REQUIREMENTS):
+// an OWNER, a ROUTER, a MESSAGE_HASH, a PRICE… Run as shipped — which
+// is what the cap-1 direct paths do — the template aborts on its own
+// require before judging the target, and the abort used to file as
+// "failed" or "error". Neither is true: no verdict about the target
+// exists. The direct paths therefore run this check BEFORE the
+// backend: when the source IS one of those templates (identity by
+// normalized-source match with TODO initializers blanked on both
+// sides — poc-wrap passes complete test contracts through unchanged,
+// so a template reaches a run path textually intact, and blanking
+// keeps partially adapted variants identifiable) and any required
+// constant is still zero, the run saves as "unadapted" without a
+// backend call.
+// ---------------------------------------------------------------------
+
+let normalizedTemplateCache: Map<string, string> | null = null;
+
+/**
+ * Replace every assignment to one of `names` with a canonical zero
+ * assignment. Identification compares sources with their TODO
+ * initializers blanked on BOTH sides, so a partially or fully adapted
+ * template still identifies as that template — the constants' values
+ * are exactly the adaptation points, and the filled-analysis below
+ * judges them separately. (A constant declared with no initializer at
+ * all — 36's `proof` — has nothing to blank; a variant that
+ * initializes it simply stops identifying here and is still caught on
+ * save by the TODO-abort output evidence if it aborts.)
+ */
+function blankTodoInitializers(code: string, names: readonly string[]): string {
+  let out = code;
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(`\\b${escaped}\\s*=(?![=>])\\s*[^;]+;`, "g"), `${name} = 0;`);
+  }
+  return out;
+}
+
+function normalizedTemplateSources(): Map<string, string> {
+  if (normalizedTemplateCache) return normalizedTemplateCache;
+  const map = new Map<string, string>();
+  for (const [file, names] of Object.entries(POC_FALLBACK_TODO_REQUIREMENTS)) {
+    const source = POC_FALLBACK_TEMPLATES[file];
+    if (source) {
+      map.set(
+        file,
+        blankTodoInitializers(stripCommentsAndStrings(source), names).replace(/\s+/g, ""),
+      );
+    }
+  }
+  normalizedTemplateCache = map;
+  return map;
+}
+
+/** A zero initializer: literal 0 / 0x0…0, a numeric type cast of one,
+ *  or an empty dynamic allocation. Anything else counts as filled. */
+function isZeroInitializer(expr: string): boolean {
+  const e = expr.replace(/\s+/g, "");
+  if (e === "0" || e === "0x0") return true;
+  if (/^0x0+$/.test(e)) return true;
+  const cast = e.match(/^(?:address|bytes32|uint256|uint|int256|int)\((.*)\)$/);
+  if (cast) return isZeroInitializer(cast[1]);
+  if (e === "newbytes(0)" || e === "newbytes[](0)" || e === "newbytes32[](0)") return true;
+  return false;
+}
+
+/**
+ * Whether a TODO constant counts as filled in this source. Adaptation
+ * in this library means editing the constant (the templates direct the
+ * adapter to the declaration), so ANY non-zero assignment to the name
+ * fills it; a declaration holding only zero initializers — or no
+ * initializer at all (36's `bytes32[] public proof;`) — does not. An
+ * array constant adapted by pushing elements in setUp also counts.
+ */
+function todoConstantFilled(code: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // (?!=|>) excludes == comparisons and => arrows: only a real
+  // assignment's initializer counts.
+  const assignRe = new RegExp(`\\b${escaped}\\s*=(?![=>])\\s*([^;]+);`, "g");
+  let sawAssignment = false;
+  let m: RegExpExecArray | null;
+  while ((m = assignRe.exec(code)) !== null) {
+    sawAssignment = true;
+    if (!isZeroInitializer(m[1])) return true;
+  }
+  if (sawAssignment) return false;
+  if (new RegExp(`\\b${escaped}\\s*\\.\\s*push\\s*\\(`).test(code)) return true;
+  return false;
+}
+
+export type UnadaptedTemplateCheck = {
+  /** The library file the source was identified as. */
+  file: string;
+  /** Required TODO constants still at their zero shipped values. */
+  unfilled: string[];
+};
+
+/**
+ * Identify `source` as a fallback template with unfilled TODO
+ * constants. Returns null for non-template sources, for templates
+ * with no TODO requirements, and for templates whose constants are
+ * all filled (an adapted template proceeds to the backend normally).
+ */
+export function unadaptedTemplateCheck(source: string): UnadaptedTemplateCheck | null {
+  if (!source || !source.trim()) return null;
+  const code = stripCommentsAndStrings(source);
+  for (const [file, templateNormalized] of normalizedTemplateSources()) {
+    const required = POC_FALLBACK_TODO_REQUIREMENTS[file] ?? [];
+    const normalized = blankTodoInitializers(code, required).replace(/\s+/g, "");
+    if (normalized !== templateNormalized && !normalized.includes(templateNormalized)) continue;
+    const unfilled = required.filter((name) => !todoConstantFilled(code, name));
+    return unfilled.length > 0 ? { file, unfilled } : null;
+  }
+  return null;
+}
+
+/** The saved output text for a pre-check short-circuit: names the
+ *  template and the unfilled constants, and carries the sentinel the
+ *  read-time reclassification keys on. */
+export function unadaptedTemplateOutput(file: string, unfilled: string[]): string {
+  return (
+    `${UNADAPTED_SENTINEL} ${file}: required TODO constant(s) still unfilled: ${unfilled.join(", ")}. ` +
+    "Run as shipped, the template aborts on its own precondition before judging the target, so no verdict exists. " +
+    "Saved as unadapted — adapt the template's TODO constants to the target (or let the AI path adapt it) and re-run."
+  );
 }
