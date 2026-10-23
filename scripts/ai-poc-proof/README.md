@@ -104,8 +104,8 @@ OPENROUTER_API_KEY=... node scripts/ai-poc-proof/run.mjs
 scripts/ai-poc-proof/
   run.mjs          the runner (plain Node, no build step)
   prompt-path.ts   thin bridge into the app's real modules, run with
-                   `node --experimental-strip-types` (the repo's own
-                   convention for its .ts sources); JSON in, JSON out;
+                   tsx (repo-local node_modules/.bin/tsx, else
+                   `npx -y tsx`); JSON in, JSON out;
                    commands: config | prompt | template | generate |
                    wrap | repair. `config` reports {hasKey, model} —
                    never the key.

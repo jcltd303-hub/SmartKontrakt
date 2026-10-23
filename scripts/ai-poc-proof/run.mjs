@@ -108,6 +108,20 @@ function findBin(name) {
   const candidates = [join(home, ".foundry", "bin", name), name];
   return candidates[0] && existsSync(candidates[0]) ? candidates[0] : name;
 }
+
+// The bridge (prompt-path.ts) is TypeScript. It runs through tsx — the
+// repo-local node_modules/.bin/tsx when present, else `npx -y tsx` (the
+// same way the pipeline worker runs on the phone). Deliberately NOT
+// `node --experimental-strip-types`: distro Node builds can ship without
+// TypeScript support compiled in — observed on the S24 proot install
+// (Node v22.22.1, ERR_NO_TYPESCRIPT) on 2026-10-22, where strip-types
+// exits with empty stdout and the bridge call fails as "non-JSON".
+const TSX_LOCAL = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+function bridgeCommand() {
+  return existsSync(TSX_LOCAL)
+    ? { cmd: TSX_LOCAL, prefix: [] }
+    : { cmd: "npx", prefix: ["-y", "tsx"] };
+}
 const FORGE = findBin("forge");
 const ANVIL = findBin("anvil");
 const CAST = findBin("cast");
@@ -131,14 +145,10 @@ async function run(cmd, args, opts = {}) {
 
 /** Call the prompt-path bridge; returns the parsed JSON object it prints. */
 async function harness(cmd, payload, timeout = 60_000) {
-  const { stdout } = await run(
-    process.execPath,
-    [
-      "--experimental-strip-types",
-      join(SUITE_DIR, "prompt-path.ts"),
-      cmd,
-      JSON.stringify(payload),
-    ],
+  const bridge = bridgeCommand();
+  const { stdout, stderr } = await run(
+    bridge.cmd,
+    [...bridge.prefix, join(SUITE_DIR, "prompt-path.ts"), cmd, JSON.stringify(payload)],
     { cwd: REPO_ROOT, timeout },
   );
   const lines = stdout.trim().split("\n").filter(Boolean);
@@ -146,7 +156,14 @@ async function harness(cmd, payload, timeout = 60_000) {
   try {
     return JSON.parse(last);
   } catch {
-    throw new Error(`prompt-path ${cmd} returned non-JSON: ${last?.slice(0, 300)}`);
+    // Surface the bridge's own error text — discarding stderr here once
+    // reduced a precise ERR_NO_TYPESCRIPT to "non-JSON: undefined" and
+    // cost a full diagnostic round-trip.
+    const errTail = (stderr ?? "").trim().split("\n").slice(-6).join("\n").slice(0, 400);
+    throw new Error(
+      `prompt-path ${cmd} returned non-JSON: ${last?.slice(0, 300)}` +
+        (errTail ? `\nbridge stderr (tail):\n${errTail}` : ""),
+    );
   }
 }
 

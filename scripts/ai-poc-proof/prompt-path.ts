@@ -1,7 +1,9 @@
 // prompt-path.ts — the AI-PoC proof suite's bridge into the app's REAL
 // prompt / template / wrap / repair code. run.mjs shells out to this file
-// (node --experimental-strip-types, the same way the repo's own test
-// script runs TS) so the suite exercises the exact modules the app uses:
+// through tsx (the pipeline worker's TS runner) so the suite exercises the
+// exact modules the app uses. (Not `node --experimental-strip-types`:
+// distro Node builds can lack compiled-in TypeScript support —
+// ERR_NO_TYPESCRIPT on Node v22.22.1, seen on the S24 proot install.)
 //
 //   buildAiReviewPrompt   src/lib/audit/ai-review.server.ts
 //   generateAiSecurityReview (prompt -> OpenRouter -> JSON extraction)
