@@ -24,6 +24,14 @@ describe("suggestDispositionForVerdict", () => {
     assert.equal(suggestDispositionForVerdict("error"), "needs_more_info");
     assert.equal(suggestDispositionForVerdict(null), "needs_more_info");
   });
+
+  it("maps no_tests and skipped to needs_more_info — neither is evidence about the bug", () => {
+    // no_tests: generation produced no executable test function.
+    // skipped: the target holds no value at stake. Both are terminal
+    // outcome kinds, distinct from "error", with the same suggestion.
+    assert.equal(suggestDispositionForVerdict("no_tests"), "needs_more_info");
+    assert.equal(suggestDispositionForVerdict("skipped"), "needs_more_info");
+  });
 });
 
 describe("planAdjudication — the idempotency matrix", () => {
@@ -71,6 +79,18 @@ describe("planAdjudication — the idempotency matrix", () => {
       existingRuns: [{ digest: "other", status: "passed" }, run],
     });
     assert.deepEqual(plan.reuseRun, run);
+  });
+
+  it("reuses stored no_tests and skipped runs for the same digest (terminal outcome kinds)", () => {
+    for (const status of ["no_tests", "skipped"]) {
+      const plan = planAdjudication({
+        hasDisposition: false,
+        hasReview: false,
+        candidateDigest: "abc",
+        existingRuns: [{ digest: "abc", status }],
+      });
+      assert.deepEqual(plan.reuseRun, { digest: "abc", status });
+    }
   });
 
   it("does not reuse a run for a different digest, a non-terminal status, or a null candidate", () => {

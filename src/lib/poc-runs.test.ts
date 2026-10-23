@@ -139,7 +139,7 @@ describe("savePocRun validation", () => {
   it("rejects a bad status", async () => {
     await assert.rejects(
       savePocRun(validResult({ status: "ok" as PocRunResult["status"] }), validConfig()),
-      /passed, failed, error, timed_out/,
+      /passed, failed, error, timed_out, skipped, no_tests/,
     );
   });
 

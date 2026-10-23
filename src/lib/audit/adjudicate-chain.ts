@@ -32,6 +32,11 @@ import {
   type PocVerdict,
 } from "./adjudication.ts";
 import { pocRunKey } from "./poc-run-key.ts";
+import {
+  effectivePocStatus,
+  ensureExecutablePocTests,
+  savedStatusFromRun,
+} from "./poc-outcome.ts";
 import type { AiSecurityReview } from "./ai-review.server.ts";
 import type { Finding } from "./types.ts";
 
@@ -181,20 +186,40 @@ export function failedAdjudicationOutcome(message: string, stoppedAt: ChainStep)
 }
 
 // Forge exits 0 when no test matches, so a "passed" with zero executed
-// tests is a hollow PASS, never a verdict (the standing repo lesson —
-// both existing Run call sites apply this same guard).
-const NO_TESTS_RE = /no tests (match|found)|ran 0 tests|0 passed;\s*0 failed/i;
-
+// tests is a hollow PASS, never a verdict (the standing repo lesson).
+// The status mapping itself lives in poc-outcome.ts, shared with the
+// PoC Audits page: a hollow PASS maps to "no_tests" (not a verdict, not
+// an error), a value-guard skip stays "skipped", and only real failures
+// (compile, backend, RPC/fork, timeout) map to "error". The chain used
+// to fold everything non-verdict into "error" — that conflation is
+// what polluted the Errors bucket with skips and zero-test runs.
 function verdictFromRunStatus(status: string, logs: string): PocVerdict {
-  if (status === "passed" && !NO_TESTS_RE.test(logs)) return "passed";
-  if (status === "failed") return "failed";
+  return savedStatusFromRun({ status, logs });
+}
+
+function verdictFromStoredStatus(status: string, output?: string | null): PocVerdict {
+  // Stored rows predate the no_tests/skipped vocabulary (both were
+  // saved as "error"); effectivePocStatus reclassifies them on read
+  // when the stored output carries the evidence.
+  const eff = effectivePocStatus(status, output);
+  if (eff === "passed" || eff === "failed" || eff === "no_tests" || eff === "skipped") return eff;
   return "error";
 }
 
-function verdictFromStoredStatus(status: string): PocVerdict {
-  if (status === "passed") return "passed";
-  if (status === "failed") return "failed";
-  return "error";
+/**
+ * Terminal-outcome completion override. Most outcomes derive `complete`
+ * from the step states (any skipped step = incomplete), but two
+ * outcomes are complete BY CONSTRUCTION even though the harness step
+ * ends "skipped": the no_tests gate save (nothing executable existed
+ * to run) and a value-guard skip (nothing at stake to test). In both,
+ * the pipeline did everything applicable and persisted a first-class
+ * outcome — marking them INCOMPLETE would present a deliberate,
+ * recorded outcome as a pipeline stoppage, the same misclassification
+ * this vocabulary exists to remove. Applied only after a successful
+ * save; a failed save leaves the outcome incomplete at "saved".
+ */
+function asTerminal(outcome: AdjudicationOutcome): AdjudicationOutcome {
+  return { ...outcome, complete: true, stoppedAt: null };
 }
 
 export async function runAdjudicationChain(
@@ -319,7 +344,7 @@ export async function runAdjudicationChain(
 
   if (plan.reuseRun) {
     const stored = runs.find((r) => r.sourceDigest === plan.reuseRun?.digest);
-    const verdict = verdictFromStoredStatus(plan.reuseRun.status);
+    const verdict = verdictFromStoredStatus(plan.reuseRun.status, stored?.output);
     steps.harness = "reused";
     steps.saved = "reused"; // the run of record is already persisted
     step("harness", "reused");
@@ -354,10 +379,72 @@ export async function runAdjudicationChain(
     });
   }
 
+  // --- Generation gate ----------------------------------------------------
+  // A prepared PoC with ZERO executable test functions can only produce
+  // a hollow tests=0 run (forge matches nothing) — historically saved
+  // as an "error" it never was. Give the LLM one generation attempt to
+  // supply a real test function; if it still has none, save the outcome
+  // as 'no_tests' WITHOUT calling the backend (no wasted fork run). The
+  // shared gate lives in poc-outcome.ts; the PoC Audits page's Run path
+  // applies the identical gate.
+  const gate = await ensureExecutablePocTests(prepared.testCode, async (instruction) => {
+    try {
+      return await deps.repairPoc({
+        contractName: ctx.contractName,
+        originalCode: prepared.testCode,
+        errorLogs: instruction,
+        body: ctx.body,
+      });
+    } catch {
+      return null;
+    }
+  });
+  if (gate.testCount === 0) {
+    steps.harness = "skipped"; // deliberately not executed — nothing to execute
+    step("harness", "skipped");
+    const gateLogs = `Finding input SHA3-256: ${sha3_256(finding.exploitSolidity ?? "")}\n${
+      prepared.note ? `${prepared.note}\n` : ""
+    }[SmartPoC] Not run — the prepared PoC contains no executable test function, so forge would run 0 tests. ${
+      gate.generationNote ?? ""
+    } Saved as no_tests: a generation gap, not an error and not a verdict on the finding.`;
+    let saveError: string | null = null;
+    try {
+      await deps.saveRun({
+        findingId: finding.id,
+        scanId: ctx.scanId,
+        status: "no_tests",
+        source: gate.testCode,
+        output: gateLogs,
+        durationMs: 0,
+        chainId: ctx.chainId,
+        targetAddress: ctx.targetAddress,
+      });
+      steps.saved = "done";
+    } catch (err) {
+      saveError = err instanceof Error ? err.message : String(err);
+      steps.saved = "failed";
+    }
+    step("saved", steps.saved);
+    const outcome = finish({
+      kind: "suggested",
+      verdict: "no_tests",
+      suggestion: suggestDispositionForVerdict("no_tests"),
+      output: gateLogs,
+      testCode: gate.testCode,
+      reviewStep,
+      runStep: "skipped",
+      saveError,
+      message:
+        "PoC generation produced no executable test function for this finding — saved as no-tests without calling the backend. Not evidence about the bug — suggesting Needs info.",
+    });
+    // Terminal outcome (see asTerminal) once the save landed.
+    return saveError ? outcome : asTerminal(outcome);
+  }
+
   // --- Harness step (with one LLM repair on a compile error) ------------
   progress("Running the PoC on the Foundry backend…");
   step("harness", "running");
-  let testCode = prepared.testCode;
+  let testCode = gate.testCode;
   let verdict: PocVerdict;
   let logs: string;
   let durationMs = 0;
@@ -438,7 +525,7 @@ export async function runAdjudicationChain(
   }
   step("saved", steps.saved);
 
-  return finish({
+  const outcome = finish({
     kind: "suggested",
     verdict,
     suggestion: suggestDispositionForVerdict(verdict),
@@ -452,6 +539,14 @@ export async function runAdjudicationChain(
         ? "PoC reproduced on the fork — suggesting Confirmed."
         : verdict === "failed"
           ? "PoC did not reproduce on the fork — suggesting False positive."
-          : "The run ended in an error, which is not evidence either way — suggesting Needs info.",
+          : verdict === "no_tests"
+            ? "The executed PoC evidenced zero tests, so there is no verdict — suggesting Needs info."
+            : verdict === "skipped"
+              ? "The run was skipped — the target holds no value at stake, so nothing was tested. A skip is not evidence about the bug — suggesting Needs info."
+              : "The run ended in an error, which is not evidence either way — suggesting Needs info.",
   });
+  // A value-guard skip is a terminal outcome (see asTerminal): the run
+  // was deliberately not executed, the outcome is of record, and the
+  // pipeline stopped for a reason that is not a failure.
+  return verdict === "skipped" && !saveError ? asTerminal(outcome) : outcome;
 }

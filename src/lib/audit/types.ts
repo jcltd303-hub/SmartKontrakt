@@ -162,7 +162,7 @@ export type AstNode = {
 };
 
 /** Outcome of one Foundry fork-PoC run against the Termux local backend. */
-export type PocStatus = "passed" | "failed" | "error" | "backend_unreachable" | "skipped";
+export type PocStatus = "passed" | "failed" | "error" | "backend_unreachable" | "skipped" | "no_tests";
 
 export type PocResult = {
   executedSource?: string;

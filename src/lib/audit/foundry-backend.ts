@@ -384,7 +384,12 @@ export async function runSmartPoc(
   const summary = result.logs.match(/(\d+) passed;\s*(\d+) failed/i);
   const testCount = summary ? Number(summary[1]) + Number(summary[2]) : (result.logs.match(/\[(?:PASS|FAIL[^\]]*)\]/g) ?? []).length;
   if (["passed", "failed"].includes(result.status) && testCount === 0) {
-    result.status = "error";
+    // Zero executed tests is its own outcome kind, NOT an error: the
+    // harness ran (or matched nothing) but no test function executed,
+    // so there is no verdict and nothing "failed". It persists as
+    // poc_status 'no_tests' (see poc-outcome.ts) instead of polluting
+    // the error bucket.
+    result.status = "no_tests";
     result.error = "No executed Foundry tests were evidenced in the backend output.";
   }
   result.evidence = { engine: "foundry", startedAt, finishedAt: result.runAt,

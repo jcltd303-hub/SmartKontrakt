@@ -38,6 +38,7 @@ export function classifyPocEvidence(input: PocEvidenceInput): PocEvidence {
   if (!result) return { ...base, description: origin === 'template' ? 'Starting point only. Adapt and run before claiming reproduction.' : 'Code is available; reproduction has not been evidenced.' };
   if (result.status === 'failed') return { ...base, description: 'Not reproduced: test assertions failed. This does not establish safety.' };
   if (result.status === 'skipped') return { ...base, description: 'Not run: execution was skipped.' };
+  if (result.status === 'no_tests') return { ...base, description: 'Not run to a verdict: the PoC contained no executable test functions, so the harness ran 0 tests.' };
   if (result.status !== 'passed') return { ...base, description: 'Execution error or backend unavailable. No reproduction verdict.' };
   const logs = result.logs ?? '';
   const unverified = (description: string): PocEvidence => ({ ...base, description });

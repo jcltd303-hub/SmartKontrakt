@@ -47,6 +47,13 @@ import {
   type PocAuditScope,
 } from "@/lib/audit/adjudication";
 import { DISPOSITION_CONFIG, DISPOSITION_ORDER } from "@/components/workbench/presentation";
+import {
+  countExecutableTestFunctions,
+  effectivePocStatus,
+  ensureExecutablePocTests,
+  savedStatusFromRun,
+  type SavedPocStatus,
+} from "@/lib/audit/poc-outcome";
 import { wrapPocSnippet } from "@/lib/audit/poc-wrap";
 import { balanceLabel, nativeSymbol } from "@/lib/audit/balance";
 import {
@@ -67,8 +74,6 @@ interface RecentPocAuditsProps {
   onLoadScanInWorkbench?: (scanId: string) => void;
 }
 
-const NO_TESTS_RE = /no tests (match|found)|ran 0 tests|0 passed;\s*0 failed/i;
-
 function generateRunId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -80,11 +85,13 @@ function generateRunId(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function mapStatus(poc: PocResult): "passed" | "failed" | "error" {
-  if (poc.status === "passed" && NO_TESTS_RE.test(poc.logs ?? "")) return "error";
-  if (poc.status === "passed") return "passed";
-  if (poc.status === "failed") return "failed";
-  return "error";
+// Run result → the status it is saved under. The mapping lives in
+// poc-outcome.ts, shared with the adjudication chain: a hollow
+// zero-test run saves as "no_tests" and a value-guard skip as
+// "skipped" — this function used to fold both into "error", which is
+// what polluted the Errors bucket.
+function mapStatus(poc: PocResult): SavedPocStatus {
+  return savedStatusFromRun({ status: poc.status, logs: poc.logs });
 }
 
 /** Pipeline step chips (fetch ✓ / llm ✓ / harness ✓ / saved ✓) plus the
@@ -151,7 +158,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   // from the actionable scope by default; the toggle includes them
   // deliberately.
   const [showPresenceOnly, setShowPresenceOnly] = useState<boolean>(false);
-  const [statusFilter, setStatusFilter] = useState<"all" | "passed" | "failed" | "error" | "unrun">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "passed" | "failed" | "error" | "no_tests" | "skipped" | "unrun">("all");
   
   // Execution state per finding
   const [executingMap, setExecutingMap] = useState<Record<string, {
@@ -260,6 +267,67 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
     const wrapped = wrapPocSnippet(finding.exploitSolidity);
     if (wrapped) {
       testCode = wrapped.testFile;
+    }
+
+    // Generation gate (shared with the adjudication chain — poc-outcome.ts):
+    // a PoC with no executable test function can only produce a hollow
+    // tests=0 run. One LLM generation attempt; if it still has none, save
+    // the outcome as "no_tests" WITHOUT calling the Foundry backend.
+    if (countExecutableTestFunctions(testCode) === 0) {
+      setExecutingMap((prev) => ({
+        ...prev,
+        [finding.id]: { running: true, repairing: true, notice: "PoC has no executable test function — asking the LLM to generate one..." },
+      }));
+    }
+    const gate = await ensureExecutablePocTests(testCode, async (instruction) => {
+      const repaired = await requestPocRepair({
+        data: {
+          contractName: finding.contractName || finding.scanLabel || "PoCTarget",
+          originalCode: testCode,
+          errorLogs: instruction,
+          body: finding.snippet || finding.exploitSolidity,
+        },
+      });
+      return repaired?.fixedCode ?? null;
+    });
+    testCode = gate.testCode;
+    if (gate.testCount === 0) {
+      const finishedAt = new Date().toISOString();
+      const displayLogs = `Finding input SHA3-256: ${pocInputDigest(finding.exploitSolidity)}\n${wrapped?.note ? `${wrapped.note}\n` : ""}[SmartPoC] Not run — the prepared PoC contains no executable test function, so forge would run 0 tests. ${gate.generationNote ?? ""} Saved as no_tests: a generation gap, not an error and not a verdict on the finding.`;
+      try {
+        await saveFindingPocResultFn({
+          data: {
+            findingId: finding.id,
+            scanId: finding.scanId,
+            status: "no_tests",
+            source: testCode,
+            output: displayLogs,
+            durationMs: 0,
+            chainId: finding.chainId ?? "1",
+            targetAddress,
+            exitCode: null,
+            truncated: displayLogs.length > 50000,
+          },
+        });
+        setFindings((prev) =>
+          prev.map((f) =>
+            f.id === finding.id
+              ? { ...f, pocStatus: "no_tests", pocOutput: displayLogs, pocDurationMs: 0, pocRunAt: finishedAt, pocCode: testCode }
+              : f
+          )
+        );
+        setExecutingMap((prev) => ({
+          ...prev,
+          [finding.id]: { running: false, repairing: false, notice: "No executable tests — saved as no-tests (backend not called)" },
+        }));
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        setExecutingMap((prev) => ({
+          ...prev,
+          [finding.id]: { running: false, repairing: false, notice: `Run error: ${errMsg}` },
+        }));
+      }
+      return false;
     }
 
     try {
@@ -646,8 +714,16 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
         [finding.id]: { running: false, outcome },
       }));
 
-      // Mirror the verdict onto the row, like a manual Run PoC does.
-      if ((outcome.runStep === "executed" || outcome.runStep === "reused") && outcome.verdict) {
+      // Mirror the verdict onto the row, like a manual Run PoC does. The
+      // generation gate's no_tests outcome never executes (runStep
+      // "skipped") but IS saved — mirror it too when it completed, so the
+      // card shows the new status without a refresh.
+      if (
+        (outcome.runStep === "executed" ||
+          outcome.runStep === "reused" ||
+          (outcome.verdict === "no_tests" && outcome.complete)) &&
+        outcome.verdict
+      ) {
         const verdict = outcome.verdict;
         setFindings((prev) =>
           prev.map((f) =>
@@ -730,9 +806,15 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
     : scopePartition.eligible;
 
   const filteredFindings = actionableFindings.filter((f) => {
+    // Effective status: rows saved under the old vocabulary report
+    // tests=0 runs and value-guard skips as "error"; effectivePocStatus
+    // reclassifies them on read, so the filters match the counters.
+    const effStatus = effectivePocStatus(f.pocStatus, f.pocOutput);
     if (statusFilter === "passed" && evidenceById.get(f.id)?.stage !== "reproduced") return false;
-    if (statusFilter === "failed" && f.pocStatus !== "failed") return false;
-    if (statusFilter === "error" && f.pocStatus !== "error") return false;
+    if (statusFilter === "failed" && effStatus !== "failed") return false;
+    if (statusFilter === "error" && effStatus !== "error") return false;
+    if (statusFilter === "no_tests" && effStatus !== "no_tests") return false;
+    if (statusFilter === "skipped" && effStatus !== "skipped") return false;
     if (statusFilter === "unrun" && f.pocStatus) return false;
 
     if (!searchQuery.trim()) return true;
@@ -752,8 +834,13 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   const criticalCount = findings.filter((f) => f.severity === "critical").length;
   const highCount = findings.filter((f) => f.severity === "high").length;
   const reproducedCount = findings.filter((f) => evidenceById.get(f.id)?.stage === "reproduced").length;
-  const unverifiedCount = findings.filter((f) => f.pocStatus === "failed").length;
-  const errorCount = findings.filter((f) => f.pocStatus === "error").length;
+  // Outcome-kind counters over EFFECTIVE statuses: real errors only in
+  // the error count; zero-test runs and value-guard skips (including
+  // historical rows saved as "error") count as their own kinds.
+  const unverifiedCount = findings.filter((f) => effectivePocStatus(f.pocStatus, f.pocOutput) === "failed").length;
+  const errorCount = findings.filter((f) => effectivePocStatus(f.pocStatus, f.pocOutput) === "error").length;
+  const noTestsCount = findings.filter((f) => effectivePocStatus(f.pocStatus, f.pocOutput) === "no_tests").length;
+  const skippedCount = findings.filter((f) => effectivePocStatus(f.pocStatus, f.pocOutput) === "skipped").length;
   const undisposedFiltered = filteredFindings.filter((f) => !dispositions[f.id]);
   const runningAdjudication = Object.values(adjudications).find((a) => a.running);
 
@@ -926,7 +1013,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
         </div>
 
         {/* Metric Cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <div className="bg-[#12110e] border border-[#2d281f] rounded-xl p-3">
             <span className="text-[10px] font-mono uppercase text-[#746c60] block">Critical / High Findings</span>
             <div className="text-xl font-bold font-mono text-[#f4efe6] mt-1 flex items-baseline gap-2">
@@ -958,6 +1045,22 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
             <div className="text-xl font-bold font-mono text-red-400 mt-1 flex items-center gap-1.5">
               <XCircle className="w-4 h-4" />
               {errorCount}
+            </div>
+          </div>
+
+          <div className="bg-[#12110e] border border-[#2d281f] rounded-xl p-3">
+            <span className="text-[10px] font-mono uppercase text-[#746c60] block">No tests</span>
+            <div className="text-xl font-bold font-mono text-[#e8a54b] mt-1 flex items-center gap-1.5">
+              <FileCode className="w-4 h-4" />
+              {noTestsCount}
+            </div>
+          </div>
+
+          <div className="bg-[#12110e] border border-[#2d281f] rounded-xl p-3">
+            <span className="text-[10px] font-mono uppercase text-[#746c60] block">Skipped (no value)</span>
+            <div className="text-xl font-bold font-mono text-[#a39886] mt-1 flex items-center gap-1.5">
+              <AlertTriangle className="w-4 h-4" />
+              {skippedCount}
             </div>
           </div>
         </div>
@@ -1005,7 +1108,15 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
 
           <div className="flex items-center gap-1 bg-[#12110e] border border-[#3a3428] rounded-lg p-1 text-xs font-mono">
             <span className="text-[11px] text-[#746c60] px-1.5">PoC Status:</span>
-            {(["all", "passed", "failed", "error", "unrun"] as const).map((st) => (
+            {([
+              ["all", "all"],
+              ["passed", "passed"],
+              ["failed", "failed"],
+              ["error", "error"],
+              ["no_tests", "no tests"],
+              ["skipped", "skipped"],
+              ["unrun", "unrun"],
+            ] as const).map(([st, label]) => (
               <button
                 key={st}
                 onClick={() => setStatusFilter(st)}
@@ -1015,7 +1126,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
                     : "text-[#a39886] hover:text-[#f4efe6]"
                 }`}
               >
-                {st}
+                {label}
               </button>
             ))}
           </div>

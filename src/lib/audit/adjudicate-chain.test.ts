@@ -177,13 +177,14 @@ describe("runAdjudicationChain", () => {
     assert.equal(outcome.suggestion, "false_positive");
   });
 
-  it("a hollow PASS (zero tests matched) is an error verdict, never confirmed", async () => {
-    const { deps } = makeDeps({
+  it("a hollow PASS (zero tests matched) is a no_tests verdict, never confirmed and not an error", async () => {
+    const { deps, saved } = makeDeps({
       runPoc: async () => ({ status: "passed", logs: "No tests match the provided pattern. 0 passed; 0 failed", durationMs: 3 }),
     });
     const outcome = await runAdjudicationChain(baseCtx(), deps);
-    assert.equal(outcome.verdict, "error");
+    assert.equal(outcome.verdict, "no_tests");
     assert.equal(outcome.suggestion, "needs_more_info");
+    assert.equal(saved[0].status, "no_tests");
   });
 
   it("repairs a compile error once and saves the repaired source", async () => {
@@ -220,6 +221,97 @@ describe("runAdjudicationChain", () => {
     const { deps, calls } = makeDeps();
     const outcome = await runAdjudicationChain(baseCtx({ targetAddress: null }), deps);
     assert.equal(outcome.kind, "error");
+    assert.equal(outcome.suggestion, "needs_more_info");
+    assert.equal(calls.run, 0);
+  });
+});
+
+// A complete Test contract whose only test function is PRIVATE: the
+// wrapper passes it through unchanged (its check does not look at
+// visibility), forge would run 0 tests — exactly the shape the
+// generation gate exists for.
+const PRIVATE_TEST_SNIPPET = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+import "forge-std/Test.sol";
+contract PoC is Test {
+    function test_exploit() private { assertTrue(true); }
+}`;
+
+describe("runAdjudicationChain outcome kinds — no_tests and skipped", () => {
+  it("gate: a PoC with no executable test gets one generation attempt, then runs the generated source", async () => {
+    const { deps, calls, saved } = makeDeps();
+    const outcome = await runAdjudicationChain(
+      baseCtx({ finding: makeFinding({ exploitSolidity: PRIVATE_TEST_SNIPPET }) }),
+      deps,
+    );
+    // Default repairPoc returns TEST_SNIPPET (a real test function).
+    assert.equal(calls.repair, 1); // the gate's single generation attempt
+    assert.equal(calls.run, 1); // backend ran the generated source
+    assert.equal(outcome.verdict, "passed");
+    assert.equal(saved[0].source, TEST_SNIPPET);
+    assert.equal(saved[0].status, "passed");
+  });
+
+  it("gate: generation still yields no test → no_tests saved, backend never called, outcome complete", async () => {
+    const { deps, calls, saved } = makeDeps({
+      repairPoc: async () => PRIVATE_TEST_SNIPPET, // still no executable test
+    });
+    const outcome = await runAdjudicationChain(
+      baseCtx({ finding: makeFinding({ exploitSolidity: PRIVATE_TEST_SNIPPET }) }),
+      deps,
+    );
+    assert.equal(calls.run, 0); // no wasted fork run
+    assert.equal(calls.save, 1);
+    assert.equal(saved[0].status, "no_tests");
+    assert.equal(outcome.verdict, "no_tests");
+    assert.equal(outcome.suggestion, "needs_more_info");
+    assert.equal(outcome.runStep, "skipped");
+    assert.equal(outcome.steps.harness, "skipped");
+    assert.equal(outcome.steps.saved, "done");
+    // A no_tests outcome is terminal, not an incompletion.
+    assert.equal(outcome.complete, true);
+    assert.equal(outcome.stoppedAt, null);
+    assert.match(saved[0].output, /no executable test function/);
+  });
+
+  it("a value-guard skip is saved as skipped — terminal and complete, not an error", async () => {
+    const { deps, saved } = makeDeps({
+      runPoc: async () => ({
+        status: "skipped",
+        logs: "[SmartPoC] Skipped — target 0x3dfd holds no value (0 ETH, no priced token holdings) at the latest block",
+        durationMs: 0,
+      }),
+    });
+    const outcome = await runAdjudicationChain(baseCtx(), deps);
+    assert.equal(outcome.verdict, "skipped");
+    assert.equal(outcome.suggestion, "needs_more_info");
+    assert.equal(saved[0].status, "skipped");
+    assert.equal(outcome.steps.harness, "skipped");
+    assert.equal(outcome.steps.saved, "done");
+    assert.equal(outcome.complete, true);
+    assert.equal(outcome.stoppedAt, null);
+  });
+
+  it("a stored tests=0 run from the old vocabulary reuses as no_tests, not error", async () => {
+    const digest = pocRunKey("scan-1:0", TEST_SNIPPET).digest;
+    const { deps, calls } = makeDeps({
+      listRuns: async () => [
+        {
+          id: "poc:scan-1:0:y",
+          status: "error",
+          sourceDigest: digest,
+          output: "[SmartPoC | Foundry] target=0x3dfd chain=ethereum tests=0\nSHA-256: x",
+          durationMs: 3,
+          createdAt: "2026-10-23T00:00:00Z",
+        },
+      ],
+    });
+    const outcome = await runAdjudicationChain(
+      baseCtx({ aiReview: { threatModelReport: "r", foundryTestCode: "", economicRiskSummary: "", source: "openrouter" as const } }),
+      deps,
+    );
+    assert.equal(outcome.runStep, "reused");
+    assert.equal(outcome.verdict, "no_tests");
     assert.equal(outcome.suggestion, "needs_more_info");
     assert.equal(calls.run, 0);
   });

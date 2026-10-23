@@ -46,11 +46,11 @@ function installFetch(opts: {
 
 const ADDR = '0x' + '1'.repeat(40);
 
-test('SmartPoC rejects zero-test success and records execution evidence', async () => {
+test('SmartPoC classifies zero-test success as no_tests (not an error, not a verdict) and records execution evidence', async () => {
   const f = installFetch({ reply: () => new Response(JSON.stringify({ok:true,passed:true,logs:'No tests found',durationMs:1})) });
   try {
     const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}'});
-    assert.equal(result.status, 'error');
+    assert.equal(result.status, 'no_tests');
     assert.match(result.logs, /SmartPoC/);
     assert.match(result.logs, /SHA-256/);
     assert.equal(result.evidence?.engine, 'foundry');

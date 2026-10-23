@@ -40,8 +40,12 @@ export type FindingDisposition = {
   updatedAt: string;
 };
 
-/** Terminal verdict of one PoC execution (or of a reused stored run). */
-export type PocVerdict = "passed" | "failed" | "error";
+/** Terminal verdict of one PoC execution (or of a reused stored run).
+ *  "no_tests" (the PoC contained no executable test function, so the
+ *  harness ran 0 tests) and "skipped" (the value guard found nothing
+ *  at stake) are first-class terminal outcomes, distinct from "error" —
+ *  neither is a failure and neither is evidence about the bug. */
+export type PocVerdict = "passed" | "failed" | "error" | "no_tests" | "skipped";
 
 /**
  * Verdict → SUGGESTED disposition. The mapping is deliberately literal:
@@ -49,7 +53,10 @@ export type PocVerdict = "passed" | "failed" | "error";
  * not-reproduced run suggests a false positive; anything that is not a
  * verdict at all (infra error, timeout, backend down, no run) suggests
  * "needs more info" — an error must never masquerade as evidence either
- * way. The human still has to tap to make it of record.
+ * way. "no_tests" and "skipped" land in the same place for the same
+ * reason: generation produced no executable tests, or the target holds
+ * no value at stake — a skip is not evidence about the bug. The human
+ * still has to tap to make it of record.
  */
 export function suggestDispositionForVerdict(verdict: PocVerdict | null): AuditorDisposition {
   if (verdict === "passed") return "confirmed";
@@ -101,9 +108,19 @@ export function planAdjudication(input: {
   }
   let reuseRun: PocRunDigestRef | null = null;
   if (!input.force && input.candidateDigest) {
+    // Terminal outcomes for the exact PoC: the two verdicts, an error,
+    // a no_tests (re-running the identical source would run the
+    // identical zero tests) and a skipped (same source, same guard).
+    // A redo (force) is the explicit way past any of them.
     reuseRun =
       input.existingRuns.find(
-        (r) => r.digest === input.candidateDigest && (r.status === "passed" || r.status === "failed" || r.status === "error"),
+        (r) =>
+          r.digest === input.candidateDigest &&
+          (r.status === "passed" ||
+            r.status === "failed" ||
+            r.status === "error" ||
+            r.status === "no_tests" ||
+            r.status === "skipped"),
       ) ?? null;
   }
   return {
