@@ -1,0 +1,1264 @@
+{
+ "version": 1,
+ "description": "AI-PoC proof suite manifest: one entry per fallback-library type in foundry/poc-fallbacks/index.json (46 on current main; the originating brief said 41 -- main gained 07b/42/43/44/45 and the suite covers every type the index lists). fixture = the vulnerable contract(s) the template runs against on a local anvil; adapt = literal find/replace pairs applied to the template source for the dry run (the TODO constants a human would fill in for a real target); placeholders {{addr:NAME}}, {{target}}, {{acct0..2}}, {{merkleRoot}}, {{tsPlus12h}} are resolved by run.mjs after deployment. In live mode no adaptations are applied: the AI gets the same fixture + finding through the app's real prompt path.",
+ "types": [
+  {
+   "id": "01-reentrancy-classic",
+   "file": "01-reentrancy-classic.t.sol",
+   "detector": "reentrancy",
+   "scenario": "Classic ETH reentrancy drain",
+   "fixture": "01-reentrancy-classic.sol",
+   "contractName": "ReentrancyVault",
+   "flaw": "withdraw() sends the caller's ETH before zeroing their balance, so a contract caller re-enters withdraw() and drains more than it deposited.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "ReentrancyVault"
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 1,
+     "to": "{{addr:vault}}",
+     "sig": "deposit()",
+     "value": "9ether"
+    }
+   ]
+  },
+  {
+   "id": "02-reentrancy-cross-function",
+   "file": "02-reentrancy-cross-function.t.sol",
+   "detector": "reentrancy",
+   "scenario": "Cross-function reentrancy (shared balance, second function)",
+   "fixture": "02-reentrancy-cross-function.sol",
+   "contractName": "CrossFunctionVault",
+   "flaw": "withdraw() pays against the shared ledger and zeroes it only after the external call; transfer() pays out against the same unsettled ledger during the callback and never debits it, so one credit is spent twice.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "CrossFunctionVault"
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 1,
+     "to": "{{addr:vault}}",
+     "sig": "deposit()",
+     "value": "9ether"
+    }
+   ]
+  },
+  {
+   "id": "03-reentrancy-erc777",
+   "file": "03-reentrancy-erc777.t.sol",
+   "detector": "reentrancy",
+   "scenario": "ERC777 tokensReceived hook reentrancy",
+   "fixture": "03-reentrancy-erc777.sol",
+   "contractName": "ERC777Vault",
+   "flaw": "withdraw() sends ERC777 tokens (firing the recipient's tokensReceived hook) before debiting the caller's deposit ledger, so the hook re-enters withdraw() and withdraws the same deposit repeatedly.",
+   "deployments": [
+    {
+     "name": "token",
+     "contract": "Mock777"
+    },
+    {
+     "name": "vault",
+     "contract": "ERC777Vault",
+     "args": [
+      "$token"
+     ]
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:token}}",
+     "sig": "mint(address,uint256)",
+     "args": [
+      "{{addr:vault}}",
+      "100000"
+     ]
+    }
+   ],
+   "adapt": [
+    {
+     "find": "address public constant TOKEN = address(0);",
+     "replace": "address public constant TOKEN = {{addr:token}};"
+    },
+    {
+     "find": "IERC777(TOKEN).send(address(attacker), 1000, bytes(\"\"));",
+     "replace": "(bool mintOk_,) = TOKEN.call(abi.encodeWithSignature(\"mint(address,uint256)\", address(attacker), uint256(1000))); require(mintOk_, \"mint failed\");"
+    }
+   ]
+  },
+  {
+   "id": "04-reentrancy-erc721",
+   "file": "04-reentrancy-erc721.t.sol",
+   "detector": "reentrancy",
+   "scenario": "ERC721 onERC721Received reentrancy",
+   "fixture": "04-reentrancy-erc721.sol",
+   "contractName": "NFTMinter",
+   "flaw": "mint() enforces a 1-per-wallet limit but updates the minted counter only after the safe-mint callback, so the recipient re-enters mint() from onERC721Received and mints past the limit.",
+   "deployments": [
+    {
+     "name": "minter",
+     "contract": "NFTMinter"
+    }
+   ],
+   "target": "minter",
+   "adapt": [
+    {
+     "find": "uint256 public constant PRICE = 0;",
+     "replace": "uint256 public constant PRICE = 0.1 ether;"
+    }
+   ]
+  },
+  {
+   "id": "05-reentrancy-read-only",
+   "file": "05-reentrancy-read-only.t.sol",
+   "detector": "read-only-reentrancy",
+   "scenario": "Read-only reentrancy (stale view mid-callback)",
+   "fixture": "05-reentrancy-read-only.sol",
+   "contractName": "ReadOnlyVault",
+   "flaw": "withdraw() pays out before updating the balance mapping, so balanceOf() read during the callback returns the stale pre-withdraw value.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "ReadOnlyVault"
+    }
+   ],
+   "target": "vault"
+  },
+  {
+   "id": "06-open-drain",
+   "file": "06-open-drain.t.sol",
+   "detector": "unprotected-ether",
+   "scenario": "Open drain (unprotected ether send)",
+   "fixture": "06-open-drain.sol",
+   "contractName": "OpenDrainVault",
+   "flaw": "withdraw() has no access check and no entitlement bound: any caller can sweep the contract's entire ETH balance.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "OpenDrainVault"
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:vault}}",
+     "value": "5ether"
+    }
+   ]
+  },
+  {
+   "id": "07-unprotected-admin",
+   "file": "07-unprotected-admin.t.sol",
+   "detector": "unprotected-admin",
+   "scenario": "Unprotected privileged function (mint / setOwner / pause)",
+   "fixture": "07-unprotected-admin.sol",
+   "contractName": "UnguardedToken",
+   "flaw": "mint() is a privileged action with no access check: any caller can mint themselves any amount.",
+   "deployments": [
+    {
+     "name": "token",
+     "contract": "UnguardedToken"
+    }
+   ],
+   "target": "token"
+  },
+  {
+   "id": "07b-unprotected-visibility",
+   "file": "07b-unprotected-visibility.t.sol",
+   "detector": "default-visibility",
+   "scenario": "Default public visibility on a sensitive function",
+   "fixture": "07b-unprotected-visibility.sol",
+   "contractName": "VisibilityVault",
+   "flaw": "_withdraw was meant to be an internal helper but is public with no access control; any caller can invoke it and drain the vault.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "VisibilityVault"
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:vault}}",
+     "value": "3ether"
+    }
+   ]
+  },
+  {
+   "id": "08-unprotected-initializer",
+   "file": "08-unprotected-initializer.t.sol",
+   "detector": "unprotected-initializer",
+   "scenario": "Unprotected initializer (proxy takeover)",
+   "fixture": "08-unprotected-initializer.sol",
+   "contractName": "UnguardedInitializer",
+   "flaw": "initialize() has no initializer guard and no access check: anyone can call it at any time and set themselves as owner.",
+   "deployments": [
+    {
+     "name": "impl",
+     "contract": "UnguardedInitializer"
+    }
+   ],
+   "target": "impl"
+  },
+  {
+   "id": "09-tx-origin-phishing",
+   "file": "09-tx-origin-phishing.t.sol",
+   "detector": "tx-origin",
+   "scenario": "tx.origin auth bypass via phishing contract",
+   "fixture": "09-tx-origin-phishing.sol",
+   "contractName": "TxOriginWallet",
+   "flaw": "withdraw() authenticates with tx.origin instead of msg.sender, so a contract the owner is tricked into calling drains the wallet while tx.origin is still the owner.",
+   "deployments": [
+    {
+     "name": "wallet",
+     "contract": "TxOriginWallet"
+    }
+   ],
+   "target": "wallet",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:wallet}}",
+     "value": "3ether"
+    }
+   ],
+   "adapt": [
+    {
+     "find": "address public constant OWNER = address(0);",
+     "replace": "address public constant OWNER = {{acct0}};"
+    }
+   ]
+  },
+  {
+   "id": "10-delegatecall-takeover",
+   "file": "10-delegatecall-takeover.t.sol",
+   "detector": "delegatecall",
+   "scenario": "Delegatecall to attacker-controlled logic (slot-0 overwrite)",
+   "fixture": "10-delegatecall-takeover.sol",
+   "contractName": "DelegatecallBox",
+   "flaw": "execute() delegatecalls any caller-chosen target with any calldata and no access check, so attacker code runs in this contract's storage and overwrites slot 0 (owner).",
+   "deployments": [
+    {
+     "name": "box",
+     "contract": "DelegatecallBox"
+    }
+   ],
+   "target": "box"
+  },
+  {
+   "id": "11-proxy-uninitialized-implementation",
+   "file": "11-proxy-uninitialized-implementation.t.sol",
+   "detector": "unprotected-initializer",
+   "scenario": "Uninitialized implementation behind a proxy (direct initialize)",
+   "fixture": "11-proxy-uninitialized-implementation.sol",
+   "contractName": "Eip1967Proxy",
+   "flaw": "The EIP-1967 proxy's implementation was never initialized and its initialize() is unguarded, so anyone can initialize the implementation directly and own it.",
+   "deployments": [
+    {
+     "name": "impl",
+     "contract": "UninitializedImpl"
+    },
+    {
+     "name": "proxy",
+     "contract": "Eip1967Proxy",
+     "args": [
+      "$impl"
+     ]
+    }
+   ],
+   "target": "proxy"
+  },
+  {
+   "id": "12-selfdestruct",
+   "file": "12-selfdestruct.t.sol",
+   "detector": "selfdestruct",
+   "scenario": "Selfdestruct destroy-sweep + forced ETH",
+   "fixture": "12-selfdestruct.sol",
+   "contractName": "KillableVault",
+   "flaw": "kill() is unguarded: anyone can selfdestruct the contract and sweep its balance to themselves; ETH can also be force-fed via a constructor selfdestruct.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "KillableVault"
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:vault}}",
+     "value": "3ether"
+    }
+   ]
+  },
+  {
+   "id": "13-unchecked-call",
+   "file": "13-unchecked-call.t.sol",
+   "detector": "unchecked-call",
+   "scenario": "Unchecked low-level call return",
+   "fixture": "13-unchecked-call.sol",
+   "contractName": "UncheckedForwarder",
+   "flaw": "execute() forwards to a caller-chosen callee and records success without checking the low-level call result, so a reverting callee still leaves the operation marked executed.",
+   "deployments": [
+    {
+     "name": "fwd",
+     "contract": "UncheckedForwarder"
+    }
+   ],
+   "target": "fwd"
+  },
+  {
+   "id": "14-erc20-unchecked-bool",
+   "file": "14-erc20-unchecked-bool.t.sol",
+   "detector": "erc20-unchecked",
+   "scenario": "Unchecked ERC-20 bool (false return, no revert)",
+   "fixture": "14-erc20-unchecked-bool.sol",
+   "contractName": "FalseBoolVault",
+   "flaw": "claim() credits the caller's ledger and ignores token.transfer()'s bool, so a token returning false still leaves the credit in place.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "FalseBoolVault"
+    }
+   ],
+   "target": "vault"
+  },
+  {
+   "id": "15-fee-on-transfer",
+   "file": "15-fee-on-transfer.t.sol",
+   "detector": "fee-on-transfer",
+   "scenario": "Fee-on-transfer accounting mismatch",
+   "fixture": "15-fee-on-transfer.sol",
+   "contractName": "FotVault",
+   "flaw": "deposit() credits the full requested amount while a fee-on-transfer token delivers less, so the ledger exceeds the vault's real token balance from the first deposit.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "FotVault"
+    }
+   ],
+   "target": "vault"
+  },
+  {
+   "id": "16-oracle-manipulation",
+   "file": "16-oracle-manipulation.t.sol",
+   "detector": "oracle-spot",
+   "scenario": "Oracle manipulation: spot price via swap + balance-as-price via donation",
+   "fixture": "16-oracle-manipulation.sol",
+   "contractName": "SpotOracle",
+   "flaw": "getPrice() reads the AMM pair's spot reserves and exchangeRate() reads the contract's own token balance, so one swap or one donation moves the price the consumer trusts.",
+   "deployments": [
+    {
+     "name": "tokenA",
+     "contract": "MockToken16",
+     "args": [
+      "TokenA",
+      "TKA"
+     ]
+    },
+    {
+     "name": "tokenB",
+     "contract": "MockToken16",
+     "args": [
+      "TokenB",
+      "TKB"
+     ]
+    },
+    {
+     "name": "pair",
+     "contract": "MiniPair",
+     "args": [
+      "$tokenA",
+      "$tokenB"
+     ]
+    },
+    {
+     "name": "router",
+     "contract": "MiniRouter",
+     "args": [
+      "$pair"
+     ]
+    },
+    {
+     "name": "oracle",
+     "contract": "SpotOracle",
+     "args": [
+      "$pair",
+      "$tokenB"
+     ]
+    }
+   ],
+   "target": "oracle",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:tokenA}}",
+     "sig": "mint(address,uint256)",
+     "args": [
+      "{{acct0}}",
+      "100000000000000000000000"
+     ]
+    },
+    {
+     "from": 0,
+     "to": "{{addr:tokenB}}",
+     "sig": "mint(address,uint256)",
+     "args": [
+      "{{acct0}}",
+      "100000000000000000000000"
+     ]
+    },
+    {
+     "from": 0,
+     "to": "{{addr:tokenA}}",
+     "sig": "transfer(address,uint256)",
+     "args": [
+      "{{addr:pair}}",
+      "10000000000000000000000"
+     ]
+    },
+    {
+     "from": 0,
+     "to": "{{addr:tokenB}}",
+     "sig": "transfer(address,uint256)",
+     "args": [
+      "{{addr:pair}}",
+      "10000000000000000000000"
+     ]
+    }
+   ],
+   "adapt": [
+    {
+     "find": "address public constant ROUTER = address(0);",
+     "replace": "address public constant ROUTER = {{addr:router}};"
+    },
+    {
+     "find": "address public constant TOKEN_IN = address(0);",
+     "replace": "address public constant TOKEN_IN = {{addr:tokenA}};"
+    },
+    {
+     "find": "address public constant TOKEN_OUT = address(0);",
+     "replace": "address public constant TOKEN_OUT = {{addr:tokenB}};"
+    },
+    {
+     "find": "address public constant WHALE = address(0);",
+     "replace": "address public constant WHALE = {{acct0}};"
+    }
+   ]
+  },
+  {
+   "id": "17-slippage-sandwich",
+   "file": "17-slippage-sandwich.t.sol",
+   "detector": "slippage",
+   "scenario": "Sandwich attack on zero-slippage swap",
+   "fixture": "17-slippage-sandwich.sol",
+   "contractName": "VictimSwapper",
+   "flaw": "swap() routes through the AMM with amountOutMin == 0, so a frontrun moves the price against the victim and a backrun pockets the difference.",
+   "deployments": [
+    {
+     "name": "tokenA",
+     "contract": "MockToken17"
+    },
+    {
+     "name": "tokenB",
+     "contract": "MockToken17"
+    },
+    {
+     "name": "pair",
+     "contract": "MiniPair17",
+     "args": [
+      "$tokenA",
+      "$tokenB"
+     ]
+    },
+    {
+     "name": "router",
+     "contract": "MiniRouter17",
+     "args": [
+      "$pair"
+     ]
+    },
+    {
+     "name": "victim",
+     "contract": "VictimSwapper",
+     "args": [
+      "$router",
+      "$tokenA",
+      "$tokenB"
+     ]
+    }
+   ],
+   "target": "victim",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:tokenA}}",
+     "sig": "mint(address,uint256)",
+     "args": [
+      "{{acct0}}",
+      "100000000000000000000000"
+     ]
+    },
+    {
+     "from": 0,
+     "to": "{{addr:tokenB}}",
+     "sig": "mint(address,uint256)",
+     "args": [
+      "{{acct0}}",
+      "100000000000000000000000"
+     ]
+    },
+    {
+     "from": 0,
+     "to": "{{addr:tokenA}}",
+     "sig": "transfer(address,uint256)",
+     "args": [
+      "{{addr:pair}}",
+      "1000000000000000000000"
+     ]
+    },
+    {
+     "from": 0,
+     "to": "{{addr:tokenB}}",
+     "sig": "transfer(address,uint256)",
+     "args": [
+      "{{addr:pair}}",
+      "1000000000000000000000"
+     ]
+    },
+    {
+     "from": 0,
+     "to": "{{addr:tokenA}}",
+     "sig": "mint(address,uint256)",
+     "args": [
+      "{{addr:victim}}",
+      "1000000000000000000000"
+     ]
+    }
+   ],
+   "adapt": [
+    {
+     "find": "address public constant ROUTER = address(0);",
+     "replace": "address public constant ROUTER = {{addr:router}};"
+    },
+    {
+     "find": "address public constant TOKEN_IN = address(0);",
+     "replace": "address public constant TOKEN_IN = {{addr:tokenA}};"
+    },
+    {
+     "find": "address public constant TOKEN_OUT = address(0);",
+     "replace": "address public constant TOKEN_OUT = {{addr:tokenB}};"
+    },
+    {
+     "find": "address public constant VICTIM = address(0);",
+     "replace": "address public constant VICTIM = {{target}};"
+    },
+    {
+     "find": "address public constant WHALE = address(0);",
+     "replace": "address public constant WHALE = {{acct0}};"
+    }
+   ]
+  },
+  {
+   "id": "18-signature-replay",
+   "file": "18-signature-replay.t.sol",
+   "detector": "signature-replay",
+   "scenario": "Signature replay (no nonce / deadline / chain binding)",
+   "fixture": "18-signature-replay.sol",
+   "contractName": "ReplayVault",
+   "flaw": "claim() verifies a signature over a fixed message hash with no nonce, deadline, or usage record, so the same signature pays out repeatedly.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "ReplayVault"
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:vault}}",
+     "value": "5ether"
+    }
+   ],
+   "adapt": [
+    {
+     "find": "bytes32 public constant MESSAGE_HASH = bytes32(0);",
+     "replace": "bytes32 public constant MESSAGE_HASH = 0x93bf105a0b8cb9db852cb7c9a9374207b28a4db9de085b158e3f5afc48e9d8ca;"
+    }
+   ]
+  },
+  {
+   "id": "19-signature-malleability",
+   "file": "19-signature-malleability.t.sol",
+   "detector": "signature-malleability",
+   "scenario": "Signature malleability (low-s not enforced)",
+   "fixture": "19-signature-malleability.sol",
+   "contractName": "MalleableVault",
+   "flaw": "claim() tracks used signatures by their bytes but never enforces low-S, so the high-S twin of a consumed signature verifies for the same signer and pays again.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "MalleableVault"
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:vault}}",
+     "value": "5ether"
+    }
+   ],
+   "adapt": [
+    {
+     "find": "bytes32 public constant MESSAGE_HASH = bytes32(0);",
+     "replace": "bytes32 public constant MESSAGE_HASH = 0x93bf105a0b8cb9db852cb7c9a9374207b28a4db9de085b158e3f5afc48e9d8ca;"
+    }
+   ]
+  },
+  {
+   "id": "20-chain-randomness-timestamp",
+   "file": "20-chain-randomness-timestamp.t.sol",
+   "detector": "weak-randomness",
+   "scenario": "Chain randomness prediction + timestamp gate bypass",
+   "fixture": "20-chain-randomness-timestamp.sol",
+   "contractName": "TimeGame",
+   "flaw": "withdraw() is gated only on block.timestamp, and guess() draws its winning number from block.timestamp -- both are public and validator-influenced.",
+   "deployments": [
+    {
+     "name": "game",
+     "contract": "TimeGame"
+    }
+   ],
+   "target": "game",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:game}}",
+     "value": "5ether"
+    }
+   ]
+  },
+  {
+   "id": "21-strict-balance-dos",
+   "file": "21-strict-balance-dos.t.sol",
+   "detector": "strict-balance",
+   "scenario": "Strict balance equality DoS via forced ETH",
+   "fixture": "21-strict-balance-dos.sol",
+   "contractName": "StrictBalanceVault",
+   "flaw": "withdraw() requires the contract balance to equal the expected pot exactly, so one force-fed wei breaks the equality forever and bricks the payout.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "StrictBalanceVault"
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:vault}}",
+     "value": "5ether"
+    }
+   ]
+  },
+  {
+   "id": "22-msg-value-loop",
+   "file": "22-msg-value-loop.t.sol",
+   "detector": "msg-value-loop",
+   "scenario": "msg.value used inside a loop (per-iteration payout)",
+   "fixture": "22-msg-value-loop.sol",
+   "contractName": "MsgValueCashback",
+   "flaw": "buy() checks msg.value once against the per-item PRICE, then loops crediting n items while refunding slices of the original msg.value per iteration -- the buyer ends with n items and essentially the whole payment back.",
+   "deployments": [
+    {
+     "name": "shop",
+     "contract": "MsgValueCashback"
+    }
+   ],
+   "target": "shop",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:shop}}",
+     "value": "10ether"
+    }
+   ],
+   "adapt": [
+    {
+     "find": "uint256 public constant PRICE = 0;",
+     "replace": "uint256 public constant PRICE = 1 ether;"
+    }
+   ]
+  },
+  {
+   "id": "23-unchecked-arithmetic-wrap",
+   "file": "23-unchecked-arithmetic-wrap.t.sol",
+   "detector": "unchecked-block",
+   "scenario": "Unchecked arithmetic wraps instead of reverting",
+   "fixture": "23-unchecked-arithmetic-wrap.sol",
+   "contractName": "WrapToken",
+   "flaw": "burn() subtracts inside an unchecked block, so burning more than the balance wraps it to a huge number instead of reverting.",
+   "deployments": [
+    {
+     "name": "token",
+     "contract": "WrapToken"
+    }
+   ],
+   "target": "token"
+  },
+  {
+   "id": "24-div-before-mul",
+   "file": "24-div-before-mul.t.sol",
+   "detector": "div-before-mul",
+   "scenario": "Division before multiplication (precision loss to zero)",
+   "fixture": "24-div-before-mul.sol",
+   "contractName": "DivFirstCalc",
+   "flaw": "calculate() divides before multiplying, so amounts smaller than the total truncate to zero.",
+   "deployments": [
+    {
+     "name": "calc",
+     "contract": "DivFirstCalc"
+    }
+   ],
+   "target": "calc"
+  },
+  {
+   "id": "25-encode-packed-collision",
+   "file": "25-encode-packed-collision.t.sol",
+   "detector": "encode-packed",
+   "scenario": "abi.encodePacked hash collision (dynamic args)",
+   "fixture": "25-encode-packed-collision.sol",
+   "contractName": "PackedClaim",
+   "flaw": "claim() authorizes via keccak256(abi.encodePacked(a, b)) over two dynamic strings, so (\"ab\",\"c\") and (\"a\",\"bc\") are the same voucher and both redeem.",
+   "deployments": [
+    {
+     "name": "claim",
+     "contract": "PackedClaim"
+    }
+   ],
+   "target": "claim",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:claim}}",
+     "value": "2ether"
+    }
+   ]
+  },
+  {
+   "id": "26-assembly-arbitrary-sstore",
+   "file": "26-assembly-arbitrary-sstore.t.sol",
+   "detector": "assembly-sstore",
+   "scenario": "Assembly SSTORE to a caller-chosen slot",
+   "fixture": "26-assembly-arbitrary-sstore.sol",
+   "contractName": "AssemblyStore",
+   "flaw": "set() lets anyone write any value to any storage slot via assembly sstore; slot 0 is the owner.",
+   "deployments": [
+    {
+     "name": "store",
+     "contract": "AssemblyStore"
+    }
+   ],
+   "target": "store"
+  },
+  {
+   "id": "27-extcodesize-bypass",
+   "file": "27-extcodesize-bypass.t.sol",
+   "detector": "extcodesize",
+   "scenario": "extcodesize identity bypass via constructor call",
+   "fixture": "27-extcodesize-bypass.sol",
+   "contractName": "EoaGateVault",
+   "flaw": "claim() gates on extcodesize(msg.sender) == 0 to keep contracts out, but a contract inside its constructor has code size 0 and passes.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "EoaGateVault"
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:vault}}",
+     "value": "2ether"
+    }
+   ]
+  },
+  {
+   "id": "28-centralization-owner-rug",
+   "file": "28-centralization-owner-rug.t.sol",
+   "detector": "centralization",
+   "scenario": "Centralization: owner can drain / mint / pause (capability proof via prank)",
+   "fixture": "28-centralization-owner-rug.sol",
+   "contractName": "OwnerRugVault",
+   "flaw": "A single owner key can sweep the entire balance instantly with no timelock or multisig; the PoC proves the capability by pranking the owner.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "OwnerRugVault"
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:vault}}",
+     "value": "4ether"
+    }
+   ]
+  },
+  {
+   "id": "29-locked-ether",
+   "file": "29-locked-ether.t.sol",
+   "detector": "locked-ether",
+   "scenario": "Locked ether (can receive, cannot send)",
+   "fixture": "29-locked-ether.sol",
+   "contractName": "LockedEther",
+   "flaw": "The contract accepts ETH but exposes no withdrawal path at all, so anything sent in is stuck forever.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "LockedEther"
+    }
+   ],
+   "target": "vault"
+  },
+  {
+   "id": "30-zero-address-brick",
+   "file": "30-zero-address-brick.t.sol",
+   "detector": "zero-address",
+   "scenario": "Zero-address write bricks the contract",
+   "fixture": "30-zero-address-brick.sol",
+   "contractName": "ZeroBrick",
+   "flaw": "setOwner() lacks a zero-address check, so the owner slot can be zeroed and every onlyOwner action reverts for everyone forever.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "ZeroBrick"
+    }
+   ],
+   "target": "vault"
+  },
+  {
+   "id": "31-gas-assumptions",
+   "file": "31-gas-assumptions.t.sol",
+   "detector": "eth-gas-stipend",
+   "scenario": "Gas assumptions: 2300 stipend failure + hardcoded gas failure",
+   "fixture": "31-gas-assumptions.sol",
+   "contractName": "StipendVault",
+   "flaw": "withdraw() pays via transfer()'s 2300-gas stipend (reverts for storage-writing recipients), and execute() forwards with a hardcoded 3000 gas and ignores the result.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "StipendVault"
+    }
+   ],
+   "target": "vault"
+  },
+  {
+   "id": "32-storage-collision-upgrade",
+   "file": "32-storage-collision-upgrade.t.sol",
+   "detector": "storage-gap",
+   "scenario": "Storage collision via unguarded upgrade",
+   "fixture": "32-storage-collision-upgrade.sol",
+   "contractName": "CollisionProxy",
+   "flaw": "upgradeTo() is unguarded, so anyone can point the proxy at a malicious implementation whose code writes the proxy's slot 0 (owner).",
+   "deployments": [
+    {
+     "name": "impl",
+     "contract": "ImplV1_32"
+    },
+    {
+     "name": "proxy",
+     "contract": "CollisionProxy",
+     "args": [
+      "$impl"
+     ]
+    }
+   ],
+   "target": "proxy"
+  },
+  {
+   "id": "33-shadowing-mismatch",
+   "file": "33-shadowing-mismatch.t.sol",
+   "detector": "shadowing",
+   "scenario": "Variable shadowing (write lands in the shadow)",
+   "fixture": "33-shadowing-mismatch.sol",
+   "contractName": "ShadowVault",
+   "flaw": "setOwner() writes a shadow variable while owner() reads the real one, so the setter succeeds and a slot moves but the visible owner never changes.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "ShadowVault"
+    }
+   ],
+   "target": "vault"
+  },
+  {
+   "id": "34-private-secret-onchain",
+   "file": "34-private-secret-onchain.t.sol",
+   "detector": "private-secret",
+   "scenario": "Private secret readable from storage",
+   "fixture": "34-private-secret-onchain.sol",
+   "contractName": "PrivateSecret",
+   "flaw": "A secret is stored in a private bytes32 at slot 0; private only hides it from other contracts, not from anyone reading storage.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "PrivateSecret"
+    }
+   ],
+   "target": "vault"
+  },
+  {
+   "id": "35-flash-loan-generic",
+   "file": "35-flash-loan-generic.t.sol",
+   "detector": "oracle-spot",
+   "scenario": "Generic flash loan (borrow / use / repay round-trip)",
+   "fixture": "35-flash-loan-generic.sol",
+   "contractName": "FlashPool",
+   "flaw": "The pool lends any amount with no collateral inside one transaction (flashLoanSimple + executeOperation callback + repay), the primitive behind oracle, sandwich, and governance attacks.",
+   "deployments": [
+    {
+     "name": "asset",
+     "contract": "MockAsset35"
+    },
+    {
+     "name": "pool",
+     "contract": "FlashPool"
+    }
+   ],
+   "target": "pool",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:asset}}",
+     "sig": "mint(address,uint256)",
+     "args": [
+      "{{addr:pool}}",
+      "1000000000000000000000000"
+     ]
+    }
+   ],
+   "adapt": [
+    {
+     "find": "address public constant POOL = address(0);",
+     "replace": "address public constant POOL = {{addr:pool}};"
+    },
+    {
+     "find": "address public constant ASSET = address(0);",
+     "replace": "address public constant ASSET = {{addr:asset}};"
+    }
+   ]
+  },
+  {
+   "id": "36-merkle-double-claim",
+   "file": "36-merkle-double-claim.t.sol",
+   "detector": "unprotected-ether",
+   "scenario": "Merkle claim double-claim (same proof twice)",
+   "fixture": "36-merkle-double-claim.sol",
+   "contractName": "MerkleAirdrop",
+   "flaw": "claim() verifies the Merkle proof but never records the leaf as claimed, so the same proof pays out repeatedly. Fixture tree is a single leaf (root == leaf for the template's makeAddr(\"attacker\") claimant at AMOUNT = 1 ether, empty proof).",
+   "deployments": [
+    {
+     "name": "drop",
+     "contract": "MerkleAirdrop",
+     "args": [
+      "{{merkleRoot}}"
+     ]
+    }
+   ],
+   "target": "drop",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:drop}}",
+     "value": "5ether"
+    }
+   ],
+   "adapt": [
+    {
+     "find": "uint256 public constant AMOUNT = 0;",
+     "replace": "uint256 public constant AMOUNT = 1 ether;"
+    }
+   ]
+  },
+  {
+   "id": "37-approval-abuse",
+   "file": "37-approval-abuse.t.sol",
+   "detector": "erc20-unchecked",
+   "scenario": "Approval abuse: infinite approval drain + approve race",
+   "fixture": "37-approval-abuse.sol",
+   "contractName": "RaceToken",
+   "flaw": "A standing max approval lets the spender drain the victim's full balance at will, and a non-zero-to-non-zero approve change can be raced to spend the old plus the new allowance.",
+   "deployments": [
+    {
+     "name": "token",
+     "contract": "RaceToken"
+    }
+   ],
+   "target": "token",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:token}}",
+     "sig": "mint(address,uint256)",
+     "args": [
+      "{{acct1}}",
+      "1000"
+     ]
+    },
+    {
+     "from": 1,
+     "to": "{{addr:token}}",
+     "sig": "approve(address,uint256)",
+     "args": [
+      "{{acct2}}",
+      "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+     ]
+    }
+   ],
+   "adapt": [
+    {
+     "find": "address public constant TOKEN = address(0);",
+     "replace": "address public constant TOKEN = {{addr:token}};"
+    },
+    {
+     "find": "address public constant VICTIM = address(0);",
+     "replace": "address public constant VICTIM = {{acct1}};"
+    },
+    {
+     "find": "address public constant SPENDER = address(0);",
+     "replace": "address public constant SPENDER = {{acct2}};"
+    }
+   ]
+  },
+  {
+   "id": "38-governance-flash-vote",
+   "file": "38-governance-flash-vote.t.sol",
+   "detector": "centralization",
+   "scenario": "Governance flash-loan vote",
+   "fixture": "38-governance-flash-vote.sol",
+   "contractName": "GovToken",
+   "flaw": "vote() weighs the caller's current token balance with no snapshot or checkpoint, so tokens borrowed for a single transaction count at full weight.",
+   "deployments": [
+    {
+     "name": "gov",
+     "contract": "GovToken"
+    }
+   ],
+   "target": "gov",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:gov}}",
+     "sig": "mint(address,uint256)",
+     "args": [
+      "{{acct0}}",
+      "10000000000000000000000"
+     ]
+    }
+   ],
+   "adapt": [
+    {
+     "find": "address public constant WHALE = address(0);",
+     "replace": "address public constant WHALE = {{acct0}};"
+    }
+   ]
+  },
+  {
+   "id": "39-dos",
+   "file": "39-dos.t.sol",
+   "detector": "unchecked-call",
+   "scenario": "DoS: revert-in-loop bricks distribution + unbounded loop gas growth",
+   "fixture": "39-dos.sol",
+   "contractName": "DosDistributor",
+   "flaw": "distribute() push-pays all recipients in a loop and reverts entirely when one recipient reverts, and process() iterates an array anyone can grow via push(), so its gas grows without bound.",
+   "deployments": [
+    {
+     "name": "dist",
+     "contract": "DosDistributor"
+    }
+   ],
+   "target": "dist",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:dist}}",
+     "sig": "addRecipient(address)",
+     "args": [
+      "{{acct1}}"
+     ]
+    },
+    {
+     "from": 0,
+     "to": "{{addr:dist}}",
+     "value": "2ether"
+    }
+   ]
+  },
+  {
+   "id": "40-erc4626-inflation",
+   "file": "40-erc4626-inflation.t.sol",
+   "detector": "balance-as-price",
+   "scenario": "ERC4626 inflation / first-depositor attack",
+   "fixture": "40-erc4626-inflation.sol",
+   "contractName": "InflationVault",
+   "flaw": "The vault prices shares as assets * supply / live balance with no virtual offset, so the first depositor deposits 1 wei for 1 share, donates a large sum, and the next victim's deposit mints ~0 shares.",
+   "deployments": [
+    {
+     "name": "asset",
+     "contract": "MockAsset40"
+    },
+    {
+     "name": "vault",
+     "contract": "InflationVault",
+     "args": [
+      "$asset"
+     ]
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:asset}}",
+     "sig": "mint(address,uint256)",
+     "args": [
+      "{{acct0}}",
+      "100000000000000000000000"
+     ]
+    }
+   ],
+   "adapt": [
+    {
+     "find": "address public constant WHALE = address(0);",
+     "replace": "address public constant WHALE = {{acct0}};"
+    }
+   ]
+  },
+  {
+   "id": "41-create2-metamorphic",
+   "file": "41-create2-metamorphic.t.sol",
+   "detector": "bytecode-create2",
+   "scenario": "CREATE2 metamorphic redeploy (same address, new code)",
+   "fixture": "41-create2-metamorphic.sol",
+   "contractName": "Placeholder41",
+   "flaw": "A CREATE2-deployed contract that selfdestructs in its creation transaction can be redeployed with different code at the same address; the template proves the pattern with its own factory, so the fixture is only a live placeholder target.",
+   "deployments": [
+    {
+     "name": "ph",
+     "contract": "Placeholder41"
+    }
+   ],
+   "target": "ph"
+  },
+  {
+   "id": "42-short-address-attack",
+   "file": "42-short-address-attack.t.sol",
+   "detector": "short-address",
+   "scenario": "Short address attack via parameter padding",
+   "fixture": "42-short-address-attack.sol",
+   "contractName": "ShortAddressPayout",
+   "flaw": "The payout decodes calldata with no length validation; an under-padded (19-byte) address shifts the amount word and inflates the payout to the whole pot.",
+   "deployments": [
+    {
+     "name": "payout",
+     "contract": "ShortAddressPayout"
+    }
+   ],
+   "target": "payout",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:payout}}",
+     "value": "5ether"
+    }
+   ]
+  },
+  {
+   "id": "43-front-running",
+   "file": "43-front-running.t.sol",
+   "detector": "front-running",
+   "scenario": "Front-running (transaction ordering vulnerability)",
+   "fixture": "43-front-running.sol",
+   "contractName": "FrontRunReward",
+   "flaw": "A one-shot reward pays the first claim() in block order with no recipient binding; a front-runner who sees the victim's transaction takes the pot.",
+   "deployments": [
+    {
+     "name": "reward",
+     "contract": "FrontRunReward"
+    }
+   ],
+   "target": "reward",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:reward}}",
+     "value": "2ether"
+    }
+   ]
+  },
+  {
+   "id": "44-external-contract-ref",
+   "file": "44-external-contract-ref.t.sol",
+   "detector": "external-contract-referencing",
+   "scenario": "Dangerous external contract reference/hijacking",
+   "fixture": "44-external-contract-ref.sol",
+   "contractName": "ExternalRefVault",
+   "flaw": "The external payout reference can be swapped by anyone via setTarget, and withdraw routes the whole balance through it.",
+   "deployments": [
+    {
+     "name": "vault",
+     "contract": "ExternalRefVault"
+    }
+   ],
+   "target": "vault",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:vault}}",
+     "value": "4ether"
+    }
+   ]
+  },
+  {
+   "id": "45-timestamp-dependence",
+   "file": "45-timestamp-dependence.t.sol",
+   "detector": "timestamp",
+   "scenario": "Timestamp dependence (miner-controllable block.timestamp gate)",
+   "fixture": "45-timestamp-dependence.sol",
+   "contractName": "TimestampSale",
+   "flaw": "isSaleFinished -- and the claim it gates -- is decided by block.timestamp alone, which a block producer can steer.",
+   "deployments": [
+    {
+     "name": "sale",
+     "contract": "TimestampSale",
+     "args": [
+      "{{tsPlus12h}}"
+     ]
+    }
+   ],
+   "target": "sale",
+   "setup": [
+    {
+     "from": 0,
+     "to": "{{addr:sale}}",
+     "value": "2ether"
+    }
+   ]
+  }
+ ]
+}
