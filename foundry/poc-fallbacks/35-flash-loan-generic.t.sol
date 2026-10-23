@@ -7,9 +7,11 @@ import {Test, console} from "forge-std/Test.sol";
 /// @notice Base pattern for every flash-loan attack (oracle, sandwich,
 ///         governance, liquidation): borrow a huge amount with NO
 ///         collateral, use it inside one transaction, repay + premium.
-///         If the borrow + repay round-trips, the flash-loan primitive
-///         works against this pool -- the attack body goes in
-///         executeOperation().
+///         The attack body goes in executeOperation() -- and a round-trip
+///         alone is NOT a verdict: this harness passes only when the
+///         adapted attack body has asserted a TARGET-STATE effect and set
+///         the `attackLanded` hook (see FlashBorrower). Unadapted, or
+///         with only POOL / ASSET set, it cannot pass.
 /// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via
 ///      scripts/run-fork-poc.sh. TODO: set POOL (Aave v3 Pool) / ASSET /
 ///      amount. Aave v3 flashLoanSimple signature below; Balancer / Uniswap
@@ -32,6 +34,11 @@ interface IERC20 {
 contract FlashBorrower {
     IPool public immutable pool;
     address public immutable owner;
+    // Adaptation hook: ships false and is set true ONLY by an adapted
+    // attack body that has verified a target-state effect (see
+    // executeOperation). The shipped body performs no attack and never
+    // sets it, so the harness cannot pass on a bare round-trip.
+    bool public attackLanded;
 
     constructor(address pool_) {
         pool = IPool(pool_);
@@ -51,7 +58,10 @@ contract FlashBorrower {
         bytes calldata
     ) external returns (bool) {
         // TODO: the attack body goes here (swap / vote / liquidate /
-        // manipulate), then repay.
+        // manipulate against POC_TARGET). Verify the TARGET-STATE effect
+        // the finding claims (its price moved / its balance drained /
+        // its vote swung) and set `attackLanded = true` only when that
+        // effect actually holds -- then repay.
         uint256 repay = amount + premium;
         IERC20(asset).approve(address(pool), repay);
         return true;
@@ -84,9 +94,14 @@ contract PoC is Test {
         FlashBorrower borrower = new FlashBorrower(POOL);
         uint256 amount = 1000 ether;
         // Borrow + repay round-trips: the flash-loan primitive works.
-        // A real attack adds the exploit body in executeOperation().
+        // That alone proves NOTHING about the target -- the verdict is
+        // the hook below, which only an adapted attack body that checked
+        // a target-state effect can satisfy.
         borrower.borrow(ASSET, amount);
         console.log("flash loan round-trip succeeded for amount:", amount);
-
+        assertTrue(
+            borrower.attackLanded(),
+            "35-flash-loan: round-trip completed but the attack hook never fired -- no target-state assertion was wired, so nothing about POC_TARGET is proven; wire the attack + target-state check in executeOperation and set attackLanded only when it holds"
+        );
     }
 }

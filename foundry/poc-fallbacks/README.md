@@ -57,11 +57,18 @@ POC_TARGET=0x... ./scripts/run-fork-poc.sh 0x...
   Function names, token addresses, proofs, slots, and whales must be adapted
   to the target's ABI. An unadapted fallback fails loudly (require with a
   message), never silently.
-- **Not PoC-able:** `missing-event`, `floating-pragma`, `old-compiler`,
-  `default-visibility`, `rtl-override` have no on-chain exploit. The
-  bytecode-shape signals (`bytecode-metadata`, `bytecode-proxy`,
-  `bytecode-reentrancy-shape`) use the source-level fallback for the
-  matching scenario.
+- **Not PoC-able (enforced by selection):** `missing-event`,
+  `floating-pragma`, `old-compiler`, `rtl-override` have no on-chain
+  exploit; the bytecode-shape signals `bytecode-metadata` and
+  `bytecode-reentrancy-shape` are not standalone exploits; and the
+  analyzer meta-findings `parse` and `report-cap` are not
+  vulnerabilities at all. `selectPocFallbacks` returns NO template for
+  these detectors (generated as `POC_NOT_POCABLE_DETECTORS` from
+  `index.json`) — no SmartBugs-category fallback is borrowed for them,
+  because a borrowed harness manufactures a verdict the finding never
+  earned. (`default-visibility` and `bytecode-proxy` were previously
+  listed here but DO have mechanism-correct harnesses — 07b and 11 —
+  and are mapped to them instead.)
 - **Fork dust:** a contract CREATE'd on a fork lands at a deterministic
   address that may already hold a mainnet balance (dust), which the new
   contract inherits. Assert `>=` the forced amount, never `==`, when a

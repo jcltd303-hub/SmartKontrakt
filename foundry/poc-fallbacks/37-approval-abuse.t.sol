@@ -14,7 +14,12 @@ import {Test, console} from "forge-std/Test.sol";
 /// @dev FORK-ONLY. Copy to foundry/test/Exploit.t.sol and run via
 ///      scripts/run-fork-poc.sh. TODO: set TOKEN / VICTIM / SPENDER to
 ///      real addresses on this fork (the victim's approval must exist
-///      on-chain for the PoC to run).
+///      on-chain for the PoC to run). GATE: the analyzed target must play
+///      a role -- TOKEN or SPENDER must BE POC_TARGET (the token whose
+///      approvals are abused, or the spender contract under analysis).
+///      An unrelated token/victim/spender triple proves something about
+///      that triple, never about the target, so both tests abort unless
+///      the target is one of the two.
 
 interface IERC20 {
     function balanceOf(address who) external view returns (uint256);
@@ -46,6 +51,10 @@ contract PoC is Test {
 
     function test_infiniteApprovalDrain() public {
         require(TOKEN != address(0) && VICTIM != address(0) && SPENDER != address(0), "set TOKEN / VICTIM / SPENDER");
+        require(
+            TOKEN == target || SPENDER == target,
+            "37-approval-abuse: POC_TARGET plays no role in this run -- TOKEN or SPENDER must BE the analyzed target; an unrelated token/victim/spender triple proves nothing about the target"
+        );
 
         address attackerEOA = makeAddr("attacker");
         uint256 allowance = IERC20(TOKEN).allowance(VICTIM, SPENDER);
@@ -65,6 +74,10 @@ contract PoC is Test {
 
     function test_approveRace() public {
         require(TOKEN != address(0) && VICTIM != address(0) && SPENDER != address(0), "set TOKEN / VICTIM / SPENDER");
+        require(
+            TOKEN == target || SPENDER == target,
+            "37-approval-abuse: POC_TARGET plays no role in this run -- TOKEN or SPENDER must BE the analyzed target; an unrelated token/victim/spender triple proves nothing about the target"
+        );
 
         address attackerEOA = makeAddr("attacker");
 

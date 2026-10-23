@@ -39,6 +39,15 @@ for (const f of index.fallbacks) {
   }
 }
 
+// Detectors with NO applicable harness (index.json `notPocable`, a list of
+// { detectors, reason } groups). Flattened + sorted for a stable generated
+// module. Selection must honor this set explicitly: without the check, an
+// unmapped detector silently inherits its SmartBugs-category templates,
+// which manufactures verdicts for findings that have no exploit at all.
+const notPocable = [
+  ...new Set((index.notPocable ?? []).flatMap((entry) => entry.detectors ?? [])),
+].sort();
+
 // Full catalog (file -> scenario + detectors + SmartBugs category) so the agent
 // knows which template shapes exist when it proposes a hypothesis for a new
 // detector. `smartbugs` is the DASP / SmartBugs-Curated category of the template
@@ -81,6 +90,15 @@ export const POC_FALLBACK_TEMPLATES: Record<string, string> = ${JSON.stringify(t
 /** Detector id -> fallback template file(s), from the library index. */
 export const POC_FALLBACK_BY_DETECTOR: Record<string, string[]> = ${JSON.stringify(byDetector, null, 2)};
 
+/**
+ * Detectors with NO applicable PoC harness (index.json \`notPocable\`):
+ * code-quality / hygiene findings, bytecode-shape signals, and analyzer
+ * meta-findings. selectPocFallbacks returns nothing for them — borrowing a
+ * SmartBugs-category harness for a finding with no exploit would manufacture
+ * a verdict the finding never earned.
+ */
+export const POC_NOT_POCABLE_DETECTORS: string[] = ${JSON.stringify(notPocable, null, 2)};
+
 /** Full fallback catalog: file -> scenario + detectors + category + provenance. */
 export const POC_FALLBACK_CATALOG: Array<{
   file: string;
@@ -118,6 +136,10 @@ export function selectPocFallbacks(
   const seen = new Set<string>();
   const out: Array<{ file: string; source: string }> = [];
   for (const f of sorted) {
+    // Not-PoC-able detectors get NO template — not even a category fallback.
+    // The finding has no on-chain exploit (or is an analyzer meta-finding),
+    // so any harness verdict attached to it would be unearned.
+    if (POC_NOT_POCABLE_DETECTORS.includes(f.detector)) continue;
     // Detector-specific harnesses first; if the detector has none, fall back to
     // the harnesses for its SmartBugs-Curated (DASP) category, so a finding
     // still starts from a working template for the right vulnerability class.

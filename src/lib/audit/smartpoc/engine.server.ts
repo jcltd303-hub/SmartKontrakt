@@ -276,8 +276,9 @@ export async function runGreEngine(input: GreInput, execute: GreExecute): Promis
     };
 
   // selectPocFallbacks falls back to the finding's SmartBugs-Curated (DASP)
-  // category when the detector has no harness of its own, so this always yields
-  // a working template rather than an empty prompt.
+  // category when the detector has no harness of its own. For not-PoC-able
+  // detectors (hygiene / bytecode-shape / analyzer-meta findings) it yields
+  // nothing, and the prompt below is built without a starting template.
   const smartbugs = smartbugsCategoryForDetector(primary.detector);
   const template = selectPocFallbacks([{ detector: primary.detector, severity: primary.severity }], 1)[0];
 
