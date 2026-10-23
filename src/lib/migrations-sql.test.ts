@@ -59,3 +59,10 @@ test("embedded 0015 creates auditor_dispositions keyed by finding with the dispo
   assert.match(sql, /finding_id text primary key references findings \(id\) on delete cascade/i);
   assert.match(sql, /'confirmed', 'false_positive', 'needs_more_info'/i);
 });
+
+test("embedded 0017 creates fp_signatures keyed by signature with the decision vocabulary", () => {
+  const sql = EMBEDDED_MIGRATIONS["0017_fp_signatures.sql"];
+  assert.match(sql, /create table if not exists fp_signatures/i);
+  assert.match(sql, /signature_key text primary key/i);
+  assert.match(sql, /'candidate', 'confirmed', 'dismissed'/i);
+});

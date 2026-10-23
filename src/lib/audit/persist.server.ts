@@ -40,6 +40,14 @@ import {
   setDispositionRow,
   dispositionsByFindingId,
 } from "./dispositions.server.ts";
+import { fpMatchForFinding, type FpSignature } from "./fp-signatures.ts";
+import {
+  getConfirmedFpSignatureRows,
+  refreshFpSignatures,
+  setFpSignatureStatus,
+} from "./fp-signatures.server.ts";
+
+export type { FpSignature };
 import type { AdjudicationRunRecord } from "./adjudicate-chain.ts";
 
 export type { AuditorDisposition, FindingDisposition };
@@ -250,6 +258,27 @@ export async function getDatabaseSize(): Promise<DatabaseSizeResult> {
   return { ...res, dbState: a.conn.state };
 }
 
+/**
+ * Confirmed FP signatures for read-time annotation (G7), FAIL-SOFT by
+ * design: the annotation is advisory metadata layered over the archive
+ * (like the JSON sidecars loadScan parses with ignore-on-error), never
+ * archive data itself — an archive whose fp_signatures table cannot be
+ * read (e.g. a store predating migration 0017) must still serve its
+ * findings, just without the "matches confirmed FP pattern" note. The
+ * failure is logged, never silent. The DECISION surface
+ * (listFpSignatures below) does the opposite: it throws, like the
+ * disposition write path, because a decision must never appear to save
+ * into the void.
+ */
+async function confirmedFpSignaturesSoft(sql: Sql): Promise<FpSignature[]> {
+  try {
+    return await getConfirmedFpSignatureRows(sql);
+  } catch (err) {
+    console.warn("[kiln] FP signature lookup failed (annotation skipped):", err);
+    return [];
+  }
+}
+
 export async function loadScan(id: string): Promise<StoredScan | null> {
   const sql = await getSql();
   const rows = await sql<ScanRow>`
@@ -312,6 +341,13 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
       pocCode: f.poc_code,
     }),
   }));
+  // G7: annotate findings whose shape matches a CONFIRMED FP pattern.
+  // Annotation only — severity, eligibility and dispositions are
+  // untouched (fp-signatures.ts doctrine).
+  const fpConfirmed = await confirmedFpSignaturesSoft(sql);
+  if (fpConfirmed.length > 0) {
+    for (const finding of findings) finding.fpMatch = fpMatchForFinding(finding, fpConfirmed);
+  }
   const aiStatus = row.ai_status === "ok" || row.ai_status === "error" ? row.ai_status : "unavailable";
   // Item 3: the stored column is authoritative; the derivation covers rows
   // saved before migration 0007 (or by a client without the column):
@@ -693,6 +729,10 @@ export async function getRecentHighSeverityFindings(opts?: {
       `;
     }
 
+    // G7: confirmed FP patterns for read-time annotation (fail-soft —
+    // see confirmedFpSignaturesSoft). Fetched once for the whole page.
+    const fpConfirmed = await confirmedFpSignaturesSoft(sql);
+
     // Dedupe at the query layer: the same contract audited and saved
     // more than once (workbench + worker, or an analyzer-version
     // re-run) yields DISTINCT finding rows — ids are `${scanId}:${ord}`,
@@ -728,6 +768,14 @@ export async function getRecentHighSeverityFindings(opts?: {
         pocOutput: f.poc_output,
         pocCode: f.poc_code,
       }),
+      // G7: FP-pattern annotation, same as loadScan (annotation only).
+      fpMatch:
+        fpConfirmed.length > 0
+          ? fpMatchForFinding(
+              { detector: f.detector, title: f.title, locationFn: f.location_fn, snippet: f.snippet },
+              fpConfirmed,
+            )
+          : null,
       scanLabel: f.scan_label,
       contractName: f.contract_name,
       targetAddress: f.target_address,
@@ -836,6 +884,34 @@ export async function getFindingDispositions(opts: {
     return dispositionsByFindingId(await getDispositionRowsForScan(a.sql, opts.scanId));
   }
   return dispositionsByFindingId(await getDispositionRowsForFindings(a.sql, opts.findingIds ?? []));
+}
+
+/**
+ * FP signatures (G7) for the decision surface: refresh derivation from
+ * the current false_positive dispositions, then return every stored
+ * row (candidates first). Throws on a failed/unconfigured database,
+ * like the disposition paths — a candidate list rendered against the
+ * void would invite decisions about an archive that is not there.
+ */
+export async function listFpSignatures(): Promise<FpSignature[]> {
+  const a = await archiveSql();
+  if (!a.sql) throw new Error(a.error);
+  return refreshFpSignatures(a.sql);
+}
+
+/**
+ * Record the human's FP-signature decision (confirm / dismiss) — the
+ * only write path for fp_signatures decisions, reached from a human
+ * tap via setFpSignatureDecisionFn. Throws like setFindingDisposition:
+ * a decision must never appear to save into the void.
+ */
+export async function setFpSignatureDecision(input: {
+  signatureKey: string;
+  status: "confirmed" | "dismissed";
+}): Promise<FpSignature> {
+  const a = await archiveSql();
+  if (!a.sql) throw new Error(a.error);
+  return setFpSignatureStatus(a.sql, input);
 }
 
 /**

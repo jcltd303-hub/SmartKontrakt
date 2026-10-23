@@ -1,6 +1,7 @@
 import type { AddressValue } from "./value.ts";
 import type { LiveStateReport } from "./live-state.ts";
 import type { PocProvenance } from "./poc-outcome.ts";
+import type { FpMatch } from "./fp-signatures.ts";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -52,6 +53,15 @@ export type Finding = {
    *  rows included — and attached by the archive loaders; absent/null
    *  when the finding has never been run. */
   pocEvidence?: PocProvenance | null;
+  /** FP-pattern annotation (G7): set when this finding's shape matches
+   *  a CONFIRMED fp_signatures pattern (fp-signatures.ts) — a pattern
+   *  derived from findings a human disposed as false_positive.
+   *  ANNOTATION ONLY: it never suppresses the finding, changes its
+   *  severity, or affects PoC eligibility; it exists so triage can see
+   *  "this shape was judged an FP before" at a glance. Derived at read
+   *  time by the archive loaders; absent/null when no confirmed
+   *  pattern matches (candidate and dismissed patterns never annotate). */
+  fpMatch?: FpMatch | null;
 };
 
 export type SelectorHit = {

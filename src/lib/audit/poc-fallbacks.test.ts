@@ -193,11 +193,12 @@ describe("detector map ordering and membership", () => {
 //   family, so several sibling templates share the map and exactly one
 //   can be primary. The ratchet asserts the weaker invariant for these:
 //   the type's own template IS in the detector's map, and the top pick
-//   is the named family primary. (40 is in this class pending a policy
-//   call: whether balance-as-price's primary should be the generic
-//   price-manipulation harness 16 or the ERC4626 share-inflation
-//   specialization 40 is a judgment the map alone cannot make — the
-//   exemption records the current primary, it does not bless it.)
+//   is the named family primary. (40's place in this class was an open
+//   policy question — balance-as-price's primary: the generic harness
+//   16 or the ERC4626 specialization 40 — until Jer decided it on
+//   2026-10-23: 16 stays primary for balance-as-price; 40 remains the
+//   ERC4626 specialist behind it. The exemption now records a decided
+//   primary, not a pending one.)
 // ---------------------------------------------------------------------
 
 type ManifestType = { id: string; file: string; detector: string };
@@ -263,7 +264,7 @@ const SHARED_DETECTOR: Record<string, { primary: string; reason: string }> = {
   "40-erc4626-inflation": {
     primary: "16-oracle-manipulation.t.sol",
     reason:
-      "Shares `balance-as-price` with 16, the generic spot/balance price-manipulation harness. Whether the ERC4626 share-inflation specialization should be primary for balance-as-price findings is an open policy question; this records the current primary without deciding it.",
+      "Shares `balance-as-price` with 16, the generic spot/balance price-manipulation harness. DECIDED by Jer, 2026-10-23: 16 stays primary for balance-as-price; 40 remains the ERC4626 share-inflation specialist behind it.",
   },
 };
 

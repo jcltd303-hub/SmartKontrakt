@@ -1,4 +1,5 @@
 import { PocEvidenceBadge } from "@/components/poc-evidence-badge";
+import { FpMatchBadge } from "@/components/fp-match-badge";
 import { findingPocEvidence } from "@/lib/audit/poc-evidence";
 import { aiReviewExcerptForFinding } from "@/lib/audit/adjudication";
 import { CHAIN_STEP_ORDER } from "@/lib/audit/adjudicate-chain";
@@ -251,6 +252,12 @@ export function FindingsTab({
                       </div>
 
                       <PocEvidenceBadge evidence={evidence} />
+
+                      {finding.fpMatch && (
+                        <div>
+                          <FpMatchBadge match={finding.fpMatch} />
+                        </div>
+                      )}
 
                       {/* Adjudication: stored evidence + one-action chain + disposition */}
                       <div className="p-3 bg-[#26231c]/50 rounded-lg border border-[#3a3428] flex flex-col gap-2.5">

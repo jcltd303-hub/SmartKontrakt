@@ -611,6 +611,44 @@ export const getFindingDispositionsFn = createServerFn({ method: "GET" })
     });
   });
 
+/**
+ * FP signatures (G7, migration 0017): refresh the derivation from the
+ * current false_positive dispositions and return every signature row
+ * (candidates first, with their evidence). Read-only for the caller —
+ * the refresh reconciles derived candidates with stored decisions and
+ * never changes a decision.
+ */
+export const getFpSignaturesFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { listFpSignatures } = await import("./audit/persist.server");
+  return listFpSignatures();
+});
+
+/**
+ * Record the human's decision on one FP signature: confirm or dismiss.
+ * This is a HUMAN write, like setFindingDispositionFn — derivation
+ * proposes, only a tap decides. A confirmed signature annotates
+ * matching findings at read time; it never suppresses, re-scores, or
+ * disposes anything.
+ */
+export const setFpSignatureDecisionFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => {
+    if (!input || typeof input !== "object") throw new Error("Invalid payload");
+    const val = input as { signatureKey?: string; status?: string };
+    if (!val.signatureKey || typeof val.signatureKey !== "string") {
+      throw new Error("Missing signatureKey");
+    }
+    if (val.status !== "confirmed" && val.status !== "dismissed") {
+      throw new Error("FP signature decision must be confirmed or dismissed");
+    }
+    return { signatureKey: val.signatureKey, status: val.status as "confirmed" | "dismissed" };
+  })
+  .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("./admin-guard.server");
+    assertAdminToken();
+    const { setFpSignatureDecision } = await import("./audit/persist.server");
+    return setFpSignatureDecision(data);
+  });
+
 /** Stored PoC runs for a finding (newest first, digest-bearing rows
  *  only) — the adjudication chain's reuse lookup. */
 export const getFindingPocRunsFn = createServerFn({ method: "GET" })

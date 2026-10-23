@@ -1,4 +1,5 @@
 import { PocEvidenceBadge } from "@/components/poc-evidence-badge";
+import { FpMatchBadge } from "@/components/fp-match-badge";
 import { findingPocEvidence } from "@/lib/audit/poc-evidence";
 import { SUPPORTED_CHAINS } from "@/lib/audit/address-fetcher";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
@@ -25,13 +26,15 @@ import {
 } from "lucide-react";
 import {
   getFindingPocRunsFn,
+  getFpSignaturesFn,
   getRecentHighSeverityFindingsFn,
   getScan,
   saveComprehensiveScanFn,
   saveFindingPocResultFn,
   setFindingDispositionFn,
+  setFpSignatureDecisionFn,
 } from "@/lib/scans.functions";
-import type { FindingWithScanInfo, StoredScan } from "@/lib/audit/persist.server";
+import type { FindingWithScanInfo, FpSignature, StoredScan } from "@/lib/audit/persist.server";
 import {
   CHAIN_STEP_ORDER,
   failedAdjudicationOutcome,
@@ -186,6 +189,45 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   const [dispositionSavingId, setDispositionSavingId] = useState<string | null>(null);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
 
+  // FP signatures (G7, migration 0017): patterns derived server-side
+  // from the false_positive dispositions above. Confirming one only
+  // annotates matching findings (the fpMatch chip) — it never
+  // suppresses, re-scores, or disposes anything.
+  const [fpSignatures, setFpSignatures] = useState<FpSignature[]>([]);
+  const [fpSignaturesError, setFpSignaturesError] = useState<string | null>(null);
+  const [fpDecisionSavingKey, setFpDecisionSavingKey] = useState<string | null>(null);
+  const [showDismissedFp, setShowDismissedFp] = useState<boolean>(false);
+
+  const fetchFpSignatures = useCallback(async () => {
+    try {
+      setFpSignatures(await getFpSignaturesFn());
+      setFpSignaturesError(null);
+    } catch (err) {
+      console.warn("[kiln] Failed to load FP signatures:", err);
+      setFpSignaturesError(
+        `FP patterns unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }, []);
+
+  // One tap records the human's decision on a derived FP pattern. The
+  // server row is the decision of record; the local list swaps in the
+  // returned row so the panel reflects it without a full reload.
+  const handleFpDecision = async (sig: FpSignature, status: "confirmed" | "dismissed") => {
+    if (fpDecisionSavingKey) return;
+    setFpDecisionSavingKey(sig.key);
+    try {
+      const saved = await setFpSignatureDecisionFn({ data: { signatureKey: sig.key, status } });
+      setFpSignatures((prev) => prev.map((s) => (s.key === saved.key ? saved : s)));
+    } catch (err) {
+      setFeedbackNotice(
+        `FP pattern decision failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setFpDecisionSavingKey(null);
+    }
+  };
+
   // Adjudication chain state per finding + the undisposed queue.
   const [adjudications, setAdjudications] = useState<Record<string, {
     running: boolean;
@@ -264,7 +306,8 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   useEffect(() => {
     fetchFindings();
     checkBackend();
-  }, [fetchFindings, checkBackend]);
+    fetchFpSignatures();
+  }, [fetchFindings, checkBackend, fetchFpSignatures]);
 
   const copyToClipboard = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -1294,6 +1337,126 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
         )}
       </div>
 
+      {/* FP patterns (G7): candidates derived from false_positive
+          dispositions. Confirming a pattern ONLY annotates matching
+          findings — it never suppresses, re-scores, or disposes one. */}
+      {(fpSignatures.length > 0 || fpSignaturesError) && (
+        <div className="bg-[#1c1a16] border border-[#3a3428] rounded-2xl p-4 sm:p-5 flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <span className="text-[11px] font-mono text-[#a39886] uppercase tracking-wider">
+              FP patterns — derived from your false_positive dispositions
+            </span>
+            <span className="text-[10px] font-mono text-[#746c60]">
+              annotation only · confirming never suppresses, re-scores, or disposes a finding
+            </span>
+          </div>
+          {fpSignaturesError && (
+            <span className="text-xs font-mono text-red-400">{fpSignaturesError}</span>
+          )}
+          {fpSignatures
+            .filter((s) => s.status === "candidate")
+            .map((sig) => (
+              <div
+                key={sig.key}
+                className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 rounded-lg bg-[#26231c]/50 border border-[#3a3428]"
+              >
+                <div className="flex flex-col gap-0.5 min-w-0">
+                  <span className="text-xs font-mono text-[#f4efe6]">
+                    <span className="font-bold">{sig.detector}</span>
+                    {" · "}
+                    {sig.titlePattern}
+                  </span>
+                  <span className="text-[10px] font-mono text-[#a39886]">
+                    {sig.evidenceCount} false_positive dispositions across {sig.scanCount} scans
+                    {" · "}fn: {sig.locationFn ?? "any"}
+                    {" · "}evidence: {sig.snippetClass ?? "any"}
+                    {sig.sampleTitles.length > 0 && <> · e.g. “{sig.sampleTitles[0]}”</>}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => handleFpDecision(sig, "confirmed")}
+                    disabled={fpDecisionSavingKey !== null}
+                    className="px-2.5 py-1 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-violet-500/40 text-[11px] font-mono font-semibold text-violet-300 flex items-center gap-1 transition-colors disabled:opacity-50"
+                    title="Confirm: findings matching this shape get a visible 'matches confirmed FP pattern' note. Nothing is suppressed or re-scored."
+                  >
+                    {fpDecisionSavingKey === sig.key ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Check className="w-3 h-3" />
+                    )}
+                    <span>Confirm pattern</span>
+                  </button>
+                  <button
+                    onClick={() => handleFpDecision(sig, "dismissed")}
+                    disabled={fpDecisionSavingKey !== null}
+                    className="px-2.5 py-1 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[11px] font-mono text-[#a39886] flex items-center gap-1 transition-colors disabled:opacity-50"
+                    title="Dismiss: this pattern is never proposed again, however much matching FP evidence accrues."
+                  >
+                    <X className="w-3 h-3" />
+                    <span>Dismiss</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          {fpSignatures
+            .filter((s) => s.status === "confirmed")
+            .map((sig) => (
+              <div
+                key={sig.key}
+                className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 py-2 rounded-lg border border-violet-500/20"
+              >
+                <span className="text-[11px] font-mono text-violet-300 min-w-0">
+                  ✓ confirmed · <span className="font-bold">{sig.detector}</span> · {sig.titlePattern}
+                  <span className="text-[#a39886]">
+                    {" "}({sig.evidenceCount} FPs / {sig.scanCount} scans · fn: {sig.locationFn ?? "any"} · evidence: {sig.snippetClass ?? "any"})
+                  </span>
+                </span>
+                <button
+                  onClick={() => handleFpDecision(sig, "dismissed")}
+                  disabled={fpDecisionSavingKey !== null}
+                  className="px-2 py-0.5 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[10px] font-mono text-[#a39886] shrink-0 transition-colors disabled:opacity-50"
+                  title="Revoke this pattern: stop annotating and never re-propose it."
+                >
+                  Revoke
+                </button>
+              </div>
+            ))}
+          {fpSignatures.some((s) => s.status === "dismissed") && (
+            <>
+              <button
+                onClick={() => setShowDismissedFp((v) => !v)}
+                className="self-start text-[10px] font-mono text-[#746c60] hover:text-[#a39886] transition-colors"
+              >
+                {showDismissedFp ? "Hide" : "Show"}{" "}
+                {fpSignatures.filter((s) => s.status === "dismissed").length} dismissed pattern(s) — never re-proposed
+              </button>
+              {showDismissedFp &&
+                fpSignatures
+                  .filter((s) => s.status === "dismissed")
+                  .map((sig) => (
+                    <div
+                      key={sig.key}
+                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 py-2 rounded-lg border border-[#3a3428] opacity-60"
+                    >
+                      <span className="text-[11px] font-mono text-[#a39886] min-w-0">
+                        dismissed · <span className="font-bold">{sig.detector}</span> · {sig.titlePattern}
+                      </span>
+                      <button
+                        onClick={() => handleFpDecision(sig, "confirmed")}
+                        disabled={fpDecisionSavingKey !== null}
+                        className="px-2 py-0.5 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[10px] font-mono text-[#a39886] shrink-0 transition-colors disabled:opacity-50"
+                        title="Undo the dismissal and confirm this pattern instead."
+                      >
+                        Confirm instead
+                      </button>
+                    </div>
+                  ))}
+            </>
+          )}
+        </div>
+      )}
+
       {/* Findings List */}
       <div className="flex flex-col gap-4">
         {isLoading ? (
@@ -1403,6 +1566,8 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
                         ⚖ {DISPOSITION_CONFIG[disposition.disposition].label}
                       </span>
                     )}
+
+                    {finding.fpMatch && <FpMatchBadge match={finding.fpMatch} />}
 
                     {/* Run Single PoC Button */}
                     <button
