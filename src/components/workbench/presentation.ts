@@ -1,5 +1,32 @@
 import { SAMPLES } from "@/lib/audit/samples";
 import type { Severity } from "@/lib/audit/types";
+import type { AuditorDisposition } from "@/lib/audit/adjudication";
+
+/** Auditor disposition (migration 0015) display config, shared by the
+ *  workbench findings tab and the PoC Audits page. */
+export const DISPOSITION_CONFIG: Record<
+  AuditorDisposition,
+  { label: string; badge: string }
+> = {
+  confirmed: {
+    label: "Confirmed real",
+    badge: "bg-emerald-950 text-emerald-300 border-emerald-800",
+  },
+  false_positive: {
+    label: "False positive",
+    badge: "bg-purple-950 text-purple-300 border-purple-800",
+  },
+  needs_more_info: {
+    label: "Needs info",
+    badge: "bg-amber-950 text-amber-300 border-amber-800",
+  },
+};
+
+export const DISPOSITION_ORDER: readonly AuditorDisposition[] = [
+  "confirmed",
+  "false_positive",
+  "needs_more_info",
+] as const;
 export const SEVERITY_CONFIG: Record<
   Severity,
   { label: string; badge: string; bg: string; border: string; text: string; dot: string }

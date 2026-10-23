@@ -562,3 +562,62 @@ export const saveFindingPocResultFn = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+/**
+ * Set the auditor disposition for one finding (migration 0015). This is
+ * a HUMAN write — the adjudication chain only ever suggests; accepting a
+ * suggestion in the UI is what calls this. UPSERT semantics: re-setting
+ * updates the single row; re-setting the identical value is a no-op.
+ */
+export const setFindingDispositionFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => {
+    if (!input || typeof input !== "object") throw new Error("Invalid payload");
+    const val = input as {
+      findingId?: string;
+      disposition?: string;
+      note?: string | null;
+    };
+    if (!val.findingId || typeof val.findingId !== "string") throw new Error("Missing findingId");
+    if (
+      val.disposition !== "confirmed" &&
+      val.disposition !== "false_positive" &&
+      val.disposition !== "needs_more_info"
+    ) {
+      throw new Error("Disposition must be one of confirmed, false_positive, needs_more_info");
+    }
+    return {
+      findingId: val.findingId,
+      disposition: val.disposition as "confirmed" | "false_positive" | "needs_more_info",
+      note: typeof val.note === "string" ? val.note.slice(0, 2000) : null,
+    };
+  })
+  .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("./admin-guard.server");
+    assertAdminToken();
+    const { setFindingDisposition } = await import("./audit/persist.server");
+    return setFindingDisposition(data);
+  });
+
+/** Dispositions for one scan (workbench) or a set of finding ids (the
+ *  PoC Audits feed), as a findingId → row map. */
+export const getFindingDispositionsFn = createServerFn({ method: "GET" })
+  .validator((input?: { scanId?: string; findingIds?: string[] }) => input)
+  .handler(async ({ data }) => {
+    const { getFindingDispositions } = await import("./audit/persist.server");
+    return getFindingDispositions({
+      scanId: typeof data?.scanId === "string" ? data.scanId : undefined,
+      findingIds: Array.isArray(data?.findingIds)
+        ? data.findingIds.filter((x): x is string => typeof x === "string").slice(0, 500)
+        : undefined,
+    });
+  });
+
+/** Stored PoC runs for a finding (newest first, digest-bearing rows
+ *  only) — the adjudication chain's reuse lookup. */
+export const getFindingPocRunsFn = createServerFn({ method: "GET" })
+  .validator((input?: { findingId?: string }) => input)
+  .handler(async ({ data }) => {
+    if (!data?.findingId) throw new Error("Missing findingId");
+    const { listFindingPocRuns } = await import("./audit/persist.server");
+    return listFindingPocRuns(data.findingId);
+  });
+

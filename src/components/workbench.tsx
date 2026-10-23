@@ -100,6 +100,13 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     handleRetryFindingPocSave,
     findingTriage,
     setFindingTriage,
+    findingDispositions,
+    findingDbId,
+    handleSetFindingDisposition,
+    dispositionSavingId,
+    findingAdjudications,
+    handleAdjudicateFinding,
+    handleClearAdjudication,
     handleOpenRagForFinding,
     disasmLines,
     setBytecodeSubView,
@@ -430,6 +437,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
               <FindingsTab
                 activeTab={activeTab}
                 report={report}
+                aiReview={aiReview}
                 setSeverityFilter={setSeverityFilter}
                 severityFilter={severityFilter}
                 findingSearch={findingSearch}
@@ -447,6 +455,13 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 handleRetryFindingPocSave={handleRetryFindingPocSave}
                 findingTriage={findingTriage}
                 setFindingTriage={setFindingTriage}
+                findingDispositions={findingDispositions}
+                findingDbId={findingDbId}
+                handleSetFindingDisposition={handleSetFindingDisposition}
+                dispositionSavingId={dispositionSavingId}
+                findingAdjudications={findingAdjudications}
+                handleAdjudicateFinding={handleAdjudicateFinding}
+                handleClearAdjudication={handleClearAdjudication}
                 handleOpenRagForFinding={handleOpenRagForFinding}
               />
 

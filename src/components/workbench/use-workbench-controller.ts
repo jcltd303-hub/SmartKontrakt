@@ -24,11 +24,26 @@ import { probeContractInterfaces, type CallProbeResult } from "@/lib/audit/simul
 import type { Finding, PocResult, Report } from "@/lib/audit/types";
 import { savePocRun, type PocRunResult } from "@/lib/poc-runs";
 import {
+  failedAdjudicationOutcome,
+  runAdjudicationChain,
+  type AdjudicationOutcome,
+  type ChainStep,
+  type ChainStepState,
+} from "@/lib/audit/adjudicate-chain";
+import type {
+  AuditorDisposition,
+  FindingDisposition,
+} from "@/lib/audit/adjudication";
+import {
   getBuildInfoFn,
   getDbInfo,
+  getFindingDispositionsFn,
+  getFindingPocRunsFn,
   getScan,
   queryRagKnowledgebaseFn,
   saveComprehensiveScanFn,
+  saveFindingPocResultFn,
+  setFindingDispositionFn,
 } from "@/lib/scans.functions";
 import { getStoredSupabaseConfig } from "@/lib/supabase";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -101,6 +116,27 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
       string,
       { status: "active" | "acknowledged" | "false_positive" | "remediated"; note?: string }
     >
+  >({});
+  // Auditor dispositions (migration 0015): the verdict OF RECORD per
+  // finding, keyed by DATABASE finding id (`${scanId}:${ord}`) — not by
+  // the report's in-memory ids. Loaded per saved scan; written only by a
+  // human tap (a button, or accepting the chain's suggestion).
+  const [findingDispositions, setFindingDispositions] = useState<
+    Record<string, FindingDisposition>
+  >({});
+  const [dispositionSavingId, setDispositionSavingId] = useState<string | null>(null);
+  // One-action adjudication chain state per DB finding id: live progress
+  // while the chain runs, then its outcome (verdict + suggestion) until
+  // the auditor accepts, redoes, or clears it.
+  type FindingAdjudication = {
+    running: boolean;
+    notice?: string;
+    outcome?: AdjudicationOutcome;
+    /** Live per-step states while the chain runs (fetch/llm/harness/saved). */
+    steps?: Partial<Record<ChainStep, ChainStepState | "running">>;
+  };
+  const [findingAdjudications, setFindingAdjudications] = useState<
+    Record<string, FindingAdjudication>
   >({});
 
   // Local DB & RAG state
@@ -209,6 +245,7 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     setPocRunning(false);
     setPocSaved(false);
     setFindingPocRuns({});
+    setFindingAdjudications({});
     setSavedScanId(null);
     try {
       const generated = analyzeInput(bodyToAnalyze, labelToAnalyze);
@@ -361,6 +398,7 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     setContractBody(scan.body);
     setContractLabel(scan.label);
     setReport(scan.report);
+    setFindingAdjudications({});
     setSavedScanId(scan.id);
     setPocResult(scan.pocResult ?? null);
     setPocRunning(false);
@@ -390,6 +428,254 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
       if (full) handleLoadStoredScan(full);
     } catch (err) {
       console.warn("[kiln] Could not load scan by id:", err);
+    }
+  };
+
+  // The DATABASE id of a report finding. Findings of a loaded scan carry
+  // it directly (`${scanId}:${ord}`); findings of a fresh analysis carry
+  // in-memory ids (`r1`, `r2`, …) and map by report position once the
+  // scan is saved, because the bulk writer stores findings in report
+  // order under `${scanId}:${ord}`. Synthetic findings (Deep Agent
+  // hypotheses) have no DB row and return null — no disposition UI, no
+  // chain persistence for them.
+  const findingDbId = (finding: Finding): string | null => {
+    if (finding.id.includes(":")) return finding.id;
+    if (finding.id.startsWith("deep-")) return null;
+    if (!savedScanId || !report) return null;
+    const idx = report.findings.indexOf(finding);
+    return idx >= 0 ? `${savedScanId}:${idx}` : null;
+  };
+
+  // Load the saved scan's dispositions whenever the saved scan changes.
+  useEffect(() => {
+    if (!savedScanId) {
+      setFindingDispositions({});
+      return;
+    }
+    let cancelled = false;
+    getFindingDispositionsFn({ data: { scanId: savedScanId } })
+      .then((map) => {
+        if (!cancelled) setFindingDispositions(map);
+      })
+      .catch(() => {
+        // Dispositions are additive UI; a failed read leaves none shown
+        // rather than breaking the workbench.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [savedScanId]);
+
+  // The human write: a disposition button tap, a note save, or accepting
+  // the chain's suggestion. Re-setting the same value is a server-side
+  // no-op, so an accidental double-tap costs nothing.
+  const handleSetFindingDisposition = async (
+    finding: Finding,
+    disposition: AuditorDisposition,
+    note?: string | null,
+  ) => {
+    const dbId = findingDbId(finding);
+    if (!dbId || dispositionSavingId) return;
+    setDispositionSavingId(dbId);
+    try {
+      const saved = await setFindingDispositionFn({
+        data: {
+          findingId: dbId,
+          disposition,
+          note: note !== undefined ? note : (findingDispositions[dbId]?.note ?? null),
+        },
+      });
+      setFindingDispositions((prev) => ({ ...prev, [dbId]: saved }));
+    } catch (err) {
+      console.warn("[kiln] Disposition save failed:", err);
+    } finally {
+      setDispositionSavingId(null);
+    }
+  };
+
+  const handleClearAdjudication = (finding: Finding) => {
+    const dbId = findingDbId(finding);
+    if (!dbId) return;
+    setFindingAdjudications((prev) => {
+      const next = { ...prev };
+      delete next[dbId];
+      return next;
+    });
+  };
+
+  // One-action adjudication for one finding: fetch/persist state →
+  // AI review (reused when the scan already has one) → PoC run (reused
+  // when this exact PoC already ran) → saved verdict → suggestion. The
+  // chain itself lives in adjudicate-chain.ts; this handler wires it to
+  // workbench state and the real server fns / backend client.
+  const handleAdjudicateFinding = async (finding: Finding, force = false) => {
+    if (!report) return;
+    // The finding needs a DB identity: persist the scan first when the
+    // analysis has not been saved yet (same payload as the manual save,
+    // minus the certificate hash).
+    let scanId = savedScanId;
+    if (!scanId) {
+      try {
+        const saved = await saveComprehensiveScanFn({
+          data: {
+            label: contractLabel,
+            report,
+            body: contractBody,
+            targetAddress: singleAddress.trim() || null,
+            chainId: singleAddressChain,
+            compilerVersion: report.inventory.compiler,
+            proxyInfo,
+            probes,
+            aiReview,
+            triageStates: Object.fromEntries(
+              Object.entries(findingTriage).map(([k, v]) => [k, v.status]),
+            ),
+            sourceOrigin: "workbench",
+            indexToRag: false,
+          },
+        });
+        scanId = saved?.id ?? null;
+        if (scanId) setSavedScanId(scanId);
+      } catch (err) {
+        console.warn("[kiln] Adjudication pre-save failed:", err);
+      }
+    }
+    if (!scanId) return;
+    const dbId = finding.id.includes(":")
+      ? finding.id
+      : `${scanId}:${report.findings.indexOf(finding)}`;
+    if (!dbId || dbId.endsWith(":-1")) return;
+    const dbFinding: Finding = { ...finding, id: dbId };
+    const dbFindings: Finding[] = report.findings.map((f, i) => ({
+      ...f,
+      id: f.id.includes(":") ? f.id : `${scanId}:${i}`,
+    }));
+    setFindingAdjudications((prev) => ({
+      ...prev,
+      [dbId]: { running: true, notice: "Starting adjudication…", steps: {} },
+    }));
+    try {
+      const outcome = await runAdjudicationChain(
+        {
+          scanId,
+          finding: dbFinding,
+          body: contractBody,
+          findings: dbFindings,
+          contractName: report.label,
+          targetAddress: singleAddress.trim() || null,
+          chainId: singleAddressChain,
+          aiReview,
+          disposition: findingDispositions[dbId] ?? null,
+          force,
+        },
+        {
+          requestAiReview: async ({ contractName, body, findings }) =>
+            requestAiReview({
+              data: {
+                contractName,
+                body,
+                findings,
+                fourbyte: fourbyteResultsFromReport(report),
+              },
+            }),
+          persistAiReview: async (review) => {
+            setAiReview(review);
+            await saveComprehensiveScanFn({
+              data: {
+                id: scanId!,
+                label: report.label,
+                report,
+                body: contractBody,
+                targetAddress: singleAddress.trim() || null,
+                chainId: singleAddressChain,
+                compilerVersion: report.inventory.compiler,
+                proxyInfo,
+                probes,
+                aiReview: review,
+                triageStates: Object.fromEntries(
+                  Object.entries(findingTriage).map(([k, v]) => [k, v.status]),
+                ),
+                sourceOrigin: "workbench",
+                indexToRag: false,
+              },
+            });
+          },
+          listRuns: async (findingId) => getFindingPocRunsFn({ data: { findingId } }),
+          runPoc: async ({ address, chainId, testCode }) => {
+            const poc = await runPocWithRpcRetries(getBackendUrl(), {
+              address,
+              chainId,
+              testCode,
+            });
+            return {
+              status: poc.status,
+              logs: poc.logs ?? "",
+              durationMs: poc.durationMs ?? 0,
+              executedSource: poc.executedSource,
+            };
+          },
+          repairPoc: async ({ contractName, originalCode, errorLogs, body }) => {
+            const repaired = await requestPocRepair({
+              data: { contractName, originalCode, errorLogs, body },
+            });
+            return repaired.fixedCode;
+          },
+          isCompileError: isPocCompileError,
+          saveRun: async (record) => {
+            await saveFindingPocResultFn({ data: record });
+          },
+          onProgress: (notice) =>
+            setFindingAdjudications((prev) => ({
+              ...prev,
+              [dbId]: { ...prev[dbId], running: true, notice },
+            })),
+          onStep: (stepName, state) =>
+            setFindingAdjudications((prev) => ({
+              ...prev,
+              [dbId]: {
+                ...prev[dbId],
+                steps: { ...prev[dbId]?.steps, [stepName]: state },
+              },
+            })),
+        },
+      );
+      setFindingAdjudications((prev) => ({
+        ...prev,
+        [dbId]: { running: false, outcome },
+      }));
+      // Mirror a fresh/reused verdict onto the in-memory finding so the
+      // card's evidence updates without reloading the scan.
+      if (outcome.runStep === "executed" || outcome.runStep === "reused") {
+        setReport((prev) =>
+          prev
+            ? {
+                ...prev,
+                findings: prev.findings.map((f) =>
+                  f.id === finding.id
+                    ? {
+                        ...f,
+                        pocStatus: outcome.verdict,
+                        pocOutput: outcome.output ?? f.pocOutput,
+                        pocCode: outcome.testCode ?? f.pocCode,
+                        pocRunAt: new Date().toISOString(),
+                      }
+                    : f,
+                ),
+              }
+            : prev,
+        );
+      }
+    } catch (err) {
+      setFindingAdjudications((prev) => ({
+        ...prev,
+        [dbId]: {
+          running: false,
+          outcome: failedAdjudicationOutcome(
+            `Adjudication failed before completing — nothing was written. ${err instanceof Error ? err.message : String(err)}`,
+            "fetch",
+          ),
+        },
+      }));
     }
   };
 
@@ -1149,6 +1435,13 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     handleRetryFindingPocSave,
     findingTriage,
     setFindingTriage,
+    findingDispositions,
+    findingDbId,
+    handleSetFindingDisposition,
+    dispositionSavingId,
+    findingAdjudications,
+    handleAdjudicateFinding,
+    handleClearAdjudication,
     handleOpenRagForFinding,
     disasmLines,
     setBytecodeSubView,

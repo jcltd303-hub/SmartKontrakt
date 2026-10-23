@@ -27,6 +27,21 @@ import type { AiSecurityReview } from "./ai-review.server";
 import { postChatWithModelFallback, resolveOpenRouterConfig, stripThinkBlocks } from "./ai-review.server";
 import { openRouterLimiter, withRetry } from "./rate-limit";
 import { pocRunKey } from "./poc-run-key.ts";
+import {
+  dedupeRecentFindings,
+  isAuditorDisposition,
+  type AuditorDisposition,
+  type FindingDisposition,
+} from "./adjudication.ts";
+import {
+  getDispositionRowsForFindings,
+  getDispositionRowsForScan,
+  setDispositionRow,
+  dispositionsByFindingId,
+} from "./dispositions.server.ts";
+import type { AdjudicationRunRecord } from "./adjudicate-chain.ts";
+
+export type { AuditorDisposition, FindingDisposition };
 
 
 export type ScanSummary = {
@@ -552,6 +567,12 @@ export type FindingWithScanInfo = Finding & {
   /** Native balance (wei) of the scan's target at analysis time. */
   balanceWei?: string | null;
   scanCreatedAt: string;
+  /** Auditor disposition of record (migration 0015), or null when the
+   *  finding has never been adjudicated. The PoC Audits queue skips
+   *  findings that carry one. */
+  disposition?: AuditorDisposition | null;
+  dispositionNote?: string | null;
+  dispositionUpdatedAt?: string | null;
 };
 
 /**
@@ -580,6 +601,9 @@ export async function getRecentHighSeverityFindings(opts?: {
     let rows;
     if (filter === "critical") {
       rows = await sql<FindingRow & {
+        disposition: string | null;
+        disposition_note: string | null;
+        disposition_updated_at: string | null;
         scan_id: string;
         scan_label: string;
         contract_name: string | null;
@@ -592,9 +616,11 @@ export async function getRecentHighSeverityFindings(opts?: {
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
                f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
+               d.disposition as disposition, d.note as disposition_note, d.updated_at::text as disposition_updated_at,
                s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
         join contract_scans s on f.scan_id = s.id
+        left join auditor_dispositions d on d.finding_id = f.id
         where f.severity = 'critical'
           and length(trim(f.exploit_solidity)) > 0
         order by s.created_at desc, f.ord asc
@@ -602,6 +628,9 @@ export async function getRecentHighSeverityFindings(opts?: {
       `;
     } else if (filter === "high") {
       rows = await sql<FindingRow & {
+        disposition: string | null;
+        disposition_note: string | null;
+        disposition_updated_at: string | null;
         scan_id: string;
         scan_label: string;
         contract_name: string | null;
@@ -614,9 +643,11 @@ export async function getRecentHighSeverityFindings(opts?: {
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
                f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
+               d.disposition as disposition, d.note as disposition_note, d.updated_at::text as disposition_updated_at,
                s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
         join contract_scans s on f.scan_id = s.id
+        left join auditor_dispositions d on d.finding_id = f.id
         where f.severity = 'high'
           and length(trim(f.exploit_solidity)) > 0
         order by s.created_at desc, f.ord asc
@@ -624,6 +655,9 @@ export async function getRecentHighSeverityFindings(opts?: {
       `;
     } else {
       rows = await sql<FindingRow & {
+        disposition: string | null;
+        disposition_note: string | null;
+        disposition_updated_at: string | null;
         scan_id: string;
         scan_label: string;
         contract_name: string | null;
@@ -636,9 +670,11 @@ export async function getRecentHighSeverityFindings(opts?: {
                f.summary, f.walkthrough, f.exploit_solidity, f.remediation_solidity,
                f.location_fn, f.location_line, f.snippet,
                f.poc_status, f.poc_output, f.poc_duration_ms, f.poc_run_at::text as poc_run_at, f.poc_code,
+               d.disposition as disposition, d.note as disposition_note, d.updated_at::text as disposition_updated_at,
                s.label as scan_label, s.contract_name, s.target_address, s.chain_id, s.balance_wei, s.created_at::text as scan_created_at
         from findings f
         join contract_scans s on f.scan_id = s.id
+        left join auditor_dispositions d on d.finding_id = f.id
         where f.severity in ('critical', 'high')
           and length(trim(f.exploit_solidity)) > 0
         order by s.created_at desc, f.ord asc
@@ -646,7 +682,14 @@ export async function getRecentHighSeverityFindings(opts?: {
       `;
     }
 
-    return rows.map((f) => ({
+    // Dedupe at the query layer: the same contract audited and saved
+    // more than once (workbench + worker, or an analyzer-version
+    // re-run) yields DISTINCT finding rows — ids are `${scanId}:${ord}`,
+    // and the findings→scans join is many-to-one, so no row can surface
+    // twice; the duplicates Jer saw are repeated saves of one audit.
+    // One row per finding identity (subject + detector + title), newest
+    // save first (the query's ORDER BY), wins. See adjudication.ts.
+    return dedupeRecentFindings(rows.map((f) => ({
       id: f.id,
       scanId: f.scan_id,
       ord: f.ord,
@@ -673,7 +716,10 @@ export async function getRecentHighSeverityFindings(opts?: {
       chainId: f.chain_id,
       balanceWei: f.balance_wei ?? null,
       scanCreatedAt: f.scan_created_at,
-    }));
+      disposition: isAuditorDisposition(f.disposition) ? f.disposition : null,
+      dispositionNote: f.disposition_note ?? null,
+      dispositionUpdatedAt: f.disposition_updated_at ?? null,
+    })));
   } catch (err) {
     // The no-fallback gate errors thrown above must propagate, not be
     // flattened into the empty list below.
@@ -736,6 +782,75 @@ export async function saveFindingPocResult(data: {
   } catch (runErr) {
     console.warn("[kiln] finding_poc_runs insert failed (non-fatal):", runErr);
   }
+}
+
+/**
+ * Set (or change) the auditor disposition for one finding — the ONLY
+ * write path for auditor_dispositions, reached from a human tap in the
+ * UI via setFindingDispositionFn. Upsert semantics with a true no-op on
+ * an identical re-set live in dispositions.server.ts. Like the archive
+ * reads, a failed/unconfigured database throws — a disposition must
+ * never appear to save into the void.
+ */
+export async function setFindingDisposition(input: {
+  findingId: string;
+  disposition: AuditorDisposition;
+  note?: string | null;
+}): Promise<FindingDisposition> {
+  const a = await archiveSql();
+  if (!a.sql) throw new Error(a.error);
+  return setDispositionRow(a.sql, input);
+}
+
+/**
+ * Dispositions as a findingId → row map, for one scan (workbench) or an
+ * explicit set of finding ids (the PoC Audits feed spans scans). Throws
+ * on a failed/unconfigured database, like getScan — a silently empty map
+ * would invite re-adjudicating findings that already carry a verdict.
+ */
+export async function getFindingDispositions(opts: {
+  scanId?: string;
+  findingIds?: string[];
+}): Promise<Record<string, FindingDisposition>> {
+  const a = await archiveSql();
+  if (!a.sql) throw new Error(a.error);
+  if (opts.scanId) {
+    return dispositionsByFindingId(await getDispositionRowsForScan(a.sql, opts.scanId));
+  }
+  return dispositionsByFindingId(await getDispositionRowsForFindings(a.sql, opts.findingIds ?? []));
+}
+
+/**
+ * Stored PoC runs for one finding, newest first — the adjudication
+ * chain's reuse source: a run whose source_digest matches the PoC that
+ * would run stands in for re-execution. Rows written before migration
+ * 0013 (NULL digest) cannot be matched and are excluded.
+ */
+export async function listFindingPocRuns(findingId: string): Promise<AdjudicationRunRecord[]> {
+  const a = await archiveSql();
+  if (!a.sql) throw new Error(a.error);
+  const rows = await a.sql<{
+    id: string;
+    status: string;
+    source_digest: string;
+    output: string;
+    duration_ms: number;
+    created_at: string;
+  }>`
+    select id, status, source_digest, output, duration_ms, created_at::text as created_at
+    from finding_poc_runs
+    where finding_id = ${findingId} and source_digest is not null
+    order by created_at desc
+    limit 20
+  `;
+  return rows.map((r) => ({
+    id: r.id,
+    status: r.status,
+    sourceDigest: r.source_digest,
+    output: r.output,
+    durationMs: r.duration_ms,
+    createdAt: r.created_at,
+  }));
 }
 
 

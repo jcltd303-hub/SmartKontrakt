@@ -1,5 +1,7 @@
 import { PocEvidenceBadge } from "@/components/poc-evidence-badge";
 import { findingPocEvidence } from "@/lib/audit/poc-evidence";
+import { aiReviewExcerptForFinding } from "@/lib/audit/adjudication";
+import { CHAIN_STEP_ORDER } from "@/lib/audit/adjudicate-chain";
 import { isValidEvmAddress } from "@/lib/audit/address-fetcher";
 import {
   BookOpen,
@@ -10,16 +12,20 @@ import {
   Copy,
   Crosshair,
   Loader2,
+  Scale,
   Search,
   ShieldCheck,
+  X,
 } from "lucide-react";
-import { SEVERITY_CONFIG } from "./presentation";
+import { useState } from "react";
+import { DISPOSITION_CONFIG, DISPOSITION_ORDER, SEVERITY_CONFIG } from "./presentation";
 import type { WorkbenchController } from "./use-workbench-controller";
 
 type FindingsTabProps = Pick<
   WorkbenchController,
   | "activeTab"
   | "report"
+  | "aiReview"
   | "setSeverityFilter"
   | "severityFilter"
   | "findingSearch"
@@ -37,12 +43,20 @@ type FindingsTabProps = Pick<
   | "handleRetryFindingPocSave"
   | "findingTriage"
   | "setFindingTriage"
+  | "findingDispositions"
+  | "findingDbId"
+  | "handleSetFindingDisposition"
+  | "dispositionSavingId"
+  | "findingAdjudications"
+  | "handleAdjudicateFinding"
+  | "handleClearAdjudication"
   | "handleOpenRagForFinding"
 >;
 
 export function FindingsTab({
   activeTab,
   report,
+  aiReview,
   setSeverityFilter,
   severityFilter,
   findingSearch,
@@ -60,8 +74,20 @@ export function FindingsTab({
   handleRetryFindingPocSave,
   findingTriage,
   setFindingTriage,
+  findingDispositions,
+  findingDbId,
+  handleSetFindingDisposition,
+  dispositionSavingId,
+  findingAdjudications,
+  handleAdjudicateFinding,
+  handleClearAdjudication,
   handleOpenRagForFinding,
 }: FindingsTabProps) {
+  // Note drafts per DB finding id — a draft is attached to whichever
+  // disposition the auditor taps next; untouched findings send no note
+  // (the stored note is kept).
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+  const liveState = report?.inventory.liveState ?? null;
   return (
     <>
       {activeTab === "findings" && (
@@ -127,6 +153,11 @@ export function FindingsTab({
                   pocCode: findingRun.result.source, pocStatus: findingRun.result.status,
                   pocOutput: findingRun.result.output, pocRunAt: findingRun.result.finishedAt,
                 } : {}) });
+              const dbId = findingDbId(finding);
+              const disposition = dbId ? findingDispositions[dbId] : undefined;
+              const adjudication = dbId ? findingAdjudications[dbId] : undefined;
+              const reviewExcerpt = aiReviewExcerptForFinding(aiReview, finding);
+              const noteArg = dbId && dbId in noteDrafts ? noteDrafts[dbId] : undefined;
 
               return (
                 <div
@@ -162,6 +193,14 @@ export function FindingsTab({
                           <span className="text-[10px] font-mono text-[#746c60]">
                             Conf: {finding.confidence}
                           </span>
+                          {disposition && (
+                            <span
+                              className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border ${DISPOSITION_CONFIG[disposition.disposition].badge}`}
+                              title={`Auditor disposition${disposition.note ? `: ${disposition.note}` : ""} — set ${new Date(disposition.updatedAt).toLocaleString()}`}
+                            >
+                              {DISPOSITION_CONFIG[disposition.disposition].label}
+                            </span>
+                          )}
                         </div>
 
                         <p className="text-xs text-[#a39886] mt-1 line-clamp-2">
@@ -212,6 +251,242 @@ export function FindingsTab({
                       </div>
 
                       <PocEvidenceBadge evidence={evidence} />
+
+                      {/* Adjudication: stored evidence + one-action chain + disposition */}
+                      <div className="p-3 bg-[#26231c]/50 rounded-lg border border-[#3a3428] flex flex-col gap-2.5">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span className="text-[11px] font-mono text-[#a39886] uppercase tracking-wider flex items-center gap-1.5">
+                            <Scale className="w-3.5 h-3.5 text-[#e8a54b]" />
+                            Adjudication
+                          </span>
+                          {dbId ? (
+                            <button
+                              onClick={() => handleAdjudicateFinding(finding, Boolean(disposition || adjudication?.outcome))}
+                              disabled={adjudication?.running || findingPocRunning}
+                              className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#e8a54b] text-[#12110e] text-[10px] font-mono font-bold hover:brightness-110 disabled:opacity-50 transition-all"
+                              title="Fetch (if needed) → AI review (reused if present) → run the PoC (reused if this exact PoC already ran) → suggestion. Never writes a disposition by itself."
+                            >
+                              {adjudication?.running ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Scale className="w-3 h-3" />
+                              )}
+                              <span>
+                                {adjudication?.running
+                                  ? "Adjudicating…"
+                                  : disposition || adjudication?.outcome
+                                    ? "Redo adjudication"
+                                    : "Adjudicate"}
+                              </span>
+                            </button>
+                          ) : (
+                            <span className="text-[10px] font-mono text-[#746c60]">
+                              Save the scan to adjudicate
+                            </span>
+                          )}
+                        </div>
+
+                        {(adjudication?.steps || adjudication?.outcome) && (
+                          <div className="flex items-center gap-1.5 flex-wrap text-[10px] font-mono">
+                            {CHAIN_STEP_ORDER.map((s) => {
+                              const state = adjudication.outcome?.steps[s] ?? adjudication.steps?.[s];
+                              return (
+                                <span
+                                  key={s}
+                                  className={`px-1.5 py-0.5 rounded border capitalize ${
+                                    state === "done"
+                                      ? "border-emerald-800 text-emerald-300"
+                                      : state === "reused"
+                                        ? "border-sky-800 text-sky-300"
+                                        : state === "failed"
+                                          ? "border-red-800 text-red-300"
+                                          : state === "running"
+                                            ? "border-[#e8a54b]/50 text-[#e8a54b]"
+                                            : "border-[#3a3428] text-[#746c60]"
+                                  }`}
+                                >
+                                  {s}{" "}
+                                  {state === "done"
+                                    ? "✓"
+                                    : state === "reused"
+                                      ? "↺"
+                                      : state === "failed"
+                                        ? "✗"
+                                        : state === "running"
+                                          ? "…"
+                                          : state === "skipped"
+                                            ? "–"
+                                            : "·"}
+                                </span>
+                              );
+                            })}
+                            {adjudication.outcome && !adjudication.outcome.complete && (
+                              <span className="text-red-400 font-bold">
+                                INCOMPLETE — stopped at {adjudication.outcome.stoppedAt}
+                              </span>
+                            )}
+                            {adjudication.outcome?.complete &&
+                              adjudication.outcome.kind !== "already_adjudicated" && (
+                                <span className="text-emerald-400">pipeline complete</span>
+                              )}
+                          </div>
+                        )}
+
+                        {adjudication?.running && adjudication.notice && (
+                          <div className="text-[11px] font-mono text-[#e8a54b] flex items-center gap-1.5">
+                            <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                            <span>{adjudication.notice}</span>
+                          </div>
+                        )}
+
+                        {adjudication?.outcome && !adjudication.running && (
+                          <div className="p-2.5 bg-[#12110e] rounded-lg border border-[#3a3428] flex flex-col gap-1.5">
+                            <span className="text-[11px] font-mono text-[#f4efe6]">
+                              {adjudication.outcome.message}
+                            </span>
+                            {adjudication.outcome.saveError && (
+                              <span className="text-[11px] font-mono text-red-400">
+                                Run completed but saving failed: {adjudication.outcome.saveError}
+                              </span>
+                            )}
+                            <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
+                              <span className="text-[#a39886]">Suggested disposition:</span>
+                              <span
+                                className={`px-1.5 py-0.5 rounded border font-bold ${DISPOSITION_CONFIG[adjudication.outcome.suggestion].badge}`}
+                              >
+                                {DISPOSITION_CONFIG[adjudication.outcome.suggestion].label}
+                              </span>
+                              {adjudication.outcome.kind !== "already_adjudicated" && dbId && (
+                                <button
+                                  onClick={() =>
+                                    handleSetFindingDisposition(finding, adjudication.outcome!.suggestion, noteArg)
+                                  }
+                                  disabled={dispositionSavingId === dbId}
+                                  className="px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300 border border-emerald-800 hover:bg-emerald-900 font-bold disabled:opacity-50"
+                                >
+                                  Accept suggestion
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handleClearAdjudication(finding)}
+                                className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#26231c] text-[#a39886] hover:text-[#f4efe6] border border-[#3a3428]"
+                              >
+                                <X className="w-3 h-3" />
+                                <span>Dismiss</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Stored PoC verdict + full log (the manual check, inline) */}
+                        {finding.pocStatus && !findingRun?.result && (
+                          <div>
+                            <div className="flex items-center gap-2 text-[11px] font-mono text-[#a39886] flex-wrap">
+                              <span className="uppercase tracking-wider">Latest PoC verdict:</span>
+                              <span
+                                className={
+                                  finding.pocStatus === "passed"
+                                    ? "text-emerald-400 font-bold"
+                                    : finding.pocStatus === "failed"
+                                      ? "text-amber-400 font-bold"
+                                      : "text-red-400 font-bold"
+                                }
+                              >
+                                {finding.pocStatus}
+                              </span>
+                              {finding.pocRunAt && (
+                                <span>· {new Date(finding.pocRunAt).toLocaleString()}</span>
+                              )}
+                              {finding.pocDurationMs != null && <span>· {finding.pocDurationMs}ms</span>}
+                            </div>
+                            {finding.pocOutput && (
+                              <details className="mt-1">
+                                <summary className="text-[11px] font-mono text-[#e8a54b] cursor-pointer hover:underline">
+                                  Full PoC output log
+                                </summary>
+                                <pre className="mt-1.5 max-h-96 overflow-y-auto bg-[#0a0908] border border-[#3a3428] rounded p-2 text-[11px] font-mono text-[#f4efe6] whitespace-pre-wrap">
+                                  {finding.pocOutput}
+                                </pre>
+                              </details>
+                            )}
+                          </div>
+                        )}
+
+                        {/* AI review excerpt that actually discusses this finding */}
+                        {reviewExcerpt && (
+                          <div>
+                            <span className="text-[11px] font-mono text-[#a39886] uppercase tracking-wider block mb-1">
+                              AI review on this finding:
+                            </span>
+                            <div className="p-2.5 bg-[#12110e] rounded-lg border border-[#3a3428] text-[#f4efe6] leading-relaxed whitespace-pre-wrap">
+                              {reviewExcerpt}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Live-state evidence attached to the scan */}
+                        {liveState && liveState.reads.length > 0 && (
+                          <div className="text-[11px] font-mono text-[#a39886]">
+                            <span className="uppercase tracking-wider">Live state</span>
+                            {liveState.blockNumber != null && <span> @ block {liveState.blockNumber}</span>}
+                            <span>: </span>
+                            <span className="text-[#f4efe6]">
+                              {liveState.reads.map((r) => `${r.name}=${r.value}`).join(" · ")}
+                            </span>
+                            {liveState.failures.length > 0 && (
+                              <span className="text-[#746c60]">
+                                {" "}
+                                ({liveState.failures.length} getter{liveState.failures.length === 1 ? "" : "s"} unreadable)
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Disposition of record: buttons + note */}
+                        {dbId && (
+                          <div className="pt-2 border-t border-[#3a3428] flex flex-col gap-2">
+                            <div className="flex items-center gap-1.5 flex-wrap text-[11px] font-mono">
+                              <span className="text-[#a39886] text-[10px] uppercase font-bold">
+                                Disposition:
+                              </span>
+                              {DISPOSITION_ORDER.map((d) => {
+                                const isCur = disposition?.disposition === d;
+                                return (
+                                  <button
+                                    key={d}
+                                    onClick={() => handleSetFindingDisposition(finding, d, noteArg)}
+                                    disabled={dispositionSavingId === dbId}
+                                    className={`px-2 py-0.5 rounded text-[10px] transition-colors disabled:opacity-50 ${
+                                      isCur
+                                        ? `${DISPOSITION_CONFIG[d].badge} border font-bold`
+                                        : "bg-[#26231c] text-[#746c60] hover:text-[#f4efe6] border border-[#3a3428]"
+                                    }`}
+                                  >
+                                    {DISPOSITION_CONFIG[d].label}
+                                  </button>
+                                );
+                              })}
+                              {dispositionSavingId === dbId && (
+                                <Loader2 className="w-3 h-3 animate-spin text-[#e8a54b]" />
+                              )}
+                              {disposition && (
+                                <span className="text-[10px] text-[#746c60]">
+                                  set {new Date(disposition.updatedAt).toLocaleString()}
+                                </span>
+                              )}
+                            </div>
+                            <input
+                              type="text"
+                              value={noteDrafts[dbId] ?? disposition?.note ?? ""}
+                              onChange={(e) =>
+                                setNoteDrafts((prev) => ({ ...prev, [dbId]: e.target.value }))
+                              }
+                              placeholder="Auditor note (saved with the next disposition tap)"
+                              className="w-full bg-[#12110e] border border-[#3a3428] rounded-md px-2.5 py-1 text-[11px] font-mono text-[#f4efe6] placeholder-[#746c60] focus:outline-none focus:border-[#e8a54b]"
+                            />
+                          </div>
+                        )}
+                      </div>
 
                       {/* Attack PoC Solidity */}
                       {finding.exploitSolidity && (

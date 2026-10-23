@@ -52,3 +52,10 @@ test("embedded 0007 adds unparsed to contract_scans and backfills unparsed recor
   assert.match(sql, /detector <> 'parse'/i);
   assert.match(sql, /contractNames.*Fragment/i);
 });
+
+test("embedded 0015 creates auditor_dispositions keyed by finding with the disposition vocabulary", () => {
+  const sql = EMBEDDED_MIGRATIONS["0015_auditor_dispositions.sql"];
+  assert.match(sql, /create table if not exists auditor_dispositions/i);
+  assert.match(sql, /finding_id text primary key references findings \(id\) on delete cascade/i);
+  assert.match(sql, /'confirmed', 'false_positive', 'needs_more_info'/i);
+});

@@ -20,12 +20,33 @@ import {
   ChevronDown,
   ChevronUp,
   StopCircle,
+  Scale,
+  X,
 } from "lucide-react";
 import {
+  getFindingPocRunsFn,
   getRecentHighSeverityFindingsFn,
+  getScan,
+  saveComprehensiveScanFn,
   saveFindingPocResultFn,
+  setFindingDispositionFn,
 } from "@/lib/scans.functions";
-import type { FindingWithScanInfo } from "@/lib/audit/persist.server";
+import type { FindingWithScanInfo, StoredScan } from "@/lib/audit/persist.server";
+import {
+  CHAIN_STEP_ORDER,
+  failedAdjudicationOutcome,
+  runAdjudicationChain,
+  type AdjudicationOutcome,
+  type ChainStep,
+  type ChainStepState,
+} from "@/lib/audit/adjudicate-chain";
+import {
+  partitionPocAuditFindings,
+  type AuditorDisposition,
+  type FindingDisposition,
+  type PocAuditScope,
+} from "@/lib/audit/adjudication";
+import { DISPOSITION_CONFIG, DISPOSITION_ORDER } from "@/components/workbench/presentation";
 import { wrapPocSnippet } from "@/lib/audit/poc-wrap";
 import { balanceLabel, nativeSymbol } from "@/lib/audit/balance";
 import {
@@ -37,7 +58,7 @@ import {
   BACKEND_KEY,
   type BackendHealth,
 } from "@/lib/audit/foundry-backend";
-import { requestPocRepair } from "@/lib/audit/ai.functions";
+import { requestAiReview, requestPocRepair } from "@/lib/audit/ai.functions";
 import { savePocRun, type PocRunResult } from "@/lib/poc-runs";
 import { getStoredSupabaseConfig } from "@/lib/supabase";
 import type { PocResult } from "@/lib/audit/types";
@@ -66,11 +87,70 @@ function mapStatus(poc: PocResult): "passed" | "failed" | "error" {
   return "error";
 }
 
+/** Pipeline step chips (fetch ✓ / llm ✓ / harness ✓ / saved ✓) plus the
+ *  INCOMPLETE marker for a chain that stopped early. */
+function ChainStepChips({
+  steps,
+  outcome,
+}: {
+  steps?: Partial<Record<ChainStep, ChainStepState | "running">>;
+  outcome?: AdjudicationOutcome;
+}) {
+  const finalSteps = outcome?.steps;
+  if (!steps && !finalSteps) return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 flex-wrap text-[10px] font-mono">
+      {CHAIN_STEP_ORDER.map((s) => {
+        const state = finalSteps?.[s] ?? steps?.[s];
+        return (
+          <span
+            key={s}
+            className={`px-1.5 py-0.5 rounded border capitalize ${
+              state === "done"
+                ? "border-emerald-800 text-emerald-300"
+                : state === "reused"
+                  ? "border-sky-800 text-sky-300"
+                  : state === "failed"
+                    ? "border-red-800 text-red-300"
+                    : state === "running"
+                      ? "border-[#e8a54b]/50 text-[#e8a54b]"
+                      : "border-[#3a3428] text-[#746c60]"
+            }`}
+          >
+            {s}{" "}
+            {state === "done"
+              ? "✓"
+              : state === "reused"
+                ? "↺"
+                : state === "failed"
+                  ? "✗"
+                  : state === "running"
+                    ? "…"
+                    : state === "skipped"
+                      ? "–"
+                      : "·"}
+          </span>
+        );
+      })}
+      {outcome && !outcome.complete && (
+        <span className="text-red-400 font-bold">INCOMPLETE — stopped at {outcome.stoppedAt}</span>
+      )}
+      {outcome?.complete && outcome.kind !== "already_adjudicated" && (
+        <span className="text-emerald-400">pipeline complete</span>
+      )}
+    </span>
+  );
+}
+
 export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps) {
   const [findings, setFindings] = useState<FindingWithScanInfo[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>("");
-  const [severityFilter, setSeverityFilter] = useState<"all" | "critical" | "high">("all");
+  const [severityFilter, setSeverityFilter] = useState<"all" | "critical" | "high">("critical");
+  // Presence-only findings (opcode-presence evidence only) are excluded
+  // from the actionable scope by default; the toggle includes them
+  // deliberately.
+  const [showPresenceOnly, setShowPresenceOnly] = useState<boolean>(false);
   const [statusFilter, setStatusFilter] = useState<"all" | "passed" | "failed" | "error" | "unrun">("all");
   
   // Execution state per finding
@@ -84,6 +164,23 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   const [isBatchRunning, setIsBatchRunning] = useState<boolean>(false);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; currentTitle?: string } | null>(null);
   const abortBatchRef = useRef<boolean>(false);
+
+  // Auditor dispositions (migration 0015), seeded from the feed rows and
+  // kept current by local writes. Keyed by finding id.
+  const [dispositions, setDispositions] = useState<Record<string, FindingDisposition>>({});
+  const [dispositionSavingId, setDispositionSavingId] = useState<string | null>(null);
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+
+  // Adjudication chain state per finding + the undisposed queue.
+  const [adjudications, setAdjudications] = useState<Record<string, {
+    running: boolean;
+    notice?: string;
+    outcome?: AdjudicationOutcome;
+    steps?: Partial<Record<ChainStep, ChainStepState | "running">>;
+  }>>({});
+  const [isQueueRunning, setIsQueueRunning] = useState<boolean>(false);
+  const [queueProgress, setQueueProgress] = useState<{ current: number; total: number; currentTitle?: string } | null>(null);
+  const abortQueueRef = useRef<boolean>(false);
 
   // Expanded details for inspection
   const [expandedFindingId, setExpandedFindingId] = useState<string | null>(null);
@@ -105,6 +202,18 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
         data: { limit: 100, severityFilter },
       });
       setFindings(data);
+      const seeded: Record<string, FindingDisposition> = {};
+      for (const f of data) {
+        if (f.disposition) {
+          seeded[f.id] = {
+            findingId: f.id,
+            disposition: f.disposition,
+            note: f.dispositionNote ?? null,
+            updatedAt: f.dispositionUpdatedAt ?? "",
+          };
+        }
+      }
+      setDispositions(seeded);
     } catch (err) {
       console.warn("[kiln] Failed to fetch recent findings:", err);
       setFeedbackNotice("Failed to load recent findings from database.");
@@ -364,10 +473,263 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
     setBatchProgress(null);
   };
 
+  // One tap writes (or updates) the auditor disposition of record. The
+  // server UPSERTs on finding_id, so re-tapping the same disposition is
+  // a no-op and changing it updates the single row.
+  const handleSetDisposition = async (
+    finding: FindingWithScanInfo,
+    disposition: AuditorDisposition,
+    note?: string,
+  ) => {
+    if (dispositionSavingId) return;
+    setDispositionSavingId(finding.id);
+    try {
+      const saved = await setFindingDispositionFn({
+        data: {
+          findingId: finding.id,
+          disposition,
+          note: note !== undefined ? note : (dispositions[finding.id]?.note ?? null),
+        },
+      });
+      setDispositions((prev) => ({ ...prev, [finding.id]: saved }));
+      setFindings((prev) =>
+        prev.map((f) =>
+          f.id === finding.id
+            ? {
+                ...f,
+                disposition: saved.disposition,
+                dispositionNote: saved.note,
+                dispositionUpdatedAt: saved.updatedAt,
+              }
+            : f,
+        ),
+      );
+    } catch (err) {
+      setFeedbackNotice(
+        `Disposition save failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setDispositionSavingId(null);
+    }
+  };
+
+  // The full adjudication pipeline for one finding: fetch (load the
+  // parent scan) → LLM review → Foundry harness → saved verdict +
+  // suggested disposition. The chain writes the run; only a human tap
+  // on a disposition button writes a disposition.
+  const handleAdjudicate = async (finding: FindingWithScanInfo, force = false) => {
+    if (adjudications[finding.id]?.running) return;
+    setAdjudications((prev) => ({
+      ...prev,
+      [finding.id]: { running: true, notice: "Loading the parent scan (fetch step)…", steps: {} },
+    }));
+
+    let stored: StoredScan;
+    try {
+      stored = await getScan({ data: { id: finding.scanId } });
+    } catch (err) {
+      setAdjudications((prev) => ({
+        ...prev,
+        [finding.id]: {
+          running: false,
+          outcome: failedAdjudicationOutcome(
+            `Could not load the parent scan — the pipeline stopped at the fetch step. ${err instanceof Error ? err.message : String(err)}`,
+            "fetch",
+          ),
+        },
+      }));
+      return;
+    }
+
+    try {
+      const outcome = await runAdjudicationChain(
+        {
+          scanId: finding.scanId,
+          finding,
+          findings: stored.report.findings,
+          contractName: finding.contractName || stored.report.label || "Target",
+          body: stored.body,
+          targetAddress: finding.targetAddress ?? stored.targetAddress ?? null,
+          chainId: finding.chainId ?? stored.chainId ?? null,
+          aiReview: stored.aiReview ?? null,
+          disposition: dispositions[finding.id] ?? null,
+          force,
+        },
+        {
+          requestAiReview: async ({ contractName, body, findings: scanFindings }) => {
+            const review = await requestAiReview({
+              data: { contractName, body, findings: scanFindings },
+            });
+            return review ?? null;
+          },
+          persistAiReview: async (review) => {
+            await saveComprehensiveScanFn({
+              data: {
+                id: stored.id,
+                label: stored.label,
+                report: stored.report,
+                body: stored.body,
+                targetAddress: stored.targetAddress ?? null,
+                chainId: stored.chainId ?? "ethereum",
+                compilerVersion: stored.report.inventory.compiler,
+                proxyInfo: stored.proxyInfo ?? null,
+                probes: stored.probes ?? [],
+                aiReview: review,
+                triageStates: stored.triageStates ?? null,
+                sourceOrigin: "workbench",
+                indexToRag: false,
+              },
+            });
+          },
+          listRuns: async (findingId) => {
+            const rows = await getFindingPocRunsFn({ data: { findingId } });
+            return rows.map((r) => ({
+              sourceDigest: r.sourceDigest,
+              status: r.status,
+              output: r.output,
+            }));
+          },
+          runPoc: async ({ address, chainId, testCode }) => {
+            const poc = await runPocWithRpcRetries(backendUrl, {
+              address,
+              chainId: chainId ?? "ethereum",
+              testCode,
+            });
+            return {
+              status: poc.status,
+              logs: poc.logs ?? "",
+              durationMs: poc.durationMs ?? 0,
+              executedSource: poc.executedSource,
+            };
+          },
+          repairPoc: async ({ contractName, originalCode, errorLogs, body }) => {
+            const repaired = await requestPocRepair({
+              data: { contractName, originalCode, errorLogs, body },
+            });
+            return repaired?.fixedCode ?? null;
+          },
+          isCompileError: (logs) => isPocCompileError(logs),
+          saveRun: async (record) => {
+            await saveFindingPocResultFn({
+              data: {
+                findingId: record.findingId,
+                scanId: record.scanId,
+                status: record.status,
+                source: record.source,
+                output: record.output,
+                durationMs: record.durationMs,
+                chainId: record.chainId ?? "1",
+                targetAddress: record.targetAddress ?? "",
+                exitCode: null,
+                truncated: record.output.length > 50000,
+              },
+            });
+          },
+          onProgress: (notice) =>
+            setAdjudications((prev) => ({
+              ...prev,
+              [finding.id]: { ...prev[finding.id], running: true, notice },
+            })),
+          onStep: (stepName, state) =>
+            setAdjudications((prev) => ({
+              ...prev,
+              [finding.id]: {
+                ...prev[finding.id],
+                steps: { ...prev[finding.id]?.steps, [stepName]: state },
+              },
+            })),
+        },
+      );
+
+      setAdjudications((prev) => ({
+        ...prev,
+        [finding.id]: { running: false, outcome },
+      }));
+
+      // Mirror the verdict onto the row, like a manual Run PoC does.
+      if ((outcome.runStep === "executed" || outcome.runStep === "reused") && outcome.verdict) {
+        const verdict = outcome.verdict;
+        setFindings((prev) =>
+          prev.map((f) =>
+            f.id === finding.id
+              ? {
+                  ...f,
+                  pocStatus: verdict,
+                  pocOutput: outcome.output ?? f.pocOutput,
+                  pocCode: outcome.testCode ?? f.pocCode,
+                  pocRunAt: new Date().toISOString(),
+                }
+              : f,
+          ),
+        );
+      }
+    } catch (err) {
+      setAdjudications((prev) => ({
+        ...prev,
+        [finding.id]: {
+          running: false,
+          outcome: failedAdjudicationOutcome(
+            `Adjudication failed before completing — nothing was written. ${err instanceof Error ? err.message : String(err)}`,
+            "fetch",
+          ),
+        },
+      }));
+    }
+  };
+
+  // Queue mode: adjudicate every filtered, in-scope finding that has NO
+  // disposition yet, sequentially. Each ends at the suggestion state —
+  // the queue never writes a disposition.
+  const handleAdjudicateAllUndisposed = async () => {
+    if (isQueueRunning || isBatchRunning) return;
+    const targets = filteredFindings.filter((f) => !dispositions[f.id]);
+    if (targets.length === 0) return;
+    abortQueueRef.current = false;
+    setIsQueueRunning(true);
+    setQueueProgress({ current: 0, total: targets.length });
+
+    for (let i = 0; i < targets.length; i++) {
+      if (abortQueueRef.current) {
+        setFeedbackNotice("Adjudication queue cancelled.");
+        break;
+      }
+      const item = targets[i];
+      setQueueProgress({ current: i + 1, total: targets.length, currentTitle: item.title });
+      await handleAdjudicate(item, false);
+    }
+
+    setIsQueueRunning(false);
+    setQueueProgress(null);
+    if (!abortQueueRef.current) {
+      setFeedbackNotice(
+        `Adjudication queue finished: ${targets.length} finding(s) processed. Suggestions are on each card — nothing was confirmed automatically.`,
+      );
+      setTimeout(() => setFeedbackNotice(null), 6000);
+    }
+  };
+
+  const handleStopQueue = () => {
+    abortQueueRef.current = true;
+    setIsQueueRunning(false);
+    setQueueProgress(null);
+  };
+
   // Filter findings
   const evidenceById = useMemo(() => new Map(findings.map(f => [f.id, findingPocEvidence(f)])), [findings]);
 
-  const filteredFindings = findings.filter((f) => {
+  // "Actually critical" scope, applied at READ time (stored severities
+  // predate the detector demotions): criticals — highs only once the
+  // severity filter widens past "critical" — minus uncorroborated
+  // bytecode-presence-only findings, which join the actionable set only
+  // when the header toggle includes them deliberately. The list, AUDIT
+  // ALL and the adjudication queue all consume this scoped set.
+  const auditScope: PocAuditScope = severityFilter === "critical" ? "critical" : "critical_and_high";
+  const scopePartition = partitionPocAuditFindings(findings, auditScope);
+  const actionableFindings = showPresenceOnly
+    ? [...scopePartition.eligible, ...scopePartition.presenceOnlyExcluded]
+    : scopePartition.eligible;
+
+  const filteredFindings = actionableFindings.filter((f) => {
     if (statusFilter === "passed" && evidenceById.get(f.id)?.stage !== "reproduced") return false;
     if (statusFilter === "failed" && f.pocStatus !== "failed") return false;
     if (statusFilter === "error" && f.pocStatus !== "error") return false;
@@ -392,6 +754,8 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
   const reproducedCount = findings.filter((f) => evidenceById.get(f.id)?.stage === "reproduced").length;
   const unverifiedCount = findings.filter((f) => f.pocStatus === "failed").length;
   const errorCount = findings.filter((f) => f.pocStatus === "error").length;
+  const undisposedFiltered = filteredFindings.filter((f) => !dispositions[f.id]);
+  const runningAdjudication = Object.values(adjudications).find((a) => a.running);
 
   return (
     <div className="flex flex-col gap-6 max-w-7xl mx-auto p-4 sm:p-6 animate-fadeIn">
@@ -408,7 +772,7 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
                   Recent Findings PoC Auditor
                 </h2>
                 <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-amber-500/10 text-[#e8a54b] border border-amber-500/30">
-                  Critical & High DB Scope
+                  {severityFilter === "critical" ? "Actually-Critical Scope" : "Critical & High DB Scope"}
                 </span>
               </div>
               <p className="text-xs text-[#a39886] mt-0.5">
@@ -439,15 +803,64 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
             ) : (
               <button
                 onClick={handleRunAllPocs}
-                disabled={isLoading || filteredFindings.length === 0}
+                disabled={isLoading || filteredFindings.length === 0 || isQueueRunning}
                 className="px-4 py-1.5 rounded-lg bg-gradient-to-r from-[#e8a54b] to-[#d97706] hover:brightness-110 text-[#12110e] text-xs font-bold font-mono tracking-wide flex items-center gap-1.5 shadow-md shadow-[#e8a54b]/20 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Play className="w-3.5 h-3.5 fill-current" />
                 <span>AUDIT ALL RECOMMENDED POCS ({filteredFindings.length})</span>
               </button>
             )}
+
+            {isQueueRunning ? (
+              <button
+                onClick={handleStopQueue}
+                className="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold font-mono tracking-wide flex items-center gap-1.5 shadow transition-all active:scale-95"
+              >
+                <StopCircle className="w-4 h-4 fill-current" />
+                <span>STOP QUEUE</span>
+              </button>
+            ) : (
+              <button
+                onClick={handleAdjudicateAllUndisposed}
+                disabled={isLoading || isBatchRunning || undisposedFiltered.length === 0}
+                className="px-4 py-1.5 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#e8a54b]/40 text-xs font-bold font-mono tracking-wide text-[#e8a54b] flex items-center gap-1.5 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Run the full pipeline (fetch → LLM → harness → saved verdict) for every filtered finding with no disposition yet. Suggestions only — nothing is confirmed automatically."
+              >
+                <Scale className="w-3.5 h-3.5" />
+                <span>ADJUDICATE ALL UNDISPOSED ({undisposedFiltered.length})</span>
+              </button>
+            )}
           </div>
         </div>
+
+        {/* Adjudication Queue Progress Bar (with live per-step state) */}
+        {queueProgress && (
+          <div className="bg-[#12110e] border border-[#3a3428] rounded-xl p-3 flex flex-col gap-2 animate-fadeIn">
+            <div className="flex items-center justify-between text-xs font-mono gap-3 flex-wrap">
+              <span className="text-[#e8a54b] flex items-center gap-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Adjudicating finding {queueProgress.current} of {queueProgress.total}: {queueProgress.currentTitle}
+              </span>
+              <span className="text-[#a39886]">
+                {Math.round((queueProgress.current / queueProgress.total) * 100)}%
+              </span>
+            </div>
+            {runningAdjudication && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <ChainStepChips steps={runningAdjudication.steps} />
+                {runningAdjudication.notice && (
+                  <span className="text-[11px] font-mono text-[#a39886]">{runningAdjudication.notice}</span>
+                )}
+              </div>
+            )}
+            <div className="w-full h-1.5 bg-[#26231c] rounded-full overflow-hidden">
+              <div
+                className="h-full bg-[#e8a54b] transition-all duration-300"
+                style={{ width: `${(queueProgress.current / queueProgress.total) * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Batch Progress Bar */}
         {batchProgress && (
@@ -609,6 +1022,30 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
         </div>
       </div>
 
+      {/* Presence-only scope visibility: bytecode findings whose only
+          evidence is opcode presence are out of the actionable scope by
+          default (read-time rule — stored severities are not rewritten). */}
+      <div className="flex items-center gap-3 flex-wrap text-[11px] font-mono text-[#a39886] px-1">
+        <span>
+          <span className="text-[#f4efe6] font-bold">{scopePartition.presenceOnlyExcluded.length}</span>{" "}
+          presence-only excluded
+          <span className="text-[#746c60]"> (opcode-presence evidence only — not actually critical)</span>
+        </span>
+        <button
+          onClick={() => setShowPresenceOnly((v) => !v)}
+          className={`px-2 py-0.5 rounded border transition-colors ${
+            showPresenceOnly
+              ? "bg-[#e8a54b] text-[#12110e] font-bold border-[#e8a54b]"
+              : "bg-[#26231c] border-[#3a3428] text-[#a39886] hover:text-[#f4efe6]"
+          }`}
+        >
+          {showPresenceOnly ? "Presence-only included" : "Include presence-only"}
+        </button>
+        {!showPresenceOnly && scopePartition.presenceOnlyExcluded.length > 0 && (
+          <span className="text-[#746c60]">toggle to adjudicate them deliberately</span>
+        )}
+      </div>
+
       {/* Findings List */}
       <div className="flex flex-col gap-4">
         {isLoading ? (
@@ -630,6 +1067,8 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
           filteredFindings.map((finding) => {
             const isExpanded = expandedFindingId === finding.id;
             const execution = executingMap[finding.id];
+            const adjudication = adjudications[finding.id];
+            const disposition = dispositions[finding.id];
             const currentCodeTab = activeCodeTab[finding.id] || "exploit";
 
             return (
@@ -708,6 +1147,15 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
                   <div className="flex items-center gap-2 shrink-0 flex-wrap">
                     <PocEvidenceBadge evidence={evidenceById.get(finding.id)!} />
 
+                    {disposition && (
+                      <span
+                        className={`px-2 py-1 rounded text-[10px] font-mono font-bold border ${DISPOSITION_CONFIG[disposition.disposition].badge}`}
+                        title={disposition.note ?? "Auditor disposition of record"}
+                      >
+                        ⚖ {DISPOSITION_CONFIG[disposition.disposition].label}
+                      </span>
+                    )}
+
                     {/* Run Single PoC Button */}
                     <button
                       onClick={() => executeFindingPoc(finding, true)}
@@ -732,6 +1180,21 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
                     >
                       <Wand2 className="w-3 h-3" />
                       <span>Repair</span>
+                    </button>
+
+                    {/* Full adjudication pipeline for this finding */}
+                    <button
+                      onClick={() => handleAdjudicate(finding, false)}
+                      disabled={adjudication?.running || isBatchRunning || isQueueRunning}
+                      className="px-2.5 py-1.5 rounded-lg bg-[#26231c] hover:bg-[#3a3428] border border-[#e8a54b]/40 text-xs font-mono font-semibold text-[#e8a54b] flex items-center gap-1 transition-colors disabled:opacity-50"
+                      title="Fetch scan → LLM review → Foundry harness → saved verdict + suggested disposition (reuses work already done)"
+                    >
+                      {adjudication?.running ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Scale className="w-3 h-3" />
+                      )}
+                      <span>Adjudicate</span>
                     </button>
 
                     {/* Open in workbench */}
@@ -768,6 +1231,72 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
                   </div>
                 )}
 
+                {/* Adjudication progress + suggestion (one-tap accept) */}
+                {adjudication && (adjudication.running || adjudication.outcome) && (
+                  <div className="flex flex-col gap-1.5 bg-[#12110e] px-2.5 py-2 rounded-md border border-[#3a3428]">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <ChainStepChips steps={adjudication.steps} outcome={adjudication.outcome} />
+                      {adjudication.running && adjudication.notice && (
+                        <span className="text-[11px] font-mono text-[#e8a54b] flex items-center gap-1.5">
+                          <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                          {adjudication.notice}
+                        </span>
+                      )}
+                    </div>
+                    {adjudication.outcome && (
+                      <>
+                        <span className="text-[11px] font-mono text-[#a39886]">
+                          {adjudication.outcome.message}
+                          {adjudication.outcome.saveError
+                            ? ` (verdict save failed: ${adjudication.outcome.saveError})`
+                            : ""}
+                        </span>
+                        {adjudication.outcome.kind !== "already_adjudicated" && (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-mono uppercase tracking-wider text-[#746c60]">
+                              Suggested:
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${DISPOSITION_CONFIG[adjudication.outcome.suggestion].badge}`}
+                            >
+                              {DISPOSITION_CONFIG[adjudication.outcome.suggestion].label}
+                            </span>
+                            <button
+                              onClick={() =>
+                                handleSetDisposition(finding, adjudication.outcome!.suggestion)
+                              }
+                              disabled={dispositionSavingId !== null}
+                              className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-mono font-bold transition-colors disabled:opacity-50"
+                            >
+                              {dispositionSavingId === finding.id ? "Saving…" : "✓ Accept"}
+                            </button>
+                            <button
+                              onClick={() =>
+                                setAdjudications((prev) => {
+                                  const next = { ...prev };
+                                  delete next[finding.id];
+                                  return next;
+                                })
+                              }
+                              className="px-2 py-0.5 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[10px] font-mono text-[#a39886] transition-colors"
+                            >
+                              Dismiss
+                            </button>
+                            <button
+                              onClick={() => handleAdjudicate(finding, true)}
+                              disabled={adjudication.running || isQueueRunning}
+                              className="px-2 py-0.5 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[10px] font-mono text-[#a39886] transition-colors disabled:opacity-50"
+                              title="Re-run the whole chain, ignoring the idempotency skips"
+                            >
+                              ↺ Redo
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
                 {/* Metadata & Durations footer */}
                 <div className="flex items-center justify-between text-[11px] font-mono text-[#746c60] pt-1 border-t border-[#26231c]">
                   <div className="flex items-center gap-3">
@@ -789,6 +1318,58 @@ export function RecentPocAudits({ onLoadScanInWorkbench }: RecentPocAuditsProps)
                 {/* Expanded Inspection Drawer */}
                 {isExpanded && (
                   <div className="mt-3 pt-3 border-t border-[#3a3428] flex flex-col gap-3 animate-fadeIn">
+                    {/* Auditor disposition of record */}
+                    <div className="flex flex-col gap-2 bg-[#12110e] border border-[#2d281f] rounded-xl p-3">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-mono uppercase tracking-wider text-[#746c60]">
+                          Auditor disposition
+                        </span>
+                        {disposition ? (
+                          <>
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${DISPOSITION_CONFIG[disposition.disposition].badge}`}
+                            >
+                              {DISPOSITION_CONFIG[disposition.disposition].label}
+                            </span>
+                            <span className="text-[10px] font-mono text-[#746c60]">
+                              set {new Date(disposition.updatedAt).toLocaleString()}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-[10px] font-mono text-[#746c60]">not set</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {DISPOSITION_ORDER.map((d) => (
+                          <button
+                            key={d}
+                            onClick={() =>
+                              handleSetDisposition(finding, d, noteDrafts[finding.id])
+                            }
+                            disabled={dispositionSavingId !== null}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-semibold border transition-all disabled:opacity-50 ${
+                              disposition?.disposition === d
+                                ? DISPOSITION_CONFIG[d].badge + " ring-1 ring-current"
+                                : "bg-[#26231c] border-[#3a3428] text-[#a39886] hover:text-[#f4efe6]"
+                            }`}
+                          >
+                            {dispositionSavingId === finding.id
+                              ? "Saving…"
+                              : DISPOSITION_CONFIG[d].label}
+                          </button>
+                        ))}
+                        <input
+                          type="text"
+                          value={noteDrafts[finding.id] ?? disposition?.note ?? ""}
+                          onChange={(e) =>
+                            setNoteDrafts((prev) => ({ ...prev, [finding.id]: e.target.value }))
+                          }
+                          placeholder="Optional note — saved with the next disposition tap"
+                          className="flex-1 min-w-52 bg-[#1c1a16] border border-[#3a3428] rounded-lg px-2 py-1 text-[11px] font-mono text-[#f4efe6] placeholder-[#746c60] focus:outline-none focus:border-[#e8a54b]"
+                        />
+                      </div>
+                    </div>
+
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1 bg-[#12110e] border border-[#3a3428] rounded-lg p-0.5 text-xs font-mono">
                         <button
