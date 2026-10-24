@@ -14,6 +14,7 @@ try {
     prefixed: { width: 1440, height: 1000 },
   })) {
     const context = await browser.newContext({ viewport });
+    context.setDefaultTimeout(30000);
     const requests = [];
     context.on("request", (request) => requests.push(request.url()));
     const proxyPrefix = "/hds-abc-8080-test";
@@ -91,15 +92,28 @@ try {
         "inference must finish within 30 seconds on throttled mobile",
       );
       results.push({ viewport: name, fixture: index, ...result.timing });
+      console.log(`${mode} ${name} fixture ${index}: parity passed`, JSON.stringify(result.timing));
       if (index === 0)
         await panel.screenshot({
           path: `/workspace/screenshots/image-ml/${mode}-resnet-${name}.png`,
         });
     }
     // Cancel while a fresh worker loads; editing also clears both successful and in-flight results.
+    // Hold the actual download so fast inference cannot remove Cancel before clicking it.
+    let releaseDownload;
+    const holdDownload = async (route) => {
+      await new Promise((resolve) => {
+        releaseDownload = resolve;
+      });
+      await route.abort().catch(() => {}); // Terminating the worker may already cancel it.
+    };
+    await context.route("**/models/resnet1d-v1.json", holdDownload);
     await panel.getByRole("button", { name: "Run Image ML", exact: true }).click();
     await panel.getByRole("button", { name: "Cancel", exact: true }).click();
+    releaseDownload?.();
+    await context.unroute("**/models/resnet1d-v1.json", holdDownload);
     assert.equal(await panel.locator("tbody tr").count(), 0);
+    console.log(`${mode} ${name}: cancellation passed`);
     await context.route("**/models/resnet1d-v1.json", (route) => route.abort());
     await panel.getByRole("button", { name: "Run Image ML", exact: true }).click();
     await panel.getByRole("alert").waitFor({ timeout: 10000 });
