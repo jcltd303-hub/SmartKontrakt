@@ -22,6 +22,7 @@ try {
       .fill(fixture.bytecode);
     await page.getByRole("button", { name: "Bytecode & CFG", exact: true }).click();
     const panel = page.getByRole("region", { name: "Experimental image machine learning" });
+    await panel.getByLabel("ML model").selectOption("rgb");
     await panel.getByRole("button", { name: "Run Image ML", exact: true }).click();
     await panel.getByText(/Model: .*Experimental ML signal/).waitFor({ timeout: 30000 });
     const rows = panel.locator("tbody tr");

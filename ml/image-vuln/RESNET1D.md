@@ -175,3 +175,24 @@ python ml/image-vuln/train_resnet1d.py --cache /tmp/image-vuln-data --output /tm
 ```
 
 Latest selected checkpoint SHA256: `f8ddd71621d6019c3aa0a6a5578254e04002ae42fea38904823204836009895e`.
+
+
+## Browser deployment
+
+The selected epoch 5 float checkpoint is exported to ONNX opset 17 with sigmoid outputs.
+The 14,850,766-byte graph is split into bounded 1 MiB files under `public/models`, with
+per-shard and whole-model SHA256 integrity checks. The export differs from PyTorch by
+at most 1.79e-7 over the five saved fixtures. Browser CI verifies all 25 scores within
+1e-5 in desktop and CPU-throttled mobile Chromium, in dev and production builds.
+ResNet uses raw bytes; RGB previews are visualizations, not its input.
+
+Inference uses self-hosted ONNX Runtime Web 1.30.0 WASM, one thread, in a worker.
+It runs only on manual request, can be cancelled, and clears results when input/model changes.
+First load includes about 15 MB of model data plus about 14 MB of WASM. No bytecode is
+sent to a model server. RGB remains an explicit alternative. Mobile viewport/throttling
+checks are not measurements on a physical phone.
+
+Re-export with `python ml/image-vuln/export_resnet1d.py --checkpoint PATH/selected.pt
+--report ml/image-vuln/resnet1d-evaluation.json --parity ml/image-vuln/resnet1d-parity.json
+--output public/models`; then run `python ml/image-vuln/verify_resnet_browser.py`.
+Export tools require onnx==1.23.2 and onnxruntime==1.31.0.
