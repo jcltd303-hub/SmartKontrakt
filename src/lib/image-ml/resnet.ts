@@ -121,14 +121,25 @@ export async function loadResnet(url: string) {
     JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await download(url, 64 * 1024))),
   );
   const bytes = new Uint8Array(manifest.bytes);
+  const offsets: number[] = [];
   let offset = 0;
   for (const shard of manifest.shards) {
-    const part = await download(new URL(shard.file, url).href, shard.bytes);
-    if (part.length !== shard.bytes || (await sha256(part)) !== shard.sha256)
-      throw new Error("ResNet model integrity check failed.");
-    bytes.set(part, offset);
-    offset += part.length;
+    offsets.push(offset);
+    offset += shard.bytes;
   }
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(4, manifest.shards.length) }, async () => {
+      while (next < manifest.shards.length) {
+        const index = next++;
+        const shard = manifest.shards[index];
+        const part = await download(new URL(shard.file, url).href, shard.bytes);
+        if (part.length !== shard.bytes || (await sha256(part)) !== shard.sha256)
+          throw new Error("ResNet model integrity check failed.");
+        bytes.set(part, offsets[index]);
+      }
+    }),
+  );
   if ((await sha256(bytes)) !== manifest.sha256)
     throw new Error("ResNet model integrity check failed.");
   return { manifest, bytes };

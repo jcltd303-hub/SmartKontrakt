@@ -1,18 +1,19 @@
 import * as ort from "onnxruntime-web/wasm";
 import wasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
-import mjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url";
-import { loadResnet, prepareSequence, runtimeAssetUrl } from "./resnet";
+import { download, loadResnet, prepareSequence, runtimeAssetUrl } from "./resnet";
 self.onmessage = async (event: MessageEvent<{ bytecode: string; modelUrl: string }>) => {
   const started = performance.now();
   try {
     const input = prepareSequence(event.data.bytecode);
-    const { manifest, bytes } = await loadResnet(event.data.modelUrl);
+    const [{ manifest, bytes }, wasmBytes] = await Promise.all([
+      loadResnet(event.data.modelUrl),
+      download(runtimeAssetUrl(wasmUrl, event.data.modelUrl), 20 * 1024 * 1024),
+    ]);
     ort.env.wasm.numThreads = 1;
     ort.env.wasm.proxy = false;
-    ort.env.wasm.wasmPaths = {
-      wasm: runtimeAssetUrl(wasmUrl, event.data.modelUrl),
-      mjs: runtimeAssetUrl(mjsUrl, event.data.modelUrl),
-    };
+    // Explicit bounded bytes avoid MIME-dependent streaming/fallback downloads.
+    // The /wasm bundled entry already contains its matching Emscripten factory.
+    ort.env.wasm.wasmBinary = wasmBytes;
     const session = await ort.InferenceSession.create(bytes, { executionProviders: ["wasm"] });
     const loaded = performance.now();
     try {

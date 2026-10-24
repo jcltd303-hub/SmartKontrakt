@@ -91,6 +91,10 @@ try {
         result.timing.inferenceMs < 30000,
         "inference must finish within 30 seconds on throttled mobile",
       );
+      assert.ok(
+        result.timing.loadMs < 30000,
+        "model loading must finish within 30 seconds on the local CI server",
+      );
       results.push({ viewport: name, fixture: index, ...result.timing });
       console.log(`${mode} ${name} fixture ${index}: parity passed`, JSON.stringify(result.timing));
       if (index === 0)

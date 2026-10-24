@@ -40,3 +40,34 @@ test("runtime assets retain the proxy prefix used by the model manifest", async 
     "https://app.example/assets/ort.mjs",
   );
 });
+
+test("model shards download concurrently with a bounded number of active requests", async (t) => {
+  const { createServer } = await import("node:http");
+  const { loadResnet } = await import("./resnet.ts");
+  let active = 0,
+    maximum = 0;
+  const server = createServer((req, res) => {
+    const file = (req.url ?? "").split("/").pop();
+    if (!file || !/^resnet1d-v1(?:-\d{2}\.bin|\.json)$/.test(file)) {
+      res.writeHead(404).end();
+      return;
+    }
+    active++;
+    maximum = Math.max(maximum, active);
+    setTimeout(() => {
+      res.end(readFileSync(`public/models/${file}`));
+      active--;
+    }, 30);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const loaded = await loadResnet(`http://127.0.0.1:${address.port}/models/resnet1d-v1.json`);
+  assert.equal(loaded.bytes.length, loaded.manifest.bytes);
+  assert.ok(maximum >= 2, "serial downloads delay loading for every shard");
+  assert.ok(maximum <= 4, "parallel downloads must keep memory and connections bounded");
+});
