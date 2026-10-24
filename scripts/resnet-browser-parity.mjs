@@ -18,7 +18,7 @@ try {
     context.on("request", (request) => requests.push(request.url()));
     const proxyPrefix = "/hds-abc-8080-test";
     if (name === "prefixed")
-      await context.route("http://preview.grok.mil/**", async (route) => {
+      await context.route("https://preview.grok.mil/**", async (route) => {
         const requestUrl = new URL(route.request().url());
         const pathname = requestUrl.pathname.startsWith(proxyPrefix)
           ? requestUrl.pathname.slice(proxyPrefix.length)
@@ -50,7 +50,7 @@ try {
         }
       };
     });
-    await page.goto(name === "prefixed" ? `http://preview.grok.mil${proxyPrefix}/` : base, {
+    await page.goto(name === "prefixed" ? `https://preview.grok.mil${proxyPrefix}/` : base, {
       waitUntil: "networkidle",
       timeout: 60000,
     });

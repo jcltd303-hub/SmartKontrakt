@@ -65,6 +65,9 @@ export default defineConfig(({ command, isPreview }) => ({
     port: 8081,
     strictPort: true,
   },
+  // Worker-only imports must be discovered before the first manual inference.
+  // Lazy discovery otherwise reloads the page and discards the active run.
+  optimizeDeps: { include: ["onnxruntime-web/wasm"] },
   resolve: { tsconfigPaths: true },
   plugins: [
     pgliteBootstrapPlugin(),

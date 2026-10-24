@@ -22,3 +22,5 @@ Malformed manifests; prefix-based preview URLs; truncated inputs; all-zero norma
 - Existing feature checkout retained; no merge or deployment authorized.
 - Runtime choice: 15 MB float model and 14 MB single-thread WASM loaded only on manual run; quantization deferred to avoid changing evaluated behavior.
 - Physical mobile memory was not measured. CPU-throttled mobile Chromium verifies practical completion, with first-load/inference timings reported separately.
+
+- First dev browser run reproduced Vite lazy dependency discovery reloading the page during inference. Added explicit startup optimization for worker-only ONNX import; browser test remains the regression check.
