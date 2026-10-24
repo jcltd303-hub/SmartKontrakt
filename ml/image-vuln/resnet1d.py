@@ -20,6 +20,14 @@ def encode_bytes(code):
     return values
 
 
+def encode_rows(rows):
+    """Allocate one uint8 matrix, rather than stacking a second full copy."""
+    values = np.empty((len(rows), SEQUENCE_LENGTH), dtype=np.uint8)
+    for index, row in enumerate(rows):
+        values[index] = encode_bytes(row['bytecode'])
+    return values
+
+
 def normalize_batch(values):
     return torch.nn.functional.normalize(values.float(), dim=-1).unsqueeze(1)
 

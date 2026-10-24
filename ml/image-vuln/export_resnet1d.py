@@ -29,6 +29,8 @@ def export_model(model, thresholds, cases, output, checkpoint_sha, metadata):
         inputs = normalize_batch(torch.from_numpy(encode_bytes(case['bytecode'])[None]))
         with torch.no_grad(): expected = wrapper(inputs).numpy()
         actual = session.run(None, {'bytecode':inputs.numpy()})[0]
+        if not np.isfinite(expected).all() or not np.isfinite(actual).all():
+            raise ValueError('Non-finite Torch or ONNX predictions')
         error = max(error,float(np.max(np.abs(expected-actual))))
         parity.append({'bytecode':case['bytecode'],'probabilities':expected[0].tolist()})
     if not np.isfinite(error) or error > 1e-5:
@@ -39,7 +41,7 @@ def export_model(model, thresholds, cases, output, checkpoint_sha, metadata):
         name = f'resnet1d-v1-{index:02d}.bin'
         (output/name).write_bytes(part)
         shards.append({'file':name,'bytes':len(part),'sha256':hashlib.sha256(part).hexdigest()})
-    manifest = {'schemaVersion':1,'modelId':'resnet1d-16384-epoch5-v1',
+    manifest = {'schemaVersion':1,'modelId':'resnet1d-16384-v1',
                 'architecture':'upstream-resnet1d-16384-v1','sequenceLength':16384,
                 'normalization':'per-example L2 after zero-pad/truncate',
                 'classes':CLASSES,'thresholds':thresholds,'bytes':len(data),
@@ -49,6 +51,21 @@ def export_model(model, thresholds, cases, output, checkpoint_sha, metadata):
     (output/'resnet1d-v1.json').write_text(json.dumps(manifest,indent=2)+'\n')
     (output/'resnet1d-v1-parity.json').write_text(json.dumps({'cases':parity,'tolerance':1e-5},indent=2)+'\n')
     return manifest
+
+
+def export_metadata(report, payload, checkpoint_sha, evaluation_report, parity_file):
+    if checkpoint_sha != report['checkpointSha256']:
+        raise ValueError('Selected checkpoint hash does not match report')
+    for key in ('protocol','selectedEpoch','thresholds'):
+        if payload[key] != report[key]:
+            raise ValueError('Checkpoint and report disagree: '+key)
+    epoch=payload['selectedEpoch'];count=payload['protocol']['counts']['train']
+    return {'modelId':f'resnet1d-16384-train{count}-epoch{epoch}-v1',
+            'evaluationReport':evaluation_report,'parityFile':parity_file,
+            'training':{'samples':report['protocol']['counts'],'selectedEpoch':epoch,
+                        'epochs':report['epochs'],'checkpointSha256':checkpoint_sha},
+            'evaluation':{'validation':report['history'][epoch-1],'test':report['test'],
+                          'notice':'Known benchmark reused across experiments; Slither labels, not exploit ground truth.'}}
 
 
 def main():
@@ -62,10 +79,7 @@ def main():
     model,payload=load_candidate(args.checkpoint)
     report=json.loads(Path(args.report).read_text())
     checkpoint_sha=hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest()
-    if checkpoint_sha != report['checkpointSha256']:
-        raise ValueError('Selected checkpoint hash does not match report')
-    metadata={'training':{'samples':report['protocol'].get('counts'), 'selectedEpoch':payload['selectedEpoch'],
-                          'checkpointSha256':checkpoint_sha},'evaluation':{'validation':report['history'][payload['selectedEpoch']-1], 'test':report['test'], 'notice':'Known benchmark reused across experiments; Slither labels, not exploit ground truth.'}}
+    metadata=export_metadata(report,payload,checkpoint_sha,Path(args.report).name,Path(args.parity).name)
     manifest=export_model(model,payload['thresholds'],json.loads(Path(args.parity).read_text())['cases'],
                           Path(args.output),checkpoint_sha,metadata)
     print(json.dumps({'bytes':manifest['bytes'],'sha256':manifest['sha256'],

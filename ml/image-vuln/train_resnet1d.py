@@ -9,7 +9,7 @@ import pickle
 import numpy as np
 import torch
 from core import CLASSES, clean_splits, hashes, labels, raw_bytes
-from resnet1d import ResNet1D, SEQUENCE_LENGTH, encode_bytes, normalize_batch, filter_candidate_training
+from resnet1d import ResNet1D, SEQUENCE_LENGTH, encode_bytes, encode_rows, normalize_batch, filter_candidate_training
 from checkpoint import save_checkpoint, restore_checkpoint, prepare_output
 from train import metrics
 
@@ -71,13 +71,18 @@ def main():
     content_hashes = {s: hashlib.sha256(json.dumps([(r['address'],r['hashes'][0],r['slither']) for r in rs],separators=(',',':')).encode()).hexdigest() for s,rs in rows.items()}
     counts = {s:len(rs) for s,rs in rows.items()}
     truncation = {s:sum(len(raw_bytes(r['bytecode'])) > SEQUENCE_LENGTH for r in rs) for s,rs in rows.items()}
-    data = {s:torch.from_numpy(np.stack([encode_bytes(r['bytecode']) for r in rs])) for s,rs in rows.items()}
+    fixtures = [r['bytecode'] for r in rows['validation'][:3]] + ['0x00','0xff']
+    data = {s:torch.from_numpy(encode_rows(rs)) for s,rs in rows.items()}
     targets = {s:np.stack([labels(r['slither']) for r in rs]) for s,rs in rows.items()}
     protocol = {'architecture':'upstream-resnet1d-16384-v1','classes':CLASSES,'seed':args.seed,
                 'batchSize':args.batch_size,'trainCap':args.train_cap,'counts':counts,
                 'candidateFingerprint':candidate_filtering['fingerprint'],'sequenceLength':SEQUENCE_LENGTH,'normalization':'per-example L2 after zero-pad/truncate',
                 'optimizer':'Adam lr=.001 weight_decay=.0001; weighted BCE from train only',
                 'contentHashes':content_hashes,'torchVersion':str(torch.__version__), 'threads':args.threads}
+    # Training retains encoded bytes and targets, not the original hex strings.
+    del rows
+    import gc
+    gc.collect()
     model = ResNet1D()
     optimizer = torch.optim.Adam(model.parameters(),lr=.001,weight_decay=.0001)
     y = torch.from_numpy(targets['train'])
@@ -124,7 +129,6 @@ def main():
     # Test is first scored only after all validation selection is finished.
     test_p = probabilities(model, data['test'], args.batch_size)
     evaluation = metrics(targets['test'],test_p,best_thresholds)
-    fixtures = [r['bytecode'] for r in rows['validation'][:3]] + ['0x00','0xff']
     fixture_tensor = torch.from_numpy(np.stack([encode_bytes(code) for code in fixtures]))
     fixture_p = probabilities(model,fixture_tensor,args.batch_size)
     parity = {'architecture':protocol['architecture'],'classes':CLASSES,'cases':[{'bytecode':code,'probabilities':p.tolist()} for code,p in zip(fixtures,fixture_p)]}
