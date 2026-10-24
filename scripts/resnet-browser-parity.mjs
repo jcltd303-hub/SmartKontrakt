@@ -116,7 +116,7 @@ try {
     assert.equal(await panel.locator("tbody tr").count(), 0);
     assert.deepEqual(errors, []);
     if (name === "prefixed") {
-      const runtimeRequests = requests.filter((url) => /ort-wasm.*\.(mjs|wasm)/.test(url));
+      const runtimeRequests = requests.filter((url) => /ort-wasm.*\.(mjs|wasm)$/.test(url));
       assert.ok(
         runtimeRequests.some((url) => url.endsWith(".wasm")),
         "actual prefixed WASM was downloaded",
