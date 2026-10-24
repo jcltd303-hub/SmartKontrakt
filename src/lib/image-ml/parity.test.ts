@@ -22,16 +22,14 @@ test("shipped trained CNN matches independent PyTorch predictions within 1e-5", 
     "unchecked-calls",
     "others",
   ]);
-  assert.deepEqual(
-    model.thresholds,
-    [
-      0.5250000000000001, 0.4250000000000001, 0.4000000000000001, 0.4250000000000001,
-      0.47500000000000014,
-    ],
+  const report = JSON.parse(
+    readFileSync(new URL("../../../ml/image-vuln/evaluation.json", import.meta.url), "utf8"),
   );
+  assert.deepEqual(model.thresholds, report.thresholds);
+  assert.deepEqual(model.training.counts, report.training.counts);
   assert.ok(
     parityArtifact.cases.length >= 5,
-    "parity must include at least five real bytecode cases",
+    "parity must include at least five real and synthetic bytecode cases",
   );
   for (const [caseIndex, fixture] of parityArtifact.cases.entries()) {
     assert.equal(fixture.probabilities.length, 5);

@@ -43,8 +43,8 @@
   },
   "selectionFingerprints": {
     "train": {
-      "count": 20000,
-      "orderedAddressSha256": "c80cfbf632da3c28a1e124098ad0f52cbf8380e8a98991dd26eb4d28e6878406"
+      "count": 55632,
+      "orderedAddressSha256": "11f68172659eabaf5dbee3ee6b4ef1733be9935f1ed98ee87029a4fe6a54650a"
     },
     "validation": {
       "count": 7358,
