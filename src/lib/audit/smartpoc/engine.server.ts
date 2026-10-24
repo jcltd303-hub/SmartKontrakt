@@ -26,6 +26,7 @@ import {
   stripThinkBlocks,
   type OpenRouterPurpose,
 } from "../ai-review.server.ts";
+import { countExecutableTestFunctions } from "../poc-outcome.ts";
 import { selectPocFallbacks } from "../poc-fallbacks.ts";
 import { smartbugsCategoryForDetector } from "../smartbugs.ts";
 import { tailorTemplateToAbi, interfaceFromAbi, type AbiItem } from "../abi.ts";
@@ -179,11 +180,22 @@ async function chat(
   return content;
 }
 
-/** Extract the first ```solidity / ``` fenced block, else the trimmed text. */
+/**
+ * Extract the PoC source from a model response. When the response
+ * carries several fenced blocks, prefer the first block that contains
+ * executable test functions: models routinely emit a helper or attack
+ * contract first and the Test contract second, and taking the first
+ * block verbatim produced test-less drafts that forge "ran" as hollow
+ * zero-test passes. When no block carries a test function — or there
+ * is a single block — the first fenced block wins, exactly as before;
+ * with no fences at all, the trimmed text.
+ */
 export function extractCodeBlock(text: string): string {
   const cleaned = stripThinkBlocks(text);
-  const fenced = cleaned.match(/```(?:solidity|sol)?\s*\n([\s\S]*?)```/i);
-  if (fenced) return fenced[1].trim();
+  const blocks = [...cleaned.matchAll(/```(?:solidity|sol)?\s*\n([\s\S]*?)```/gi)].map((m) => m[1].trim());
+  if (blocks.length) {
+    return blocks.find((b) => countExecutableTestFunctions(b) > 0) ?? blocks[0];
+  }
   return cleaned.trim();
 }
 

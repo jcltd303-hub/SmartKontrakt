@@ -1,5 +1,6 @@
 import type { PocResult } from "./types";
 import { sha3_256 } from "js-sha3";
+import { countExecutableTestFunctions } from "./poc-outcome.ts";
 import { wrapPocSnippet } from "./poc-wrap.ts";
 import { nativeSymbol } from "./balance.ts";
 import { fetchAddressValue, isZeroValue } from "./value.ts";
@@ -141,6 +142,11 @@ async function requestPocOnBackend(
     const data = (await res.json()) as {
       ok: boolean;
       passed: boolean;
+      /** Backend honesty fields: testsRun is how many tests forge
+       *  executed; noTests marks a completed run that executed zero
+       *  (a hollow pass on older backends, which claimed passed:true). */
+      noTests?: boolean;
+      testsRun?: number;
       logs: string;
       durationMs: number;
       error?: string;
@@ -161,6 +167,17 @@ async function requestPocOnBackend(
         durationMs: data.durationMs ?? Date.now() - started,
         runAt: runAt(),
         error: data.error,
+      };
+    }
+    if (data.noTests) {
+      // Forge completed but executed 0 tests — no verdict exists.
+      // Its own outcome kind (poc-outcome.ts), never "failed".
+      return {
+        status: "no_tests",
+        logs: data.logs || "(no output)",
+        durationMs: data.durationMs ?? Date.now() - started,
+        runAt: runAt(),
+        error: "Backend ran forge but executed 0 tests (no matching test contract or test functions).",
       };
     }
     return {
@@ -382,6 +399,44 @@ export async function runSmartPoc(
   const bytes = new TextEncoder().encode(input.testCode);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   const sourceHash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+
+  // Pre-run test gate — the SmartPoC hollow-pass fix. A draft with ZERO
+  // executable test functions can only produce a hollow tests=0 backend
+  // run: forge matches nothing, exits 0, and the outcome used to be
+  // manufactured after the fact (or, on the old backend, filed as a
+  // pass). The adjudicate chain gates its prepared PoCs before the
+  // backend (ensureExecutablePocTests, poc-outcome.ts); this shared
+  // execution path — SmartPoC engine drafts, the worker Deep Agent —
+  // had no gate, so test-less drafts (a bare attack contract, a helper)
+  // burned a fork run to learn nothing. Count with the SAME counter the
+  // chain's gate uses and refuse here: no backend call, outcome
+  // no_tests, cause named. (After the value guard above on purpose: a
+  // confirmed zero-value target still reports its deliberate skip.)
+  if (countExecutableTestFunctions(input.testCode) === 0) {
+    const runAt = new Date().toISOString();
+    return {
+      status: "no_tests",
+      logs:
+        `[SmartPoC | Foundry] target=${input.address} chain=${input.chainId ?? 1} tests=0\n` +
+        `SHA-256: ${sourceHash}\n` +
+        `Executed source SHA3-256: ${sha3_256(input.testCode)}\n` +
+        `Started: ${startedAt}\nFinished: ${runAt}\n` +
+        `[SmartPoC] Not run — the PoC draft contains no executable test function, so forge would run 0 tests. ` +
+        `The draft did not include a Test contract with a public/external test function (the SmartPoC engine's draft was a bare contract or helper). ` +
+        `Saved as no_tests: a generation gap, not an error and not a verdict on the finding.`,
+      durationMs: 0,
+      runAt,
+      error: "PoC draft contains no executable test functions — the draft did not include a Test contract.",
+      executedSource: input.testCode,
+      triedRpcs: [],
+      evidence: {
+        engine: "foundry", startedAt, finishedAt: runAt,
+        target: input.address, chainId: String(input.chainId ?? 1), sourceHash,
+        backendUrl, rpcUrls: [], testCount: 0,
+      },
+    };
+  }
+
   const result = await executeWithRpcRetries(backendUrl, input);
   if (result.status === "failed" && isPocCompileError(result.logs)) result.status = "error";
   if (result.status === "error" && isPocCompileError(result.logs) && input.repair) {

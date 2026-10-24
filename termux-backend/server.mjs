@@ -175,6 +175,35 @@ function shouldRetryRpc(output) {
   return false;
 }
 
+/**
+ * How many tests forge actually executed, parsed from its output.
+ * Returns null when the output carries no test-count evidence (a compile
+ * failure, an RPC failure before any suite ran), so those runs keep
+ * their existing classification.
+ *
+ * Why this exists: `forge test` exits 0 with "No tests found in
+ * project!" when --match-contract matches nothing or the matched
+ * contract declares no test functions. Exit 0 is therefore NOT evidence
+ * that any test ran — a zero-count run is a hollow pass and must never
+ * be reported as passed.
+ */
+export function parseForgeTestsRun(output) {
+  if (!output) return null;
+  if (/no tests found/i.test(output)) return 0;
+  // Final aggregate line: "Ran 1 test suite in …: 1 tests passed, 1
+  // failed, 0 skipped (2 total tests)" — take the last one.
+  const aggregate = [...output.matchAll(/\(\s*(\d+)\s+total tests?\s*\)/gi)];
+  if (aggregate.length) return Number(aggregate[aggregate.length - 1][1]);
+  // Per-suite lines: "Suite result: ok. 3 passed; 0 failed; 0 skipped".
+  const suites = [
+    ...output.matchAll(/Suite result:\s*(?:ok|FAILED)\.\s*(\d+)\s+passed;\s*(\d+)\s+failed;\s*(\d+)\s+skipped/gi),
+  ];
+  if (suites.length) {
+    return suites.reduce((n, m) => n + Number(m[1]) + Number(m[2]) + Number(m[3]), 0);
+  }
+  return null;
+}
+
 function validateRun(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return "body must be a JSON object";
   if (typeof body.address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(body.address)) {
@@ -324,9 +353,26 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls, t
         };
       }
       if (result.code === 0) {
+        const testsRun = parseForgeTestsRun(result.output);
+        if (testsRun === 0) {
+          // Hollow pass: forge exited 0 having executed NOTHING (the
+          // --match-contract matched no contract, or the contract has
+          // no test functions). Never claim passed for zero evidence —
+          // flag it so clients classify the run no_tests.
+          return {
+            ok: true, // forge ran to completion; it simply ran no tests
+            passed: false,
+            noTests: true,
+            testsRun: 0,
+            logs: tailCap(result.output),
+            durationMs,
+            rpcUrl: candidate,
+          };
+        }
         return {
           ok: true, // forge ran to completion; passed says whether the PoC reproduced
           passed: true,
+          ...(testsRun !== null ? { testsRun } : {}),
           logs: tailCap(result.output),
           durationMs,
           rpcUrl: candidate,
@@ -335,9 +381,12 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls, t
       lastOutput = result.output;
       if (!shouldRetryRpc(result.output)) {
         // Tests ran and failed (a real verdict), or a compile error.
+        const testsRun = parseForgeTestsRun(result.output);
         return {
           ok: true,
           passed: false,
+          ...(testsRun !== null ? { testsRun } : {}),
+          ...(testsRun === 0 ? { noTests: true } : {}),
           logs: tailCap(result.output),
           durationMs,
           rpcUrl: candidate,
@@ -432,7 +481,7 @@ const server = http.createServer((req, res) => {
           tokenAddress: body.tokenAddress,
         });
         console.log(
-          `[${new Date().toISOString()}] /run-poc address=${body.address} passed=${result.passed} ok=${result.ok} durationMs=${result.durationMs} rpc=${result.rpcUrl ?? "-"}${result.error ? ` error=${result.error}` : ""}`,
+          `[${new Date().toISOString()}] /run-poc address=${body.address} passed=${result.passed} ok=${result.ok} durationMs=${result.durationMs} rpc=${result.rpcUrl ?? "-"}${result.testsRun !== undefined ? ` testsRun=${result.testsRun}` : ""}${result.noTests ? " noTests=true" : ""}${result.error ? ` error=${result.error}` : ""}`,
         );
         sendJson(res, result.ok ? 200 : 500, result);
       } catch (err) {
@@ -455,7 +504,8 @@ server.listen(PORT, HOST, () => {
   console.log(`Scaffold: ${SCAFFOLD_DIR}`);
 });
 
-// Exported for unit tests (the rotation helpers); importing this module
-// still starts the server, so tests must close it when done.
+// Exported for unit tests (the rotation helpers + the test-count
+// parser); importing this module still starts the server, so tests
+// must close it when done.
 export { candidateRpcs, shouldRetryRpc, server };
 

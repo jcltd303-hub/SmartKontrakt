@@ -49,7 +49,7 @@ const ADDR = '0x' + '1'.repeat(40);
 test('SmartPoC classifies zero-test success as no_tests (not an error, not a verdict) and records execution evidence', async () => {
   const f = installFetch({ reply: () => new Response(JSON.stringify({ok:true,passed:true,logs:'No tests found',durationMs:1})) });
   try {
-    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}'});
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC { function test_exploit() public {} }'});
     assert.equal(result.status, 'no_tests');
     assert.match(result.logs, /SmartPoC/);
     assert.match(result.logs, /SHA-256/);
@@ -61,7 +61,7 @@ test('SmartPoC classifies zero-test success as no_tests (not an error, not a ver
 test('SmartPoC keeps Base RPC retries on Base and records real test counts', async () => {
   const f = installFetch({ reply: () => new Response(JSON.stringify({ok:true,passed:true,logs:'[PASS] testProof()\n1 passed; 0 failed',durationMs:2})) });
   try {
-    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}',chainId:8453});
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC { function test_exploit() public {} }',chainId:8453});
     assert.equal(result.status,'passed');
     assert.equal(result.evidence?.testCount,1);
     assert.equal(result.evidence?.chainId,"8453");
@@ -108,7 +108,7 @@ test('SmartPoC still runs when only an ERC-20 holding carries the value', async 
     tokens: [{ token: { address_hash: '0x'+'a'.repeat(40), decimals: '18', exchange_rate: '1.5', symbol: 'TKN', name: 'Token', type: 'ERC-20' }, value: '1000000000000000000' }],
   });
   try {
-    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}'});
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC { function test_exploit() public {} }'});
     assert.equal(result.status, 'passed');
     assert.equal(f.backend.length, 1);
   } finally { f.restore(); }
@@ -117,7 +117,7 @@ test('SmartPoC still runs when only an ERC-20 holding carries the value', async 
 test('skipZeroValue:false forces the run on a zero-value target', async () => {
   const f = installFetch({ balance: '0x0', tokens: [] });
   try {
-    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}',skipZeroValue:false});
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC { function test_exploit() public {} }',skipZeroValue:false});
     assert.equal(result.status, 'passed');
   } finally { f.restore(); }
 });
@@ -125,7 +125,7 @@ test('skipZeroValue:false forces the run on a zero-value target', async () => {
 test('an incomplete valuation (token indexer down) does NOT skip the run', async () => {
   const f = installFetch({ balance: '0x0', tokensDown: true });
   try {
-    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}'});
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC { function test_exploit() public {} }'});
     assert.equal(result.status, 'passed', 'unknown value must never be treated as zero');
   } finally { f.restore(); }
 });
@@ -138,7 +138,7 @@ test('an unpriced token holding does NOT skip the run', async () => {
     tokens: [{ token: { address_hash: '0x'+'b'.repeat(40), decimals: '18', exchange_rate: null, symbol: 'NOPRICE', name: 'X', type: 'ERC-20' }, value: '5000000000000000000' }],
   });
   try {
-    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC {}'});
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC { function test_exploit() public {} }'});
     assert.equal(result.status, 'passed');
   } finally { f.restore(); }
 });
@@ -176,10 +176,10 @@ test('SmartPoC repairs a compile failure once and records the code actually exec
       : {ok:true,passed:true,logs:'1 passed; 0 failed',durationMs:1})),
   });
   try {
-    const result = await runSmartPoc('http://localhost:8787',{address:ADDR,testCode:'broken',
-      repair: async () => { repairs++; return 'fixed'; }});
+    const result = await runSmartPoc('http://localhost:8787',{address:ADDR,testCode:'contract PoC { function test_exploit() public { broken } }',
+      repair: async () => { repairs++; return 'contract PoC { function test_exploit() public {} }'; }});
     assert.equal(result.status,'passed');
-    assert.equal(result.executedSource,'fixed');
+    assert.equal(result.executedSource,'contract PoC { function test_exploit() public {} }');
     assert.equal(repairs,1);
     assert.equal(f.backend.length,2);
   } finally { f.restore(); }
@@ -200,5 +200,46 @@ test('SmartPoC binds the executed source for synchronous UI evidence labels', as
     const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:code});
     assert.equal(classifyPocEvidence({code,result}).stage,'reproduced');
     assert.notEqual(classifyPocEvidence({code:code+' // edited',result}).stage,'reproduced');
+  } finally { f.restore(); }
+});
+
+test('SmartPoC gate: a test-less draft returns no_tests and NEVER reaches the backend', async () => {
+  // The hollow-pass shape from the live page: the SmartPoC engine's
+  // draft was a bare attack contract — no Test contract, no test
+  // function. The gate must refuse before any backend traffic (the
+  // value guard is disabled here so only the gate can stop the run).
+  const f = installFetch();
+  try {
+    const draft = 'contract Attack { function poke(address t) public { t.call(""); } }';
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:draft,skipZeroValue:false});
+    assert.equal(result.status, 'no_tests');
+    assert.equal(f.backend.length, 0, 'the backend fetch must never be called for a test-less draft');
+    assert.match(result.logs, /tests=0/);
+    assert.match(result.logs, /no executable test function/);
+    assert.match(result.logs, /did not include a Test contract/);
+    assert.equal(result.evidence?.testCount, 0);
+    assert.equal(result.executedSource, draft);
+  } finally { f.restore(); }
+});
+
+test('SmartPoC gate: a draft WITH a test function proceeds to the backend', async () => {
+  const f = installFetch({ reply: () => new Response(JSON.stringify({ok:true,passed:true,logs:'Suite result: ok. 1 passed; 0 failed; 0 skipped',durationMs:2})) });
+  try {
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC { function test_exploit() public {} }',skipZeroValue:false});
+    assert.equal(result.status, 'passed');
+    assert.equal(f.backend.length, 1, 'a test-bearing draft must reach the backend exactly once');
+    assert.equal(result.evidence?.testCount, 1);
+  } finally { f.restore(); }
+});
+
+test('SmartPoC maps a backend noTests response to no_tests (not failed)', async () => {
+  // New-backend contract: forge completed, executed 0 tests, and says
+  // so (noTests/testsRun) instead of claiming a hollow pass.
+  const f = installFetch({ reply: () => new Response(JSON.stringify({ok:true,passed:false,noTests:true,testsRun:0,logs:'Warning: No tests found in project! Forge looks for functions that start with `test`',durationMs:2})) });
+  try {
+    const result = await runSmartPoc('http://localhost:8787', {address:ADDR,testCode:'contract PoC { function test_exploit() public {} }',skipZeroValue:false});
+    assert.equal(result.status, 'no_tests');
+    assert.equal(result.evidence?.testCount, 0);
+    assert.match(result.logs, /tests=0/);
   } finally { f.restore(); }
 });
