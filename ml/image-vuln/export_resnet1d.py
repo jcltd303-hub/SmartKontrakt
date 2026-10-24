@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import io
 import json
+import re
 from pathlib import Path
 import numpy as np
 import torch
@@ -53,6 +54,21 @@ def export_model(model, thresholds, cases, output, checkpoint_sha, metadata):
     return manifest
 
 
+def normalized_reference(name, kind):
+    if re.fullmatch(r'resnet1d(?:-[a-z0-9]+)*-'+kind+r'\.json',name):
+        return name
+    return 'resnet1d-export-'+kind+'.json'
+
+
+def stage_export_references(report_source, parity_source, output, metadata):
+    output.mkdir(parents=True,exist_ok=True)
+    for source,key in ((report_source,'evaluationReport'),(parity_source,'parityFile')):
+        name=metadata[key]
+        if name != Path(name).name:
+            raise ValueError('Report sidecars must remain inside model directory')
+        (output/name).write_bytes(Path(source).read_bytes())
+
+
 def export_metadata(report, payload, checkpoint_sha, evaluation_report, parity_file):
     if checkpoint_sha != report['checkpointSha256']:
         raise ValueError('Selected checkpoint hash does not match report')
@@ -61,7 +77,8 @@ def export_metadata(report, payload, checkpoint_sha, evaluation_report, parity_f
             raise ValueError('Checkpoint and report disagree: '+key)
     epoch=payload['selectedEpoch'];count=payload['protocol']['counts']['train']
     return {'modelId':f'resnet1d-16384-train{count}-epoch{epoch}-v1',
-            'evaluationReport':evaluation_report,'parityFile':parity_file,
+            'evaluationReport':normalized_reference(evaluation_report,'evaluation'),
+            'parityFile':normalized_reference(parity_file,'parity'),'referenceLocation':'model-directory',
             'training':{'samples':report['protocol']['counts'],'selectedEpoch':epoch,
                         'epochs':report['epochs'],'checkpointSha256':checkpoint_sha},
             'evaluation':{'validation':report['history'][epoch-1],'test':report['test'],
@@ -82,6 +99,7 @@ def main():
     metadata=export_metadata(report,payload,checkpoint_sha,Path(args.report).name,Path(args.parity).name)
     manifest=export_model(model,payload['thresholds'],json.loads(Path(args.parity).read_text())['cases'],
                           Path(args.output),checkpoint_sha,metadata)
+    stage_export_references(Path(args.report),Path(args.parity),Path(args.output),metadata)
     print(json.dumps({'bytes':manifest['bytes'],'sha256':manifest['sha256'],
                       'parityMaxAbsoluteError':manifest['parityMaxAbsoluteError']}))
 

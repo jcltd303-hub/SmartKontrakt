@@ -25,6 +25,8 @@ class FullCohortReportTests(unittest.TestCase):
         current['test']['microF1']=1.;current['test']['macroF1']=1.
         result=annotate_full_cohort(current,baseline)
         self.assertFalse(result['browserPromotion']['eligibleOnValidation'])
+        self.assertFalse(result['promotionEligibleOnValidation'])
+        self.assertTrue(result['rgbPromotionEligibleOnValidation'])
         self.assertFalse(result['browserPromotion']['deploymentVerified'])
 
     def test_both_selected_validation_metrics_must_improve(self):

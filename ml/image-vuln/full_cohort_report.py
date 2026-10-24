@@ -44,9 +44,12 @@ def annotate_full_cohort(current, baseline):
     selected=selected_validation(current);old=selected_validation(baseline)
     result=copy.deepcopy(current)
     result['runKind']=f"Full eligible cohort, bounded {current['epochs']}-epoch CPU experiment; not a convergence or upstream reproduction claim"
+    eligible=selected['microF1']>old['microF1'] and selected['macroF1']>old['macroF1']
+    result['rgbPromotionEligibleOnValidation']=current.get('rgbPromotionEligibleOnValidation',current.get('promotionEligibleOnValidation'))
+    result['promotionEligibleOnValidation']=eligible
     result['browserPromotion']={
         'rule':'Both selected validation micro F1 and macro F1 must strictly exceed current ResNet; test cannot select; deployment verification also required',
-        'eligibleOnValidation':selected['microF1']>old['microF1'] and selected['macroF1']>old['macroF1'],
+        'eligibleOnValidation':eligible,
         'deploymentVerified':False,
         'baseline':{'checkpointSha256':baseline['checkpointSha256'],'trainCount':reference['counts']['train'],
                     'selectedEpoch':baseline['selectedEpoch'],'validation':old},

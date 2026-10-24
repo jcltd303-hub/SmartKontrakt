@@ -9,15 +9,18 @@ import onnxruntime as ort
 from resnet1d import sequence
 
 
-def reference_path(name, kind):
+def reference_path(name, kind, directory=None):
     if not isinstance(name,str) or len(name)>100 or not re.fullmatch(r'resnet1d(?:-[a-z0-9]+)*-'+kind+r'\.json',name):
         raise ValueError('Invalid model report reference')
-    return Path(__file__).parent/name
+    return (Path(directory) if directory is not None else Path(__file__).parent)/name
 
 
 def verify(directory=Path('public/models')):
     manifest=json.loads((directory/'resnet1d-v1.json').read_text())
-    report=json.loads(reference_path(manifest.get('evaluationReport','resnet1d-evaluation.json'),'evaluation').read_text())
+    location=manifest.get('referenceLocation','repository')
+    if location not in ('repository','model-directory'):raise ValueError('Invalid report reference location')
+    reference_directory=directory if location=='model-directory' else None
+    report=json.loads(reference_path(manifest.get('evaluationReport','resnet1d-evaluation.json'),'evaluation',reference_directory).read_text())
     assert manifest['checkpointSha256']==report['checkpointSha256']
     assert manifest['thresholds']==report['thresholds']
     data=bytearray()
@@ -29,7 +32,7 @@ def verify(directory=Path('public/models')):
     onnx.checker.check_model(onnx.load_model_from_string(bytes(data)))
     options=ort.SessionOptions(); options.intra_op_num_threads=2
     session=ort.InferenceSession(bytes(data),sess_options=options,providers=['CPUExecutionProvider'])
-    fixtures=json.loads(reference_path(manifest.get('parityFile','resnet1d-parity.json'),'parity').read_text())['cases']
+    fixtures=json.loads(reference_path(manifest.get('parityFile','resnet1d-parity.json'),'parity',reference_directory).read_text())['cases']
     error=0.0
     for case in fixtures:
         actual=session.run(None,{'bytecode':sequence(case['bytecode'])[None]})[0][0]

@@ -2,6 +2,7 @@ import copy
 import json
 from pathlib import Path
 import unittest
+import tempfile
 import export_resnet1d
 
 class ExportMetadataTests(unittest.TestCase):
@@ -26,5 +27,20 @@ class ExportMetadataTests(unittest.TestCase):
             elif field=='protocol':payload[field]['counts']['train']=55626
             else:payload[field]=[.5]*5
             with self.assertRaises(ValueError):export_resnet1d.export_metadata(report,payload,report['checkpointSha256'],'resnet1d-evaluation.json','resnet1d-parity.json')
+
+    def test_normal_training_output_names_stage_usable_model_sidecars(self):
+        report,payload=self.fixture()
+        metadata=export_resnet1d.export_metadata(report,payload,report['checkpointSha256'],'evaluation.json','parity.json')
+        self.assertEqual(metadata.get('referenceLocation'),'model-directory')
+        self.assertEqual(metadata['evaluationReport'],'resnet1d-export-evaluation.json')
+        import verify_resnet_browser
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);output=root/'model'
+            evaluation=root/'evaluation.json';parity=root/'parity.json'
+            evaluation.write_text(json.dumps(report));parity.write_text('{"cases":[]}')
+            export_resnet1d.stage_export_references(evaluation,parity,output,metadata)
+            reference=verify_resnet_browser.reference_path(metadata['evaluationReport'],'evaluation',output)
+            self.assertEqual(json.loads(reference.read_text()),report)
+            self.assertEqual((output/metadata['parityFile']).read_bytes(),parity.read_bytes())
 
 if __name__=='__main__':unittest.main()
