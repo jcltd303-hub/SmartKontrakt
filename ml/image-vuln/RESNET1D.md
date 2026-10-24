@@ -84,8 +84,8 @@ validation selection. Training/validation/test scoring took805.2 measured second
 excluding data loading and preprocessing. The checkpoint and Adam/RNG continuation
 state are supplied in the downloadable `SmartKontrakt-resnet1d-pilot-2026-10-24.zip`
 bundle; its manifest pins source revision and both checkpoint hashes. Binary
-weights are kept outside Git to avoid repository bloat. The full measured report
-is `resnet1d-evaluation.json`; `resnet1d-parity.json` stores real validation/edge
+weights are kept outside Git to avoid repository bloat. The original pilot report
+is preserved as `resnet1d-pilot2-evaluation.json`; `resnet1d-pilot2-parity.json` stores real validation/edge
 case scores verified against the reloaded checkpoint.
 
 | Metric | RGB CNN,55,632 train/12epochs | ResNet1D pilot,8,192 train/2epochs |
@@ -96,8 +96,9 @@ case scores verified against the reloaded checkpoint.
 | Test macro F1 | 0.5963 | 0.5568 |
 | Test exact match | 0.2912 | 0.2515 |
 
-This pilot does **not** meet the validation promotion criterion. The browser
-therefore retains the RGB CNN. Different data/epoch budgets mean this is not a
+The original two-epoch pilot did **not** meet the validation promotion criterion.
+The browser retained the RGB CNN at that stage. The continuation below supersedes
+that initial candidate result. Different data/epoch budgets mean this is not a
 controlled claim that one architecture is superior. Two epochs on8,192 rows
 are insufficient evidence about the fully trained ResNet1D's potential, and
 longer training is not guaranteed to reach upstream.8381. Test remains the same
@@ -121,3 +122,56 @@ then run `verify_resnet1d.py --directory` with that directory. The archive's
 The GitHub workflow becomes manually dispatchable once it is present on the
 repository's default branch. Its tests passed in PR CI; this local measured
 pilot was not run by that manual workflow.
+
+
+## Six-epoch continuation (2026-10-24)
+
+Resumed the actual two-epoch Adam/model/RNG checkpoint for four additional epochs
+without changing data or training settings. All8,192 train /7,358 validation /
+10,686 test contracts and content hashes remain identical. The six held-out input
+collisions remain excluded from training.
+
+| Epoch | Validation micro F1 | Validation macro F1 |
+|---|---:|---:|
+| 1 | 0.5645 | 0.5403 |
+| 2 | 0.5963 | 0.5533 |
+| 3 | 0.6260 | 0.5834 |
+| 4 | 0.6477 | 0.6110 |
+| 5 | 0.6596 | 0.6213 |
+| 6 | 0.6480 | 0.6106 |
+
+Epoch5 was selected using validation micro F1; epoch6 scored lower. Test scoring
+used the selected epoch5 only. `last.pt` retains epoch6 for continuation, while
+`selected.pt` holds the selected epoch5 weights.
+
+| Metric | Two-epoch pilot | Six-epoch run, selected epoch5 | Full-data RGB CNN |
+|---|---:|---:|---:|
+| Validation micro F1 | 0.5963 | 0.6596 | 0.6397 |
+| Validation macro F1 | 0.5533 | 0.6213 | 0.6009 |
+| Test micro F1 | 0.5996 | 0.6626 | 0.6370 |
+| Test macro F1 | 0.5568 | 0.6243 | 0.5963 |
+
+The candidate now passes both validation promotion thresholds. This is improved
+**offline** ResNet1D performance; browser inference still uses RGB pending a
+separate browser-compatible export, numerical parity and runtime/memory checks.
+Different sample/epoch budgets and a reused known benchmark prevent a claim of
+architecture superiority or independent reproduction of upstream.8381.
+
+The latest report/parity are `resnet1d-evaluation.json` and
+`resnet1d-parity.json`; the original two-epoch pair is preserved under `pilot2`
+filenames. `continuation.py` validates the parent checkpoint, exact protocol,
+history prefix and training counters. All16 BatchNorm and66 Adam counters match
+3,072 completed batches. The new invocation took1,447.0 measured seconds; the sum
+of both completed invocations is2,252.2 seconds, excluding environment setup,
+data loading and time between runs. Timings are explicitly separated in
+`resumeProvenance`.
+
+```bash
+# Given both original and continued output directories:
+python ml/image-vuln/continuation.py --current-directory /tmp/resnet6 --parent-directory /tmp/resnet-pilot
+python ml/image-vuln/verify_resnet1d.py --directory /tmp/resnet6
+# Future same-data continuation: total epochs must exceed the completed6.
+python ml/image-vuln/train_resnet1d.py --cache /tmp/image-vuln-data --output /tmp/resnet6 --train-cap 8192 --epochs 10 --batch-size 16 --threads 8 --resume /tmp/resnet6/last.pt
+```
+
+Latest selected checkpoint SHA256: `f8ddd71621d6019c3aa0a6a5578254e04002ae42fea38904823204836009895e`.
