@@ -24,3 +24,6 @@ Malformed manifests; prefix-based preview URLs; truncated inputs; all-zero norma
 - Physical mobile memory was not measured. CPU-throttled mobile Chromium verifies practical completion, with first-load/inference timings reported separately.
 
 - First dev browser run reproduced Vite lazy dependency discovery reloading the page during inference. Added explicit startup optimization for worker-only ONNX import; browser test remains the regression check.
+
+- Production load diagnosis: selected model scores matched, but default Brotli compression in Nitro preview cost 26 seconds for WASM alone in a browser-header HTTP reproduction (35 seconds on CI). A preview-only static asset handler reduced this to 0.037 seconds with application/wasm, with HTTP tests RED→GREEN. Production CDN assets remain ordinary build files.
+- Model download concurrency is bounded at four; native HTTP regression RED→GREEN. WASM download is bounded to 20 MiB and does not depend on streaming MIME behavior.

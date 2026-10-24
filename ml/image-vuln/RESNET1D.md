@@ -196,3 +196,11 @@ Re-export with `python ml/image-vuln/export_resnet1d.py --checkpoint PATH/select
 --report ml/image-vuln/resnet1d-evaluation.json --parity ml/image-vuln/resnet1d-parity.json
 --output public/models`; then run `python ml/image-vuln/verify_resnet_browser.py`.
 Export tools require onnx==1.23.2 and onnxruntime==1.31.0.
+
+The loader downloads at most four model shards concurrently and supplies bounded WASM
+bytes directly to the runtime. The built preview serves these static assets without
+Nitro's per-request default-quality Brotli compression and with the WASM MIME type.
+A real HTTP regression covers these headers, byte preservation, HEAD, missing files
+and path rejection. Browser CI enforces a 30-second load budget on its local server;
+this is not a network-speed guarantee for end users. Result timings distinguish
+model transport, WASM transport, session initialization and inference.
