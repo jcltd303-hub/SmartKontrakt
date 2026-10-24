@@ -5,15 +5,24 @@ self.onmessage = async (event: MessageEvent<{ bytecode: string; modelUrl: string
   const started = performance.now();
   try {
     const input = prepareSequence(event.data.bytecode);
+    let modelDownloadMs = 0,
+      wasmDownloadMs = 0;
     const [{ manifest, bytes }, wasmBytes] = await Promise.all([
-      loadResnet(event.data.modelUrl),
-      download(runtimeAssetUrl(wasmUrl, event.data.modelUrl), 20 * 1024 * 1024),
+      loadResnet(event.data.modelUrl).then((value) => {
+        modelDownloadMs = performance.now() - started;
+        return value;
+      }),
+      download(runtimeAssetUrl(wasmUrl, event.data.modelUrl), 20 * 1024 * 1024).then((value) => {
+        wasmDownloadMs = performance.now() - started;
+        return value;
+      }),
     ]);
     ort.env.wasm.numThreads = 1;
     ort.env.wasm.proxy = false;
     // Explicit bounded bytes avoid MIME-dependent streaming/fallback downloads.
     // The /wasm bundled entry already contains its matching Emscripten factory.
     ort.env.wasm.wasmBinary = wasmBytes;
+    const sessionStarted = performance.now();
     const session = await ort.InferenceSession.create(bytes, { executionProviders: ["wasm"] });
     const loaded = performance.now();
     try {
@@ -28,7 +37,13 @@ self.onmessage = async (event: MessageEvent<{ bytecode: string; modelUrl: string
         modelId: manifest.modelId,
         training: manifest.training,
         evaluation: manifest.evaluation,
-        timing: { loadMs: loaded - started, inferenceMs: performance.now() - loaded },
+        timing: {
+          loadMs: loaded - started,
+          inferenceMs: performance.now() - loaded,
+          modelDownloadMs,
+          wasmDownloadMs,
+          sessionMs: loaded - sessionStarted,
+        },
         predictions: manifest.classes.map((label, i) => ({
           label,
           score: scores[i],

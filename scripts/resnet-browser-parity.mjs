@@ -91,6 +91,7 @@ try {
         result.timing.inferenceMs < 30000,
         "inference must finish within 30 seconds on throttled mobile",
       );
+      console.log(`${mode} ${name} fixture ${index}: timings`, JSON.stringify(result.timing));
       assert.ok(
         result.timing.loadMs < 30000,
         "model loading must finish within 30 seconds on the local CI server",
