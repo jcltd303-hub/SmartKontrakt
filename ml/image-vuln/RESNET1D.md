@@ -75,3 +75,49 @@ same pinned manifest URLs and records content hashes to detect changes.
 The browser stays on the validated RGB worker. This larger candidate does not
 fit its small JSON architecture or download limit; it requires separate export,
 numerical parity and runtime performance work before browser promotion.
+
+
+## Completed two-epoch pilot (2026-10-24)
+
+Trained on8,192 rows, using all7,358 validation and10,686 test rows. Epoch2 won
+validation selection. Training/validation/test scoring took805.2 measured seconds
+excluding data loading and preprocessing. The checkpoint and Adam/RNG continuation
+state are supplied in the downloadable `SmartKontrakt-resnet1d-pilot-2026-10-24.zip`
+bundle; its manifest pins source revision and both checkpoint hashes. Binary
+weights are kept outside Git to avoid repository bloat. The full measured report
+is `resnet1d-evaluation.json`; `resnet1d-parity.json` stores real validation/edge
+case scores verified against the reloaded checkpoint.
+
+| Metric | RGB CNN,55,632 train/12epochs | ResNet1D pilot,8,192 train/2epochs |
+|---|---:|---:|
+| Validation micro F1 | 0.6397 | 0.5963 |
+| Validation macro F1 | 0.6009 | 0.5533 |
+| Test micro F1 | 0.6370 | 0.5996 |
+| Test macro F1 | 0.5963 | 0.5568 |
+| Test exact match | 0.2912 | 0.2515 |
+
+This pilot does **not** meet the validation promotion criterion. The browser
+therefore retains the RGB CNN. Different data/epoch budgets mean this is not a
+controlled claim that one architecture is superior. Two epochs on8,192 rows
+are insufficient evidence about the fully trained ResNet1D's potential, and
+longer training is not guaranteed to reach upstream.8381. Test remains the same
+known benchmark, with Slither pseudo-labels and no semantic family isolation.
+
+| Class | Precision | Recall | F1 |
+|---|---:|---:|---:|
+| access-control | 0.3312 | 0.5517 | 0.4139 |
+| arithmetic | 0.2871 | 0.5740 | 0.3828 |
+| reentrancy | 0.5537 | 0.8512 | 0.6709 |
+| unchecked-calls | 0.6719 | 0.8529 | 0.7516 |
+| others | 0.4557 | 0.7418 | 0.5646 |
+
+Selected checkpoint SHA256: `83a05a4b22b0c039077b77db6c55eecbd5c95aeb155e0fe92c2035fcc56e6897`.
+
+To verify the provided checkpoint bundle, put `resnet1d-evaluation.json` beside
+`selected.pt` as `evaluation.json`, and `resnet1d-parity.json` as `parity.json`,
+then run `verify_resnet1d.py --directory` with that directory. The archive's
+`README-checkpoint.txt` also gives inference and continuation commands.
+
+The GitHub workflow becomes manually dispatchable once it is present on the
+repository's default branch. Its tests passed in PR CI; this local measured
+pilot was not run by that manual workflow.
