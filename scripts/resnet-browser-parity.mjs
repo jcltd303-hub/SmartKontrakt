@@ -31,6 +31,12 @@ try {
     const page = await context.newPage();
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") console.log("browser console:", message.text());
+    });
+    page.on("requestfailed", (request) =>
+      console.log("request failed:", request.url(), request.failure()?.errorText),
+    );
     const cdp = await page.context().newCDPSession(page);
     if (name === "mobile") await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
     await page.addInitScript(() => {
@@ -64,7 +70,15 @@ try {
         window.__mlResult = null;
       });
       await panel.getByRole("button", { name: "Run Image ML", exact: true }).click();
-      await panel.getByText(/Model: resnet1d-/).waitFor({ timeout: 120000 });
+      await Promise.race([
+        panel.getByText(/Model: resnet1d-/).waitFor({ timeout: 120000 }),
+        panel
+          .getByRole("alert")
+          .waitFor({ timeout: 120000 })
+          .then(async () => {
+            throw new Error(await panel.getByRole("alert").innerText());
+          }),
+      ]);
       const result = await page.evaluate(() => window.__mlResult);
       assert.equal(result.ok, true);
       for (let i = 0; i < 5; i++)
