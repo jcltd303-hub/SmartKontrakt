@@ -1,8 +1,21 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
+import { createServer } from "vite";
 import { readFileSync } from "node:fs";
-import { getDatabaseInfo, getDbConnectionState, getSql, switchDatabase } from "../db.ts";
-import { getDatabaseSize, getScansStats, listScanSummaries } from "./persist.server.ts";
+// Match the application's bundler resolution for extensionless server imports.
+const server = await createServer({
+  configFile: false,
+  resolve: { alias: { "@": new URL("../../", import.meta.url).pathname } },
+  optimizeDeps: { noDiscovery: true },
+  server: { middlewareMode: true },
+  appType: "custom",
+});
+after(() => server.close());
+const { getDatabaseInfo, getDbConnectionState, getSql, switchDatabase } =
+  await server.ssrLoadModule("/src/lib/db.ts");
+const { getDatabaseSize, getScansStats, listScanSummaries } = await server.ssrLoadModule(
+  "/src/lib/audit/persist.server.ts",
+);
 
 /**
  * No-fallback contract (Jer, 2026-10-22: "No fallback duh").
@@ -57,7 +70,10 @@ test("configured-but-unreachable: archive payloads report FAILED, never zeros-as
   const list = await listScanSummaries();
   assert.equal(list.dbState, "failed");
   assert.deepEqual(list.summaries, []);
-  assert.ok(list.error && list.error.includes("could not be reached"), `list error was: ${list.error}`);
+  assert.ok(
+    list.error && list.error.includes("could not be reached"),
+    `list error was: ${list.error}`,
+  );
   assert.ok(list.error && list.error.includes("No fallback"), `list error was: ${list.error}`);
   assert.ok(list.dbError, "dbError carries the classified failure");
 
@@ -80,7 +96,10 @@ test("unconfigured: explicit unconfigured payloads, not a local archive", async 
   const list = await listScanSummaries();
   assert.equal(list.dbState, "unconfigured");
   assert.deepEqual(list.summaries, []);
-  assert.ok(list.error && list.error.includes("No database configured"), `list error was: ${list.error}`);
+  assert.ok(
+    list.error && list.error.includes("No database configured"),
+    `list error was: ${list.error}`,
+  );
 
   const stats = await getScansStats();
   assert.equal(stats.dbState, "unconfigured");

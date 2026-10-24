@@ -1,3 +1,4 @@
+import { sha3_256 } from "js-sha3";
 import type { Report } from "./types.ts";
 import { analyzeInput } from "./engine.ts";
 import { analyzeBytecode } from "./bytecode.ts";
@@ -555,6 +556,7 @@ export async function analyzeAddress(
     try {
       const bytecode = await fetchBytecodeRpc(address, chain.rpcUrls);
       if (bytecode) {
+        report.runtimeBytecode = { code: bytecode, sourceHash: sha3_256(sourcifyMatch.source) };
         const byte = analyzeBytecode(bytecode);
         const inv = report.inventory;
         inv.disassembly = byte.inventory.disassembly;

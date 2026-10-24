@@ -1,0 +1,7 @@
+# PyTorch CPU wheels: pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.1
+# Training was executed with torch 2.14.1+cpu.
+torch==2.14.1
+numpy==2.3.5
+scikit-learn==1.8.0
+pyarrow==26.0.0
+requests==2.34.2
