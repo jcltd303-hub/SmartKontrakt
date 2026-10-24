@@ -185,12 +185,13 @@ the model-selection objective.
 The separate [ResNet1D experiment](RESNET1D.md) implements the upstream feature
 architecture with16,384 raw-byte input. It has its own training/checkpoint/resume
 and offline inference tools. Its larger architecture and bounded CPU pilot are
-reported separately; the browser continues using the validated RGB artifact.
+reported separately. Browser screening defaults to the evaluated ResNet ONNX model,
+with RGB available as an explicit alternative.
 
 
 The six-epoch continuation selected epoch5 and improved ResNet1D validation micro
 F1 to.6596 and test micro F1 to.6626 (test macro F1.6243), above the current RGB
-benchmark. These are offline candidate results; the existing browser continues
-using RGB until a separate runtime/export validation is completed. See the
+benchmark. Browser deployment preserves the float checkpoint through ONNX and
+checks raw-byte preprocessing and numerical parity independently. See the
 ResNet1D model card for the unchanged8,192-row training budget and known-test
 limitations.

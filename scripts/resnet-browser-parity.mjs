@@ -11,8 +11,24 @@ try {
   for (const [name, viewport] of Object.entries({
     desktop: { width: 1440, height: 1000 },
     mobile: { width: 390, height: 844 },
+    prefixed: { width: 1440, height: 1000 },
   })) {
-    const page = await browser.newPage({ viewport });
+    const context = await browser.newContext({ viewport });
+    const requests = [];
+    context.on("request", (request) => requests.push(request.url()));
+    const proxyPrefix = "/hds-abc-8080-test";
+    if (name === "prefixed")
+      await context.route("http://preview.grok.mil/**", async (route) => {
+        const requestUrl = new URL(route.request().url());
+        const pathname = requestUrl.pathname.startsWith(proxyPrefix)
+          ? requestUrl.pathname.slice(proxyPrefix.length)
+          : requestUrl.pathname;
+        const response = await route.fetch({
+          url: new URL(`${pathname}${requestUrl.search}`, base).href,
+        });
+        await route.fulfill({ response });
+      });
+    const page = await context.newPage();
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const cdp = await page.context().newCDPSession(page);
@@ -28,7 +44,10 @@ try {
         }
       };
     });
-    await page.goto(base, { waitUntil: "networkidle", timeout: 60000 });
+    await page.goto(name === "prefixed" ? `http://preview.grok.mil${proxyPrefix}/` : base, {
+      waitUntil: "networkidle",
+      timeout: 60000,
+    });
     const input = page.getByPlaceholder(
       "// Paste Solidity contract or runtime bytecode (0x...)...",
     );
@@ -36,7 +55,10 @@ try {
     await page.getByRole("button", { name: "Bytecode & CFG", exact: true }).click();
     const panel = page.getByRole("region", { name: "Experimental image machine learning" });
     assert.equal(await panel.getByLabel("ML model").inputValue(), "resnet");
-    for (const [index, fixture] of fixtures.entries()) {
+    for (const [index, fixture] of (name === "prefixed"
+      ? fixtures.slice(0, 1)
+      : fixtures
+    ).entries()) {
       await input.fill(fixture.bytecode);
       await page.evaluate(() => {
         window.__mlResult = null;
@@ -64,6 +86,14 @@ try {
     await panel.getByRole("button", { name: "Run Image ML", exact: true }).click();
     await panel.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.equal(await panel.locator("tbody tr").count(), 0);
+    await context.route("**/models/resnet1d-v1.json", (route) => route.abort());
+    await panel.getByRole("button", { name: "Run Image ML", exact: true }).click();
+    await panel.getByRole("alert").waitFor({ timeout: 10000 });
+    assert.equal(
+      await panel.locator("tbody tr").count(),
+      0,
+      "failed model download must not produce scores",
+    );
     await input.fill("contract Changed {}");
     assert.equal(
       await panel.getByRole("button", { name: "Run Image ML", exact: true }).isDisabled(),
@@ -71,7 +101,18 @@ try {
     );
     assert.equal(await panel.locator("tbody tr").count(), 0);
     assert.deepEqual(errors, []);
-    await page.close();
+    if (name === "prefixed") {
+      const runtimeRequests = requests.filter((url) => /ort-wasm.*\.(mjs|wasm)/.test(url));
+      assert.ok(
+        runtimeRequests.some((url) => url.endsWith(".wasm")),
+        "actual prefixed WASM was downloaded",
+      );
+      assert.ok(
+        runtimeRequests.every((url) => new URL(url).pathname.startsWith(proxyPrefix + "/")),
+        "runtime requests preserve preview prefix",
+      );
+    }
+    await context.close();
   }
   writeFileSync(
     `/workspace/screenshots/image-ml/${mode}-resnet-performance.json`,

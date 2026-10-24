@@ -10,6 +10,9 @@ on:
         "src/components/image-vulnerability-panel.tsx",
         "public/models/**",
         "scripts/image-ml-browser.mjs",
+        "scripts/resnet-browser-parity.mjs",
+        "package.json",
+        "package-lock.json",
         ".github/workflows/image-ml.yml",
       ]
 jobs:

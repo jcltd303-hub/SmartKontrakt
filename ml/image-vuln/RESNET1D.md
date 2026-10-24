@@ -1,6 +1,6 @@
 # ResNet1D long-byte candidate
 
-Real offline experiment, not a replacement for the shipped RGB CNN. The user
+Evaluated long-byte model with a browser-local ONNX deployment. The user
 approved training this architecture after the upstream validation table. The
 upstream .8381 micro F1 is a reference, not a score reproduced here.
 
@@ -72,9 +72,9 @@ training (`--train-cap55632`, using all remaining55,626 eligible rows) is expect
 to take much longer; run bounded epoch chunks and resume. Acquisition uses the
 same pinned manifest URLs and records content hashes to detect changes.
 
-The browser stays on the validated RGB worker. This larger candidate does not
-fit its small JSON architecture or download limit; it requires separate export,
-numerical parity and runtime performance work before browser promotion.
+The browser uses a separate ONNX/WASM worker for ResNet, with RGB available as
+an explicitly selected alternative. The larger ResNet does not use the RGB JSON
+architecture or its small download limit; see Browser deployment below.
 
 
 ## Completed two-epoch pilot (2026-10-24)
@@ -152,8 +152,8 @@ used the selected epoch5 only. `last.pt` retains epoch6 for continuation, while
 | Test macro F1 | 0.5568 | 0.6243 | 0.5963 |
 
 The candidate now passes both validation promotion thresholds. This is improved
-**offline** ResNet1D performance; browser inference still uses RGB pending a
-separate browser-compatible export, numerical parity and runtime/memory checks.
+ResNet1D performance. The browser deployment below preserves these float weights
+and verifies numerical parity; its first-load cost is substantially larger than RGB.
 Different sample/epoch budgets and a reused known benchmark prevent a claim of
 architecture superiority or independent reproduction of upstream.8381.
 
