@@ -25,8 +25,15 @@ For each type, the suite:
 3. **Obtains a PoC for the finding:**
    - *Live mode:* `generateAiSecurityReview()` from the app (prompt →
      OpenRouter → JSON extraction). If the app silently falls back to
-     the template review (`source != "openrouter"`), the type is a
-     **generation FAILURE** — a fallback is never reported as an AI pass.
+     the template review (`source != "openrouter"`), the generation
+     step retries — up to **3 attempts** with 5 s / 15 s backoff
+     (`generation-retry.mjs`). Only generation retries: a generated
+     PoC that fails compile/assertion is a result, never a re-roll.
+     If every attempt falls back, the type is a **generation
+     FAILURE** and is reported as **UNTESTED** — a fallback is never
+     reported as an AI pass, and an untested type is never reported
+     as a failed PoC. The attempt count is recorded per type as
+     `generationAttempts`.
    - *`--dry-run`:* the type's fallback **template** from the app's own
      `POC_FALLBACK_TEMPLATES` map, with the manifest's TODO adaptations
      applied (the constants a human would fill in for a real target).
@@ -63,8 +70,11 @@ returned". Failure categories:
 | `infra`      | harness/environment failure (deploy, setup, RPC, timeout)      |
 
 Results print as a table (`type | status | category | detail`) and are
-written to `results.json` next to the runner. Exit code is 0 only when
-every selected type passed.
+written to `results.json` next to the runner. Types in the
+`generation` category are also listed separately as **UNTESTED** in
+the summary — no AI PoC was generated for them, so nothing about
+their exploit was measured. Exit code is 0 only when every selected
+type passed (with `--only-failed`, the merged set — see below).
 
 ## Running it
 
@@ -88,21 +98,57 @@ OPENROUTER_API_KEY=... node scripts/ai-poc-proof/run.mjs
   (`resolveOpenRouterConfig`).
 - Useful flags: `--type 07b` (run a prefix subset, e.g. one type),
   `--keep-work` / `--work <dir>` (keep the scratch foundry project),
-  `--port <n>` (anvil port, default 18545).
+  `--port <n>` (anvil port, default 18545), `--only-failed` (re-run
+  only what didn't pass — see below).
 - Prerequisites: `npm install` done in the repo (the prompt path pulls
   `@solidity-parser/parser` through the deep-agent module graph),
   `forge`/`anvil`/`cast` (foundry), and `forge-std` — taken from
   `foundry/lib/forge-std` or `$FORGE_STD_PATH` when present, otherwise
   cloned into the scratch project.
 - Runs are sequential with modest pacing (OpenRouter budget:
-  60 req/min); a full live run makes 46 generation calls, plus at most
-  one repair call per compile failure.
+  60 req/min); a full live run makes one generation call per type
+  (47), plus extra attempts only for types whose generation falls
+  back (up to 3 each), plus at most one repair call per compile
+  failure.
+
+**Re-running only what didn't pass (`--only-failed`):**
+
+```
+OPENROUTER_API_KEY=... node scripts/ai-poc-proof/run.mjs --only-failed
+```
+
+Loads the existing `results.json` and runs only the types whose
+recorded status is not a pass (`PASS` / `DRY-PASS` are the runner's
+passing statuses; a type with no entry counts as not passing). The
+results then **merge** over the previous file:
+
+- entries for types that were not re-run are carried over untouched;
+- a re-run type's fresh entry keeps its earlier attempt in
+  `previousStatus` / `previousCategory` / `previousDetail`;
+- the summary counts and the exit code judge the merged set;
+- without the flag, behavior is unchanged: a full run overwrites
+  `results.json` with only the types it ran.
+
+A missing or unparseable `results.json` is a hard stop (exit 2,
+nothing runs) — merging against a guessed base could silently drop
+recorded proofs. If every selected type already passes, the runner
+says so and leaves the file untouched. Merging is mode-agnostic (it
+keys on the recorded statuses), so re-run in the same mode that
+produced the file. `--type` composes: it narrows the selection
+first, then `--only-failed` filters within it.
 
 ## Layout
 
 ```
 scripts/ai-poc-proof/
   run.mjs          the runner (plain Node, no build step)
+  generation-retry.mjs  the live-mode generation retry policy
+                   (fallback detection + bounded retry loop),
+                   unit-tested by
+                   scripts/ai-poc-proof-generation-retry.test.mjs
+  results-merge.mjs     the --only-failed selection/merge rules,
+                   unit-tested by
+                   scripts/ai-poc-proof-results-merge.test.mjs
   prompt-path.ts   thin bridge into the app's real modules, run with
                    tsx (repo-local node_modules/.bin/tsx, else
                    `npx -y tsx`); JSON in, JSON out;

@@ -16,8 +16,12 @@
  *          Statuses are labeled DRY-*; no LLM is called.
  *        live: generateAiSecurityReview() from the app (prompt ->
  *          OpenRouter -> JSON extraction). A reply that falls back to
- *          the template (source != "openrouter") is a generation
- *          FAILURE, never a silent pass.
+ *          the template (source != "openrouter") retries the
+ *          generation step (3 attempts, 5s/15s backoff --
+ *          generation-retry.mjs); if every attempt falls back, the
+ *          type is a generation FAILURE and UNTESTED -- never a
+ *          silent pass, never a failed PoC. Compile/assertion
+ *          outcomes are results and are never retried.
  *   4. wrap a bare snippet via the app's poc-wrap (same rule the
  *      workbench uses: no `contract PoC is Test` -> wrap);
  *   5. run it exactly like the Termux backend does: test/PoC.t.sol,
@@ -34,6 +38,10 @@
  * Usage:
  *   node scripts/ai-poc-proof/run.mjs --dry-run [--type 01] [--keep-work]
  *   OPENROUTER_API_KEY=... node scripts/ai-poc-proof/run.mjs [--type 01]
+ *   OPENROUTER_API_KEY=... node scripts/ai-poc-proof/run.mjs --only-failed
+ *     (re-runs only the types whose recorded status in results.json
+ *     is not a pass, then merges over that file -- the README has the
+ *     exact semantics)
  *
  * Live mode REQUIRES the key (env OPENROUTER_API_KEY; OPENROUTER_MODEL
  * overrides the model, default = the repo's resolveOpenRouterConfig
@@ -60,6 +68,12 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
+import { generateWithRetry } from "./generation-retry.mjs";
+import {
+  mergeResults,
+  previousFields,
+  selectRerunTypes,
+} from "./results-merge.mjs";
 const SUITE_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SUITE_DIR, "..", "..");
 const FORGE_TIMEOUT_MS = 120_000; // mirrors termux-backend/server.mjs
@@ -89,11 +103,12 @@ const COMPILE_ERROR_RE =
   /(compiler run failed|compilation failed|failed to compile|error\[\d+\]|error\s*\(\d+\)|parsererror|declarationerror|typeerror)/i;
 
 function parseArgs(argv) {
-  const args = { dryRun: false, type: null, keepWork: false, port: 18545, work: null };
+  const args = { dryRun: false, type: null, keepWork: false, onlyFailed: false, port: 18545, work: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dry-run") args.dryRun = true;
     else if (a === "--keep-work") args.keepWork = true;
+    else if (a === "--only-failed") args.onlyFailed = true;
     else if (a === "--type") args.type = argv[++i];
     else if (a === "--port") args.port = Number(argv[++i]);
     else if (a === "--work") args.work = argv[++i];
@@ -265,7 +280,10 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log("Usage: node scripts/ai-poc-proof/run.mjs --dry-run [--type 01]");
-    console.log("       OPENROUTER_API_KEY=... node scripts/ai-poc-proof/run.mjs [--type 01]");
+    console.log("       OPENROUTER_API_KEY=... node scripts/ai-poc-proof/run.mjs [--type 01] [--only-failed]");
+    console.log("  --only-failed  re-run only the types whose recorded status in results.json is not");
+    console.log("                 a pass, then merge: passing entries are preserved untouched and");
+    console.log("                 re-run entries keep their earlier attempt in previous* fields.");
     return;
   }
   const mode = args.dryRun ? "dry" : "live";
@@ -286,6 +304,47 @@ async function main() {
     process.exit(2);
   }
 
+  // --only-failed: load the previous results BEFORE anything runs.
+  // That file is the merge base; it is rewritten only at the very end
+  // (and not at all when there is nothing to re-run). A missing or
+  // unparseable file is a hard stop — merging against a guessed base
+  // could silently drop recorded proofs.
+  let previous = null;
+  let previousById = new Map();
+  let runTypes = types;
+  if (args.onlyFailed) {
+    const resultsPath = join(SUITE_DIR, "results.json");
+    if (!existsSync(resultsPath)) {
+      console.error(
+        "--only-failed: no results.json next to the runner -- run the suite once without the flag first. Nothing was run.",
+      );
+      process.exit(2);
+    }
+    try {
+      previous = JSON.parse(readFileSync(resultsPath, "utf8"));
+    } catch {
+      console.error(
+        "--only-failed: results.json is not parseable JSON -- refusing to merge against it. Nothing was run.",
+      );
+      process.exit(2);
+    }
+    if (!previous || !Array.isArray(previous.results)) {
+      console.error(
+        "--only-failed: results.json has no results array -- refusing to merge against it. Nothing was run.",
+      );
+      process.exit(2);
+    }
+    previousById = new Map(previous.results.map((r) => [r.id, r]));
+    runTypes = selectRerunTypes(types, previous.results);
+    console.log(
+      `--only-failed: ${runTypes.length} of ${types.length} selected type(s) have no passing entry and will (re-)run; the other recorded entries are preserved untouched`,
+    );
+    if (runTypes.length === 0) {
+      console.log("--only-failed: nothing to re-run; results.json left untouched.");
+      return;
+    }
+  }
+
   // Live-mode preflight FIRST: no key -> exit before doing anything.
   // (In dry-run the config call doubles as a bridge health check.)
   const config = await harness("config", {});
@@ -299,7 +358,7 @@ async function main() {
     process.exit(2);
   }
   console.log(
-    `mode: ${mode}${args.dryRun ? " (template stand-in, no LLM calls)" : ""} | model: ${config.model} | types: ${types.length}`,
+    `mode: ${mode}${args.dryRun ? " (template stand-in, no LLM calls)" : ""} | model: ${config.model} | types: ${runTypes.length}`,
   );
 
   // Verify the anvil account keys match the expected addresses.
@@ -385,7 +444,7 @@ async function main() {
     const merkleRoot = await merkleRootFor36();
     const results = [];
 
-    for (const t of types) {
+    for (const t of runTypes) {
       const startedAt = Date.now();
       const row = {
         id: t.id,
@@ -396,6 +455,7 @@ async function main() {
         category: "",
         detail: "",
         repairs: 0,
+        generationAttempts: 0,
         testsPassed: 0,
         testsFailed: 0,
         target: "",
@@ -406,6 +466,11 @@ async function main() {
         row.detail = detail;
         row.status = args.dryRun ? "DRY-FAIL" : "FAIL";
       };
+      // A re-run entry keeps its earlier attempt visible: the merge
+      // must not silently overwrite history.
+      if (args.onlyFailed) {
+        Object.assign(row, previousFields(previousById.get(t.id)));
+      }
       try {
         // 1. Deploy the fixture chain + setup on anvil.
         const ctx = {
@@ -462,16 +527,37 @@ async function main() {
           }
           row.detail = `template ${t.file}; selector top pick: ${tpl.selectorTopPick ?? "none"}`;
         } else {
-          const gen = await harness(
-            "generate",
-            { contractName: t.contractName, body: fixtureSource, finding },
-            420_000,
+          // Live generation retries on FALLBACK only
+          // (generation-retry.mjs): a transient upstream blip that
+          // makes the app fall back to the template review must not
+          // eat the type. A {fatal} bridge crash is not a fallback
+          // (infra, via the throw below), and a generated PoC's
+          // compile/assertion outcome is a result -- never retried
+          // into a different answer.
+          const {
+            result: gen,
+            attempts: generationAttempts,
+            fellBack,
+          } = await generateWithRetry(
+            () =>
+              harness(
+                "generate",
+                { contractName: t.contractName, body: fixtureSource, finding },
+                420_000,
+              ),
+            {
+              onRetry: ({ attempt, waitMs, source }) =>
+                console.log(
+                  `  ${t.id}: generation attempt ${attempt} fell back (source: ${source ?? "unknown"}); retrying in ${Math.round(waitMs / 1000)}s`,
+                ),
+            },
           );
+          row.generationAttempts = generationAttempts;
           if (gen.fatal) throw new Error(`generation crashed: ${gen.fatal}`);
-          if (gen.source !== "openrouter") {
+          if (fellBack) {
             fail(
               "generation",
-              "AI review fell back to the template (source != openrouter) -- no AI PoC was generated",
+              `AI review fell back to the template on all ${generationAttempts} generation attempts (source != openrouter) -- no AI PoC was generated; this type is UNTESTED, not failed`,
             );
             results.push(row);
             continue;
@@ -547,16 +633,28 @@ async function main() {
       if (!args.dryRun) await new Promise((r) => setTimeout(r, 1100));
     }
 
-    // Report.
-    const passCount = results.filter((r) => r.category === "passed").length;
+    // Report. With --only-failed the fresh rows merge over the
+    // previous file (results-merge.mjs): preserved entries keep their
+    // original rows untouched, and the counts + exit code judge the
+    // MERGED set -- the suite's actual state after this run.
+    const finalResults = args.onlyFailed
+      ? mergeResults(manifest.types, previous.results, results)
+      : results;
+    const passCount = finalResults.filter((r) => r.category === "passed").length;
     console.log("\n===== AI-PoC proof results =====");
     console.log("type | status | category | detail");
-    for (const r of results) {
+    for (const r of finalResults) {
       console.log(
         `${r.id} | ${r.status} | ${r.category} | ${r.detail.replace(/\s*\n\s*/g, " ").slice(0, 200)}`,
       );
     }
-    console.log(`\n${passCount}/${results.length} types reproduced (${mode} mode)`);
+    console.log(`\n${passCount}/${finalResults.length} types reproduced (${mode} mode)`);
+    const untested = finalResults.filter((r) => r.category === "generation");
+    if (untested.length > 0) {
+      console.log(
+        `${untested.length} type(s) UNTESTED (generation fell back -- no AI PoC was generated): ${untested.map((r) => r.id).join(", ")}`,
+      );
+    }
     writeFileSync(
       join(SUITE_DIR, "results.json"),
       JSON.stringify(
@@ -565,17 +663,21 @@ async function main() {
           mode,
           model: config.model,
           rpc,
-          note: args.dryRun
-            ? "DRY RUN: the fallback template (with manifest TODO adaptations) stood in for the AI-generated PoC. No LLM was called."
-            : "LIVE run: PoCs generated by the app's generateAiSecurityReview via OpenRouter.",
-          results,
+          note:
+            (args.dryRun
+              ? "DRY RUN: the fallback template (with manifest TODO adaptations) stood in for the AI-generated PoC. No LLM was called."
+              : "LIVE run: PoCs generated by the app's generateAiSecurityReview via OpenRouter.") +
+            (args.onlyFailed
+              ? ` Merged --only-failed run over the results recorded ${previous.generatedAt ?? "earlier"}: ${finalResults.length - results.length} entries preserved untouched, ${results.length} type(s) re-run.`
+              : ""),
+          results: finalResults,
         },
         null,
         1,
       ),
     );
     console.log(`results written to ${join(SUITE_DIR, "results.json")}`);
-    if (passCount !== results.length) process.exitCode = 1;
+    if (passCount !== finalResults.length) process.exitCode = 1;
   } finally {
     cleanup();
   }
