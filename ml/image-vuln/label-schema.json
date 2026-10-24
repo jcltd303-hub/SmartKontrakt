@@ -1,0 +1,44 @@
+[
+  {
+    "feature_idx": 0,
+    "name": "address",
+    "type": {
+      "dtype": "string",
+      "_type": "Value"
+    }
+  },
+  {
+    "feature_idx": 1,
+    "name": "source_code",
+    "type": {
+      "dtype": "string",
+      "_type": "Value"
+    }
+  },
+  {
+    "feature_idx": 2,
+    "name": "bytecode",
+    "type": {
+      "dtype": "string",
+      "_type": "Value"
+    }
+  },
+  {
+    "feature_idx": 3,
+    "name": "slither",
+    "type": {
+      "feature": {
+        "names": [
+          "access-control",
+          "arithmetic",
+          "other",
+          "reentrancy",
+          "safe",
+          "unchecked-calls"
+        ],
+        "_type": "ClassLabel"
+      },
+      "_type": "Sequence"
+    }
+  }
+]

@@ -1,3 +1,5 @@
+import { ImageVulnerabilityPanel } from "@/components/image-vulnerability-panel";
+import { selectImageBytecode } from "@/lib/image-ml/input";
 import { CfgViewer } from "@/components/cfg-viewer";
 import { GitBranch } from "lucide-react";
 import type { WorkbenchController } from "./use-workbench-controller";
@@ -30,6 +32,7 @@ export function BytecodeTab({
     <>
       {activeTab === "bytecode" && (
         <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl p-4 flex flex-col gap-4">
+          <ImageVulnerabilityPanel bytecode={selectImageBytecode(contractBody, report?.runtimeBytecode)} />
           {/* Bytecode Meta Stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             <div className="p-3 bg-[#26231c] border border-[#3a3428] rounded-lg text-center font-mono">

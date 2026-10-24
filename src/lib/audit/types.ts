@@ -156,6 +156,9 @@ export type Inventory = {
 };
 
 export type Report = {
+  /** Ephemeral on-chain runtime bound to fetched source for Image ML.
+   * Outside inventory: archive writers intentionally do not persist it. */
+  runtimeBytecode?: { code: string; sourceHash: string };
   label: string;
   inputKind: "source" | "bytecode";
   riskScore: number;

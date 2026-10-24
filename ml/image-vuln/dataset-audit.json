@@ -1,0 +1,111 @@
+{
+  "invalidDropped": {
+    "train": 227,
+    "validation": 30,
+    "test": 51
+  },
+  "maximumValidByteLength": {
+    "train": 24575,
+    "validation": 24573,
+    "test": 24575
+  },
+  "crossSplitSharedFingerprintCount": 3940,
+  "contradictoryLabelFingerprintCount": 167,
+  "rowsAffectedByContradictoryLabels": {
+    "train": 990,
+    "validation": 136,
+    "test": 195
+  },
+  "retainedRowsAffectedByContradictoryLabels": {
+    "train": 54,
+    "validation": 0,
+    "test": 2
+  },
+  "deduplication": {
+    "train": {
+      "input": 79414,
+      "crossSplitDropped": 20460,
+      "withinSplitDropped": 3322,
+      "retained": 55632
+    },
+    "validation": {
+      "input": 10831,
+      "crossSplitDropped": 3433,
+      "withinSplitDropped": 40,
+      "retained": 7358
+    },
+    "test": {
+      "input": 15921,
+      "crossSplitDropped": 5161,
+      "withinSplitDropped": 74,
+      "retained": 10686
+    }
+  },
+  "selectionFingerprints": {
+    "train": {
+      "count": 20000,
+      "orderedAddressSha256": "c80cfbf632da3c28a1e124098ad0f52cbf8380e8a98991dd26eb4d28e6878406"
+    },
+    "validation": {
+      "count": 7358,
+      "orderedAddressSha256": "2f007b1bd28ad33fde052dd1067bb99516a2e7f484769e7fc00dde11e969155d"
+    },
+    "test": {
+      "count": 10686,
+      "orderedAddressSha256": "c1e43be58e9f4bbc451a1dfff13e1767f7fc9823b9afcebe22f21522526d9bd3"
+    }
+  },
+  "allPositiveBaseline": {
+    "microF1": 0.48715226162667236,
+    "macroF1": 0.4737981071176366,
+    "exactMatch": 0.02395657870110425,
+    "perClass": [
+      {
+        "class": "access-control",
+        "precision": 0.17827063447501404,
+        "recall": 1.0,
+        "f1": 0.30259709316178224,
+        "support": 1905,
+        "averagePrecision": 0.17827063447501404,
+        "auroc": 0.5
+      },
+      {
+        "class": "arithmetic",
+        "precision": 0.2029758562605278,
+        "recall": 1.0,
+        "f1": 0.3374562427071178,
+        "support": 2169,
+        "averagePrecision": 0.2029758562605278,
+        "auroc": 0.5
+      },
+      {
+        "class": "reentrancy",
+        "precision": 0.38686131386861317,
+        "recall": 1.0,
+        "f1": 0.5578947368421052,
+        "support": 4134,
+        "averagePrecision": 0.38686131386861317,
+        "auroc": 0.5
+      },
+      {
+        "class": "unchecked-calls",
+        "precision": 0.520868425977915,
+        "recall": 1.0,
+        "f1": 0.6849618508491263,
+        "support": 5566,
+        "averagePrecision": 0.520868425977915,
+        "auroc": 0.5
+      },
+      {
+        "class": "others",
+        "precision": 0.32107430282612764,
+        "recall": 1.0,
+        "f1": 0.4860806120280513,
+        "support": 3431,
+        "averagePrecision": 0.32107430282612764,
+        "auroc": 0.5
+      }
+    ]
+  },
+  "note": "Fingerprint groups may overlap (raw, metadata-normalized and image); counts are not distinct contracts. Within-split duplicates keep first official row, including contradictory pseudo-labels; quantified here as label-noise limitation."
+}

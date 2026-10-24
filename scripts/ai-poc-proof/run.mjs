@@ -415,11 +415,11 @@ async function main() {
   const cleanup = () => {
     try {
       anvil.kill("SIGKILL");
-    } catch {}
+    } catch { /* Cleanup is best-effort after process exit. */ }
     if (!args.keepWork && !args.work) {
       try {
         rmSync(work, { recursive: true, force: true });
-      } catch {}
+      } catch { /* Cleanup is best-effort after process exit. */ }
     }
   };
   process.on("SIGINT", () => {
