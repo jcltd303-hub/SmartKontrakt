@@ -40,27 +40,29 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
       - run: npm run build
-      - name: Real model in dev and built UI, desktop and mobile
+      - name: Start dev and built servers
         shell: bash
         run: |
           sudo mkdir -p /workspace/screenshots/image-ml
           sudo chown -R "$USER" /workspace/screenshots
-          for mode in dev preview; do
-            npm run "$mode" > "/workspace/screenshots/image-ml/$mode-server.log" 2>&1 &
-            server_pid=$!
-            trap 'kill "$server_pid" 2>/dev/null || true' EXIT
-            port=8080
-            if [ "$mode" = preview ]; then port=8081; fi
+          npm run dev > /workspace/screenshots/image-ml/dev-server.log 2>&1 &
+          npm run preview > /workspace/screenshots/image-ml/preview-server.log 2>&1 &
+          for port in 8080 8081; do
+            ready=false
             for attempt in $(seq 1 120); do
-              if curl --fail --silent "http://127.0.0.1:$port/" > /dev/null; then break; fi
-              kill -0 "$server_pid"
+              if curl --fail --silent "http://127.0.0.1:$port/" > /dev/null; then ready=true; break; fi
               sleep 1
             done
-            node scripts/image-ml-browser.mjs "http://127.0.0.1:$port/" "$mode"
-            node scripts/resnet-browser-parity.mjs "http://127.0.0.1:$port/" "$mode"
-            kill "$server_pid" 2>/dev/null || true
-            wait "$server_pid" 2>/dev/null || true
+            if [ "$ready" != true ]; then cat /workspace/screenshots/image-ml/*-server.log; exit 1; fi
           done
+      - name: Verify dev RGB inference
+        run: node scripts/image-ml-browser.mjs http://127.0.0.1:8080/ dev
+      - name: Verify dev ResNet parity, cancellation and preview prefix
+        run: node scripts/resnet-browser-parity.mjs http://127.0.0.1:8080/ dev
+      - name: Verify built RGB inference
+        run: node scripts/image-ml-browser.mjs http://127.0.0.1:8081/ preview
+      - name: Verify built ResNet parity, cancellation and preview prefix
+        run: node scripts/resnet-browser-parity.mjs http://127.0.0.1:8081/ preview
       - uses: actions/upload-artifact@v4
         if: always()
         with:
