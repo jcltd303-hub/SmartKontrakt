@@ -920,7 +920,17 @@
      "contract": "PrivateSecret"
     }
    ],
-   "target": "vault"
+   "target": "vault",
+   "adapt": [
+    {
+     "find": "uint256 public constant SECRET_SLOT = 0;",
+     "replace": "uint256 public constant SECRET_SLOT = 0; // supplied from the fixture layout: PrivateSecret._secret is its first (only) state variable, slot 0"
+    },
+    {
+     "find": "bool public constant SECRET_SLOT_SUPPLIED = false;",
+     "replace": "bool public constant SECRET_SLOT_SUPPLIED = true;"
+    }
+   ]
   },
   {
    "id": "35-flash-loan-generic",
@@ -960,6 +970,10 @@
     {
      "find": "address public constant ASSET = address(0);",
      "replace": "address public constant ASSET = {{addr:asset}};"
+    },
+    {
+     "find": "        // TODO: the attack body goes here (swap / vote / liquidate /\n        // manipulate against POC_TARGET). Verify the TARGET-STATE effect\n        // the finding claims (its price moved / its balance drained /\n        // its vote swung) and set `attackLanded = true` only when that\n        // effect actually holds -- then repay.",
+     "replace": "        // Adapted attack body (ai-poc-proof type 35): the finding is\n        // that the pool lends its asset with NO collateral, so during\n        // this callback the borrower holds the full loan amount of the\n        // pool's own asset in its own custody, having posted nothing.\n        // That custody is the target-state effect -- verify it actually\n        // holds before marking the attack landed; a round-trip that\n        // never put the pool's funds in the borrower's hands proves\n        // nothing about the pool.\n        if (IERC20(asset).balanceOf(address(this)) >= amount) {\n            attackLanded = true;\n        }"
     }
    ]
   },
@@ -1155,15 +1169,32 @@
    "detector": "bytecode-create2",
    "scenario": "CREATE2 metamorphic redeploy (same address, new code)",
    "fixture": "41-create2-metamorphic.sol",
-   "contractName": "Placeholder41",
-   "flaw": "A CREATE2-deployed contract that selfdestructs in its creation transaction can be redeployed with different code at the same address; the template proves the pattern with its own factory, so the fixture is only a live placeholder target.",
+   "contractName": "FixtureFactory41",
+   "flaw": "The factory deploys its occupant via CREATE2 from a constant init-code stub, so the occupant's address is fixed while its code is whatever the factory points at, and the occupant's kill() is unauthenticated: in one transaction the factory deploys one incarnation, it is destroyed, and different code is installed at the same address -- 'this address is that code' is a mutable binding.",
    "deployments": [
     {
-     "name": "ph",
-     "contract": "Placeholder41"
+     "name": "factory",
+     "contract": "FixtureFactory41"
     }
    ],
-   "target": "ph"
+   "target": "tgt",
+   "targetFrom": {
+    "from": "factory",
+    "sig": "addressFor(bytes32)",
+    "args": [
+     "0x0000000000000000000000000000000000000000000000000000000000000029"
+    ]
+   },
+   "adapt": [
+    {
+     "find": "address public constant TARGET_FACTORY = address(0);",
+     "replace": "address public constant TARGET_FACTORY = {{addr:factory}};"
+    },
+    {
+     "find": "bytes32 public constant TARGET_SALT = bytes32(0);",
+     "replace": "bytes32 public constant TARGET_SALT = 0x0000000000000000000000000000000000000000000000000000000000000029;"
+    }
+   ]
   },
   {
    "id": "42-short-address-attack",

@@ -492,8 +492,42 @@ async function main() {
           });
           ctx.addrs[d.name] = await deployOne(work, rpc, fixtureFile, d.contract, dargs);
         }
-        ctx.target = ctx.addrs[t.target];
+        ctx.target = ctx.addrs[t.target] ?? "";
         row.target = ctx.target;
+        // Optional: the target is not a direct deployment but an address
+        // only a deployed contract can compute (e.g. a factory's CREATE2
+        // cycle address). Resolve it with a view call before setup.
+        if (t.targetFrom) {
+          const fromAddr = ctx.addrs[t.targetFrom.from];
+          if (!fromAddr) {
+            throw new Error(`targetFrom: unknown deployment "${t.targetFrom.from}"`);
+          }
+          const callArgs = (t.targetFrom.args ?? []).map((a) =>
+            resolvePlaceholders(String(a), ctx),
+          );
+          const { stdout, stderr } = await run(
+            CAST,
+            ["call", "--rpc-url", rpc, fromAddr, t.targetFrom.sig, ...callArgs],
+            { timeout: 30_000 },
+          );
+          const m = (stdout + stderr).match(/0x[0-9a-fA-F]+/);
+          if (!m) {
+            throw new Error(
+              `targetFrom call failed (${t.targetFrom.sig} on ${fromAddr}): ${(stdout + stderr).slice(-300)}`,
+            );
+          }
+          // cast prints an address return as a full 32-byte word --
+          // the address is its low 20 bytes.
+          const hex = m[0].slice(2).slice(-40);
+          if (hex.length !== 40) {
+            throw new Error(
+              `targetFrom call returned an unparseable address (${t.targetFrom.sig} on ${fromAddr}): ${m[0].slice(0, 80)}`,
+            );
+          }
+          ctx.addrs[t.target] = `0x${hex}`;
+          ctx.target = `0x${hex}`;
+          row.target = `0x${hex}`;
+        }
         for (const step of t.setup ?? []) await setupStep(rpc, step, ctx);
 
         const fixtureSource = readFileSync(join(SUITE_DIR, "fixtures", t.fixture), "utf8");

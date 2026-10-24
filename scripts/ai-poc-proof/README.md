@@ -155,8 +155,10 @@ scripts/ai-poc-proof/
                    commands: config | prompt | template | generate |
                    wrap | repair. `config` reports {hasKey, model} —
                    never the key.
-  manifest.json    per type: fixture, deployments, target, setup
-                   steps, and the dry-run template adaptations
+  manifest.json    per type: fixture, deployments, target (or a
+                   targetFrom view call that resolves it, e.g. a
+                   factory's CREATE2 address), setup steps, and the
+                   dry-run template adaptations
   fixtures/        one minimal vulnerable contract set per type
   results.json     output of the most recent run
 ```

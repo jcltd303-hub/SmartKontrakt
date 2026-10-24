@@ -1,5 +1,5 @@
 {
- "generatedAt": "2026-10-22T23:37:33.450Z",
+ "generatedAt": "2026-10-24T00:22:22.915Z",
  "mode": "dry",
  "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
  "rpc": "http://127.0.0.1:18545",
@@ -17,7 +17,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-   "durationMs": 3576
+   "durationMs": 6150
   },
   {
    "id": "02-reentrancy-cross-function",
@@ -31,7 +31,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
-   "durationMs": 3851
+   "durationMs": 6027
   },
   {
    "id": "03-reentrancy-erc777",
@@ -45,7 +45,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
-   "durationMs": 3925
+   "durationMs": 6320
   },
   {
    "id": "04-reentrancy-erc721",
@@ -59,7 +59,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
-   "durationMs": 3708
+   "durationMs": 5679
   },
   {
    "id": "05-reentrancy-read-only",
@@ -73,7 +73,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x0165878A594ca255338adfa4d48449f69242Eb8F",
-   "durationMs": 3913
+   "durationMs": 5386
   },
   {
    "id": "06-open-drain",
@@ -87,7 +87,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
-   "durationMs": 3624
+   "durationMs": 5768
   },
   {
    "id": "07-unprotected-admin",
@@ -101,7 +101,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
-   "durationMs": 3185
+   "durationMs": 5914
   },
   {
    "id": "07b-unprotected-visibility",
@@ -115,7 +115,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
-   "durationMs": 3612
+   "durationMs": 5564
   },
   {
    "id": "08-unprotected-initializer",
@@ -129,7 +129,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
-   "durationMs": 3194
+   "durationMs": 5411
   },
   {
    "id": "09-tx-origin-phishing",
@@ -143,7 +143,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82",
-   "durationMs": 3395
+   "durationMs": 5922
   },
   {
    "id": "10-delegatecall-takeover",
@@ -157,7 +157,7 @@
    "testsPassed": 3,
    "testsFailed": 0,
    "target": "0x0B306BF915C4d645ff596e518fAf3F9669b97016",
-   "durationMs": 3174
+   "durationMs": 5664
   },
   {
    "id": "11-proxy-uninitialized-implementation",
@@ -171,7 +171,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE",
-   "durationMs": 3349
+   "durationMs": 5783
   },
   {
    "id": "12-selfdestruct",
@@ -185,7 +185,7 @@
    "testsPassed": 3,
    "testsFailed": 0,
    "target": "0x68B1D87F95878fE05B998F19b66F4baba5De1aed",
-   "durationMs": 3340
+   "durationMs": 5888
   },
   {
    "id": "13-unchecked-call",
@@ -199,7 +199,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0xc6e7DF5E7b4f2A278906862b61205850344D4e7d",
-   "durationMs": 3227
+   "durationMs": 5507
   },
   {
    "id": "14-erc20-unchecked-bool",
@@ -213,7 +213,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x59b670e9fA9D0A427751Af201D676719a970857b",
-   "durationMs": 3193
+   "durationMs": 5790
   },
   {
    "id": "15-fee-on-transfer",
@@ -227,7 +227,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x4ed7c70F96B99c776995fB64377f0d4aB3B0e1C1",
-   "durationMs": 3292
+   "durationMs": 5505
   },
   {
    "id": "16-oracle-manipulation",
@@ -241,7 +241,7 @@
    "testsPassed": 3,
    "testsFailed": 0,
    "target": "0x09635F643e140090A9A8Dcd712eD6285858ceBef",
-   "durationMs": 5666
+   "durationMs": 7880
   },
   {
    "id": "17-slippage-sandwich",
@@ -255,7 +255,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x851356ae760d987E095750cCeb3bC6014560891C",
-   "durationMs": 5910
+   "durationMs": 8413
   },
   {
    "id": "18-signature-replay",
@@ -269,7 +269,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x99bbA657f2BbC93c02D617f8bA121cB8Fc104Acf",
-   "durationMs": 3376
+   "durationMs": 5712
   },
   {
    "id": "19-signature-malleability",
@@ -283,7 +283,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x8f86403A4DE0BB5791fa46B8e795C547942fE4Cf",
-   "durationMs": 3328
+   "durationMs": 6023
   },
   {
    "id": "20-chain-randomness-timestamp",
@@ -297,7 +297,7 @@
    "testsPassed": 3,
    "testsFailed": 0,
    "target": "0x5eb3Bc0a489C5A8288765d2336659EbCA68FCd00",
-   "durationMs": 3426
+   "durationMs": 6224
   },
   {
    "id": "21-strict-balance-dos",
@@ -311,7 +311,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x809d550fca64d94Bd9F66E60752A544199cfAC3D",
-   "durationMs": 3419
+   "durationMs": 6524
   },
   {
    "id": "22-msg-value-loop",
@@ -325,7 +325,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x1291Be112d480055DaFd8a610b7d1e203891C274",
-   "durationMs": 3491
+   "durationMs": 6020
   },
   {
    "id": "23-unchecked-arithmetic-wrap",
@@ -339,7 +339,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0xb7278A61aa25c888815aFC32Ad3cC52fF24fE575",
-   "durationMs": 3125
+   "durationMs": 5383
   },
   {
    "id": "24-div-before-mul",
@@ -353,7 +353,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0xCD8a1C3ba11CF5ECfa6267617243239504a98d90",
-   "durationMs": 3054
+   "durationMs": 5584
   },
   {
    "id": "25-encode-packed-collision",
@@ -367,7 +367,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x82e01223d51Eb87e16A03E24687EDF0F294da6f1",
-   "durationMs": 3491
+   "durationMs": 5869
   },
   {
    "id": "26-assembly-arbitrary-sstore",
@@ -381,7 +381,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x7969c5eD335650692Bc04293B07F5BF2e7A673C0",
-   "durationMs": 3122
+   "durationMs": 5558
   },
   {
    "id": "27-extcodesize-bypass",
@@ -395,7 +395,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x7bc06c482DEAd17c0e297aFbC32f6e63d3846650",
-   "durationMs": 3466
+   "durationMs": 6033
   },
   {
    "id": "28-centralization-owner-rug",
@@ -409,7 +409,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0xFD471836031dc5108809D173A067e8486B9047A3",
-   "durationMs": 3467
+   "durationMs": 6228
   },
   {
    "id": "29-locked-ether",
@@ -418,12 +418,12 @@
    "scenario": "Locked ether (can receive, cannot send)",
    "status": "DRY-PASS",
    "category": "passed",
-   "detail": "template 29-locked-ether.t.sol; selector top pick: 28-centralization-owner-rug.t.sol | 2 test(s) passed",
+   "detail": "template 29-locked-ether.t.sol; selector top pick: 29-locked-ether.t.sol | 2 test(s) passed",
    "repairs": 0,
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x1429859428C0aBc9C2C47C8Ee9FBaf82cFA0F20f",
-   "durationMs": 3267
+   "durationMs": 5944
   },
   {
    "id": "30-zero-address-brick",
@@ -437,7 +437,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0xB0D4afd8879eD9F52b28595d31B441D079B2Ca07",
-   "durationMs": 3155
+   "durationMs": 5541
   },
   {
    "id": "31-gas-assumptions",
@@ -451,7 +451,7 @@
    "testsPassed": 3,
    "testsFailed": 0,
    "target": "0x162A433068F51e18b7d13932F27e66a3f99E6890",
-   "durationMs": 3110
+   "durationMs": 5265
   },
   {
    "id": "32-storage-collision-upgrade",
@@ -465,7 +465,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x5081a39b8A5f0E35a8D959395a630b68B74Dd30f",
-   "durationMs": 3314
+   "durationMs": 5817
   },
   {
    "id": "33-shadowing-mismatch",
@@ -479,7 +479,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x1fA02b2d6A771842690194Cf62D91bdd92BfE28d",
-   "durationMs": 3088
+   "durationMs": 5634
   },
   {
    "id": "34-private-secret-onchain",
@@ -493,7 +493,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0xdbC43Ba45381e02825b14322cDdd15eC4B3164E6",
-   "durationMs": 3386
+   "durationMs": 5315
   },
   {
    "id": "35-flash-loan-generic",
@@ -507,7 +507,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x4C4a2f8c81640e47606d3fd77B353E87Ba015584",
-   "durationMs": 4360
+   "durationMs": 5772
   },
   {
    "id": "36-merkle-double-claim",
@@ -521,7 +521,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x2E2Ed0Cfd3AD2f1d34481277b3204d807Ca2F8c2",
-   "durationMs": 4130
+   "durationMs": 5912
   },
   {
    "id": "37-approval-abuse",
@@ -535,7 +535,7 @@
    "testsPassed": 3,
    "testsFailed": 0,
    "target": "0xDC11f7E700A4c898AE5CAddB1082cFfa76512aDD",
-   "durationMs": 4261
+   "durationMs": 6369
   },
   {
    "id": "38-governance-flash-vote",
@@ -549,7 +549,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x36b58F5C1969B7b6591D752ea6F5486D069010AB",
-   "durationMs": 3550
+   "durationMs": 5957
   },
   {
    "id": "39-dos",
@@ -563,7 +563,7 @@
    "testsPassed": 3,
    "testsFailed": 0,
    "target": "0x0355B7B8cb128fA5692729Ab3AAa199C1753f726",
-   "durationMs": 3740
+   "durationMs": 6142
   },
   {
    "id": "40-erc4626-inflation",
@@ -577,7 +577,7 @@
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x4EE6eCAD1c2Dae9f525404De8555724e3c35d07B",
-   "durationMs": 3762
+   "durationMs": 6326
   },
   {
    "id": "41-create2-metamorphic",
@@ -590,8 +590,8 @@
    "repairs": 0,
    "testsPassed": 2,
    "testsFailed": 0,
-   "target": "0xD84379CEae14AA33C123Af12424A37803F885889",
-   "durationMs": 3119
+   "target": "0x95ec98f209757f4870005f624cddbdd2407dc95e",
+   "durationMs": 5570
   },
   {
    "id": "42-short-address-attack",
@@ -605,7 +605,7 @@
    "testsPassed": 1,
    "testsFailed": 0,
    "target": "0x2B0d36FACD61B71CC05ab8F3D2355ec3631C0dd5",
-   "durationMs": 3384
+   "durationMs": 6809
   },
   {
    "id": "43-front-running",
@@ -619,7 +619,7 @@
    "testsPassed": 1,
    "testsFailed": 0,
    "target": "0x46b142DD1E924FAb83eCc3c08e4D46E82f005e0E",
-   "durationMs": 3382
+   "durationMs": 6975
   },
   {
    "id": "44-external-contract-ref",
@@ -633,7 +633,7 @@
    "testsPassed": 1,
    "testsFailed": 0,
    "target": "0x1c85638e118b37167e9298c2268758e058DdfDA0",
-   "durationMs": 3333
+   "durationMs": 6166
   },
   {
    "id": "45-timestamp-dependence",
@@ -642,12 +642,26 @@
    "scenario": "Timestamp dependence (miner-controllable block.timestamp gate)",
    "status": "DRY-PASS",
    "category": "passed",
-   "detail": "template 45-timestamp-dependence.t.sol; selector top pick: 20-chain-randomness-timestamp.t.sol | 2 test(s) passed",
+   "detail": "template 45-timestamp-dependence.t.sol; selector top pick: 45-timestamp-dependence.t.sol | 2 test(s) passed",
    "repairs": 0,
    "testsPassed": 2,
    "testsFailed": 0,
    "target": "0x4C2F7092C2aE51D986bEFEe378e50BD4dB99C901",
-   "durationMs": 3473
+   "durationMs": 6321
+  },
+  {
+   "id": "46-token-rescue",
+   "file": "46-token-rescue.t.sol",
+   "detector": "token-drain",
+   "scenario": "Unprotected ERC-20 rescue (token drain to a fixed recipient)",
+   "status": "DRY-PASS",
+   "category": "passed",
+   "detail": "template 46-token-rescue.t.sol; selector top pick: 46-token-rescue.t.sol | 2 test(s) passed",
+   "repairs": 0,
+   "testsPassed": 2,
+   "testsFailed": 0,
+   "target": "0x49fd2BE640DB2910c2fAb69bB8531Ab6E76127ff",
+   "durationMs": 6375
   }
  ]
 }
