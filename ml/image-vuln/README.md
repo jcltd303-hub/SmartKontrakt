@@ -178,3 +178,11 @@ Micro F1 pools TP/FP/FN across labels and favors frequent-label contributions;
 macro F1 weights each class equally. Both and per-class precision/recall are
 reported. Exact-match accuracy requires every label on a row to agree and is not
 the model-selection objective.
+
+
+## Long-sequence candidate
+
+The separate [ResNet1D experiment](RESNET1D.md) implements the upstream feature
+architecture with16,384 raw-byte input. It has its own training/checkpoint/resume
+and offline inference tools. Its larger architecture and bounded CPU pilot are
+reported separately; the browser continues using the validated RGB artifact.
