@@ -108,6 +108,24 @@ contract KailuaRegisteredGameForkTest is Test {
         assertTrue(found, "Registered game is not in parent child list");
     }
 
+    function test_observeRealProposerBondAndRewardAccounting() public view {
+        uint256 bondCredit = _readUintArg(treasury, "paidBonds(address)", registeredProposer);
+        uint256 rewardCredit = _readUintArg(treasury, "eliminationRewards(address)", registeredProposer);
+        uint256 eliminationRound = _readUintArg(treasury, "eliminationRound(address)", registeredProposer);
+        address lastProposal = _readAddressArg(treasury, "lastProposal(address)", registeredProposer);
+        uint256 lastProposalStatus;
+        if (lastProposal.code.length != 0) lastProposalStatus = _readUint(lastProposal, "status()");
+        console2.log("Real proposer paidBonds:", bondCredit);
+        console2.log("Real proposer eliminationRewards:", rewardCredit);
+        console2.log("Real proposer eliminationRound:", eliminationRound);
+        console2.log("Real proposer lastProposal:", lastProposal);
+        console2.log("Real proposer lastProposal status:", lastProposalStatus);
+        console2.log("Actual treasury balance:", treasury.balance);
+        assertTrue(lastProposal != address(0), "Registered proposer has no last proposal");
+        assertGt(lastProposal.code.length, 0, "Real last proposal has no code");
+        assertEq(_readAddressArg(treasury, "proposerOf(address)", lastProposal), registeredProposer, "Last proposal registration inconsistent");
+    }
+
     function test_cannotAppendForgedChildToRealParent() public {
         uint256 countBefore = _readUint(parent, "childCount()");
         vm.prank(actor);
