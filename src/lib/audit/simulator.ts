@@ -66,12 +66,100 @@ function decodeHexWord(hex: string, type: "string" | "uint" | "address" | "bool"
   return {};
 }
 
+export type EthCallResult = {
+  success: boolean;
+  result?: string;
+  error?: string;
+  /** Raw revert data (0x-prefixed) when the node returns it — the
+   *  initializer gate decodes Error(string) reasons from it. */
+  errorData?: string;
+};
+
 /**
- * Execute public eth_call against target address
+ * Execute public eth_call against target address. `from` is optional:
+ * the initializer gate simulates calls from a fresh attacker address,
+ * because a guard that compares msg.sender against a stored admin must
+ * see the same caller an attacker would be.
  */
+async function ethCall(
+  address: string,
+  calldata: string,
+  chainId: string,
+  from?: string,
+): Promise<EthCallResult> {
+  const chain = SUPPORTED_CHAINS.find((c) => c.id === chainId) ?? SUPPORTED_CHAINS[0]!;
+
+  for (const rpcUrl of chain.rpcUrls) {
+    try {
+      const res = await withRetry(async () => {
+        await rpcLimiter.acquire();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4000);
+        try {
+          return await fetch(rpcUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              method: "eth_call",
+              params: [{ to: address, data: calldata, ...(from ? { from } : {}) }, "latest"],
+              id: 1,
+            }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+      }, { retries: 1, baseDelayMs: 1500 });
+      if (!res.ok) continue;
+
+      const data = (await res.json()) as { result?: string; error?: { message?: string; data?: unknown } };
+      if (data.error) {
+        return {
+          success: false,
+          error: data.error.message || "EVM reverted execution",
+          errorData: typeof data.error.data === "string" ? data.error.data : undefined,
+        };
+      }
+
+      if (data.result) {
+        return { success: true, result: data.result };
+      }
+    } catch {
+      // try next RPC
+    }
+  }
+
+  return { success: false, error: "RPC nodes unreachable or timed out" };
+}
+
 export async function executeEthCall(
   address: string,
   calldata: string,
+  chainId = "ethereum"
+): Promise<EthCallResult> {
+  return ethCall(address, calldata, chainId);
+}
+
+/** eth_call with an explicit simulated sender (see ethCall above). */
+export async function executeEthCallFrom(
+  address: string,
+  calldata: string,
+  chainId: string,
+  from: string,
+): Promise<EthCallResult> {
+  return ethCall(address, calldata, chainId, from);
+}
+
+/**
+ * Read one storage slot (eth_getStorageAt) with the same rotation /
+ * limiter / retry discipline as eth_call. The initializer gate reads
+ * the Initializable state slots; proxy-resolver.ts keeps its own
+ * resolver-scoped reader for EIP-1967 slots.
+ */
+export async function executeStorageRead(
+  address: string,
+  slot: string,
   chainId = "ethereum"
 ): Promise<{ success: boolean; result?: string; error?: string }> {
   const chain = SUPPORTED_CHAINS.find((c) => c.id === chainId) ?? SUPPORTED_CHAINS[0]!;
@@ -88,8 +176,8 @@ export async function executeEthCall(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               jsonrpc: "2.0",
-              method: "eth_call",
-              params: [{ to: address, data: calldata }, "latest"],
+              method: "eth_getStorageAt",
+              params: [address, slot, "latest"],
               id: 1,
             }),
             signal: controller.signal,
@@ -102,10 +190,9 @@ export async function executeEthCall(
 
       const data = (await res.json()) as { result?: string; error?: { message?: string } };
       if (data.error) {
-        return { success: false, error: data.error.message || "EVM reverted execution" };
+        return { success: false, error: data.error.message || "eth_getStorageAt error" };
       }
-
-      if (data.result) {
+      if (typeof data.result === "string") {
         return { success: true, result: data.result };
       }
     } catch {

@@ -6,6 +6,7 @@ import { rpcLimiter, sourcifyLimiter, withRetry } from "./rate-limit.ts";
 import { fetchAddressValue } from "./value.ts";
 import { gatherAbi } from "./abi.ts";
 import { gatherLiveState } from "./live-state.ts";
+import { applyInitializerGate } from "./initializer-gate.ts";
 import { enrichReportFourbyte, type FourbyteLookup } from "./fourbyte.ts";
 import { attachResnetToReport, runtimeCodeForReport, type ResnetRunner } from "./resnet-attach.ts";
 
@@ -637,6 +638,24 @@ export async function analyzeAddress(
     // enriches via the resolveFourbyte server fn instead).
     if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
     await attachValueAndAbi(report);
+    // Initializer live-state gate (Fix 37): unprotected-initializer
+    // findings arrive capped at high from the detector; with the ABI
+    // now gathered, this probe is the only route back to critical —
+    // a candidate missing from the deployed ABI is dropped (it
+    // belongs to another contract in the compilation), and positive
+    // live evidence (an uninitialized state read, or a simulated call
+    // from a fresh address that succeeds and moves privileged state)
+    // restores critical + corroborated. Everything else keeps the
+    // cap. Fail-soft and fail-closed: a probe failure changes nothing.
+    try {
+      await applyInitializerGate(report, {
+        address,
+        chainId: chain.id,
+        source: sourcifyMatch.source,
+      });
+    } catch {
+      // the gate never throws by construction; belt-and-braces
+    }
     // Live-state evidence (2026-10-22): for verified-source audits with
     // at least one high/critical finding, probe the contract's decisive
     // getters (paused / owner / trading flags / fees / limits) over RPC

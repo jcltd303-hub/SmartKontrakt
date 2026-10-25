@@ -60,7 +60,9 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // fixes) — this pin was written against 2026-10-24.1 in the
   // skip-audit batch (82652287) after that bump had already landed,
   // which left this test red on main until it was re-pinned here.
-  assert.equal(ANALYZER_BASELINE, "2026-10-25.1");
+  // It moved again to 2026-10-25.2 with the initializer gate
+  // (Fix 37): unprotected-initializer provenance + the critical cap.
+  assert.equal(ANALYZER_BASELINE, "2026-10-25.2");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });

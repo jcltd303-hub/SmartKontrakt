@@ -58,9 +58,19 @@ import {
  *                the bounded ML term (MAX_RESNET_BONUS, also hashed
  *                into the fingerprint below). Same inputs now produce
  *                different records, so the archive refreshes.
+ * 2026-10-25.2 — Initializer gate (Fix 37): unprotected-initializer
+ *                candidates must be externally reachable functions of
+ *                a contract (internal/private and library/interface
+ *                members no longer flag), the source pattern alone
+ *                caps at high, and critical + corroborated require
+ *                positive live evidence from the address-path probe
+ *                (initializer-gate.ts) — the fork proof showed all
+ *                15 stored criticals of this type were false
+ *                positives. Same inputs now produce different
+ *                records, so the archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-25.1";
+export const ANALYZER_BASELINE = "2026-10-25.2";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

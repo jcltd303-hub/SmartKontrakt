@@ -45,6 +45,23 @@ export function calibrateFindings(findings: Finding[]): Finding[] {
   });
 }
 
+/**
+ * Gate 3 note (Fix 37, initializer gate): an unprotected-initializer
+ * pattern match is capped at high until LIVE evidence confirms the
+ * deployed contract is actually uninitialized. The 2026-10-25 fork
+ * proof executed the re-initialization call against all 15 stored
+ * criticals of this type (initializer-proof/RESULTS.md) and every one
+ * failed: already-initialized guards, access control, functions that
+ * do not exist on the deployed contract, and per-pool initializers
+ * that succeed by design. Source shape cannot separate those from a
+ * genuinely uninitialized contract, so critical is restored only by
+ * the live-state gate in initializer-gate.ts (address path), which
+ * also marks the finding corroborated. Every other path — pasted
+ * source included — keeps this cap and this note.
+ */
+export const INITIALIZER_GATE_NOTE_UNCONFIRMED =
+  "\n\n[Initializer gate: critical requires live evidence — an initialized-state read showing uninitialized, or a simulated initializer call from a fresh address that succeeds and moves privileged state. Source pattern alone caps this at high: live initialized state not confirmed. Address audits run the live probe automatically.]";
+
 /** Gate 2: a finding on an access-controlled function is capped at high. */
 export function withAccessControlCap(finding: Finding, authed: boolean): Finding {
   if (!authed) return finding;

@@ -1,6 +1,6 @@
 import type { AstNode, Finding, Severity } from "./types.ts";
 import type { ContractModel, FnModel, ModModel, SourceModel, StateVar } from "./model.ts";
-import { withAccessControlCap } from "./severity-calibration.ts";
+import { INITIALIZER_GATE_NOTE_UNCONFIRMED, withAccessControlCap } from "./severity-calibration.ts";
 
 type ExtKind =
   | "call"
@@ -100,7 +100,10 @@ const BUILTIN = new Set([
   "encodeWithSignature", "encodeWithSelector", "encodeCall", "concat", "push", "pop",
 ]);
 
-const PRIVILEGED = /^(owner|admin|governor|implementation|pendingOwner|operator|oracle|beacon|logic|feeRecipient|treasury)$/;
+/** Privileged state-variable names. Exported for initializer-gate.ts:
+ *  its live-evidence rule asks whether an initializer writes one of
+ *  these — the same family this module's detectors reason about. */
+export const PRIVILEGED = /^(owner|admin|governor|implementation|pendingOwner|operator|oracle|beacon|logic|feeRecipient|treasury)$/;
 
 /**
  * Cached `new RegExp`. The detector helpers build their patterns from contract
@@ -2597,6 +2600,25 @@ function scanSimple(
   }
 
   const initName = /^init(ialize)?$/.test(fn.name);
+  // Fix 37 (provenance): an initializer candidate must be an entry
+  // point OF THE ANALYZED CONTRACT — externally reachable (public /
+  // external / pre-0.5 default visibility) and declared on a contract,
+  // never an internal or private function and never a library or
+  // interface member. The 2026-10-25 fork proof (initializer-proof/
+  // RESULTS.md) found a stored critical whose "initialize" was an
+  // `internal view` library function inside Settler's flattened source:
+  // it is not callable on the deployed contract at any severity.
+  // Sibling contracts in one compilation (Party's initialize flagged
+  // on a TokenDistributor record) are handled by detectSource scoping
+  // when the target is known, and on the address path by the
+  // initializer gate's ABI membership check (initializer-gate.ts),
+  // which drops a candidate the deployed contract does not expose.
+  const initCandidate =
+    initName &&
+    contract.kind !== "library" &&
+    contract.kind !== "interface" &&
+    fn.visibility !== "internal" &&
+    fn.visibility !== "private";
   // A revert-only initialize (StarkWare Proxy) cannot be called
   // successfully by anyone — skip the unprotected-initializer flag.
   // Fix 36: the same flag conditions on a PROXY-shaped contract are a
@@ -2607,8 +2629,9 @@ function scanSimple(
   // logic/admin, and whether it already ran is chain state, not source
   // shape. Suppress the critical on proxies and note where the check
   // belongs; an implementation's own unprotected initialize (non-proxy
-  // contract) keeps the critical in the branch below.
-  if (initName && !alwaysReverts(src) && !authed && !fn.modifiers.some((m) => /initializer|reinitializer/i.test(m)) && !/require\s*\(\s*!?\s*initialized/.test(src) && isProxyShape(contract)) {
+  // contract) is flagged in the branch below — capped at high since
+  // Fix 37, for the reason given there.
+  if (initCandidate && !alwaysReverts(src) && !authed && !fn.modifiers.some((m) => /initializer|reinitializer/i.test(m)) && !/require\s*\(\s*!?\s*initialized/.test(src) && isProxyShape(contract)) {
     push(make({
       severity: "info",
       swc: null,
@@ -2629,14 +2652,25 @@ function initialize(address _oracle) external initializer { oracle = _oracle; }`
       locationLine: fn.line,
       snippet: snippet(parsed, fn.line + delta, delta),
     }));
-  } else if (initName && !alwaysReverts(src) && !authed && !fn.modifiers.some((m) => /initializer|reinitializer/i.test(m)) && !/require\s*\(\s*!?\s*initialized/.test(src)) {
+  } else if (initCandidate && !alwaysReverts(src) && !authed && !fn.modifiers.some((m) => /initializer|reinitializer/i.test(m)) && !/require\s*\(\s*!?\s*initialized/.test(src)) {
+    // Fix 37 (severity): the source pattern alone no longer stamps
+    // critical. The fork proof executed the re-init call against all
+    // 15 stored criticals of this type and every one failed —
+    // already-initialized guards (7), access control (3), no such
+    // entry point (4), per-pool category errors (2) — because source
+    // shape cannot see live initialized state. The finding stays (the
+    // pattern is a real lead), capped at high with the gate note;
+    // critical is restored only by the live-state gate
+    // (initializer-gate.ts) on the address path, on positive live
+    // evidence, which also marks the finding corroborated. Pasted
+    // source has no chain to probe, so it keeps this cap.
     push(make({
-      severity: "critical",
+      severity: "high",
       swc: null,
       title: `${fn.name} can be called by anyone, more than once`,
       confidence: "high",
       detector: "unprotected-initializer",
-      summary: "Initializer functions replace the constructor on proxies. Without an initializer modifier or a one-shot flag check, anyone can reset the owner or oracle, and they can do it again later.",
+      summary: "Initializer functions replace the constructor on proxies. Without an initializer modifier or a one-shot flag check, anyone can reset the owner or oracle, and they can do it again later." + INITIALIZER_GATE_NOTE_UNCONFIRMED,
       walkthrough: [
         `1. ${fn.name} is ${fn.visibility || "public"} and writes privileged storage.`,
         "2. Nothing reverts when it has already been called.",
