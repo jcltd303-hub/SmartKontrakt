@@ -34,8 +34,28 @@
  *   risk score and the findings themselves are unchanged by it.
  * - Sequential: findings run one chain at a time; the backend runs
  *   one PoC at a time, so nothing here parallelizes backend calls.
- * - Per-run cap (autoPocCap, default 25; 0 = unlimited): when the cap
- *   is hit it is logged once and the pipeline continues static-only.
+ * - Identical-draft dedupe: within one entry, sibling findings of the
+ *   same detector routinely prepare byte-identical PoC code (one
+ *   template-derived draft per finding). The first execution's
+ *   outcome is a determination about that CODE — re-running the same
+ *   code against the same target proves nothing and burns a backend
+ *   slot per sibling (Jer's 2026-10-25 run: 10 identical
+ *   erc20-unchecked runs on one address). So the code that would be
+ *   sent to the backend is hashed (SHA-256 — the digest the SmartPoC
+ *   run header prints) and a repeat within the entry is NOT executed:
+ *   the sibling saves the same verdict with the shared run named in
+ *   its output, and the save is tallied as "shared", never as an
+ *   attempt. Only code-determined outcomes are shared (the verdicts,
+ *   no_tests, the value-guard skip, a compile error); infra outcomes
+ *   (backend unreachable, RPC/fork failure) are never cached — they
+ *   carry no information about the code.
+ * - Per-run cap (autoPocCap, default 25; 0 = unlimited): the cap
+ *   counts BACKEND ATTEMPTS — findings whose chain actually sent new
+ *   code to the backend. Shared saves consume no slot. The cap is
+ *   checked before each finding's chain (sharing can only be known
+ *   after generation), so once the backend budget is spent the
+ *   entry's remaining findings wait — logged once, pipeline
+ *   continues static-only.
  * - Circuit breaker: 3 CONSECUTIVE infra outcomes (backend
  *   unreachable / RPC-or-fork failure — an "error" verdict that is
  *   not attributable to the PoC) trip it for the rest of the run;
@@ -45,6 +65,8 @@
  *   the chain, a failed save is counted and logged, and no outcome
  *   fails the pipeline entry — the static record already landed.
  */
+
+import { createHash } from "node:crypto";
 
 import { runAdjudicationChain } from "../src/lib/audit/adjudicate-chain.ts";
 import type {
@@ -76,11 +98,16 @@ export const WORKER_AUTO_POC_DEFAULT_CAP = 25;
 export const WORKER_AUTO_POC_BREAKER_THRESHOLD = 3;
 
 export type AutoPocTally = {
+  /** Findings whose chain sent at least one new PoC to the backend —
+   *  the cap counts these (see the header's dedupe/cap rules). */
   attempted: number;
   passed: number;
   failed: number;
   errors: number;
   skipped: number;
+  /** Findings saved from an identical-code sibling's run instead of
+   *  a backend execution of their own (dedupe — see the header). */
+  shared: number;
 };
 
 /** Per-run auto-PoC state, owned by worker.ts (reset on every /start). */
@@ -96,7 +123,7 @@ export type AutoPocRunState = {
 
 export function newAutoPocRunState(): AutoPocRunState {
   return {
-    tally: { attempted: 0, passed: 0, failed: 0, errors: 0, skipped: 0 },
+    tally: { attempted: 0, passed: 0, failed: 0, errors: 0, skipped: 0, shared: 0 },
     consecutiveInfra: 0,
     breakerTripped: false,
     capLogged: false,
@@ -108,6 +135,43 @@ export function newAutoPocRunState(): AutoPocRunState {
 export function autoPocCapReached(state: AutoPocRunState, cap: number): boolean {
   return cap > 0 && state.tally.attempted >= cap;
 }
+
+/**
+ * SHA-256 hex of the exact PoC source — the same digest the SmartPoC
+ * run header prints (`SHA-256: …`, foundry-backend.ts) — computed
+ * here over the code that would be sent to the backend, so an
+ * identical draft is recognizable before it is sent twice.
+ */
+export function autoPocCodeHash(testCode: string): string {
+  return createHash("sha256").update(testCode).digest("hex");
+}
+
+/** A backend result as the chain's runPoc dep returns it. */
+type BackendRunResult = { status: string; logs: string; durationMs: number; executedSource?: string };
+
+/**
+ * Is this backend outcome a determination about the CODE — safe to
+ * share with a sibling finding whose generated code is byte-identical?
+ * The real verdicts (passed/failed), the zero-test outcome and the
+ * value-guard skip all are; so is a compile error, which is a
+ * property of the source alone (the sibling's chain still gets its
+ * own repair attempt on top of the shared logs). Infra outcomes are
+ * NOT: backend_unreachable and RPC/fork failures describe the
+ * environment, not the code, and sharing them would save a verdict
+ * the code never earned. This mirrors the terminal set the chain's
+ * own planner reuses for a single finding (planAdjudication), minus
+ * the infra-ambiguous "error".
+ */
+function isShareableRunResult(r: BackendRunResult): boolean {
+  if (r.status === "passed" || r.status === "failed" || r.status === "no_tests" || r.status === "skipped") {
+    return true;
+  }
+  if (r.status === "error") return isPocCompileError(r.logs) && !isRpcOrForkFailure(r.logs);
+  return false;
+}
+
+/** One executed run of an entry, remembered for identical-code siblings. */
+type SharedRun = { result: BackendRunResult; firstFindingId: string };
 
 export type AutoPocCandidate = { finding: Finding; ord: number };
 
@@ -236,6 +300,8 @@ export type AutoPocEntryResult = {
   failed: number;
   errors: number;
   skipped: number;
+  /** Findings saved from an identical-code sibling's run (dedupe). */
+  shared: number;
   /** Breaker state after this entry. */
   breakerTripped: boolean;
   /** One-line summary for the worker's per-entry log. */
@@ -248,6 +314,7 @@ const ZERO_ENTRY: Omit<AutoPocEntryResult, "breakerTripped" | "note"> = {
   failed: 0,
   errors: 0,
   skipped: 0,
+  shared: 0,
 };
 
 /**
@@ -325,8 +392,9 @@ export async function runAutoPocForEntry(
   opts: AutoPocOptions,
   deps: AutoPocDeps = defaultAutoPocDeps,
 ): Promise<AutoPocEntryResult> {
-  const delta = { passed: 0, failed: 0, errors: 0, skipped: 0 };
+  const delta = { passed: 0, failed: 0, errors: 0, skipped: 0, shared: 0 };
   let attempted = 0;
+  let processed = 0;
   const finish = (note: string): AutoPocEntryResult => ({
     ...ZERO_ENTRY,
     attempted,
@@ -350,6 +418,12 @@ export async function runAutoPocForEntry(
 
   const candidates = selectAutoPocFindings(input.report, input.body);
   if (candidates.length === 0) return finish("no eligible high/critical findings");
+
+  // Identical-draft dedupe for THIS entry: code hash -> the run that
+  // already executed it. Scoped to the entry (one scan, one target,
+  // one fork context) — across entries the stored-run layer (the
+  // chain's digest reuse) is the dedupe of record.
+  const runCache = new Map<string, SharedRun>();
 
   // Finding rows are keyed `${scanId}:${ord}` (bulk-persist) — the
   // chain keys dispositions, runs and saves on that database id.
@@ -395,12 +469,16 @@ export async function runAutoPocForEntry(
       break;
     }
     const finding = dbFindings[ord]!;
-    attempted++;
-    state.tally.attempted++;
+    // Backend accounting for THIS finding, filled by the runPoc dep
+    // below: the cap counts findings that sent new code to the
+    // backend (realBackendCalls > 0); a finding served entirely from
+    // the identical-code cache is a shared save instead.
+    let realBackendCalls = 0;
+    let sharedHits = 0;
     // The most recent backend interaction for THIS attempt — the
     // circuit breaker's infra evidence.
     let lastRun: { status: string; logs: string } | null = null;
-    let outcome: AdjudicationOutcome;
+    let outcome: AdjudicationOutcome | null = null;
     try {
       outcome = await deps.runChain(
         {
@@ -422,12 +500,51 @@ export async function runAutoPocForEntry(
           },
           listRuns: deps.listRuns,
           runPoc: async ({ address, chainId, testCode, tokenAddress }) => {
+            // Identical-draft dedupe: the hash covers the exact code
+            // that would be sent (post gate/repair), keyed with the
+            // run's identity (target, chain, token) — constant within
+            // an entry, spelled out so the invariant is explicit.
+            const hash = autoPocCodeHash(testCode);
+            const cacheKey = `${address}|${chainId ?? input.chainId}|${tokenAddress ?? ""}|${hash}`;
+            const hit = runCache.get(cacheKey);
+            if (hit) {
+              sharedHits++;
+              const shared: BackendRunResult = {
+                status: hit.result.status,
+                // The sharing is on the record: the chain saves this
+                // output (under its own header) as the sibling's run
+                // output, visibly distinct from an independent run,
+                // while the sibling's finding row still gets the
+                // verdict through the normal save.
+                logs:
+                  `[auto-poc] shared run — identical PoC code (SHA-256 ${hash}) was already executed ` +
+                  `for finding ${hit.firstFindingId} in this entry; backend call skipped, this record ` +
+                  `shares that run's verdict.\n${hit.result.logs}`,
+                // This finding spent no backend time of its own.
+                durationMs: 0,
+                executedSource: hit.result.executedSource,
+              };
+              lastRun = { status: shared.status, logs: shared.logs };
+              return shared;
+            }
             const r = await deps.runBackend(opts.backendUrl, {
               address,
               chainId: chainId ?? input.chainId,
               testCode,
               ...(tokenAddress ? { tokenAddress } : {}),
             });
+            realBackendCalls++;
+            if (isShareableRunResult(r)) {
+              runCache.set(cacheKey, {
+                result: {
+                  status: r.status,
+                  logs: r.logs,
+                  durationMs: r.durationMs,
+                  executedSource: r.executedSource,
+                },
+                firstFindingId: finding.id,
+              });
+            }
             lastRun = { status: r.status, logs: r.logs };
             return r;
           },
@@ -455,19 +572,41 @@ export async function runAutoPocForEntry(
       deps.log(
         `[worker] auto-poc ${input.address} ${finding.detector}: error (chain threw: ${err instanceof Error ? err.message : String(err)})`,
       );
-      continue;
     }
-    accountOutcome(state, outcome, lastRun, delta);
-    const savedStatus = outcome.saveError
-      ? `error (save failed: ${outcome.saveError})`
-      : (outcome.verdict ?? outcome.kind);
-    deps.log(`[worker] auto-poc ${input.address} ${finding.detector}: ${savedStatus}`);
+    processed++;
+    // Cap accounting (see the header): only a finding that actually
+    // sent new code to the backend consumes an attempt — a shared
+    // save is free, and a chain that never reached the backend (the
+    // gate / unadapted saves) consumed no backend budget either.
+    if (realBackendCalls > 0) {
+      attempted++;
+      state.tally.attempted++;
+    }
+    if (outcome) {
+      accountOutcome(state, outcome, lastRun, delta);
+      const sharedSave =
+        realBackendCalls === 0 &&
+        sharedHits > 0 &&
+        outcome.runStep === "executed" &&
+        !outcome.saveError;
+      if (sharedSave) {
+        delta.shared++;
+        state.tally.shared++;
+      }
+      const savedStatus = outcome.saveError
+        ? `error (save failed: ${outcome.saveError})`
+        : (outcome.verdict ?? outcome.kind);
+      deps.log(
+        `[worker] auto-poc ${input.address} ${finding.detector}: ${savedStatus}${sharedSave ? " (shared run)" : ""}`,
+      );
+    }
   }
 
   const note =
-    attempted === 0
+    processed === 0
       ? "cap reached — skipped"
       : `${attempted} attempted: ${delta.passed} passed, ${delta.failed} failed, ${delta.errors} error(s), ${delta.skipped} skipped` +
+        (delta.shared > 0 ? `, ${delta.shared} shared` : "") +
         (state.breakerTripped ? " — circuit breaker tripped" : "");
   return finish(note);
 }

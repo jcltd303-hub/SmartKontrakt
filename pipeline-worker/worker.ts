@@ -22,8 +22,9 @@
  *                     autoPoc (default ON) runs the adjudication chain —
  *                     LLM-gen -> Foundry run -> Supabase save — for every
  *                     PoC-eligible high/critical finding right after its
- *                     entry is persisted. autoPocCap caps chain attempts
- *                     per run (default 25, 0 = unlimited). A circuit
+ *                     entry is persisted. autoPocCap caps backend
+ *                     attempts per run (default 25, 0 = unlimited;
+ *                     identical-code shared saves are free). A circuit
  *                     breaker stops auto-PoC for the run after 3
  *                     consecutive backend-infra failures.
  *                     deepAgent runs the Deep Agent loop (propose ->
@@ -228,6 +229,7 @@ type Status = {
   autoPocFailed: number;
   autoPocErrors: number;
   autoPocSkipped: number;
+  autoPocShared: number;
   autoPocBackendDown: boolean;
 };
 
@@ -262,6 +264,7 @@ let status: Status = {
   autoPocFailed: 0,
   autoPocErrors: 0,
   autoPocSkipped: 0,
+  autoPocShared: 0,
   autoPocBackendDown: false,
 };
 
@@ -608,6 +611,7 @@ async function runLoop(): Promise<void> {
         status.autoPocFailed = autoPocState.tally.failed;
         status.autoPocErrors = autoPocState.tally.errors;
         status.autoPocSkipped = autoPocState.tally.skipped;
+        status.autoPocShared = autoPocState.tally.shared;
         status.autoPocBackendDown = autoPocState.breakerTripped;
         console.log(`[worker] auto-poc ${item.address}: ${ap.note}`);
       }

@@ -1,7 +1,7 @@
 import type { ResnetResult } from "./resnet-result.ts";
 import { auditEvidence } from "./audit-evidence.ts";
 import type { Finding, Inventory } from "./types.ts";
-import { openRouterLimiter, withRetry } from "./rate-limit.ts";
+import { isTransientError, openRouterLimiter, withRetry } from "./rate-limit.ts";
 import { selectPocFallbacks } from "./poc-fallbacks.ts";
 import { smartbugsCategoryForDetector } from "./smartbugs.ts";
 import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte.ts";
@@ -184,6 +184,50 @@ export function resolveOpenRouterConfig(
   const apiKey = rawKey && !PLACEHOLDER_KEYS.has(rawKey) ? rawKey : undefined;
   const model = resolveOpenRouterModel(purpose, env);
   return { apiKey, model };
+}
+
+/**
+ * Default per-attempt timeout for the AI review call, ms.
+ *
+ * The review is the heaviest single generation in the codebase: the
+ * prompt carries up to 12,000 chars of source, the findings, the
+ * fourbyte context and up to three FULL fallback templates, and the
+ * reply must hold a complete threat-model report plus a complete
+ * Foundry test file (max_tokens 8000). The codebase's other long
+ * generations (Deep Agent rounds, PoC repair, SmartPoC) already run
+ * at 180s for comparable work; the review sat at 60s, and on the
+ * shared free lane every attempt died at that budget in Jer's live
+ * pipeline run (2026-10-25) — the run fell back to template reviews
+ * for entry after entry. The timeout batch first raised the default
+ * to 240s (the house 180s plus headroom for this prompt/response
+ * size); Jer then directed 300s outright — his live run is a
+ * 59,852-address batch on the shared free lane, whose queue latency
+ * is the dominant term, and a timed-out review costs the entry its
+ * LLM review entirely. `OPENROUTER_TIMEOUT_MS` overrides it (raise
+ * it on the free lane, lower it behind a fast paid model).
+ */
+export const DEFAULT_OPENROUTER_TIMEOUT_MS = 300_000;
+
+/** The review call's per-attempt timeout: `OPENROUTER_TIMEOUT_MS`
+ *  when it parses to a positive number, else the default. */
+export function resolveOpenRouterTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.OPENROUTER_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_OPENROUTER_TIMEOUT_MS;
+}
+
+/**
+ * Is this failure the call's own clock — as opposed to an HTTP error,
+ * a provider failure or a network error? `AbortSignal.timeout`
+ * raises a DOMException named "TimeoutError" (the exact shape in
+ * Jer's worker log: `DOMException [TimeoutError]: The operation was
+ * aborted due to timeout`); an explicit abort surfaces as
+ * "AbortError". The message check covers runtimes that surface the
+ * same condition under a generic name.
+ */
+export function isOpenRouterTimeoutError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "TimeoutError" || err.name === "AbortError") return true;
+  return /aborted due to timeout|timed out/i.test(err.message);
 }
 
 /**
@@ -427,6 +471,155 @@ Format your response strictly as JSON with this schema:
   };
 }
 
+/**
+ * Output-token budget for one review reply (the value makeBody
+ * sends). It was 6000, and 6000 is what cut replies at
+ * finish_reason "length" — foundryTestCode is the largest field and
+ * dies first, which is how a truncated reply surfaces as the
+ * missing-fields failure. Raised to 8000: the Deep Agent already
+ * requests 8000 for comparable generations (report + full PoCs),
+ * and max_tokens is a cap, not a target — a reply that completes
+ * naturally is unaffected, so the response contract is unchanged.
+ */
+export const REVIEW_MAX_TOKENS = 8000;
+
+/**
+ * Fields a review reply MUST carry (truthy) to be a usable review —
+ * the schema the prompt demands. `economicRiskSummary` is the only
+ * optional field; it has a standing default.
+ */
+export const REVIEW_REQUIRED_FIELDS = ["threatModelReport", "foundryTestCode"] as const;
+
+/**
+ * A reply that ARRIVED but is not a usable review object: no JSON
+ * object could be extracted from it, or the extracted object is
+ * missing required fields. Carries everything the corrective retry
+ * and the fallback log line need — which required fields were
+ * missing, which top-level keys the reply DID contain, and whether
+ * the provider cut the reply at the token budget.
+ *
+ * This failure class is distinct from a timeout or an HTTP error:
+ * the call succeeded and the model answered, just not in the schema.
+ * In Jer's 59,852-address worker run (2026-10-25) it fell straight
+ * through to the template with a bare "missing threatModelReport /
+ * foundryTestCode" and no trace of what the reply actually held.
+ */
+export class ReviewReplyError extends Error {
+  readonly missingFields: readonly string[];
+  readonly receivedKeys: readonly string[];
+  /** finish_reason === "length": the provider cut the reply at max_tokens. */
+  readonly truncated: boolean;
+
+  constructor(args: {
+    detail: string;
+    missingFields: readonly string[];
+    receivedKeys: readonly string[];
+    truncated: boolean;
+  }) {
+    super(args.detail);
+    this.name = "ReviewReplyError";
+    this.missingFields = args.missingFields;
+    this.receivedKeys = args.receivedKeys;
+    this.truncated = args.truncated;
+  }
+
+  /**
+   * The corrective user message for the single retry: names the exact
+   * missing fields and demands the complete JSON object with the
+   * exact schema keys and nothing else (the Deep Agent's corrective
+   * discipline, specialised to this schema). A truncated reply also
+   * gets told to be compact — the largest field is the test code, and
+   * a same-size resend would just be cut again.
+   */
+  correctiveInstruction(): string {
+    const exactKeys = [...REVIEW_REQUIRED_FIELDS, "economicRiskSummary"]
+      .map((k) => `"${k}"`)
+      .join(", ");
+    const head =
+      this.missingFields.length > 0
+        ? `Your previous reply was not a complete review object: it was missing ${this.missingFields
+            .map((k) => `"${k}"`)
+            .join(", ")}${this.receivedKeys.length > 0 ? ` (it contained only: ${this.receivedKeys.join(", ")})` : ""}.`
+        : "Your previous reply could not be parsed as a JSON review object.";
+    const compact = this.truncated
+      ? ` Your previous reply was cut off at the token limit (finish_reason "length", max_tokens ${REVIEW_MAX_TOKENS}): keep the threat model concise and write a complete but more compact foundryTestCode so the entire JSON object fits in one reply.`
+      : "";
+    return `${head} Reply with ONLY the complete JSON object with exactly these keys: ${exactKeys} — no prose, no code fences, no explanation before or after it.${compact}`;
+  }
+}
+
+/** The truncation marker appended to a reply-shape diagnosis. */
+function truncationNote(truncated: boolean): string {
+  return truncated
+    ? `; reply truncated at max_tokens ${REVIEW_MAX_TOKENS} (finish_reason "length")`
+    : "";
+}
+
+/**
+ * Parse + validate one review reply. Validation strictness is
+ * unchanged from the original inline check (both required fields
+ * truthy; economicRiskSummary defaulted) — what changed is that a
+ * failure now throws a ReviewReplyError carrying the diagnosis
+ * instead of a bare assertion, so the caller can spend its one
+ * corrective retry and the fallback line can name the received keys.
+ *
+ * `finishReason` is the choice's finish_reason from the SAME response
+ * body the content came from (postChatWithModelFallback returns the
+ * raw Response, so it was always reachable — it was simply never
+ * read). "length" is the truncation signal: a reply cut mid-object
+ * usually fails extraction outright, but a reply the model closed
+ * early (threat model only, code field empty) lands here, and only
+ * finish_reason separates "model chose a wrong schema" from "model
+ * ran out of tokens".
+ */
+export function parseReviewReply(
+  content: string,
+  finishReason: string | undefined,
+): AiSecurityReview {
+  const truncated = finishReason === "length";
+  let parsed: unknown;
+  try {
+    parsed = extractJsonContent(content);
+  } catch (err) {
+    throw new ReviewReplyError({
+      detail:
+        `OpenRouter reply did not yield a JSON object: ${err instanceof Error ? err.message : String(err)}` +
+        truncationNote(truncated),
+      missingFields: [...REVIEW_REQUIRED_FIELDS],
+      receivedKeys: [],
+      truncated,
+    });
+  }
+  const record =
+    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  const receivedKeys = record ? Object.keys(record) : [];
+  const missing = REVIEW_REQUIRED_FIELDS.filter((f) => !record?.[f]);
+  if (!record || missing.length > 0) {
+    const missingText =
+      missing.length === REVIEW_REQUIRED_FIELDS.length
+        ? `missing ${REVIEW_REQUIRED_FIELDS.join(" / ")}`
+        : `missing ${missing.join(", ")}`;
+    const shape = record
+      ? `reply keys: ${receivedKeys.join(", ") || "none"}`
+      : `reply was a JSON ${Array.isArray(parsed) ? "array" : typeof parsed}, not an object`;
+    throw new ReviewReplyError({
+      detail: `OpenRouter reply was ${missingText} (${shape})` + truncationNote(truncated),
+      missingFields: missing.length > 0 ? missing : [...REVIEW_REQUIRED_FIELDS],
+      receivedKeys,
+      truncated,
+    });
+  }
+  return {
+    threatModelReport: record.threatModelReport as string,
+    foundryTestCode: record.foundryTestCode as string,
+    economicRiskSummary:
+      (record.economicRiskSummary as string) || "Completed OpenRouter threat review.",
+    source: "openrouter",
+  };
+}
+
 export async function generateAiSecurityReview(
   contractName: string,
   body: string,
@@ -438,12 +631,18 @@ export async function generateAiSecurityReview(
   // The review pass uses the "review" purpose; the model itself is chosen (and
   // fallen back through) inside postChatWithModelFallback.
   const purpose: OpenRouterPurpose = "review";
-  const { apiKey } = resolveOpenRouterConfig(process.env, purpose);
+  const { apiKey, model } = resolveOpenRouterConfig(process.env, purpose);
+  const timeoutMs = resolveOpenRouterTimeoutMs(process.env);
 
   if (!apiKey) {
     return buildFallbackReview(contractName, findings, body);
   }
 
+  // Set when the first attempt died on the timeout and the single
+  // retry was spent — the fallback log line below reports it.
+  let timeoutRetried = false;
+  // Same for the corrective (reply-shape) retry.
+  let shapeRetried = false;
   try {
     const { system, user } = buildAiReviewPrompt(contractName, body, findings, fourbyte, inventory, resnet);
 
@@ -452,61 +651,130 @@ export async function generateAiSecurityReview(
       process.env.VERCEL_URL?.trim() ||
       "https://smart-kontrakt.vercel.app";
 
-    const response = await withRetry(async () => {
-      await openRouterLimiter.acquire();
-      return postChatWithModelFallback({
-        purpose,
-        apiKey,
-        timeoutMs: 60_000,
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": referer,
-          "X-Title": "SmartKontrakt / Kiln",
+    // One attempt. withRetry still absorbs the transient HTTP/network
+    // failures (429 / 5xx / connection errors, 3 retries as before),
+    // but it must NOT retry a timeout: a timed-out attempt restarts
+    // the generation from zero, so the old default predicate burned
+    // 4 x 60s on the same slow prompt and fell back anyway — the
+    // exact failure in Jer's 2026-10-25 worker run (template reviews
+    // for entry after entry, downstream no_tests verdicts). The Deep
+    // Agent's calls learned this first ("do not retry timeouts");
+    // here the discipline is: fail the attempt fast on timeout, and
+    // let the single counted retry below handle it. `corrective`
+    // appends the reply-shape instruction used by the corrective
+    // retry further down (same shape as the Deep Agent's call).
+    const callReview = (corrective?: string): Promise<Response> =>
+      withRetry(
+        async () => {
+          await openRouterLimiter.acquire();
+          return postChatWithModelFallback({
+            purpose,
+            apiKey,
+            timeoutMs,
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+              "HTTP-Referer": referer,
+              "X-Title": "SmartKontrakt / Kiln",
+            },
+            makeBody: (candidate) => ({
+              model: candidate,
+              messages: [
+                { role: "system", content: system },
+                { role: "user", content: user },
+                ...(corrective
+                  ? [{ role: "user" as const, content: corrective }]
+                  : []),
+              ],
+              response_format: { type: "json_object" },
+              temperature: 0.7,
+              max_tokens: REVIEW_MAX_TOKENS,
+            }),
+          });
         },
-        makeBody: (model) => ({
-          model,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-          response_format: { type: "json_object" },
-          temperature: 0.7,
-          max_tokens: 6000,
-        }),
-      });
-    }, { retries: 3, baseDelayMs: 2000 });
+        {
+          retries: 3,
+          baseDelayMs: 2000,
+          retryOn: (err) => !isOpenRouterTimeoutError(err) && isTransientError(err),
+        },
+      );
 
-    if (!response.ok) {
-      const detail = (await response.text().catch(() => "")).slice(0, 500);
-      throw new Error(`OpenRouter returned HTTP ${response.status}: ${detail}`);
-    }
+    // One logical review call: the HTTP call (with its own single
+    // timeout retry) plus the response read. Returns the message
+    // content AND the choice's finish_reason — "length" is the only
+    // truncation signal the provider gives, and it rides in the same
+    // body; parseReviewReply needs it to tell a cut reply apart from
+    // a wrong-schema one.
+    const fetchReviewReply = async (
+      corrective?: string,
+    ): Promise<{ content: string; finishReason?: string }> => {
+      let response: Response;
+      try {
+        response = await callReview(corrective);
+      } catch (err) {
+        if (!isOpenRouterTimeoutError(err)) throw err;
+        // Exactly ONE retry on a timeout — a slow free-lane queue can
+        // clear between attempts; a second timeout means the lane is
+        // not answering at this budget today, and the template
+        // fallback (which the caller gets below) is the honest outcome.
+        timeoutRetried = true;
+        console.warn(
+          `[Kiln] OpenRouter AI review timed out (model ${model}, timeout ${timeoutMs}ms) — retrying once`,
+        );
+        response = await callReview(corrective);
+      }
 
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string | null } }>;
-    };
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error("OpenRouter returned no message content");
-    }
+      if (!response.ok) {
+        const detail = (await response.text().catch(() => "")).slice(0, 500);
+        throw new Error(`OpenRouter returned HTTP ${response.status}: ${detail}`);
+      }
 
-    const parsed = extractJsonContent(content) as {
-      threatModelReport?: string;
-      foundryTestCode?: string;
-      economicRiskSummary?: string;
-    };
-
-    if (parsed.threatModelReport && parsed.foundryTestCode) {
-      return {
-        threatModelReport: parsed.threatModelReport,
-        foundryTestCode: parsed.foundryTestCode,
-        economicRiskSummary: parsed.economicRiskSummary || "Completed OpenRouter threat review.",
-        source: "openrouter",
+      const data = (await response.json()) as {
+        choices?: Array<{
+          message?: { content?: string | null };
+          finish_reason?: string | null;
+        }>;
       };
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) {
+        throw new Error("OpenRouter returned no message content");
+      }
+      return { content, finishReason: data.choices?.[0]?.finish_reason ?? undefined };
+    };
+
+    // A reply that arrived but is not a usable review object gets ONE
+    // corrective retry — the instruction names the exact missing
+    // fields and demands the complete JSON object with the exact
+    // schema keys. Jer's 59,852-address run (2026-10-25) showed the
+    // old behaviour: the call returned in time, validation rejected
+    // the shape ("missing threatModelReport / foundryTestCode"), and
+    // the entry went straight to the template with no diagnosis of
+    // what the reply held. A second shape failure falls back exactly
+    // as before, with the received keys in the error.
+    let review: AiSecurityReview;
+    try {
+      const first = await fetchReviewReply();
+      review = parseReviewReply(first.content, first.finishReason);
+    } catch (err) {
+      if (!(err instanceof ReviewReplyError)) throw err;
+      shapeRetried = true;
+      console.warn(
+        `[Kiln] OpenRouter AI review reply unusable (model ${model}): ${err.message} — retrying once with a corrective instruction`,
+      );
+      const second = await fetchReviewReply(err.correctiveInstruction());
+      review = parseReviewReply(second.content, second.finishReason);
     }
-    throw new Error("OpenRouter reply was missing threatModelReport / foundryTestCode");
+    return review;
   } catch (err) {
-    console.warn("[Kiln] OpenRouter AI review failed, falling back to structured template:", err);
+    // The fallback line must carry the whole diagnosis — model, the
+    // timeout budget in force, and whether the timeout retry was
+    // spent. The bare "aborted due to timeout" this replaced cost a
+    // screenshot round-trip to explain (2026-10-25).
+    console.warn(
+      `[Kiln] OpenRouter AI review failed, falling back to structured template ` +
+        `(model ${model}, timeout ${timeoutMs}ms${timeoutRetried ? ", timeout retry attempted and exhausted" : ""}${shapeRetried ? ", corrective retry attempted and exhausted" : ""}): ` +
+        `${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`,
+    );
   }
 
   return buildFallbackReview(contractName, findings, body);

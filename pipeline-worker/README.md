@@ -149,16 +149,31 @@ as the PoC Audits page's Adjudicate button, no human tap:
   verdict saved onto the finding row (plus the run-history row).
   Without an `OPENROUTER_API_KEY`, generation/repair return nothing
   and outcomes still save honestly — template/snippet PoCs run.
-- **Budget:** `autoPocCap` caps chain attempts per run (default 25,
-  `0` = unlimited). Each attempt is one backend run at most (plus one
-  compile-repair re-run), sequential — the backend runs one PoC at a
-  time.
+- **Budget:** `autoPocCap` caps **backend attempts** per run
+  (default 25, `0` = unlimited). An attempt is a finding whose chain
+  actually sent new PoC code to the backend (one run, plus one
+  compile-repair re-run at most), sequential — the backend runs one
+  PoC at a time.
+- **Identical-draft dedupe:** sibling findings of the same detector
+  often prepare byte-identical PoC code. Within one entry, the code
+  that would be sent to the backend is hashed (SHA-256); a repeat is
+  not executed again — the sibling saves the same verdict, its run
+  output names the finding whose run it shares, and the save counts
+  as **shared** (`autoPocShared`), never as an attempt, so shared
+  saves do not consume cap. Only verdicts about the code itself are
+  shared (passed / failed / no_tests / value-guard skip / compile
+  error); backend-unreachable and RPC/fork outcomes are never
+  cached. The cap is checked before each finding's chain (whether a
+  draft is a repeat is only known after generation), so once the
+  backend budget is spent, an entry's remaining findings wait for
+  the app's adjudication queue even if some would have shared.
 - **Backend down:** 3 consecutive infra failures (backend unreachable
   / RPC-fork failure) trip a circuit breaker for the rest of the run
   (status shows `autoPocBackendDown: true`); the static pipeline
   keeps going. Restart the backend and start a new run to re-enable.
-- `/status` reports the tally: `autoPocAttempted`, `autoPocPassed`,
-  `autoPocFailed`, `autoPocErrors`, `autoPocSkipped`.
+- `/status` reports the tally: `autoPocAttempted` (backend
+  attempts), `autoPocPassed`, `autoPocFailed`, `autoPocErrors`,
+  `autoPocSkipped`, `autoPocShared`.
 
 ## Resume and freshness
 

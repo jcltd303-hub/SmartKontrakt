@@ -27,6 +27,22 @@ contract PoC is Test {
     function test_exploit() public { assertTrue(true); }
 }`;
 
+// Distinct-code variants: tests whose subject is per-run sequencing
+// (cap, breaker) or independent runs need findings whose prepared
+// PoC code DIFFERS — identical code now dedupes within an entry
+// (identical-draft dedupe, see the dedupe suite below), which would
+// silently turn their later findings into shared saves.
+const snippetWithTest = (fn: string) => `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+import "forge-std/Test.sol";
+contract PoC is Test {
+    function ${fn}() public { assertTrue(true); }
+}`;
+const TEST_SNIPPET_B = snippetWithTest("test_exploit_b");
+const TEST_SNIPPET_C = snippetWithTest("test_exploit_c");
+const TEST_SNIPPET_D = snippetWithTest("test_exploit_d");
+const TEST_SNIPPET_E = snippetWithTest("test_exploit_e");
+
 // A complete Test contract whose only test function is private —
 // forge executes none of it, so the chain's generation gate fires.
 const PRIVATE_TEST_SNIPPET = `// SPDX-License-Identifier: MIT
@@ -201,7 +217,13 @@ describe("runAutoPocForEntry", () => {
     {
       const { deps, saved, calls } = makeDeps();
       const state = newAutoPocRunState();
-      const report = makeReport([makeFinding(), makeFinding({ title: "Second", detector: "access" })]);
+      // Distinct code for the second finding: this case pins two
+      // INDEPENDENT runs (identical code would dedupe to one backend
+      // call + a shared save — the dedupe suite below covers that).
+      const report = makeReport([
+        makeFinding(),
+        makeFinding({ title: "Second", detector: "access", exploitSolidity: TEST_SNIPPET_B }),
+      ]);
       const res = await runAutoPocForEntry(state, entry(report), OPTS, deps);
       assert.equal(res.attempted, 2);
       assert.equal(res.passed, 2);
@@ -258,10 +280,12 @@ describe("runAutoPocForEntry", () => {
     const { deps, calls, logs } = makeDeps();
     const state = newAutoPocRunState();
     const opts = { ...OPTS, cap: 2 };
+    // Distinct code per finding: the cap counts backend attempts, so
+    // each finding must be one — identical code would share instead.
     const report = makeReport([
       makeFinding(),
-      makeFinding({ title: "Two", detector: "access" }),
-      makeFinding({ title: "Three", detector: "overflow" }),
+      makeFinding({ title: "Two", detector: "access", exploitSolidity: TEST_SNIPPET_B }),
+      makeFinding({ title: "Three", detector: "overflow", exploitSolidity: TEST_SNIPPET_C }),
     ]);
     const res = await runAutoPocForEntry(state, entry(report), opts, deps);
     assert.equal(res.attempted, 2);
@@ -319,12 +343,15 @@ describe("runAutoPocForEntry", () => {
       },
     });
     const state = newAutoPocRunState();
+    // Distinct code per finding: the fake backend's outcome sequence
+    // is keyed on real backend calls, and identical code would
+    // dedupe (a cached "passed" would replace the scripted outcome).
     const five = makeReport([
       makeFinding(),
-      makeFinding({ title: "2", detector: "d2" }),
-      makeFinding({ title: "3", detector: "d3" }),
-      makeFinding({ title: "4", detector: "d4" }),
-      makeFinding({ title: "5", detector: "d5" }),
+      makeFinding({ title: "2", detector: "d2", exploitSolidity: TEST_SNIPPET_B }),
+      makeFinding({ title: "3", detector: "d3", exploitSolidity: TEST_SNIPPET_C }),
+      makeFinding({ title: "4", detector: "d4", exploitSolidity: TEST_SNIPPET_D }),
+      makeFinding({ title: "5", detector: "d5", exploitSolidity: TEST_SNIPPET_E }),
     ]);
     const res = await runAutoPocForEntry(state, entry(five), OPTS, deps);
     assert.equal(res.attempted, 5);
@@ -346,11 +373,14 @@ describe("runAutoPocForEntry", () => {
       },
     });
     const state = newAutoPocRunState();
+    // Distinct code per finding: identical code would share the
+    // first compile error (compile outcomes ARE shared — see the
+    // dedupe suite), collapsing four attempts into one.
     const report = makeReport([
       makeFinding(),
-      makeFinding({ title: "2", detector: "d2" }),
-      makeFinding({ title: "3", detector: "d3" }),
-      makeFinding({ title: "4", detector: "d4" }),
+      makeFinding({ title: "2", detector: "d2", exploitSolidity: TEST_SNIPPET_B }),
+      makeFinding({ title: "3", detector: "d3", exploitSolidity: TEST_SNIPPET_C }),
+      makeFinding({ title: "4", detector: "d4", exploitSolidity: TEST_SNIPPET_D }),
     ]);
     const res = await runAutoPocForEntry(state, entry(report), OPTS, deps);
     assert.equal(res.attempted, 4);
@@ -385,5 +415,134 @@ describe("runAutoPocForEntry", () => {
     assert.equal(calls.backend, 1);
     assert.equal(res.passed, 1);
     assert.equal(saved[0]!.status, "passed");
+  });
+});
+
+describe("auto-PoC identical-draft dedupe", () => {
+  it("two findings, identical generated code → ONE backend call, both saved, sibling marked shared", async () => {
+    const { deps, calls, saved } = makeDeps();
+    const state = newAutoPocRunState();
+    // Both findings carry the same exploitSolidity (makeFinding's
+    // default): the prepared PoC code is byte-identical — Jer's live
+    // shape (10 same-detector siblings, 10 identical drafts).
+    const report = makeReport([
+      makeFinding(),
+      makeFinding({ title: "Same code, second finding", detector: "access" }),
+    ]);
+    const res = await runAutoPocForEntry(state, entry(report), OPTS, deps);
+    assert.equal(calls.backend, 1);
+    assert.equal(saved.length, 2);
+    assert.equal(saved[0]!.findingId, "scan-1:0");
+    assert.equal(saved[1]!.findingId, "scan-1:1");
+    assert.equal(saved[1]!.status, "passed");
+    // The sibling's record is distinguishable from an independent
+    // run: its output names the shared run and the finding that ran.
+    assert.match(saved[1]!.output, /shared run — identical PoC code \(SHA-256 [0-9a-f]{64}\)/);
+    assert.match(saved[1]!.output, /finding scan-1:0/);
+    assert.doesNotMatch(saved[0]!.output, /shared run/);
+    // Verdicts land on both findings; the accounting splits the one
+    // backend attempt from the one shared save.
+    assert.equal(res.passed, 2);
+    assert.equal(res.attempted, 1);
+    assert.equal(res.shared, 1);
+    assert.equal(state.tally.attempted, 1);
+    assert.equal(state.tally.shared, 1);
+    assert.match(res.note, /1 shared/);
+  });
+
+  it("two findings, different code → two backend calls, nothing shared", async () => {
+    const { deps, calls, saved } = makeDeps();
+    const state = newAutoPocRunState();
+    const report = makeReport([
+      makeFinding(),
+      makeFinding({ title: "Other code", detector: "access", exploitSolidity: TEST_SNIPPET_B }),
+    ]);
+    const res = await runAutoPocForEntry(state, entry(report), OPTS, deps);
+    assert.equal(calls.backend, 2);
+    assert.equal(res.attempted, 2);
+    assert.equal(res.shared, 0);
+    assert.doesNotMatch(saved[1]!.output, /shared run/);
+  });
+
+  it("a shared save does not consume a cap slot (cap = backend attempts)", async () => {
+    const { deps, calls, saved, logs } = makeDeps();
+    const state = newAutoPocRunState();
+    const opts = { ...OPTS, cap: 2 };
+    const report = makeReport([
+      makeFinding(),
+      makeFinding({ title: "Identical twin", detector: "access" }),
+      makeFinding({ title: "Other code", detector: "overflow", exploitSolidity: TEST_SNIPPET_B }),
+    ]);
+    const res = await runAutoPocForEntry(state, entry(report), opts, deps);
+    // A ran (slot 1), its identical twin shared (no slot), and the
+    // different-code finding still got slot 2 — had the shared save
+    // consumed a slot, the third finding would have hit the cap.
+    assert.equal(calls.backend, 2);
+    assert.equal(saved.length, 3);
+    assert.equal(res.attempted, 2);
+    assert.equal(res.shared, 1);
+    assert.equal(res.passed, 3);
+    assert.equal(autoPocCapReached(state, 2), true);
+    assert.equal(logs.filter((l) => l.includes("cap reached")).length, 0);
+  });
+
+  it("a compile-error outcome is shared too — it is a property of the code alone", async () => {
+    // The runBackend override replaces the counting default, so it
+    // keeps its own count.
+    let backendCalls = 0;
+    const { deps, saved } = makeDeps({
+      runBackend: async () => {
+        backendCalls++;
+        return {
+          status: "error",
+          logs: "Compiler run failed: ParserError: expected identifier",
+          durationMs: 5,
+        };
+      },
+      repair: async () => {
+        throw new Error("no key");
+      },
+    });
+    const state = newAutoPocRunState();
+    const report = makeReport([
+      makeFinding(),
+      makeFinding({ title: "Identical twin", detector: "access" }),
+    ]);
+    const res = await runAutoPocForEntry(state, entry(report), OPTS, deps);
+    assert.equal(backendCalls, 1);
+    assert.equal(res.errors, 2);
+    assert.equal(res.attempted, 1);
+    assert.equal(res.shared, 1);
+    assert.equal(saved[1]!.status, "error");
+    assert.match(saved[1]!.output, /shared run/);
+    // A shared compile error is not infra — the breaker stays shut.
+    assert.equal(state.breakerTripped, false);
+    assert.equal(state.consecutiveInfra, 0);
+  });
+
+  it("infra outcomes are never shared — an unreachable backend is attempted per finding", async () => {
+    let backendCalls = 0;
+    const { deps } = makeDeps({
+      runBackend: async () => {
+        backendCalls++;
+        return {
+          status: "backend_unreachable",
+          logs: "Backend not reachable — start it in Termux",
+          durationMs: 0,
+        };
+      },
+    });
+    const state = newAutoPocRunState();
+    const report = makeReport([
+      makeFinding(),
+      makeFinding({ title: "Identical twin", detector: "access" }),
+    ]);
+    const res = await runAutoPocForEntry(state, entry(report), OPTS, deps);
+    // backend_unreachable carries no information about the code, so
+    // nothing is cached: both findings make their own real attempt
+    // (and both count toward the circuit breaker, as before).
+    assert.equal(backendCalls, 2);
+    assert.equal(res.shared, 0);
+    assert.equal(res.errors, 2);
   });
 });

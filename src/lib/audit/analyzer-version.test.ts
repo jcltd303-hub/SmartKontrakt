@@ -55,7 +55,12 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // was hand-bumped AND the fingerprint gained MAX_RESNET_BONUS plus
   // three category changes. A stamp matching today on only one of the
   // two halves is still stale.
-  assert.equal(ANALYZER_BASELINE, "2026-10-24.1");
+  // The pin below tracks the CURRENT baseline: it moved again to
+  // 2026-10-25.1 in c276b75 (full-bytecode windows + prompt-evidence
+  // fixes) — this pin was written against 2026-10-24.1 in the
+  // skip-audit batch (82652287) after that bump had already landed,
+  // which left this test red on main until it was re-pinned here.
+  assert.equal(ANALYZER_BASELINE, "2026-10-25.1");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });

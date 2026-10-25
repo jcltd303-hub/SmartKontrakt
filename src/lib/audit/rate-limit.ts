@@ -39,7 +39,7 @@ export const openRouterLimiter = new RateLimiter(1000); // 60 OpenRouter req/min
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function isTransientError(err: unknown): boolean {
+export function isTransientError(err: unknown): boolean {
   if (err instanceof Error) {
     if (err.name === "AbortError" || err.name === "TimeoutError") return true;
     return /429|rate.?limit|too many|timeout|timed out|abort|network|fetch failed|econnreset|etimedout|econnrefused|socket hang up|503|502|500/i.test(err.message);
