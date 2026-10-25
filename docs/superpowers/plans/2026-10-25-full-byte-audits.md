@@ -37,9 +37,9 @@
 - [ ] Finish PR28 CI verification; leave unmerged.
 
 ## Progress
-- Scratch reset interrupted initial implementation; current recovery starts from remote main d02615d.
+- Scratch reset interrupted initial implementation; current recovery starts from remote main e0951cf (which includes PR27).
 
 - Reused concurrent main e0951cf's existing ResnetResult, six-point scoring and migration0018 rather than introducing a duplicate result format.
 - Fresh review: two important findings (stale model result on failed replay; ML band crossing) reproduced RED→GREEN. Node deep-agent stale weight bug also reproduced RED→GREEN.
-- Full suite before final prompt snippet regression: 791 tests passed. Final full suite and CI are rerunning after snippet/UI-history wording updates.
-- Build/typecheck/lint passed; real Node ONNX coverage 131073 bytes and repeated inference passed. No checkpoint changes.
+- Final local full suite: 793 Node tests passed (252 scripts + 541 TypeScript). Typecheck, lint and build passed. CI c276b75 passed general checks, 55 Python tests/artifact checks and dev/built desktop/mobile browser verification. Current final branch checks are linked on PR28.
+- Local Python attempt was blocked by missing torch (13 import errors); the complete pinned Python environment passed in GitHub artifact CI. Real Node ONNX coverage 131073 bytes and repeated inference passed. No checkpoint changes.

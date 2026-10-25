@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { analyzeAddress, RpcUnavailableError } from './address-fetcher.ts';
 import { looksLikeBytecode } from './bytecode.ts';
 const address = '0x1111111111111111111111111111111111111111';
-function providers(verified: boolean, code: string) {
+function providers(verified: boolean, code: string, abiAvailable = true) {
  const before = globalThis.fetch;
  globalThis.fetch = (async (input, init) => {
   const url = String(input);
   const json = (data: unknown, status=200) => new Response(JSON.stringify(data), {status});
   if (url.includes('sourcify.dev/server/files/any/')) return verified ? json({files:[{name:'Vault.sol',content:'pragma solidity ^0.8.0; contract Vault { function ping() public {} }'}]}) : json({},404);
-  if (url.includes('repo.sourcify.dev/contracts/')) return json({output:{abi:[{type:'function',name:'ping',inputs:[],outputs:[],stateMutability:'nonpayable'}]}});
+  if (url.includes('repo.sourcify.dev/contracts/')) return !abiAvailable ? json({},404) : json({output:{abi:[{type:'function',name:'ping',inputs:[],outputs:[],stateMutability:'nonpayable'}]}});
   if (init?.body) {
    const method = JSON.parse(String(init.body)).method;
    return json({result: method === 'eth_getCode' ? code : method === 'eth_getBalance' ? '0x0' : '0x'+'0'.repeat(64)});
@@ -43,4 +43,9 @@ test('missing Node callback is explicit unavailable',async()=>{
 test('inference failure is explicit error',async()=>{
  const restore=providers(false,'0x00');
  try {const {report}=await analyzeAddress(address,'ethereum',undefined,{resnetRunner:async()=>{throw Error('inference exploded');}});assert.equal(report.inventory.resnetStatus?.status,'error');} finally{restore();}
+});
+
+test('an unavailable ABI is recorded explicitly on the completed address audit',async()=>{
+ const restore=providers(false,'0x00',false);
+ try {const {report}=await analyzeAddress(address);assert.equal(report.inventory.abi,undefined);assert.ok(report.inventory.notes.some(note=>note.startsWith('ABI unavailable:')));} finally{restore();}
 });

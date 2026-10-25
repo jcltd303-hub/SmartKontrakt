@@ -2,8 +2,9 @@
  * ResNet1D screening — the shared result shape and its risk-score term.
  *
  * ResNet1D (see ml/image-vuln/RESNET1D.md) is a five-class multi-label
- * classifier over raw runtime bytecode: the first 16,384 bytes, zero-padded,
- * L2-normalized. It is a SCREENING signal — Slither-pseudo-labelled training
+ * classifier trained on 16,384-byte prefixes. Current audits evaluate all bytes
+ * in consecutive zero-padded, L2-normalized windows and class-max pool. The
+ * prefix benchmark does not evaluate that pooling policy. It is a SCREENING signal — Slither-pseudo-labelled training
  * data, test micro F1 ≈ 0.74 — not a detector. Its classes deliberately use
  * the same names as the model's manifest (`CLASSES` in
  * src/lib/image-ml/runtime.ts; a test pins the two lists together).
@@ -62,9 +63,9 @@ export type ResnetResult = {
   architecture: string;
   checkpointSha256: string;
   predictions: ResnetPrediction[];
-  /** Runtime bytecode length the model screened (it reads at most 16,384). */
+  /** Total supplied runtime length; processedBytes identifies current all-byte coverage. */
   inputBytes: number;
-  /** True when inputBytes > 16,384 — the model saw a prefix, not the whole. */
+  /** Historical prefix-only rows may be truncated. Current full-byte runs set false. */
   truncated: boolean;
   /** ISO timestamp of the inference run. */
   ranAt: string;

@@ -13,8 +13,8 @@
  *     the audit trail Jer reads in the workbench and the archive.
  *
  * Fail-soft: no code to classify, a runner that returns null, or a
- * runner that throws all leave the report exactly as the static
- * analysis produced it. ResNet is a screening layer; the audit must
+ * runner that throws preserve static findings and record missing evidence,
+ * clearing any previous model result/bonus. ResNet is a screening layer; the audit must
  * never fail because the model did.
  */
 import { riskScore } from "./risk.ts";

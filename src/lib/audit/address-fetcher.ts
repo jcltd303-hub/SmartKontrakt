@@ -540,9 +540,11 @@ export async function analyzeAddress(
       if (gathered) {
         r.inventory.abi = gathered.abi;
         r.inventory.abiSource = gathered.source;
+      } else {
+        r.inventory.notes.push("ABI unavailable: no verified ABI or usable heuristic interface could be gathered.");
       }
     } catch {
-      // leave unset
+      r.inventory.notes.push("ABI unavailable: interface gathering failed.");
     }
   };
 
