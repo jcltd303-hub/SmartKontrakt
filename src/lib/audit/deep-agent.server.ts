@@ -211,68 +211,101 @@ export async function runDeepAgentRound(
     process.env.VERCEL_URL?.trim() ||
     "https://smart-kontrakt.vercel.app";
 
-  const response = await withRetry(async () => {
-    await openRouterLimiter.acquire();
-    // Routed through the fallback helper: this round died with
-    // "OpenRouter returned HTTP 404 ... This model is unavailable for free"
-    // when a free-tier id was withdrawn, which the chain now absorbs.
-    return postChatWithModelFallback({
-      purpose: "json",
-      apiKey,
-      // The prompt carries source + templates + prior results, and the
-      // model must emit up to 2 full PoCs — 60s was not enough (every
-      // round timed out on the pipeline). 180s for one attempt.
-      timeoutMs: 180_000,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": referer,
-        "X-Title": "SmartKontrakt / Kiln Deep Agent",
+  // One proposal call. `corrective` appends the parse-failure
+  // instruction used by the single retry below.
+  const callProposal = async (corrective: boolean): Promise<string> => {
+    const response = await withRetry(async () => {
+      await openRouterLimiter.acquire();
+      // Routed through the fallback helper: this round died with
+      // "OpenRouter returned HTTP 404 ... This model is unavailable for free"
+      // when a free-tier id was withdrawn, which the chain now absorbs.
+      return postChatWithModelFallback({
+        purpose: "json",
+        apiKey,
+        // The prompt carries source + templates + prior results, and the
+        // model must emit up to 2 full PoCs — 60s was not enough (every
+        // round timed out on the pipeline). 180s for one attempt.
+        timeoutMs: 180_000,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": referer,
+          "X-Title": "SmartKontrakt / Kiln Deep Agent",
+        },
+        makeBody: (model) => ({
+          model,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+            ...(corrective
+              ? [
+                  {
+                    role: "user" as const,
+                    content:
+                      "Your previous reply could not be parsed as JSON. Reply with ONLY the JSON object — no prose, no code fences, no explanation before or after it.",
+                  },
+                ]
+              : []),
+          ],
+          response_format: { type: "json_object" },
+          temperature: 0.7,
+          max_tokens: 8000,
+        }),
+      });
+    }, {
+      retries: 3,
+      baseDelayMs: 2000,
+      // Do NOT retry timeouts/aborts: a timeout means the model is too
+      // slow for this prompt, and retrying the same huge prompt just
+      // burns 4x the time (that is how every flagged address ate 4
+      // minutes of timeouts). Fail fast after one long attempt. Keep
+      // retrying 429 / 5xx / network errors, which are transient.
+      retryOn: (err) => {
+        if (!(err instanceof Error)) return false;
+        if (err.name === "AbortError" || err.name === "TimeoutError") return false;
+        if (/timeout|timed out|abort/i.test(err.message)) return false;
+        return /429|rate.?limit|too many|network|fetch failed|econnreset|etimedout|econnrefused|socket hang up|503|502|500/i.test(err.message);
       },
-      makeBody: (model) => ({
-        model,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.7,
-        max_tokens: 8000,
-      }),
     });
-  }, {
-    retries: 3,
-    baseDelayMs: 2000,
-    // Do NOT retry timeouts/aborts: a timeout means the model is too
-    // slow for this prompt, and retrying the same huge prompt just
-    // burns 4x the time (that is how every flagged address ate 4
-    // minutes of timeouts). Fail fast after one long attempt. Keep
-    // retrying 429 / 5xx / network errors, which are transient.
-    retryOn: (err) => {
-      if (!(err instanceof Error)) return false;
-      if (err.name === "AbortError" || err.name === "TimeoutError") return false;
-      if (/timeout|timed out|abort/i.test(err.message)) return false;
-      return /429|rate.?limit|too many|network|fetch failed|econnreset|etimedout|econnrefused|socket hang up|503|502|500/i.test(err.message);
-    },
-  });
 
-  if (!response.ok) {
-    const detail = (await response.text().catch(() => "")).slice(0, 500);
-    throw new Error(`OpenRouter returned HTTP ${response.status}: ${detail}`);
-  }
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => "")).slice(0, 500);
+      throw new Error(`OpenRouter returned HTTP ${response.status}: ${detail}`);
+    }
 
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string | null } }>;
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string | null } }>;
+    };
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("OpenRouter returned no message content");
+    }
+    return content;
   };
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error("OpenRouter returned no message content");
-  }
 
-  const parsed = extractJsonContent(content) as {
+  // Parse the proposal. Free-tier models routinely wrap the JSON in
+  // prose or fences despite response_format — extractJsonContent
+  // tolerates that, but a reply with NO recoverable object gets ONE
+  // bounded corrective retry (reply with only the JSON), not a dead
+  // round: on 2026-10-25 a single prose reply killed the whole search
+  // with "Model reply did not contain a JSON object". A second failure
+  // throws, and the extractor's error carries the head of the
+  // offending reply so the failure is diagnosable from the message.
+  type Proposal = {
     hypotheses?: Array<Record<string, unknown>>;
     stopReason?: string | null;
   };
+  const firstReply = await callProposal(false);
+  let parsed: Proposal;
+  try {
+    parsed = extractJsonContent(firstReply) as Proposal;
+  } catch {
+    // Extraction failed — the reply carried no recoverable JSON
+    // object. (Transport/HTTP failures from callProposal never reach
+    // this catch: they propagate, so a slow or dead model is not
+    // re-asked — the fail-fast rule above stands.)
+    parsed = extractJsonContent(await callProposal(true)) as Proposal;
+  }
 
   // Validate: a hypothesis without a real PoC is not actionable.
   const hypotheses: DeepAgentHypothesis[] = (parsed.hypotheses ?? [])

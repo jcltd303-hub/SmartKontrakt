@@ -71,6 +71,71 @@ test("extractJsonContent throws when there is no JSON object", () => {
   assert.throws(() => extractJsonContent("no json here"), /JSON object/);
 });
 
+// --- tolerant extraction (2026-10-25): free-tier models wrap the
+// payload in prose/fences despite response_format, and the old
+// first-fence + first-{ to last-} slice died on all of these ---
+
+test("extractJsonContent skips a balanced non-JSON span in the prose", () => {
+  // A Solidity sketch in the explanation is a balanced {...} span that
+  // is not JSON — it must be skipped, not merged into the payload.
+  assert.deepEqual(
+    extractJsonContent(
+      'The fix looks like: function f() { require(x); } — result: {"hypotheses": [], "stopReason": "none"} (end)',
+    ),
+    { hypotheses: [], stopReason: "none" },
+  );
+});
+
+test("extractJsonContent is not corrupted by a brace in trailing prose", () => {
+  // The old greedy slice ran to the LAST } in the reply, swallowing
+  // the trailing note into the candidate and failing the parse.
+  assert.deepEqual(
+    extractJsonContent('{"a": {"b": 1}}\nHope that helps }'),
+    { a: { b: 1 } },
+  );
+});
+
+test("extractJsonContent respects braces inside JSON string values", () => {
+  // A PoC payload is full of braces inside its code string; they must
+  // not open/close spans or truncate the object.
+  const payload = {
+    foundryTestCode:
+      "contract PoC is Test { function test_x() public { uint256 a = 1; if (a > 0) { a += 1; } } }",
+    n: 1,
+  };
+  assert.deepEqual(
+    extractJsonContent(`Here is the PoC:\n${JSON.stringify(payload)}\nDone.`),
+    payload,
+  );
+});
+
+test("extractJsonContent tries later fences when the first is not JSON", () => {
+  assert.deepEqual(
+    extractJsonContent("Sketch:\n```\nnotes, no json\n```\n```json\n{\"a\": 2}\n```"),
+    { a: 2 },
+  );
+});
+
+test("extractJsonContent throws on a truncated reply (no balanced object)", () => {
+  // The outer object never closes — mining its first inner object
+  // would hand the caller a hypothesis where the envelope belongs.
+  assert.throws(
+    () => extractJsonContent('{"hypotheses": [{"title": "x", "foundryTestCode": "contract PoC is Test {'),
+    /did not contain a JSON object/,
+  );
+});
+
+test("extractJsonContent's failure names the offending reply (snippet)", () => {
+  let message = "";
+  try {
+    extractJsonContent("Sorry — I cannot produce that analysis in this format.");
+  } catch (err) {
+    message = err instanceof Error ? err.message : String(err);
+  }
+  assert.match(message, /did not contain a JSON object/);
+  assert.match(message, /Sorry — I cannot produce that analysis/);
+});
+
 
 // --- model gating must degrade, not fail the step ---
 

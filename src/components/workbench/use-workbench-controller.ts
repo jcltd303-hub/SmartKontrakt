@@ -804,29 +804,36 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     }
   };
 
-  // Single-PoC run with one LLM repair on compile failure. Returns the
-  // final PoC result + the final test code (repaired when repair ran).
-  // Repair failure is NOT a new verdict — the caller keeps the original
-  // compile-error result, so a failed repair never hides the real error.
+  // The PoC repair callback every workbench SmartPoC run hands to
+  // runSmartPoc: the chain's repair machinery (requestPocRepair →
+  // repairPocCode), nothing new. runSmartPoc invokes it ONLY when a
+  // run ends in a solc compile error — one bounded attempt, the
+  // re-run carries no repair callback, and assertion/verdict outcomes
+  // are never re-rolled. A repair that itself fails keeps the original
+  // compile-error result, with the failure noted in its logs.
+  const smartPocRepair = async (source: string, logs: string): Promise<string> => {
+    const repaired = await requestPocRepair({
+      data: {
+        contractName: report?.label ?? "TargetContract",
+        originalCode: source,
+        errorLogs: logs,
+        body: contractBody,
+      },
+    });
+    return repaired.fixedCode;
+  };
+
+  // Single-PoC run with one LLM repair on compile failure (inside
+  // runSmartPoc, via the repair callback). Returns the final PoC
+  // result + the code that actually executed (the repaired code when
+  // repair ran).
   const runSinglePocWithRepair = async (address: string, testCode: string) => {
-    let poc = await runPocWithRpcRetries(getBackendUrl(), { address, testCode });
-    if (poc.status === "error" && isPocCompileError(poc.logs ?? "")) {
-      try {
-        const repaired = await requestPocRepair({
-          data: {
-            contractName: report?.label ?? "TargetContract",
-            originalCode: testCode,
-            errorLogs: poc.logs ?? "",
-            body: contractBody,
-          },
-        });
-        testCode = repaired.fixedCode;
-        poc = await runPocWithRpcRetries(getBackendUrl(), { address, testCode });
-      } catch (repairErr) {
-        console.warn("[Kiln] PoC repair failed:", repairErr);
-      }
-    }
-    return { poc, testCode };
+    const poc = await runPocWithRpcRetries(getBackendUrl(), {
+      address,
+      testCode,
+      repair: smartPocRepair,
+    });
+    return { poc, testCode: poc.executedSource ?? testCode };
   };
 
   // --- Per-finding PoC runs (Run button on each finding's Attack Contract
@@ -1013,6 +1020,11 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
         testCode,
         chainId: singleAddressChain,
         ...(tokenAddress ? { tokenAddress } : {}),
+        // Same bounded compile repair the adjudicate chain gets: a
+        // generated PoC that dies on a solc type error (the
+        // bytes32→uint256 vm.load slip) is repaired once from the
+        // compiler output instead of ending as a terminal error.
+        repair: smartPocRepair,
       });
       // Release the run lock as soon as the backend call returns — the
       // save attempt below must not block other runs (it can take up to
@@ -1043,7 +1055,9 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
       const truncated = displayLogs.length > POC_OUTPUT_CAP;
       const result: PocRunResult = {
         id: runId,
-        source: testCode,
+        // The code that actually executed — the repaired PoC when the
+        // compile repair ran, not the broken draft it replaced.
+        source: poc.executedSource ?? testCode,
         status,
         startedAt,
         finishedAt,

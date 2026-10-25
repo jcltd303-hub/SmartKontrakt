@@ -187,10 +187,6 @@ export function resolveOpenRouterConfig(
 }
 
 /**
- * Extract the JSON payload from a model reply. Models sometimes wrap JSON
- * in ```json fences or add prose around it — find the outermost object.
- */
-/**
  * Reasoning models (Nemotron included) can leak chain-of-thought into the
  * message content as <think> blocks. Strip them before parsing or storing —
  * a stray brace inside a think block breaks JSON extraction, and raw
@@ -204,20 +200,98 @@ export function stripThinkBlocks(content: string): string {
     .trim();
 }
 
+/**
+ * Balanced top-level `{...}` spans of a text, in order. One pass that
+ * tracks brace depth while respecting JSON string literals and their
+ * escapes, so braces inside string values (a Solidity PoC is full of
+ * them) never open or close a span. A span is only recorded when its
+ * depth returns to zero — a truncated reply yields NO span for its
+ * unclosed object instead of a corrupt slice, and balanced non-JSON
+ * spans in surrounding prose (a code sketch) are returned as their own
+ * candidates for the caller to reject and move past.
+ */
+export function balancedObjectSpans(text: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  let depth = 0;
+  let spanStart = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      if (depth === 0) spanStart = i;
+      depth += 1;
+    } else if (ch === "}") {
+      if (depth > 0) {
+        depth -= 1;
+        if (depth === 0 && spanStart >= 0) {
+          spans.push({ start: spanStart, end: i });
+          spanStart = -1;
+        }
+      }
+    }
+  }
+  return spans;
+}
+
+/** First ~200 chars of a model reply, whitespace-collapsed — enough of
+ *  the offending text to diagnose a parse failure from the error alone. */
+export function replySnippet(content: string): string {
+  return content.replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/**
+ * Extract the JSON payload from a model reply — THE shared extractor
+ * for every LLM-JSON consumer (AI review, Deep Agent rounds, PoC
+ * repair, SmartPoC BCE/DV). Free-tier models routinely ignore
+ * `response_format: json_object` and wrap the payload in prose or
+ * fences; the tolerant paths below recover it. When nothing parses,
+ * the thrown error carries the head of the offending reply — a bare
+ * "did not contain a JSON object" with no trace of the reply cost a
+ * full debugging round on 2026-10-25 (both the Deep Agent and a PoC
+ * repair died on this in one screenshot).
+ */
 export function extractJsonContent(content: string): unknown {
   const trimmed = stripThinkBlocks(content);
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1].trim() : trimmed;
+  // Bare reply: the whole text is the payload (the historical fast path).
   try {
-    return JSON.parse(candidate);
+    return JSON.parse(trimmed);
   } catch {
-    const start = candidate.indexOf("{");
-    const end = candidate.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      return JSON.parse(candidate.slice(start, end + 1));
-    }
-    throw new Error("Model reply did not contain a JSON object");
+    // fall through to the tolerant paths
   }
+  // Fenced replies: try EVERY fenced block in order — free-tier models
+  // routinely fence a prose sketch or an example before the real JSON,
+  // and the old first-fence-only read died on exactly that.
+  for (const fenced of trimmed.matchAll(/```(?:\w+)?\s*\n?([\s\S]*?)```/g)) {
+    try {
+      return JSON.parse(fenced[1].trim());
+    } catch {
+      // not this block — keep looking
+    }
+  }
+  // Prose around the payload: parse the first balanced top-level
+  // object that is actually JSON. Balanced non-JSON spans (a Solidity
+  // sketch in the prose) fail their parse and are skipped, never
+  // merged into the payload the way the old first-{ to last-} slice
+  // merged them.
+  for (const span of balancedObjectSpans(trimmed)) {
+    try {
+      return JSON.parse(trimmed.slice(span.start, span.end + 1));
+    } catch {
+      // balanced but not JSON — try the next span
+    }
+  }
+  throw new Error(
+    `Model reply did not contain a JSON object (reply began: "${replySnippet(trimmed)}")`,
+  );
 }
 
 function buildFallbackReview(contractName: string, findings: Finding[], _codeOrBytecode: string): AiSecurityReview {
