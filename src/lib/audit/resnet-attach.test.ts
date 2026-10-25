@@ -70,6 +70,17 @@ test("a null runner result preserves static analysis and records unavailable evi
   assert.equal(report.inventory.resnetStatus?.status,"unavailable");
 });
 
+test("an unavailable runner preserves static findings and records the evidence gap", async () => {
+  const report = analyzeInput(VAULT_SOURCE, "Vault");
+  const before = JSON.stringify(report);
+  const attached = await attachResnetToReport(report, SOME_BYTECODE, async () => null);
+  assert.equal(attached, false);
+  assert.equal(report.resnet, null);
+  assert.equal(report.riskScore, riskScore(report.findings));
+  assert.deepEqual(report.findings, JSON.parse(before).findings);
+  assert.equal(report.inventory.resnetStatus?.status,"unavailable");
+});
+
 test("a throwing runner is swallowed — the audit never fails on the model", async () => {
   const report = analyzeInput(VAULT_SOURCE, "Vault");
   const attached = await attachResnetToReport(report, SOME_BYTECODE, async () => {

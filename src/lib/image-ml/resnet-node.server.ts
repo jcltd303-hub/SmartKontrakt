@@ -28,17 +28,46 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import * as ort from "onnxruntime-web/wasm";
 import { sha256, validateManifest, type Manifest } from "./resnet.ts";
 import { inferAllBytes } from "./all-bytes.ts";
 import type { ResnetResult } from "../audit/resnet-result.ts";
 
 const MANIFEST_FILE = "resnet1d-v1.json";
 
+type OnnxRuntime = typeof import("onnxruntime-web/wasm");
+
 type SessionCtx = {
   manifest: Manifest;
-  session: ort.InferenceSession;
+  ort: OnnxRuntime;
+  session: Awaited<ReturnType<OnnxRuntime["InferenceSession"]["create"]>>;
 };
+
+let onnxRuntimePromise: Promise<OnnxRuntime | null> | null = null;
+let onnxRuntimeUnavailableLogged = false;
+
+/**
+ * Load the optional ONNX runtime only when a screening session is first
+ * constructed. This module is imported by long-lived server/worker
+ * processes, so a top-level import would make an optional ML dependency
+ * a hard startup dependency — exactly the failure this guards against.
+ * A failed load is cached for the process and reported once; every
+ * screening call then behaves like a model/no-code miss (null).
+ */
+function loadOnnxRuntime(): Promise<OnnxRuntime | null> {
+  if (!onnxRuntimePromise) {
+    onnxRuntimePromise = import("onnxruntime-web/wasm").catch((err: unknown) => {
+      if (!onnxRuntimeUnavailableLogged) {
+        onnxRuntimeUnavailableLogged = true;
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[resnet] ResNet screening unavailable: ONNX runtime could not be loaded (${reason}). Audits will continue with static analysis only.`,
+        );
+      }
+      return null;
+    });
+  }
+  return onnxRuntimePromise;
+}
 
 /**
  * Where the model files live, in resolution order:
@@ -101,6 +130,8 @@ function getSession(modelDir?: string): Promise<SessionCtx | null> {
   if (!pending) {
     pending = (async () => {
       try {
+        const ort = await loadOnnxRuntime();
+        if (!ort) return null;
         const dir = await resolveResnetModelDir(modelDir);
         if (!dir) return null;
         const manifest = validateManifest(
@@ -134,7 +165,7 @@ function getSession(modelDir?: string): Promise<SessionCtx | null> {
         const session = await ort.InferenceSession.create(bytes, {
           executionProviders: ["wasm"],
         });
-        return { manifest, session };
+        return { manifest, ort, session };
       } catch {
         return null;
       }
@@ -165,8 +196,8 @@ export async function runResnetNode(
       const ctx = await getSession(opts?.modelDir);
       if (!ctx) return null;
       return await inferAllBytes(bytecode, async sequence => {
-        const input = new ort.Tensor("float32", sequence, [1, 1, 16384]);
-        let output: Record<string, ort.Tensor> | undefined;
+        const input = new ctx.ort.Tensor("float32", sequence, [1, 1, 16384]);
+        let output: Record<string, import("onnxruntime-web/wasm").Tensor> | undefined;
         try {
           output = await ctx.session.run({bytecode: input});
           return Array.from(output.probabilities.data as Float32Array);

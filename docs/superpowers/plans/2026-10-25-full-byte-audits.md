@@ -33,7 +33,7 @@
 
 ### Task 4: Product verification
 - [x] Update coverage/UI and browser all-byte checks, bump analyzer version.
-- [ ] Finish browser CI and inspect screenshots; local tests/types/lint/build and fresh review are complete.
+- [x] Browser CI passed; dev/built desktop/mobile screenshots inspected; local tests/types/lint/build and fresh review complete.
 - [ ] Finish PR28 CI verification; leave unmerged.
 
 ## Progress
@@ -41,5 +41,7 @@
 
 - Reused concurrent main e0951cf's existing ResnetResult, six-point scoring and migration0018 rather than introducing a duplicate result format.
 - Fresh review: two important findings (stale model result on failed replay; ML band crossing) reproduced RED→GREEN. Node deep-agent stale weight bug also reproduced RED→GREEN.
-- Final local full suite: 793 Node tests passed (252 scripts + 541 TypeScript). Typecheck, lint and build passed. CI c276b75 passed general checks, 55 Python tests/artifact checks and dev/built desktop/mobile browser verification. Current final branch checks are linked on PR28.
+- Final local full suite after upstream integration: 795 Node tests passed (252 scripts + 543 TypeScript). Typecheck, lint and build passed. CI c276b75 passed general checks, 55 Python tests/artifact checks and dev/built desktop/mobile browser verification. Current final branch checks are linked on PR28.
 - Local Python attempt was blocked by missing torch (13 import errors); the complete pinned Python environment passed in GitHub artifact CI. Real Node ONNX coverage 131073 bytes and repeated inference passed. No checkpoint changes.
+
+- Integrated main 9df65b1's optional ONNX lazy loading: missing package keeps the worker alive and yields explicit unavailable evidence. Preserved all-byte inference, cached serialized sessions and retryable model loads. Upstream missing-package tests now assert static findings/score preservation plus the required failure status (rather than byte-identical reports). All 13 loader/attachment tests passed; typecheck/lint/build and full suite passed after integration.
