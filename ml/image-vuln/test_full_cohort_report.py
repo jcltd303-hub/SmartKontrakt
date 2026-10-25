@@ -5,7 +5,7 @@ import unittest
 
 class FullCohortReportTests(unittest.TestCase):
     def fixture(self, micro=.70, macro=.65):
-        baseline=json.loads(Path(__file__).with_name('resnet1d-evaluation.json').read_text())
+        baseline=json.loads(Path(__file__).with_name('resnet1d-pilot6-evaluation.json').read_text())
         current=copy.deepcopy(baseline)
         current['protocol']['counts']['train']=55626
         current['protocol']['trainCap']=55632
@@ -18,6 +18,28 @@ class FullCohortReportTests(unittest.TestCase):
         current['thresholds']=current['history'][1]['thresholds']
         current['checkpointSha256']='b'*64
         return current,baseline
+
+    def test_cli_default_self_comparison_refuses_to_overwrite_recorded_decision(self):
+        import hashlib
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        import full_cohort_report
+        current,_=self.fixture()
+        checkpoint=b'checkpoint'
+        current['checkpointSha256']=hashlib.sha256(checkpoint).hexdigest()
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);out=root/'run';out.mkdir()
+            original=json.dumps(current)
+            (root/'resnet1d-evaluation.json').write_text(original)
+            (out/'evaluation.json').write_text(original)
+            (out/'selected.pt').write_bytes(checkpoint)
+            with patch.object(full_cohort_report,'__file__',str(root/'full_cohort_report.py')), patch('sys.argv',['full_cohort_report.py','--directory',str(out)]), redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError,'identical.*--baseline'):
+                    full_cohort_report.main()
+            self.assertEqual((out/'evaluation.json').read_text(),original)
+            self.assertFalse((out/'raw-evaluation.json').exists())
 
     def test_rgb_improvement_alone_cannot_replace_the_better_resnet(self):
         from full_cohort_report import annotate_full_cohort

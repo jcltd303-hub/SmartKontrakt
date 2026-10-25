@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "modelId": "resnet1d-16384-epoch5-v1",
+  "modelId": "resnet1d-16384-train55626-epoch2-v1",
   "architecture": "upstream-resnet1d-16384-v1",
   "sequenceLength": 16384,
   "normalization": "per-example L2 after zero-pad/truncate",
@@ -12,267 +12,271 @@
     "others"
   ],
   "thresholds": [
-    0.5250000000000001,
-    0.47500000000000014,
-    0.2750000000000001,
+    0.5750000000000002,
+    0.4500000000000001,
+    0.5000000000000002,
     0.3000000000000001,
-    0.47500000000000014
+    0.2750000000000001
   ],
   "bytes": 14850766,
-  "sha256": "77fbcfad7d0cc378e51c0106f5bdd8e5ffc41e5cc33a687df54d5bb75e5d298b",
+  "sha256": "984b3ee002e5491942c447aac45f54c47052e606105ed61e8ea61372c71242ab",
   "shards": [
     {
       "file": "resnet1d-v1-00.bin",
       "bytes": 1048576,
-      "sha256": "a91e8e446303550b9cfb5b4e2ec0baa2d39e0c5703388848a53330b9181f6d54"
+      "sha256": "e4adf6bf8a39f234344f6679dc03105e4a69442c400d199be2dca5624fbaf4ea"
     },
     {
       "file": "resnet1d-v1-01.bin",
       "bytes": 1048576,
-      "sha256": "b48d3bcfad591b31a48d2721f4b2c307bc8ab0149aa312221a9b8ce06602b889"
+      "sha256": "7faa3eea4355ec41f51c9a57289ee81d7d9cab5ab78db94c5aa13fa5f8aef5db"
     },
     {
       "file": "resnet1d-v1-02.bin",
       "bytes": 1048576,
-      "sha256": "38eaf060c1c1f7722ed162b5ea9da382074d6d94c80736c191d141651f55908f"
+      "sha256": "072aa6d0abcd91817a31b2b2492ca3f8e4b69a8350dd5cb574482bf33c21779d"
     },
     {
       "file": "resnet1d-v1-03.bin",
       "bytes": 1048576,
-      "sha256": "1c8d114937482519dba84327b40ec3fa4902d93fab94d48565ecd6c43bcfe8be"
+      "sha256": "82e4cc6406c8c4e98e83ad38f6df443c8f4b0162ecc09c07762a850acbe502e1"
     },
     {
       "file": "resnet1d-v1-04.bin",
       "bytes": 1048576,
-      "sha256": "21919a368de130cdc867911f7490728f5561a4d3009c0df56bfca3b875ba6c31"
+      "sha256": "634b564da5a80237a3c8639d4938748267520e9f2b3502ab5c8af728e1f25e4a"
     },
     {
       "file": "resnet1d-v1-05.bin",
       "bytes": 1048576,
-      "sha256": "882c479a3de9486cc3712c630eeba349ac05160799335acc3495371d663ea196"
+      "sha256": "5f7a8e517a8a198ec8fc5c277693e1bdd08cbdcae0b1d7657ad247ac508c3dee"
     },
     {
       "file": "resnet1d-v1-06.bin",
       "bytes": 1048576,
-      "sha256": "5e7c93124ab95f374fe5ff2deb070ba0043ad831e334ba262a4fda711ecb1e80"
+      "sha256": "ce744ab6a1029e35fe4d26b3ac2ca669a690abe009d85974d5115fa010b3a6e6"
     },
     {
       "file": "resnet1d-v1-07.bin",
       "bytes": 1048576,
-      "sha256": "aa197a75f2624dd5d5c4c5794079cc4b8a4c91e66ceb164049b9853e4348887d"
+      "sha256": "40d08ebab315f7769fd51559075512ef4dd9070f17e41abb5c5afd0bf6af24ab"
     },
     {
       "file": "resnet1d-v1-08.bin",
       "bytes": 1048576,
-      "sha256": "4dcd62f0e5d24fa30449f65f999eaabc3af30751a041cbf5d4eecf530a2a6db1"
+      "sha256": "bd2cfae1bacfeaecf9a55921a6c5c2513ec07477d88737afbbfd13e41165f05f"
     },
     {
       "file": "resnet1d-v1-09.bin",
       "bytes": 1048576,
-      "sha256": "63b926c44c3b8647eb9792b8b7ac0494cf45b9ef8d7535252d8d5f970a0c1271"
+      "sha256": "2215ecbeacde66635e971e382fbea52f5f99de51a8f996499f1cd7fbe29e0d62"
     },
     {
       "file": "resnet1d-v1-10.bin",
       "bytes": 1048576,
-      "sha256": "490ef6a7acc5e7a3758ad315abf4530b1f15b96074a16b9df5041c02ff6b295d"
+      "sha256": "1a56d35ae134808848cb53c050b952b0a71ce1dbe6761441f6ba63277f517c8a"
     },
     {
       "file": "resnet1d-v1-11.bin",
       "bytes": 1048576,
-      "sha256": "e0e7713f3a2ebe910648ccec0c69343f5f02774f42c8232307b6d479f96de305"
+      "sha256": "7028992aacecba3dbb279bf71cc2561153a80dcf38b3a657fb068bcc14218094"
     },
     {
       "file": "resnet1d-v1-12.bin",
       "bytes": 1048576,
-      "sha256": "480187d490780bca502d1e4fa10537a55380c9c8cd2bc4be36d4f2bc017fe0f3"
+      "sha256": "78d42aab349d96b61b8221dc131c0b58ab87fe5a213c08e9257d72aa43582cc5"
     },
     {
       "file": "resnet1d-v1-13.bin",
       "bytes": 1048576,
-      "sha256": "d37ce2b52ab555a23b18800caa49939f9e46c5a03f10159d67d5dae4b3bc66a2"
+      "sha256": "9ca28471468adb820c736d68a3b9e80ebe83ff2a4fb9a6ab7dfc55c760059517"
     },
     {
       "file": "resnet1d-v1-14.bin",
       "bytes": 170702,
-      "sha256": "f9defc046b5923ede5a1e41b2694cd59ff03287a4ac43641fb7636bf43d29c99"
+      "sha256": "daabddfbb924500f6c584194d948789f7ba6058f2e3be3c387abcd8f73359adc"
     }
   ],
-  "checkpointSha256": "f8ddd71621d6019c3aa0a6a5578254e04002ae42fea38904823204836009895e",
-  "parityMaxAbsoluteError": 1.7881393432617188e-07,
+  "checkpointSha256": "a488b44abc0021499406012c8a8f22d08bba927a07d01e51458509f632657eae",
+  "parityMaxAbsoluteError": 4.172325134277344e-07,
+  "evaluationReport": "resnet1d-evaluation.json",
+  "parityFile": "resnet1d-parity.json",
+  "referenceLocation": "model-directory",
   "training": {
     "samples": {
-      "train": 8192,
+      "train": 55626,
       "validation": 7358,
       "test": 10686
     },
-    "selectedEpoch": 5,
-    "checkpointSha256": "f8ddd71621d6019c3aa0a6a5578254e04002ae42fea38904823204836009895e"
+    "selectedEpoch": 2,
+    "epochs": 2,
+    "checkpointSha256": "a488b44abc0021499406012c8a8f22d08bba927a07d01e51458509f632657eae"
   },
   "evaluation": {
     "validation": {
-      "epoch": 5,
-      "trainLoss": 0.7646741749485955,
+      "epoch": 2,
+      "trainLoss": 0.6461938355793498,
       "validation": {
-        "microF1": 0.6596268120056016,
-        "macroF1": 0.6213193462490864,
-        "exactMatch": 0.32440880674096223,
+        "microF1": 0.7374643130001206,
+        "macroF1": 0.7039670826841037,
+        "exactMatch": 0.4688774123403099,
         "perClass": [
           {
             "class": "access-control",
-            "precision": 0.5537777777777778,
-            "recall": 0.4795996920708237,
-            "f1": 0.514026402640264,
+            "precision": 0.5579710144927537,
+            "recall": 0.6520400307929176,
+            "f1": 0.6013489527866525,
             "support": 1299,
-            "averagePrecision": 0.5435767109199093,
-            "auroc": 0.7926172722145504
+            "averagePrecision": 0.6550396566119695,
+            "auroc": 0.8631943700646493
           },
           {
             "class": "arithmetic",
-            "precision": 0.3887277248238707,
-            "recall": 0.6261682242990654,
-            "f1": 0.4796727179749425,
+            "precision": 0.6673992673992674,
+            "recall": 0.6081441922563418,
+            "f1": 0.6363953894516242,
             "support": 1498,
-            "averagePrecision": 0.4467713900439085,
-            "auroc": 0.733895706220353
+            "averagePrecision": 0.6922793230185909,
+            "auroc": 0.8591077067489303
           },
           {
             "class": "reentrancy",
-            "precision": 0.7042866711319491,
-            "recall": 0.7543041606886657,
-            "f1": 0.7284378247315553,
+            "precision": 0.7752570010634526,
+            "recall": 0.7844332855093257,
+            "f1": 0.7798181494027456,
             "support": 2788,
-            "averagePrecision": 0.8206547309541111,
-            "auroc": 0.8624787695939773
+            "averagePrecision": 0.8835937269213501,
+            "auroc": 0.9040644650879511
           },
           {
             "class": "unchecked-calls",
-            "precision": 0.7232082678049876,
-            "recall": 0.8471052631578947,
-            "f1": 0.7802690582959642,
+            "precision": 0.7786311271741586,
+            "recall": 0.9071052631578947,
+            "f1": 0.8379725294761152,
             "support": 3800,
-            "averagePrecision": 0.8613436421026439,
-            "auroc": 0.842584538918967
+            "averagePrecision": 0.9276058980194417,
+            "auroc": 0.9151778793526819
           },
           {
             "class": "others",
-            "precision": 0.4922043010752688,
-            "recall": 0.7821443827424178,
-            "f1": 0.6041907276027059,
+            "precision": 0.5903054448871182,
+            "recall": 0.7595044852627082,
+            "f1": 0.6643003923033812,
             "support": 2341,
-            "averagePrecision": 0.5990017839832578,
-            "auroc": 0.7633832666499045
+            "averagePrecision": 0.6926821819750073,
+            "auroc": 0.8305373009001348
           }
         ]
       },
       "thresholds": [
-        0.5250000000000001,
-        0.47500000000000014,
-        0.2750000000000001,
+        0.5750000000000002,
+        0.4500000000000001,
+        0.5000000000000002,
         0.3000000000000001,
-        0.47500000000000014
+        0.2750000000000001
       ],
       "validationAtFixedHalfThreshold": {
-        "microF1": 0.6168022149160755,
-        "macroF1": 0.5897507141202629,
-        "exactMatch": 0.32930144060886113,
+        "microF1": 0.7254935622317596,
+        "macroF1": 0.6886918747809859,
+        "exactMatch": 0.4729546072302256,
         "perClass": [
           {
             "class": "access-control",
-            "precision": 0.5041698256254739,
-            "recall": 0.5119322555812164,
-            "f1": 0.5080213903743316,
+            "precision": 0.5094124358243012,
+            "recall": 0.6874518860662048,
+            "f1": 0.5851900393184797,
             "support": 1299,
-            "averagePrecision": 0.5435767109199093,
-            "auroc": 0.7926172722145504
+            "averagePrecision": 0.6550396566119695,
+            "auroc": 0.8631943700646493
           },
           {
             "class": "arithmetic",
-            "precision": 0.4040307101727447,
-            "recall": 0.562082777036048,
-            "f1": 0.4701284198771636,
+            "precision": 0.7139152981849611,
+            "recall": 0.5514018691588785,
+            "f1": 0.6222222222222222,
             "support": 1498,
-            "averagePrecision": 0.4467713900439085,
-            "auroc": 0.733895706220353
+            "averagePrecision": 0.6922793230185909,
+            "auroc": 0.8591077067489303
           },
           {
             "class": "reentrancy",
-            "precision": 0.888961038961039,
-            "recall": 0.49103299856527977,
-            "f1": 0.6326247689463955,
+            "precision": 0.7752570010634526,
+            "recall": 0.7844332855093257,
+            "f1": 0.7798181494027456,
             "support": 2788,
-            "averagePrecision": 0.8206547309541111,
-            "auroc": 0.8624787695939773
+            "averagePrecision": 0.8835937269213501,
+            "auroc": 0.9040644650879511
           },
           {
             "class": "unchecked-calls",
-            "precision": 0.8185613359023763,
-            "recall": 0.6707894736842105,
-            "f1": 0.7373445183685277,
+            "precision": 0.8256291730868002,
+            "recall": 0.8460526315789474,
+            "f1": 0.8357161424486613,
             "support": 3800,
-            "averagePrecision": 0.8613436421026439,
-            "auroc": 0.842584538918967
+            "averagePrecision": 0.9276058980194417,
+            "auroc": 0.9151778793526819
           },
           {
             "class": "others",
-            "precision": 0.5112511251125113,
-            "recall": 0.72789406236651,
-            "f1": 0.600634473034896,
+            "precision": 0.6829143150333504,
+            "recall": 0.5685604442545921,
+            "f1": 0.6205128205128205,
             "support": 2341,
-            "averagePrecision": 0.5990017839832578,
-            "auroc": 0.7633832666499045
+            "averagePrecision": 0.6926821819750073,
+            "auroc": 0.8305373009001348
           }
         ]
       }
     },
     "test": {
-      "microF1": 0.6625647336307234,
-      "macroF1": 0.6242757045397607,
-      "exactMatch": 0.3179861501029384,
+      "microF1": 0.7361406958326506,
+      "macroF1": 0.7003373145916977,
+      "exactMatch": 0.4619127830806663,
       "perClass": [
         {
           "class": "access-control",
-          "precision": 0.5599755201958384,
-          "recall": 0.48031496062992124,
-          "f1": 0.5170952246397288,
+          "precision": 0.552286102308737,
+          "recall": 0.6404199475065617,
+          "f1": 0.5930967428293632,
           "support": 1905,
-          "averagePrecision": 0.5630382765707815,
-          "auroc": 0.8037364436039277
+          "averagePrecision": 0.6622568176340915,
+          "auroc": 0.8621991946941037
         },
         {
           "class": "arithmetic",
-          "precision": 0.37954607601859447,
-          "recall": 0.6399262332872291,
-          "f1": 0.4764847236525918,
+          "precision": 0.6404878048780488,
+          "recall": 0.6053480866758875,
+          "f1": 0.6224223749703721,
           "support": 2169,
-          "averagePrecision": 0.45597725865718675,
-          "auroc": 0.7356671680910681
+          "averagePrecision": 0.6977286517728156,
+          "auroc": 0.8628834593444306
         },
         {
           "class": "reentrancy",
-          "precision": 0.7064854022732338,
-          "recall": 0.7668118045476536,
-          "f1": 0.7354135251130959,
+          "precision": 0.7822619623006283,
+          "recall": 0.7830188679245284,
+          "f1": 0.7826402321083172,
           "support": 4134,
-          "averagePrecision": 0.8272897769154715,
-          "auroc": 0.8625573211930251
+          "averagePrecision": 0.888912849336885,
+          "auroc": 0.9088838545478604
         },
         {
           "class": "unchecked-calls",
-          "precision": 0.7218989280245023,
-          "recall": 0.8469277757815307,
-          "f1": 0.779431216931217,
+          "precision": 0.7765226682949168,
+          "recall": 0.9139417894358606,
+          "f1": 0.8396467772550962,
           "support": 5566,
-          "averagePrecision": 0.8642462576902785,
-          "auroc": 0.8450433400051653
+          "averagePrecision": 0.9321577980183934,
+          "auroc": 0.9204219114938915
         },
         {
           "class": "others",
-          "precision": 0.4979064263608229,
-          "recall": 0.7971436898863306,
-          "f1": 0.6129538323621694,
+          "precision": 0.587010078387458,
+          "recall": 0.7639172252987467,
+          "f1": 0.6638804457953394,
           "support": 3431,
-          "averagePrecision": 0.6177675248080142,
-          "auroc": 0.7770033671589218
+          "averagePrecision": 0.6988308382856494,
+          "auroc": 0.8318870733276542
         }
       ]
     },

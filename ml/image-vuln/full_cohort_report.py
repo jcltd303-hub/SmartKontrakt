@@ -74,7 +74,10 @@ def main():
     original=source.read_bytes();current=json.loads(original)
     if hashlib.sha256((directory/'selected.pt').read_bytes()).hexdigest()!=current['checkpointSha256']:
         raise ValueError('Selected checkpoint hash differs from report')
-    result=annotate_full_cohort(current,json.loads(Path(args.baseline).read_text()))
+    baseline=json.loads(Path(args.baseline).read_text())
+    if current['checkpointSha256']==baseline['checkpointSha256']:
+        raise ValueError('Candidate and baseline checkpoints are identical; choose an explicit historical --baseline')
+    result=annotate_full_cohort(current,baseline)
     if not raw_path.exists():raw_path.write_bytes(original)
     temporary=directory/'evaluation.json.tmp';temporary.write_text(json.dumps(result,indent=2,allow_nan=False)+'\n')
     temporary.replace(directory/'evaluation.json')
