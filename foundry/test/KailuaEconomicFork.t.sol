@@ -253,6 +253,7 @@ contract KailuaEconomicForkTest is Test {
         vm.deal(target, 4 ether);
         claimant.configure("", false, true);
         uint256 targetBefore = target.balance;
+        uint256 claimantBefore = address(claimant).balance;
         (bool ok, bytes memory err) = address(claimant).call(abi.encodeWithSignature("claimRewards()"));
         assertFalse(ok, "reward claim should revert when receiver rejects ETH");
         // The failed nested claim is wrapped by claimant.require, so outer return data is not
@@ -260,6 +261,6 @@ contract KailuaEconomicForkTest is Test {
         assertGt(err.length, 0, "expected revert data");
         assertEq(_readMapping("eliminationRewards(address)", address(claimant)), 0.4 ether);
         assertEq(target.balance, targetBefore);
-        assertEq(address(claimant).balance, 0);
+        assertEq(address(claimant).balance, claimantBefore, "failed payout changed receiver balance");
     }
 }
