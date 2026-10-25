@@ -107,10 +107,10 @@ export function WindowExperiment({ comparison }: { comparison: WindowComparison 
       <section aria-label="Window experiment" className="space-y-3 text-xs">
         <p className="leading-relaxed text-muted">
           Same trained weights, up to eight 16,384-byte windows. Thresholds selected on validation
-          only. Window inference is not enabled in this browser.
+          only. These historical results do not evaluate the current consecutive-window policy.
         </p>
         <p className="rounded-md bg-surface-2 p-3 font-medium">
-          Prefix model retained.{" "}
+          Historical experiment: prefix model was retained.{" "}
           {comparison.validationImproved
             ? "Window validation improved."
             : "Window validation did not improve both F1 metrics."}{" "}

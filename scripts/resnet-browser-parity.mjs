@@ -115,8 +115,8 @@ try {
         assert.ok((await coverage.innerText()).includes("bytes read"));
         await panel.getByText("Compare offline window experiment", { exact: true }).click();
         const comparison = panel.getByRole("region", { name: "Window experiment", exact: true });
-        assert.ok((await comparison.innerText()).includes("Prefix model retained"));
-        assert.ok((await comparison.innerText()).includes("not enabled in this browser"));
+        assert.ok((await comparison.innerText()).includes("Historical experiment: prefix model was retained"));
+        assert.ok((await comparison.innerText()).includes("do not evaluate the current consecutive-window policy"));
         assert.equal(await comparison.locator("tbody tr").count(), 4);
         await page.evaluate(() => window.scrollTo(0, 0));
         await page.screenshot({

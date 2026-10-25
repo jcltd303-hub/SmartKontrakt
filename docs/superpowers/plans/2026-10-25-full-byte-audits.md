@@ -20,21 +20,26 @@
 - Unknown detector and missing ABI do not produce invented attack evidence.
 
 ### Task 1: Full-byte reducer and scoring
-- [ ] Write/run failing behavioral tests for normalized windows, partial tail, malformed input/output, score caps and deep-agent rescoring.
-- [ ] Implement audit.ts/types/risk and reusable browser worker/client; run targeted tests and real Node model inference.
+- [x] Write/run failing behavioral tests for normalized windows, partial tail, malformed input/output, score caps and deep-agent rescoring.
+- [x] Implement audit.ts/types/risk and reusable browser worker/client; run targeted tests and real Node model inference.
 
 ### Task 2: Address enrichment
-- [ ] Reproduce short-runtime/RPC parsing and missing ML integration; implement shared fetcher + Node worker callback and cached offline model.
-- [ ] Verify source/bytecode/ABI/provider failure paths and serialized actual inference.
+- [x] Reproduce short-runtime/RPC parsing and missing ML integration; implement shared fetcher + Node worker callback and cached offline model.
+- [x] Verify source/bytecode/ABI/provider failure paths and serialized actual inference.
 
 ### Task 3: Fallbacks and prompts
-- [ ] Reproduce unknown-detector unrelated templates, universal reentrancy/profit instructions and invented no-key claims.
-- [ ] Correct generators/prompts; render bounded ABI/ML evidence and wire review/second pass consumers.
+- [x] Reproduce unknown-detector unrelated templates, universal reentrancy/profit instructions and invented no-key claims.
+- [x] Correct generators/prompts; render bounded ABI/ML evidence and wire review/second pass consumers.
 
 ### Task 4: Product verification
-- [ ] Update coverage/UI and browser all-byte checks, bump analyzer version.
-- [ ] Run full tests/types/lint/build and browser CI; inspect screenshots; fresh review and regression fixes.
-- [ ] Publish a reviewable PR with verified checks, leave unmerged.
+- [x] Update coverage/UI and browser all-byte checks, bump analyzer version.
+- [ ] Finish browser CI and inspect screenshots; local tests/types/lint/build and fresh review are complete.
+- [ ] Finish PR28 CI verification; leave unmerged.
 
 ## Progress
 - Scratch reset interrupted initial implementation; current recovery starts from remote main d02615d.
+
+- Reused concurrent main e0951cf's existing ResnetResult, six-point scoring and migration0018 rather than introducing a duplicate result format.
+- Fresh review: two important findings (stale model result on failed replay; ML band crossing) reproduced RED→GREEN. Node deep-agent stale weight bug also reproduced RED→GREEN.
+- Full suite before final prompt snippet regression: 791 tests passed. Final full suite and CI are rerunning after snippet/UI-history wording updates.
+- Build/typecheck/lint passed; real Node ONNX coverage 131073 bytes and repeated inference passed. No checkpoint changes.

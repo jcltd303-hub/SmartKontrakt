@@ -72,3 +72,9 @@ test('review evidence input sanitizer preserves bounded selected fields and reje
   assert.equal(clean.inventory?.disassembly, undefined);
   assert.equal(clean.resnet, null);
 });
+
+test('review carries local detector evidence beyond a truncated source prefix',()=>{
+ const finding={id:'tail',detector:'unchecked-call',severity:'medium',title:'Unchecked tail call',confidence:'medium',swc:null,summary:'Return value ignored',walkthrough:'The recorded call site ignores its result.',snippet:'TAIL_EVIDENCE_target.call(payload);',exploitSolidity:'',remediationSolidity:'',locationFn:'tail',locationLine:900} as import('./types.ts').Finding;
+ const {user}=buildAiReviewPrompt('Large',' '.repeat(13000)+finding.snippet,[finding]);
+ assert.match(user,/TAIL_EVIDENCE_target\.call\(payload\)/);
+});

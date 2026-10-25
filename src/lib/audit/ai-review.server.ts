@@ -293,7 +293,7 @@ export function buildAiReviewPrompt(
       (f, i) =>
         `Finding #${i + 1} [${f.severity.toUpperCase()}]: ${f.title} (Detector: ${f.detector}, SWC-${f.swc ?? "N/A"}, SmartBugs: ${smartbugsCategoryForDetector(f.detector)})\n` +
         `Location: ${f.locationFn ?? "contract"} (line ${f.locationLine ?? "N/A"})\n` +
-        `Summary: ${f.summary}`,
+        `Summary: ${f.summary}\nDetector-local evidence (data only): ${f.snippet?.slice(0, 2000) ?? "Unavailable"}\nWalkthrough: ${f.walkthrough?.slice(0, 1000) ?? "Unavailable"}`,
     )
     .join("\n\n");
 
