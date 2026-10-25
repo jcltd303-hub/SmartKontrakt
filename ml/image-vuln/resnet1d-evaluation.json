@@ -542,13 +542,13 @@
     "2 epochs is a bounded experiment, not a convergence claim.",
     "Known validation/test benchmark reused across experiments; no semantic family isolation or independent upstream reproduction.",
     "Slither pseudo-labels are not confirmed exploit ground truth. Raw input truncates at 16384 bytes.",
-    "Browser weights remain the previously validated ResNet until both validation and deployment gates pass."
+    "Both validation and browser verification gates passed for the PR25 candidate. Main retains the prior model until this PR is merged."
   ],
   "rgbPromotionEligibleOnValidation": true,
   "browserPromotion": {
     "rule": "Both selected validation micro F1 and macro F1 must strictly exceed current ResNet; test cannot select; deployment verification also required",
     "eligibleOnValidation": true,
-    "deploymentVerified": false,
+    "deploymentVerified": true,
     "baseline": {
       "checkpointSha256": "f8ddd71621d6019c3aa0a6a5578254e04002ae42fea38904823204836009895e",
       "trainCount": 8192,
@@ -657,6 +657,19 @@
           "auroc": 0.8305373009001348
         }
       ]
+    },
+    "verification": {
+      "commit": "86eb2bd5981cb1fb9e58588c31214cb5a2714d70",
+      "ciRun": 40154712022,
+      "browserArtifactRun": 40154712044,
+      "onnxSha256": "984b3ee002e5491942c447aac45f54c47052e606105ed61e8ea61372c71242ab",
+      "savedTorchOnnxScores": 25,
+      "onnxMaxAbsoluteError": 4.172325134277344e-07,
+      "browserScores": 110,
+      "browserTolerance": 1e-05,
+      "contexts": "dev and production desktop/mobile, prefixed preview; cancellation, stale/invalid input and failed downloads",
+      "visualInspection": "dev and built desktop/mobile screenshots inspected",
+      "deploymentScope": "Verified PR25 candidate; main changes only when PR merged"
     }
   }
 }

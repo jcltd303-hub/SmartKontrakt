@@ -241,3 +241,12 @@ To reproduce this experiment's historical promotion decision, use
 `python ml/image-vuln/full_cohort_report.py --directory RUN --baseline ml/image-vuln/resnet1d-pilot6-evaluation.json`.
 The default baseline follows the active model for future experiments. Comparing
 a checkpoint with itself is rejected before any report is overwritten.
+
+Browser verification passed for PR25 candidate commit86eb2bd: all110 scores
+matched saved PyTorch values within1e-5 across dev/built desktop, CPU-throttled
+mobile viewport and prefixed contexts; cancellation, stale/invalid input and
+failed downloads passed. Dev and built desktop/mobile screenshots were inspected.
+Built first-fixture load/inference was .449/.115 seconds desktop and .490/.128
+seconds in the mobile viewport on the local CI runner; physical-phone performance
+and internet download speed are not measured. CI40154712022 and artifact/browser
+40154712044 passed. These verify the PR candidate; main changes after merge.
