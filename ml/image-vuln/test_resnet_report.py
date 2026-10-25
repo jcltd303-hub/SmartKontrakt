@@ -8,7 +8,7 @@ from core import CLASSES
 
 class ResNetReportTests(unittest.TestCase):
     def test_completed_candidate_report_matches_protocol_and_selection(self):
-        path = Path(__file__).with_name('resnet1d-evaluation.json')
+        path = Path(__file__).with_name('resnet1d-pilot6-evaluation.json')
         self.assertTrue(path.is_file(), 'Completed candidate report must be present')
         report = json.loads(path.read_text())
         protocol = report['protocol']

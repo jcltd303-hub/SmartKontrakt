@@ -114,8 +114,8 @@ known benchmark, with Slither pseudo-labels and no semantic family isolation.
 
 Selected checkpoint SHA256: `83a05a4b22b0c039077b77db6c55eecbd5c95aeb155e0fe92c2035fcc56e6897`.
 
-To verify the provided checkpoint bundle, put `resnet1d-evaluation.json` beside
-`selected.pt` as `evaluation.json`, and `resnet1d-parity.json` as `parity.json`,
+To verify the original two-epoch checkpoint bundle, put `resnet1d-pilot2-evaluation.json` beside
+`selected.pt` as `evaluation.json`, and `resnet1d-pilot2-parity.json` as `parity.json`,
 then run `verify_resnet1d.py --directory` with that directory. The archive's
 `README-checkpoint.txt` also gives inference and continuation commands.
 
@@ -141,8 +141,11 @@ collisions remain excluded from training.
 | 6 | 0.6480 | 0.6106 |
 
 Epoch5 was selected using validation micro F1; epoch6 scored lower. Test scoring
-used the selected epoch5 only. `last.pt` retains epoch6 for continuation, while
-`selected.pt` holds the selected epoch5 weights.
+used the selected epoch5 only. The training run produced an epoch6 `last.pt`
+and epoch5 `selected.pt`. The original six-epoch download was incomplete: only
+`selected.pt` was recoverable, with its published SHA256 verified. Its repaired
+download is inference-only and does not contain the epoch6 optimizer/RNG state.
+The full-cohort experiment starts independently from fresh weights and optimizer.
 
 | Metric | Two-epoch pilot | Six-epoch run, selected epoch5 | Full-data RGB CNN |
 |---|---:|---:|---:|
@@ -171,6 +174,7 @@ data loading and time between runs. Timings are explicitly separated in
 python ml/image-vuln/continuation.py --current-directory /tmp/resnet6 --parent-directory /tmp/resnet-pilot
 python ml/image-vuln/verify_resnet1d.py --directory /tmp/resnet6
 # Future same-data continuation: total epochs must exceed the completed6.
+# Requires an intact epoch6 last.pt; it is not available in the repaired inference-only download.
 python ml/image-vuln/train_resnet1d.py --cache /tmp/image-vuln-data --output /tmp/resnet6 --train-cap 8192 --epochs 10 --batch-size 16 --threads 8 --resume /tmp/resnet6/last.pt
 ```
 
@@ -204,3 +208,45 @@ A real HTTP regression covers these headers, byte preservation, HEAD, missing fi
 and path rejection. Browser CI enforces a 30-second load budget on its local server;
 this is not a network-speed guarantee for end users. Result timings distinguish
 model transport, WASM transport, session initialization and inference.
+
+
+## Full-cohort two-epoch experiment
+
+Fresh training used all55,626 eligible contracts, with the same7,358 validation
+and10,686 known-test contracts. All six candidate-input collisions remain excluded.
+Seed20261024, batch16, eight CPU threads, architecture, optimizer and normalization
+match the pilot. The expanded cohort required fresh model/Adam state.
+
+| Model | Validation micro F1 | Validation macro F1 | Test micro F1 | Test macro F1 |
+|---|---:|---:|---:|---:|
+| Pilot,8,192 train,selected epoch5 | .6596 | .6213 | .6626 | .6243 |
+| Full cohort,55,626 train,selected epoch2 | .7375 | .7040 | .7361 | .7003 |
+
+Epoch1 validation micro/macro was .6752/.6448; epoch2 won by maximum validation
+micro F1. Both selected validation metrics strictly exceed the current pilot;
+test did not select the epoch, thresholds or promotion. This is a bounded
+two-epoch experiment on a reused benchmark, not convergence, semantic-family
+isolation, confirmed exploit detection or reproduction of upstream .8381.
+
+The six-epoch pilot reports are preserved as `resnet1d-pilot6-evaluation.json`
+and `resnet1d-pilot6-parity.json`. The active report records the validation gate
+and separately tracks deployment verification. `selected.pt` contains epoch2
+weights; `last.pt` contains epoch2 model/Adam/RNG state for continuation with
+unchanged settings and `--train-cap 55632 --epochs 4 --batch-size 16 --threads 8`.
+The full checkpoint bundle is independent of the repaired pilot download.
+
+Selected checkpoint SHA256: `a488b44abc0021499406012c8a8f22d08bba927a07d01e51458509f632657eae`.
+
+To reproduce this experiment's historical promotion decision, use
+`python ml/image-vuln/full_cohort_report.py --directory RUN --baseline ml/image-vuln/resnet1d-pilot6-evaluation.json`.
+The default baseline follows the active model for future experiments. Comparing
+a checkpoint with itself is rejected before any report is overwritten.
+
+Browser verification passed for PR25 candidate commit86eb2bd: all110 scores
+matched saved PyTorch values within1e-5 across dev/built desktop, CPU-throttled
+mobile viewport and prefixed contexts; cancellation, stale/invalid input and
+failed downloads passed. Dev and built desktop/mobile screenshots were inspected.
+Built first-fixture load/inference was .449/.115 seconds desktop and .490/.128
+seconds in the mobile viewport on the local CI runner; physical-phone performance
+and internet download speed are not measured. CI40154712022 and artifact/browser
+40154712044 passed. These verify the PR candidate; main changes after merge.

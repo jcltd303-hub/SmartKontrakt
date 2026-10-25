@@ -1,0 +1,675 @@
+{
+  "protocol": {
+    "architecture": "upstream-resnet1d-16384-v1",
+    "classes": [
+      "access-control",
+      "arithmetic",
+      "reentrancy",
+      "unchecked-calls",
+      "others"
+    ],
+    "seed": 20261024,
+    "batchSize": 16,
+    "trainCap": 55632,
+    "counts": {
+      "train": 55626,
+      "validation": 7358,
+      "test": 10686
+    },
+    "candidateFingerprint": "16384-byte padded/truncated integer vector divided by gcd, then SHA256; protects proportional L2 inputs",
+    "sequenceLength": 16384,
+    "normalization": "per-example L2 after zero-pad/truncate",
+    "optimizer": "Adam lr=.001 weight_decay=.0001; weighted BCE from train only",
+    "contentHashes": {
+      "train": "488d821ab9d35f75ab3315a04cae0f82b4fafd55f60c74e453703244b066742c",
+      "validation": "ad0a55b8c61bff8a94a5ab827de97ed12c217312339d7c113aadc63e1cf6ea5e",
+      "test": "f1bf91a806ce473ec78231a8a7478dc0a8eb29a9960bf94fede4a915fbe96ade"
+    },
+    "torchVersion": "2.14.1+cpu",
+    "threads": 8
+  },
+  "upstreamCommit": "d755f0f2232ce9ef873150ab0dbb0043f04ebded",
+  "runKind": "Full eligible cohort, bounded 2-epoch CPU experiment; not a convergence or upstream reproduction claim",
+  "epochs": 2,
+  "selectedEpoch": 2,
+  "selection": "Maximum validation micro F1; per-class thresholds selected on validation only. Test not used to select.",
+  "history": [
+    {
+      "epoch": 1,
+      "trainLoss": 0.7720754452946331,
+      "validation": {
+        "microF1": 0.6752043391464838,
+        "macroF1": 0.6447574598852416,
+        "exactMatch": 0.3567545528676271,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.5665961945031712,
+            "recall": 0.6189376443418014,
+            "f1": 0.5916114790286976,
+            "support": 1299,
+            "averagePrecision": 0.6366195796267164,
+            "auroc": 0.8492310854986271
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.42354533152909335,
+            "recall": 0.6268357810413885,
+            "f1": 0.5055181695827725,
+            "support": 1498,
+            "averagePrecision": 0.5252049003277008,
+            "auroc": 0.7698719453013574
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.6273743016759776,
+            "recall": 0.8055954088952654,
+            "f1": 0.7054020100502513,
+            "support": 2788,
+            "averagePrecision": 0.8320596868343857,
+            "auroc": 0.8573279826954532
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.775751601774273,
+            "recall": 0.828421052631579,
+            "f1": 0.801221684907101,
+            "support": 3800,
+            "averagePrecision": 0.8835920961313934,
+            "auroc": 0.8720578163367948
+          },
+          {
+            "class": "others",
+            "precision": 0.5145111298957453,
+            "recall": 0.7800085433575396,
+            "f1": 0.6200339558573854,
+            "support": 2341,
+            "averagePrecision": 0.6261495111499796,
+            "auroc": 0.7887331726550914
+          }
+        ]
+      },
+      "thresholds": [
+        0.6750000000000003,
+        0.3000000000000001,
+        0.25000000000000006,
+        0.4250000000000001,
+        0.2750000000000001
+      ],
+      "validationAtFixedHalfThreshold": {
+        "microF1": 0.6167080864079526,
+        "macroF1": 0.5301699204931446,
+        "exactMatch": 0.3558032073933134,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.4058087938684954,
+            "recall": 0.7744418783679754,
+            "f1": 0.532556908417152,
+            "support": 1299,
+            "averagePrecision": 0.6366195796267164,
+            "auroc": 0.8492310854986271
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.8514285714285714,
+            "recall": 0.09946595460614152,
+            "f1": 0.1781231320980275,
+            "support": 1498,
+            "averagePrecision": 0.5252049003277008,
+            "auroc": 0.7698719453013574
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.8922619047619048,
+            "recall": 0.537661406025825,
+            "f1": 0.6709937332139659,
+            "support": 2788,
+            "averagePrecision": 0.8320596868343857,
+            "auroc": 0.8573279826954532
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.8090534979423868,
+            "recall": 0.7760526315789473,
+            "f1": 0.7922095366017461,
+            "support": 3800,
+            "averagePrecision": 0.8835920961313934,
+            "auroc": 0.8720578163367948
+          },
+          {
+            "class": "others",
+            "precision": 0.6964725184577523,
+            "recall": 0.36266552755232806,
+            "f1": 0.47696629213483144,
+            "support": 2341,
+            "averagePrecision": 0.6261495111499796,
+            "auroc": 0.7887331726550914
+          }
+        ]
+      }
+    },
+    {
+      "epoch": 2,
+      "trainLoss": 0.6461938355793498,
+      "validation": {
+        "microF1": 0.7374643130001206,
+        "macroF1": 0.7039670826841037,
+        "exactMatch": 0.4688774123403099,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.5579710144927537,
+            "recall": 0.6520400307929176,
+            "f1": 0.6013489527866525,
+            "support": 1299,
+            "averagePrecision": 0.6550396566119695,
+            "auroc": 0.8631943700646493
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.6673992673992674,
+            "recall": 0.6081441922563418,
+            "f1": 0.6363953894516242,
+            "support": 1498,
+            "averagePrecision": 0.6922793230185909,
+            "auroc": 0.8591077067489303
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.7752570010634526,
+            "recall": 0.7844332855093257,
+            "f1": 0.7798181494027456,
+            "support": 2788,
+            "averagePrecision": 0.8835937269213501,
+            "auroc": 0.9040644650879511
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.7786311271741586,
+            "recall": 0.9071052631578947,
+            "f1": 0.8379725294761152,
+            "support": 3800,
+            "averagePrecision": 0.9276058980194417,
+            "auroc": 0.9151778793526819
+          },
+          {
+            "class": "others",
+            "precision": 0.5903054448871182,
+            "recall": 0.7595044852627082,
+            "f1": 0.6643003923033812,
+            "support": 2341,
+            "averagePrecision": 0.6926821819750073,
+            "auroc": 0.8305373009001348
+          }
+        ]
+      },
+      "thresholds": [
+        0.5750000000000002,
+        0.4500000000000001,
+        0.5000000000000002,
+        0.3000000000000001,
+        0.2750000000000001
+      ],
+      "validationAtFixedHalfThreshold": {
+        "microF1": 0.7254935622317596,
+        "macroF1": 0.6886918747809859,
+        "exactMatch": 0.4729546072302256,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.5094124358243012,
+            "recall": 0.6874518860662048,
+            "f1": 0.5851900393184797,
+            "support": 1299,
+            "averagePrecision": 0.6550396566119695,
+            "auroc": 0.8631943700646493
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.7139152981849611,
+            "recall": 0.5514018691588785,
+            "f1": 0.6222222222222222,
+            "support": 1498,
+            "averagePrecision": 0.6922793230185909,
+            "auroc": 0.8591077067489303
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.7752570010634526,
+            "recall": 0.7844332855093257,
+            "f1": 0.7798181494027456,
+            "support": 2788,
+            "averagePrecision": 0.8835937269213501,
+            "auroc": 0.9040644650879511
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.8256291730868002,
+            "recall": 0.8460526315789474,
+            "f1": 0.8357161424486613,
+            "support": 3800,
+            "averagePrecision": 0.9276058980194417,
+            "auroc": 0.9151778793526819
+          },
+          {
+            "class": "others",
+            "precision": 0.6829143150333504,
+            "recall": 0.5685604442545921,
+            "f1": 0.6205128205128205,
+            "support": 2341,
+            "averagePrecision": 0.6926821819750073,
+            "auroc": 0.8305373009001348
+          }
+        ]
+      }
+    }
+  ],
+  "test": {
+    "microF1": 0.7361406958326506,
+    "macroF1": 0.7003373145916977,
+    "exactMatch": 0.4619127830806663,
+    "perClass": [
+      {
+        "class": "access-control",
+        "precision": 0.552286102308737,
+        "recall": 0.6404199475065617,
+        "f1": 0.5930967428293632,
+        "support": 1905,
+        "averagePrecision": 0.6622568176340915,
+        "auroc": 0.8621991946941037
+      },
+      {
+        "class": "arithmetic",
+        "precision": 0.6404878048780488,
+        "recall": 0.6053480866758875,
+        "f1": 0.6224223749703721,
+        "support": 2169,
+        "averagePrecision": 0.6977286517728156,
+        "auroc": 0.8628834593444306
+      },
+      {
+        "class": "reentrancy",
+        "precision": 0.7822619623006283,
+        "recall": 0.7830188679245284,
+        "f1": 0.7826402321083172,
+        "support": 4134,
+        "averagePrecision": 0.888912849336885,
+        "auroc": 0.9088838545478604
+      },
+      {
+        "class": "unchecked-calls",
+        "precision": 0.7765226682949168,
+        "recall": 0.9139417894358606,
+        "f1": 0.8396467772550962,
+        "support": 5566,
+        "averagePrecision": 0.9321577980183934,
+        "auroc": 0.9204219114938915
+      },
+      {
+        "class": "others",
+        "precision": 0.587010078387458,
+        "recall": 0.7639172252987467,
+        "f1": 0.6638804457953394,
+        "support": 3431,
+        "averagePrecision": 0.6988308382856494,
+        "auroc": 0.8318870733276542
+      }
+    ]
+  },
+  "testAtFixedHalfThreshold": {
+    "microF1": 0.7273996915825308,
+    "macroF1": 0.6895166241361118,
+    "exactMatch": 0.47379749204566723,
+    "perClass": [
+      {
+        "class": "access-control",
+        "precision": 0.5076982294072363,
+        "recall": 0.6923884514435695,
+        "f1": 0.5858316677770375,
+        "support": 1905,
+        "averagePrecision": 0.6622568176340915,
+        "auroc": 0.8621991946941037
+      },
+      {
+        "class": "arithmetic",
+        "precision": 0.6885913853317811,
+        "recall": 0.545412632549562,
+        "f1": 0.6086956521739131,
+        "support": 2169,
+        "averagePrecision": 0.6977286517728156,
+        "auroc": 0.8628834593444306
+      },
+      {
+        "class": "reentrancy",
+        "precision": 0.7822619623006283,
+        "recall": 0.7830188679245284,
+        "f1": 0.7826402321083172,
+        "support": 4134,
+        "averagePrecision": 0.888912849336885,
+        "auroc": 0.9088838545478604
+      },
+      {
+        "class": "unchecked-calls",
+        "precision": 0.8274475524475524,
+        "recall": 0.8503413582464966,
+        "f1": 0.8387382597908913,
+        "support": 5566,
+        "averagePrecision": 0.9321577980183934,
+        "auroc": 0.9204219114938915
+      },
+      {
+        "class": "others",
+        "precision": 0.6782608695652174,
+        "recall": 0.5910813174001749,
+        "f1": 0.6316773088304003,
+        "support": 3431,
+        "averagePrecision": 0.6988308382856494,
+        "auroc": 0.8318870733276542
+      }
+    ]
+  },
+  "thresholds": [
+    0.5750000000000002,
+    0.4500000000000001,
+    0.5000000000000002,
+    0.3000000000000001,
+    0.2750000000000001
+  ],
+  "invalidDropped": {
+    "train": 227,
+    "validation": 30,
+    "test": 51
+  },
+  "deduplication": {
+    "train": {
+      "input": 79414,
+      "crossSplitDropped": 20460,
+      "withinSplitDropped": 3322,
+      "retained": 55632
+    },
+    "validation": {
+      "input": 10831,
+      "crossSplitDropped": 3433,
+      "withinSplitDropped": 40,
+      "retained": 7358
+    },
+    "test": {
+      "input": 15921,
+      "crossSplitDropped": 5161,
+      "withinSplitDropped": 74,
+      "retained": 10686
+    }
+  },
+  "addressHashes": {
+    "train": "c5cf2d1cab0ffe5e3860e1e8ff28fe7306b13002ec58f2c4d555a020ea40145a",
+    "validation": "2f007b1bd28ad33fde052dd1067bb99516a2e7f484769e7fc00dde11e969155d",
+    "test": "c1e43be58e9f4bbc451a1dfff13e1767f7fc9823b9afcebe22f21522526d9bd3"
+  },
+  "truncatedRows": {
+    "train": 7791,
+    "validation": 996,
+    "test": 1492
+  },
+  "candidateFiltering": {
+    "fingerprint": "16384-byte padded/truncated integer vector divided by gcd, then SHA256; protects proportional L2 inputs",
+    "trainingRowsDropped": 6,
+    "trainingAddressesDropped": [
+      "0x9a0516cfb85c42a3f62cacb3c310784c0fcb0da2",
+      "0xa70f6cc65fb84d090ea2adea9564557cc15a4e3b",
+      "0xa8db6a3d9dc985d8812c6f5fd55d45f9d6448524",
+      "0xcEA967B693e89B1FFb08718c3106847616e95607",
+      "0xd4d8c43ba00b49cc0160810515375d294ae38f8a",
+      "0xefe0b4ca532769a3ae758fd82e1426a03a94f185"
+    ],
+    "availableTrainAfterCandidateFiltering": 55626,
+    "validationTestSharedFingerprints": 0,
+    "validationUniqueFingerprints": 7357,
+    "testUniqueFingerprints": 10686
+  },
+  "trainingAndEvaluationSeconds": 2812.4487661949997,
+  "parameters": 3719173,
+  "checkpointSha256": "a488b44abc0021499406012c8a8f22d08bba927a07d01e51458509f632657eae",
+  "rgbBaseline": {
+    "trainCount": 55632,
+    "validation": {
+      "microF1": 0.6396508728179551,
+      "macroF1": 0.600869361999133,
+      "exactMatch": 0.30361511280239195,
+      "perClass": [
+        {
+          "class": "access-control",
+          "precision": 0.46887966804979253,
+          "recall": 0.5219399538106235,
+          "f1": 0.49398907103825135,
+          "support": 1299,
+          "averagePrecision": 0.5144474770158867,
+          "auroc": 0.7752169105413397
+        },
+        {
+          "class": "arithmetic",
+          "precision": 0.3553199842952493,
+          "recall": 0.6041388518024032,
+          "f1": 0.44746600741656367,
+          "support": 1498,
+          "averagePrecision": 0.4165485120782514,
+          "auroc": 0.7281101764810418
+        },
+        {
+          "class": "reentrancy",
+          "precision": 0.5793376173999011,
+          "recall": 0.8407460545193687,
+          "f1": 0.6859818554287387,
+          "support": 2788,
+          "averagePrecision": 0.7278862667243822,
+          "auroc": 0.8108289198157781
+        },
+        {
+          "class": "unchecked-calls",
+          "precision": 0.7397358943577431,
+          "recall": 0.8107894736842105,
+          "f1": 0.7736346516007533,
+          "support": 3800,
+          "averagePrecision": 0.8373929925894197,
+          "auroc": 0.823636135025591
+        },
+        {
+          "class": "others",
+          "precision": 0.5131815458358299,
+          "recall": 0.7317385732592909,
+          "f1": 0.6032752245113576,
+          "support": 2341,
+          "averagePrecision": 0.5822572114899737,
+          "auroc": 0.7582195758683612
+        }
+      ]
+    },
+    "test": {
+      "microF1": 0.6370421974522293,
+      "macroF1": 0.5963177069240796,
+      "exactMatch": 0.29122215983529853,
+      "perClass": [
+        {
+          "class": "access-control",
+          "precision": 0.45306691449814124,
+          "recall": 0.5118110236220472,
+          "f1": 0.4806507271382795,
+          "support": 1905,
+          "averagePrecision": 0.49620577011474765,
+          "auroc": 0.7728505323920263
+        },
+        {
+          "class": "arithmetic",
+          "precision": 0.34469096671949284,
+          "recall": 0.6016597510373444,
+          "f1": 0.43828715365239296,
+          "support": 2169,
+          "averagePrecision": 0.4017839357166331,
+          "auroc": 0.7244032262002179
+        },
+        {
+          "class": "reentrancy",
+          "precision": 0.583796530234125,
+          "recall": 0.8384131591678762,
+          "f1": 0.6883129778572138,
+          "support": 4134,
+          "averagePrecision": 0.7406058537782192,
+          "auroc": 0.8164241721026917
+        },
+        {
+          "class": "unchecked-calls",
+          "precision": 0.7390597039206117,
+          "recall": 0.8162055335968379,
+          "f1": 0.7757192862631265,
+          "support": 5566,
+          "averagePrecision": 0.8497493163845579,
+          "auroc": 0.8306154975521021
+        },
+        {
+          "class": "others",
+          "precision": 0.5061430010070493,
+          "recall": 0.7324395220052463,
+          "f1": 0.5986183897093854,
+          "support": 3431,
+          "averagePrecision": 0.5821922448588929,
+          "auroc": 0.7579826051883133
+        }
+      ]
+    }
+  },
+  "promotionEligibleOnValidation": true,
+  "limitations": [
+    "2 epochs is a bounded experiment, not a convergence claim.",
+    "Known validation/test benchmark reused across experiments; no semantic family isolation or independent upstream reproduction.",
+    "Slither pseudo-labels are not confirmed exploit ground truth. Raw input truncates at 16384 bytes.",
+    "Both validation and browser verification gates passed for the PR25 candidate. Main retains the prior model until this PR is merged."
+  ],
+  "rgbPromotionEligibleOnValidation": true,
+  "browserPromotion": {
+    "rule": "Both selected validation micro F1 and macro F1 must strictly exceed current ResNet; test cannot select; deployment verification also required",
+    "eligibleOnValidation": true,
+    "deploymentVerified": true,
+    "baseline": {
+      "checkpointSha256": "f8ddd71621d6019c3aa0a6a5578254e04002ae42fea38904823204836009895e",
+      "trainCount": 8192,
+      "selectedEpoch": 5,
+      "validation": {
+        "microF1": 0.6596268120056016,
+        "macroF1": 0.6213193462490864,
+        "exactMatch": 0.32440880674096223,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.5537777777777778,
+            "recall": 0.4795996920708237,
+            "f1": 0.514026402640264,
+            "support": 1299,
+            "averagePrecision": 0.5435767109199093,
+            "auroc": 0.7926172722145504
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.3887277248238707,
+            "recall": 0.6261682242990654,
+            "f1": 0.4796727179749425,
+            "support": 1498,
+            "averagePrecision": 0.4467713900439085,
+            "auroc": 0.733895706220353
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.7042866711319491,
+            "recall": 0.7543041606886657,
+            "f1": 0.7284378247315553,
+            "support": 2788,
+            "averagePrecision": 0.8206547309541111,
+            "auroc": 0.8624787695939773
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.7232082678049876,
+            "recall": 0.8471052631578947,
+            "f1": 0.7802690582959642,
+            "support": 3800,
+            "averagePrecision": 0.8613436421026439,
+            "auroc": 0.842584538918967
+          },
+          {
+            "class": "others",
+            "precision": 0.4922043010752688,
+            "recall": 0.7821443827424178,
+            "f1": 0.6041907276027059,
+            "support": 2341,
+            "averagePrecision": 0.5990017839832578,
+            "auroc": 0.7633832666499045
+          }
+        ]
+      }
+    },
+    "candidateValidation": {
+      "microF1": 0.7374643130001206,
+      "macroF1": 0.7039670826841037,
+      "exactMatch": 0.4688774123403099,
+      "perClass": [
+        {
+          "class": "access-control",
+          "precision": 0.5579710144927537,
+          "recall": 0.6520400307929176,
+          "f1": 0.6013489527866525,
+          "support": 1299,
+          "averagePrecision": 0.6550396566119695,
+          "auroc": 0.8631943700646493
+        },
+        {
+          "class": "arithmetic",
+          "precision": 0.6673992673992674,
+          "recall": 0.6081441922563418,
+          "f1": 0.6363953894516242,
+          "support": 1498,
+          "averagePrecision": 0.6922793230185909,
+          "auroc": 0.8591077067489303
+        },
+        {
+          "class": "reentrancy",
+          "precision": 0.7752570010634526,
+          "recall": 0.7844332855093257,
+          "f1": 0.7798181494027456,
+          "support": 2788,
+          "averagePrecision": 0.8835937269213501,
+          "auroc": 0.9040644650879511
+        },
+        {
+          "class": "unchecked-calls",
+          "precision": 0.7786311271741586,
+          "recall": 0.9071052631578947,
+          "f1": 0.8379725294761152,
+          "support": 3800,
+          "averagePrecision": 0.9276058980194417,
+          "auroc": 0.9151778793526819
+        },
+        {
+          "class": "others",
+          "precision": 0.5903054448871182,
+          "recall": 0.7595044852627082,
+          "f1": 0.6643003923033812,
+          "support": 2341,
+          "averagePrecision": 0.6926821819750073,
+          "auroc": 0.8305373009001348
+        }
+      ]
+    },
+    "verification": {
+      "commit": "86eb2bd5981cb1fb9e58588c31214cb5a2714d70",
+      "ciRun": 40154712022,
+      "browserArtifactRun": 40154712044,
+      "onnxSha256": "984b3ee002e5491942c447aac45f54c47052e606105ed61e8ea61372c71242ab",
+      "savedTorchOnnxScores": 25,
+      "onnxMaxAbsoluteError": 4.172325134277344e-07,
+      "browserScores": 110,
+      "browserTolerance": 1e-05,
+      "contexts": "dev and production desktop/mobile, prefixed preview; cancellation, stale/invalid input and failed downloads",
+      "visualInspection": "dev and built desktop/mobile screenshots inspected",
+      "deploymentScope": "Verified PR25 candidate; main changes only when PR merged"
+    }
+  }
+}

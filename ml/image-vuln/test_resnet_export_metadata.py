@@ -7,7 +7,7 @@ import export_resnet1d
 
 class ExportMetadataTests(unittest.TestCase):
     def fixture(self):
-        report=json.loads(Path(__file__).with_name('resnet1d-evaluation.json').read_text())
+        report=json.loads(Path(__file__).with_name('resnet1d-pilot6-evaluation.json').read_text())
         payload={k:copy.deepcopy(report[k]) for k in ('protocol','selectedEpoch','thresholds')}
         return report,payload
 

@@ -6,7 +6,7 @@ import unittest
 class ResNetContinuationReportTests(unittest.TestCase):
     def test_six_epoch_report_preserves_published_pilot_and_exact_protocol(self):
         root=Path(__file__).parent
-        current=json.loads((root/'resnet1d-evaluation.json').read_text())
+        current=json.loads((root/'resnet1d-pilot6-evaluation.json').read_text())
         pilot=json.loads((root/'resnet1d-pilot2-evaluation.json').read_text())
         self.assertEqual(current['epochs'],6)
         self.assertEqual(pilot['epochs'],2)
