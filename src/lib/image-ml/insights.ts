@@ -93,6 +93,12 @@ export function windowComparison(value: unknown, checkpointSha: unknown): Window
     typeof root.inputAuditPassed !== "boolean"
   )
     return null;
+  const improved =
+    (result.windows.validation.micro as number) > (result.prefix.validation.micro as number) &&
+    (result.windows.validation.macro as number) > (result.prefix.validation.macro as number);
+  const auditPassed =
+    root.overlappingTrainingContracts === 0 && root.sharedValidationTestWindows === 0;
+  if (root.validationImproved !== improved || root.inputAuditPassed !== auditPassed) return null;
   return {
     ...result,
     validationImproved: root.validationImproved,

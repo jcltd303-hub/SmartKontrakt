@@ -68,6 +68,16 @@ test("offline comparison is bound to the exact selected checkpoint and validates
   assert.equal(windowComparison(fixture, sha)?.unseenSkeletonCount, 7);
   assert.equal(windowComparison(fixture, "b".repeat(64)), null);
   assert.equal(
+    windowComparison({ ...fixture, inputAuditPassed: true }, sha),
+    null,
+    "an audit cannot pass with overlapping inputs",
+  );
+  assert.equal(
+    windowComparison({ ...fixture, validationImproved: true }, sha),
+    null,
+    "lower validation scores cannot claim improvement",
+  );
+  assert.equal(
     windowComparison({ ...fixture, windows: { validation: { microF1: NaN } } }, sha),
     null,
   );
