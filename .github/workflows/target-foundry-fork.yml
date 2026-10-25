@@ -85,3 +85,9 @@ jobs:
           set -euo pipefail
           cd foundry
           POC_TARGET="$POC_TARGET" forge test --match-contract KailuaEconomicForkTest --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
+      - name: Inspect registered KailuaGame clones and parent registration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd foundry
+          POC_TARGET="$POC_TARGET" forge test --match-contract KailuaRegisteredGameForkTest --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
