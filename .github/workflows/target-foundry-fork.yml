@@ -62,3 +62,9 @@ jobs:
           set -euo pipefail
           cd foundry
           POC_TARGET="$POC_TARGET" POC_FORK_BLOCK="$FORK_BLOCK" POC_RPC_URL="$ETH_RPC_URL" forge test --match-contract TargetValidRedemptionForkTest --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
+      - name: Verify supplied Kailua initializer PoC compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd foundry
+          POC_TARGET="$POC_TARGET" forge test --match-contract KailuaInitializerCompatibilityForkTest --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
