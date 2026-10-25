@@ -11,7 +11,7 @@ const FOUNDRY_RULES = [
   'declare `contract PoC is Test` and `import {Test, console} from "forge-std/Test.sol";`',
   'in setUp(): fork live state with `vm.createSelectFork(vm.envString("POC_RPC_URL"))` (pin a block with `vm.envUint("POC_FORK_BLOCK")` when it is nonzero)',
   "attach to the live target via `vm.envAddress(\"POC_TARGET\")` — NEVER hardcode the target address",
-  "fund the attacker with `vm.deal`, run the attack against the forked live contract, and assert an observable state change (balance / owner / shares) — never assert a bare low-level-call success",
+  "fund the attacker with `vm.deal` only if needed, exercise the finding against the forked live contract, and assert a finding-specific observable invariant (authorization / owner / accounting / availability / value movement) — never assert a bare low-level-call success",
 ].join("\n- ");
 
 /** Figure 5 — prompted PoC generation. */
@@ -49,14 +49,10 @@ ${args.fourbyteSection ?? ""}
 ${args.bugContext}
 \`\`\`
 ${template}
-## One-shot example
-Input: a finding on a Vault's \`withdraw\` (state updated after the external call).
-Output: \`contract PoC is Test\` with setUp() forking and attaching to the target, an attacker that re-enters \`withdraw\`, and \`assertGt(address(attacker).balance, before)\`.
-
 ## Task
 Generate a complete, compilation-ready Foundry test for the finding above. It MUST:
 - ${FOUNDRY_RULES}
-- use ONLY functions and state the slice shows exist — never invent an interface or a signature the target does not have
+- use ONLY functions and state supported by the supplied source slice or gathered ABI — never invent an interface or a signature the target does not have
 
 Output the test script as:
 \`\`\`solidity

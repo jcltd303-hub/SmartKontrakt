@@ -30,8 +30,8 @@ export function BytecodeCoverage({ bytes }: { bytes: number }) {
       </div>
       <p className="mt-2 text-xs leading-relaxed text-muted">
         {coverage.omitted > 0
-          ? "Only the prefix is evaluated. Vulnerabilities in the omitted tail may be missed."
-          : "All supplied bytes fit in the input; shorter inputs are zero-padded."}{" "}
+          ? "Coverage is incomplete."
+          : "All bytes are included in consecutive 16,384-byte windows; only the final window is zero-padded."}{" "}
         This measures input coverage, not source-line or vulnerability coverage.
       </p>
     </section>

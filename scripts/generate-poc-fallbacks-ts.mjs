@@ -129,7 +129,7 @@ const header = `// GENERATED — do not edit by hand.
 // of inventing a harness from scratch. The no-AI template fallback also
 // returns the best-matching template instead of a hollow sanity check.
 
-import { smartbugsCategoryForDetector } from "./smartbugs.ts";
+import { SMARTBUGS_BY_DETECTOR, smartbugsCategoryForDetector } from "./smartbugs.ts";
 
 /** Fallback PoC template sources, keyed by library file name. */
 export const POC_FALLBACK_TEMPLATES: Record<string, string> = ${JSON.stringify(templates, null, 2)};
@@ -199,6 +199,7 @@ export function selectPocFallbacks(
     // The finding has no on-chain exploit (or is an analyzer meta-finding),
     // so any harness verdict attached to it would be unearned.
     if (POC_NOT_POCABLE_DETECTORS.includes(f.detector)) continue;
+    if (!Object.hasOwn(SMARTBUGS_BY_DETECTOR, f.detector) && !Object.hasOwn(POC_FALLBACK_BY_DETECTOR, f.detector)) continue;
     // Detector-specific harnesses first; if the detector has none, fall back to
     // the harnesses for its SmartBugs-Curated (DASP) category, so a finding
     // still starts from a working template for the right vulnerability class.

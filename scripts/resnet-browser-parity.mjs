@@ -164,18 +164,27 @@ try {
     assert.ok(
       (
         await panel.getByRole("region", { name: "Bytecode coverage", exact: true }).innerText()
-      ).includes("1 byte omitted"),
+      ).includes("0 bytes omitted"),
     );
     assert.equal(
       await panel.getByRole("region", { name: "Model evaluation", exact: true }).count(),
       0,
       "editing clears result-derived evaluation cards",
     );
+    await page.evaluate(() => { window.__mlResult = null; });
+    await panel.getByRole("button", { name: "Run Image ML", exact: true }).click();
+    await panel.getByText(/Model: resnet1d-/).waitFor({timeout:120000});
+    const full = await page.evaluate(() => window.__mlResult);
+    assert.equal(full.result.inputBytes,16385);
+    assert.equal(full.result.processedBytes,16385);
+    assert.equal(full.result.windows,2);
+    assert.equal(full.result.truncated,false);
+
     await panel.getByLabel("ML model").selectOption("rgb");
     assert.equal(
       await panel.getByRole("region", { name: "Bytecode coverage", exact: true }).count(),
       0,
-      "RGB must not claim ResNet prefix coverage",
+      "RGB must not claim ResNet coverage",
     );
     await panel.getByLabel("ML model").selectOption("resnet");
     await input.fill(fixtures[0].bytecode);

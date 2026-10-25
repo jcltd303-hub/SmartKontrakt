@@ -172,3 +172,9 @@ test("the resnet delta never exceeds MAX_RESNET_BONUS, at any severity mix", () 
     assert.ok(delta >= 0 && delta <= MAX_RESNET_BONUS, `delta ${delta} out of bounds`);
   }
 });
+
+test('ML pressure cannot promote a static low finding across a severity band',()=>{
+ const findings=[f('low'),...Array.from({length:6},()=>f('info'))];
+ assert.equal(riskScore(findings),24);
+ assert.equal(riskScore(findings,ML_MAX),24);
+});

@@ -253,3 +253,14 @@ describe("externalTokenCandidate — POC_TOKEN source (audit class E1)", () => {
     );
   });
 });
+
+it('stored review payload carries gathered ABI, screening and failure provenance', () => {
+  const inventory = inventoryWith([]);
+  inventory.abi = [{ type: 'function', name: 'owner', inputs: [] }];
+  inventory.abiSource = 'sourcify';
+  inventory.resnetStatus = { status: 'error', error: 'checkpoint unavailable' };
+  const report = reportWith(inventory);
+  const payload = pocAuditReviewPayload({ contractName: 'Target', body: '0x00', findings: [], storedReport: report });
+  assert.deepEqual(payload.inventory, inventory);
+  assert.equal(payload.resnet, report.resnet);
+});

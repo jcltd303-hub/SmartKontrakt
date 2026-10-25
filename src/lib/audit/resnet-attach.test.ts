@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { attachResnetToReport, runtimeCodeForReport } from "./resnet-attach.ts";
 import { riskScore } from "./risk.ts";
 import { analyzeInput } from "./engine.ts";
-import type { ResnetResult } from "./resnet-result.ts";
+import { parseResnetJson, type ResnetResult } from "./resnet-result.ts";
 
 function stubResult(): ResnetResult {
   return {
@@ -17,7 +17,7 @@ function stubResult(): ResnetResult {
       { label: "unchecked-calls", score: 0.1, threshold: 0.3, flagged: false },
       { label: "others", score: 0.1, threshold: 0.275, flagged: false },
     ],
-    inputBytes: 100,
+    inputBytes: SOME_BYTECODE.slice(2).length/2,
     truncated: false,
     ranAt: "2026-10-24T00:00:00.000Z",
   };
@@ -59,14 +59,15 @@ test("attach stores the result, rescores with the bounded term, and notes exactl
   assert.match(report.inventory.notes.at(-1)!, /ResNet1D screening \(stub-model\)/);
 });
 
-test("a null runner result leaves the report exactly as static analysis made it", async () => {
+test("a null runner result preserves static analysis and records unavailable evidence", async () => {
   const report = analyzeInput(VAULT_SOURCE, "Vault");
   const notesBefore = [...report.inventory.notes];
   const attached = await attachResnetToReport(report, SOME_BYTECODE, async () => null);
   assert.equal(attached, false);
-  assert.equal(report.resnet, undefined);
+  assert.equal(report.resnet, null);
   assert.equal(report.riskScore, riskScore(report.findings));
-  assert.deepEqual(report.inventory.notes, notesBefore);
+  assert.deepEqual(report.inventory.notes.slice(0,-1), notesBefore);
+  assert.equal(report.inventory.resnetStatus?.status,"unavailable");
 });
 
 test("a throwing runner is swallowed — the audit never fails on the model", async () => {
@@ -75,7 +76,7 @@ test("a throwing runner is swallowed — the audit never fails on the model", as
     throw new Error("model exploded");
   });
   assert.equal(attached, false);
-  assert.equal(report.resnet, undefined);
+  assert.equal(report.resnet, null);
 });
 
 test("no code, no call: the runner is not invoked without runtime bytecode", async () => {
@@ -103,4 +104,20 @@ test("runtimeCodeForReport picks the right code per entry kind", () => {
   assert.equal(runtimeCodeForReport(byteReport, SOME_BYTECODE), SOME_BYTECODE);
   // Bytecode entry with a non-hex body: refuse rather than guess.
   assert.equal(runtimeCodeForReport(byteReport, "not hex at all"), null);
+});
+
+test('retry failure clears previous ML score and records unavailable evidence', async()=>{
+ const report=analyzeInput(VAULT_SOURCE,'Vault');
+ await attachResnetToReport(report,SOME_BYTECODE,async()=>stubResult());
+ await attachResnetToReport(report,SOME_BYTECODE,async()=>null);
+ assert.equal(report.resnet,null);
+ assert.equal(report.riskScore,riskScore(report.findings));
+ assert.equal(report.inventory.resnetStatus?.status,'unavailable');
+ assert.match(report.inventory.notes.at(-1)!,/unavailable/i);
+});
+test('full-byte results round-trip coverage and reject inconsistent flags',()=>{
+ const r={...stubResult(),processedBytes:SOME_BYTECODE.slice(2).length/2,windows:1,policy:'consecutive-16384-zero-pad-l2-class-max-v1'};
+ assert.deepEqual(parseResnetJson(JSON.stringify(r)),r);
+ assert.equal(parseResnetJson(JSON.stringify({...r,processedBytes:99})),null);
+ assert.equal(parseResnetJson(JSON.stringify({...r,predictions:r.predictions.map(p=>({...p,flagged:!p.flagged}))})),null);
 });

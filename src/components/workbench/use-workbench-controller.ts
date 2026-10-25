@@ -597,6 +597,8 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
                 body,
                 findings,
                 fourbyte: fourbyteResultsFromReport(report),
+                inventory: report.inventory,
+                resnet: report.resnet,
               },
             }),
           persistAiReview: async (review) => {
@@ -1079,6 +1081,8 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
           body: contractBody,
           findings: report.findings,
           fourbyte: fourbyteResultsFromReport(report),
+          inventory: report.inventory,
+          resnet: report.resnet,
         },
       });
       setAiReview(res);

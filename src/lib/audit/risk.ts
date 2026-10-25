@@ -62,14 +62,8 @@ export function worstFinding(findings: Finding[]): Finding | null {
  *     something above info — a findings-free report scores 0 and an
  *     info-only report is untouched, no matter what the model flags,
  *     so ResNet alone can never mint risk out of nothing;
- *   - it can add at most MAX_RESNET_BONUS (6) points. That can move a
- *     score within a band, or just over an edge when the static terms
- *     already sit near it — the same behaviour the volume term has —
- *     but it can never substitute for a finding: reaching the critical
- *     band (>= 75) still requires a static score of at least 69, which
- *     itself requires real high/critical findings, and critical
- *     findings come only from the detectors under the
- *     severity-calibration gates;
+ *   - it adds at most MAX_RESNET_BONUS (6) points, capped within the
+ *     static score's severity band. ML cannot promote low to medium.
  *   - it never lowers a score and never touches a finding's severity.
  */
 export function riskScore(findings: Finding[], resnet?: ResnetResult | null): number {
@@ -95,7 +89,9 @@ export function riskScore(findings: Finding[], resnet?: ResnetResult | null): nu
   // ResNet1D screening term — bounded ML pressure, see the header above.
   // The floor guard is the gate: info-severity "findings" are notes, not
   // signal, so a report whose worst finding is info gets no ML term.
-  if (SEVERITY_FLOOR[worst.severity] > 0) score += resnetRiskBonus(resnet);
+  const staticScore = Math.max(0, Math.min(100, Math.round(score)));
+  const bandCeiling = staticScore >= 75 ? 100 : staticScore >= 50 ? 74 : staticScore >= 25 ? 49 : 24;
+  if (SEVERITY_FLOOR[worst.severity] > 0) score = Math.min(bandCeiling, staticScore + resnetRiskBonus(resnet));
 
   return Math.max(0, Math.min(100, Math.round(score)));
 }

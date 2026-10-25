@@ -1,4 +1,6 @@
-import type { Finding } from "./types.ts";
+import type { ResnetResult } from "./resnet-result.ts";
+import { auditEvidence } from "./audit-evidence.ts";
+import type { Finding, Inventory } from "./types.ts";
 import { openRouterLimiter, withRetry } from "./rate-limit.ts";
 import { selectPocFallbacks } from "./poc-fallbacks.ts";
 import { smartbugsCategoryForDetector } from "./smartbugs.ts";
@@ -220,7 +222,7 @@ export function extractJsonContent(content: string): unknown {
 
 function buildFallbackReview(contractName: string, findings: Finding[], _codeOrBytecode: string): AiSecurityReview {
   const critList = findings.filter((f) => f.severity === "critical" || f.severity === "high");
-  const topIssue = critList[0]?.title ?? "Potential Reentrancy / State Desynchronization";
+  const topIssue = critList[0]?.title ?? findings[0]?.title ?? "No static finding reported";
 
   // No-AI path: return the best-matching fallback-library template as the
   // starting-point PoC, not a hollow sanity check. The template's TODOs
@@ -260,23 +262,15 @@ contract PoC is Test {
 `;
 
   return {
-    threatModelReport: `### Automated Threat Model for ${contractName}
+    threatModelReport: `### AI Review Unavailable for ${contractName}
 
-1. **Architecture & Trust Invariants**:
-   - The contract exposes public state-mutating functions that handle value or sensitive state transitions.
-   - Analysis of current rule findings identified ${findings.length} issue(s), with ${critList.length} high/critical priority item(s).
+Static analysis reported ${findings.length} finding(s), including ${critList.length} high/critical priority item(s). These are unconfirmed static signals, not verified vulnerabilities.
+Lead static finding: ${topIssue}.
+Architecture, exploitability, and economic exposure have not been established by an AI review.${startingTemplate ? `
 
-2. **Economic & Game-Theoretic Risks**:
-   - **Lead Risk**: ${topIssue}.
-   - **Flash Loan Sensitivity**: Review all balance checks against instantaneous spot reserves.
-   - **First Deposit / Vault Inflation**: Ensure minimum shares or virtual offsets exist on liquidity deposits.
-
-3. **Governance & Centralization**:
-   - Verify whether owner privileges include immediate withdrawals, pause flags, or proxy logic modifications without timelocks.${startingTemplate ? `
-
-**PoC**: AI review unavailable — attached test is the fallback-library starting template (\`${startingTemplate.file}\`) for the lead finding. Adapt its TODOs to the target's real ABI before running; it fails loudly until adapted.` : ""}`,
+The attached fallback-library starting template (\`${startingTemplate.file}\`) is unadapted and unexecuted. Its TODOs require the actual target ABI; it is not evidence of an exploit.` : "\n\nThe attached test checks only that the target has code; it does not reproduce an exploit."}`,
     foundryTestCode,
-    economicRiskSummary: `Identified ${critList.length} high/critical vulnerabilities. Top risk: ${topIssue}. Review economic price feeds and reentrancy vectors.`,
+    economicRiskSummary: `AI economic review unavailable. Static analysis reported ${findings.length} finding(s), including ${critList.length} high/critical signals; economic impact and exploitability remain unconfirmed.`,
     source: "template",
   };
 }
@@ -291,6 +285,8 @@ export function buildAiReviewPrompt(
   body: string,
   findings: Finding[],
   fourbyte?: FourbyteResults,
+  inventory?: Partial<Inventory>,
+  resnet?: ResnetResult | null,
 ): { system: string; user: string } {
   const findingsSummary = findings
     .map(
@@ -309,7 +305,7 @@ export function buildAiReviewPrompt(
       ? `
 
 STARTING-POINT PoC TEMPLATES — adapt, do not reinvent:
-The library below contains proven, fork-ready Foundry PoC templates matched to this audit's findings. START FROM the template(s) for the primary vulnerability: keep its setUp()/fork shape, its \`contract PoC is Test\` name, and its observable-state assertions (balances, owner, shares — never a silent low-level-call success). Adapt ONLY the TODO-marked constants / interfaces to the target's real ABI (function names, token addresses, amounts, proofs, slots). Do NOT invent a new harness, a new attacker pattern, or a new setUp. If a template's TODO cannot be adapted to the target (e.g. the function does not exist), say so in the threat model and use the next template — never fabricate an interface the target does not have.
+The library below contains unadapted, unexecuted Foundry PoC starting templates matched to this audit's findings. START FROM the template(s) for the primary vulnerability: keep its setUp()/fork shape, its \`contract PoC is Test\` name, and its observable-state assertions (balances, owner, shares — never a silent low-level-call success). Adapt ONLY the TODO-marked constants / interfaces to the target's real ABI (function names, token addresses, amounts, proofs, slots). Do NOT invent a new harness, a new attacker pattern, or a new setUp. If a template's TODO cannot be adapted to the target (e.g. the function does not exist), say so in the threat model and use the next template — never fabricate an interface the target does not have.
 
 ${startingTemplates
   .map(
@@ -331,14 +327,16 @@ Detected Static Analysis Findings:
 ${findingsSummary || "No static detectors triggered."}
 ${fourbyte ? formatFourbyteResultsForPrompt(fourbyte) : ""}
 ${templateSection}
+${auditEvidence(inventory, resnet)}
 Your tasks:
-1. Provide a rigorous, concise Executive Threat Model Report (economic flash loan attack vectors, oracle spot-price manipulation, ERC-4626 share inflation risks, and administrative rug vectors).
-2. Generate a complete, compilation-ready Foundry test suite contract in Solidity (\`test/Exploit.t.sol\`) that tests and confirms the primary vulnerability. START FROM the starting-point template(s) above: keep the template's setUp()/fork shape, its \`contract PoC is Test\` name, and its observable-state assertions, adapting ONLY the TODO-marked constants / interfaces to the target's real ABI. The test MUST:
+1. Provide a rigorous, concise Executive Threat Model Report grounded in the supplied evidence and finding-specific risks. Do not invent a vault, oracle, or economic exposure absent evidence.
+2. Generate a complete, compilation-ready Foundry test suite contract in Solidity (\`test/Exploit.t.sol\`) that evaluates the primary finding without presuming it is confirmed. START FROM the starting-point template(s) above: keep the template's setUp()/fork shape, its \`contract PoC is Test\` name, and its observable-state assertions, adapting ONLY the TODO-marked constants / interfaces to the target's real ABI. The test MUST:
    - declare \`contract PoC is Test\` and \`import "forge-std/Test.sol";\`
    - in setUp(): fork live chain state with \`vm.createSelectFork(vm.envString("POC_RPC_URL"))\` (pin a block with \`vm.envUint("POC_FORK_BLOCK")\` when it is nonzero) and attach to the live target via \`vm.envAddress("POC_TARGET")\` — never hardcode a target address
-   - fund an attacker with \`vm.deal\`, execute the attack against the forked live contract, and assert a balance/profit change
-   - when the entry point is a GUESS (an unverified target, or a function name you inferred rather than read), do NOT commit to one name. Try the plausible ones and judge by the OBSERVED STATE DELTA, not by the call returning: a no-op or already-guarded function returns successfully and changes nothing, so a single wrong name reports "not reproduced" for a vulnerability that exists under another. For a destroy/selfdestruct finding try at least kill(), destroy(), selfdestruct(), terminate(), burn(), close() and destroy(address) before concluding, and name in the failure message which selectors you tried.
-   - when the finding is refuted (the assertion fails), say so plainly in the threat model rather than asserting the exploit as fact: the test result is the evidence and it may contradict the narrative.
+   - choose a finding-specific observable invariant (authorization, owner, accounting, availability, or value movement as appropriate); fund an attacker only when required. Never treat a bare low-level-call success as proof
+   - use only signatures supported by the actual ABI or supplied source. Selector databases and heuristic ABI entries are hypotheses, not verified call surfaces. Do not guess destructive selectors or invent interfaces; describe missing evidence and leave the finding unconfirmed when the required surface is unavailable
+   - the finding is unconfirmed until execution demonstrates the predicted invariant violation; report confirmed, refuted, or inconclusive based on execution evidence, and never describe an unexecuted template as proven
+   - a failed assertion alone does not refute a finding: distinguish missing prerequisites, compile or infrastructure failures, inconclusive execution, and actual counterevidence. Report what the observed execution supports.
 3. Provide a 2-sentence economic risk summary.
 
 Format your response strictly as JSON with this schema:
@@ -360,6 +358,8 @@ export async function generateAiSecurityReview(
   body: string,
   findings: Finding[],
   fourbyte?: FourbyteResults,
+  inventory?: Partial<Inventory>,
+  resnet?: ResnetResult | null,
 ): Promise<AiSecurityReview> {
   // The review pass uses the "review" purpose; the model itself is chosen (and
   // fallen back through) inside postChatWithModelFallback.
@@ -371,7 +371,7 @@ export async function generateAiSecurityReview(
   }
 
   try {
-    const { system, user } = buildAiReviewPrompt(contractName, body, findings, fourbyte);
+    const { system, user } = buildAiReviewPrompt(contractName, body, findings, fourbyte, inventory, resnet);
 
     const referer =
       process.env.APP_URL?.trim() ||

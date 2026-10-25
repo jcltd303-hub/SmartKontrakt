@@ -54,6 +54,10 @@ export type ResnetPrediction = {
 };
 
 export type ResnetResult = {
+  /** Present on full-byte audits; absent on historical prefix-only rows. */
+  processedBytes?: number;
+  windows?: number;
+  policy?: string;
   modelId: string;
   architecture: string;
   checkpointSha256: string;
@@ -87,7 +91,7 @@ export function resnetRiskBonus(result: ResnetResult | null | undefined): number
   const flagged = resnetFlagged(result);
   if (flagged.length === 0) return 0;
   const strongestMargin = Math.max(...flagged.map((p) => p.score - p.threshold));
-  let bonus = 3 + (strongestMargin >= 0.25 ? 1 : 0) + (flagged.length - 1);
+  const bonus = 3 + (strongestMargin >= 0.25 ? 1 : 0) + (flagged.length - 1);
   return Math.min(MAX_RESNET_BONUS, bonus);
 }
 
@@ -121,7 +125,7 @@ export const RESNET_CLASS_DETECTORS: Record<string, string[]> = {
 export function resnetSummaryLine(result: ResnetResult, appliedBonus: number): string {
   const flagged = resnetFlagged(result);
   const scope =
-    `over ${result.inputBytes} runtime bytes${result.truncated ? " (prefix only)" : ""}`;
+    `over ${result.inputBytes} runtime bytes${result.truncated ? " (prefix only)" : ""}${result.windows ? ` in ${result.windows} consecutive windows (experimental class-max pooling)` : ""}`;
   if (flagged.length === 0) {
     return (
       `ResNet1D screening (${result.modelId}): no vulnerability class at or above its threshold ` +
@@ -170,7 +174,7 @@ export function parseResnetJson(text: string | null | undefined): ResnetResult |
       if (typeof label !== "string" || label !== RESNET_CLASSES[i]) return null;
       if (!isNum(p.score) || p.score < 0 || p.score > 1) return null;
       if (!isNum(p.threshold) || p.threshold < 0 || p.threshold > 1) return null;
-      if (typeof p.flagged !== "boolean") return null;
+      if (typeof p.flagged !== "boolean" || p.flagged !== (p.score >= p.threshold)) return null;
       predictions.push({
         label,
         score: p.score,
@@ -178,17 +182,23 @@ export function parseResnetJson(text: string | null | undefined): ResnetResult |
         flagged: p.flagged,
       });
     }
-    if (!isNum(v.inputBytes) || v.inputBytes < 0) return null;
+    if (!Number.isSafeInteger(v.inputBytes) || (v.inputBytes as number) < 1) return null;
     if (typeof v.truncated !== "boolean") return null;
     if (typeof v.ranAt !== "string" || !v.ranAt) return null;
+    const coverage = v.processedBytes !== undefined || v.windows !== undefined || v.policy !== undefined;
+    if (coverage && (v.policy !== "consecutive-16384-zero-pad-l2-class-max-v1" ||
+      !Number.isSafeInteger(v.processedBytes) || v.processedBytes !== v.inputBytes ||
+      !Number.isSafeInteger(v.windows) || v.windows !== Math.ceil((v.inputBytes as number)/16384) ||
+      v.truncated !== false)) return null;
     return {
       modelId: v.modelId,
       architecture: v.architecture,
       checkpointSha256: v.checkpointSha256,
       predictions,
-      inputBytes: v.inputBytes,
+      inputBytes: v.inputBytes as number,
       truncated: v.truncated,
       ranAt: v.ranAt,
+      ...(coverage ? {processedBytes:v.processedBytes as number,windows:v.windows as number,policy:v.policy as string} : {}),
     };
   } catch {
     return null;

@@ -24,7 +24,8 @@
 //     on the run record instead of letting it pass silently.
 
 import { fourbyteResultsFromReport, type FourbyteResults } from "./fourbyte.ts";
-import type { Finding, Report } from "./types.ts";
+import type { ResnetResult } from "./resnet-result.ts";
+import type { Finding, Inventory, Report } from "./types.ts";
 
 /** The requestAiReview payload the PoC Audits page sends — the same
  *  fields, from the same sources, as the workbench's review calls. */
@@ -33,6 +34,8 @@ export type PocAuditReviewPayload = {
   body: string;
   findings: Finding[];
   fourbyte: FourbyteResults | undefined;
+  inventory: Partial<Inventory> | undefined;
+  resnet: ResnetResult | null | undefined;
 };
 
 export function pocAuditReviewPayload(input: {
@@ -46,6 +49,8 @@ export function pocAuditReviewPayload(input: {
     body: input.body,
     findings: input.findings,
     fourbyte: fourbyteForStoredReport(input.storedReport),
+    inventory: input.storedReport?.inventory,
+    resnet: input.storedReport?.resnet,
   };
 }
 
