@@ -79,3 +79,9 @@ jobs:
           set -euo pipefail
           cd foundry
           POC_TARGET="$POC_TARGET" forge test --match-contract KailuaInitializerCompatibilityForkTest --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
+      - name: Run Kailua economic and synthetic-credit payout invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd foundry
+          POC_TARGET="$POC_TARGET" forge test --match-contract KailuaEconomicForkTest --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
