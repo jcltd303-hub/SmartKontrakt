@@ -17,40 +17,63 @@ export type AiSecurityReview = {
 export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 /**
- * Best current OpenRouter **free-tier** models, by purpose. Verified 2026-10-21.
+ * Best current OpenRouter **free-tier** models, by purpose. Verified against
+ * the live catalog (GET https://openrouter.ai/api/v1/models + per-model
+ * endpoints) on 2026-10-25: of 467 listed models only 20 are genuinely free
+ * (prompt AND completion price 0). The big free coder/reasoner ids of earlier
+ * rotations (Qwen3-Coder, DeepSeek, Kimi, gpt-oss) are not free in the
+ * catalog today, so these picks are the best of what is actually free now.
  *
- * The free tier is a shared, per-account daily quota (50 requests/day, or 1000
- * after a one-time $10 top-up) and the endpoints are 4-bit quantised, so the
- * model is chosen per task rather than globally:
+ * The free tier is a shared, per-account daily quota (50 requests/day, or
+ * 1000 after a one-time $10 top-up) and the endpoints are 4-bit quantised, so
+ * the model is chosen per task rather than globally:
  *
- *   review — long-context reasoning and prose (threat model, second pass).
- *            Nemotron 3 Ultra: 550B/55B MoE, 1M-token context, strongest free
- *            reasoning.
- *   code   — Foundry PoC synthesis and repair. Inkling-Small: best published
- *            free coding score (80.2% SWE-bench Verified) at 276B/12B active,
- *            1M-token context.
- *   json   — structured output + tool calling (Deep Agent hypotheses, DV
- *            action/state extraction and verdicts). Qwen3.8-27B: 262K context,
- *            structured outputs and tool calling, strong coding.
+ *   review — threat model + a complete Foundry test in one reply, and the
+ *            prose second pass. Nemotron 3 Ultra (550B/55B MoE): the
+ *            strongest free reasoning class in the catalog, 1M-token context
+ *            (full source + findings + up to 3 injected templates), 65,536
+ *            max completion against the 8,000 these calls request. Its
+ *            single endpoint is healthy (status 0) and it carried Jer's
+ *            59,852-address live run. Unchanged.
+ *   code   — Foundry PoC synthesis, regeneration and compile repair.
+ *            Laguna S 2.1 (Poolside): the free list's dedicated frontier
+ *            coding model — 118B total / 8B active, 70.2% Terminal-Bench 2.1
+ *            per its catalog description, 262K context, 32,768 max
+ *            completion (4x the 8,000 requested). Endpoint healthy
+ *            (status 0). History: was `thinkingmachines/inkling-small:free`
+ *            (harness-gated — OpenRouter refuses it for plain API calls,
+ *            HTTP 403), then Nemotron Ultra as the one verified-working
+ *            stopgap; now that a purpose-built coder is free and healthy,
+ *            the code purposes go back to a dedicated model. One caveat,
+ *            recorded deliberately: the repair call sends
+ *            `response_format`, which Laguna's catalog entry does not list
+ *            (Ultra's does not either, and NVIDIA's endpoint accepts it in
+ *            practice). If Poolside's endpoint rejects it, repair degrades
+ *            best-effort exactly as a failed repair does today — set
+ *            OPENROUTER_MODEL_CODE back to the Nemotron id to restore the
+ *            stopgap with no code change.
+ *   json   — Deep Agent hypotheses, SmartPoC DV extraction and verdicts:
+ *            exact-schema JSON via response_format. Stays on Nemotron 3
+ *            Ultra. The tempting alternative is Nemotron 3 Super (120B/12B):
+ *            the only free model whose catalog entry lists response_format
+ *            AND structured_outputs, with a 235,929 max completion — but at
+ *            decision time its single endpoint was flagged (endpoint status
+ *            -5 in two independent catalog reads) while both models picked
+ *            here sat at 0, a saturation liability for batch runs, and
+ *            every free model here has exactly one endpoint, so there is no
+ *            routing redundancy to absorb a degraded one. Ultra's JSON wobbles are
+ *            already absorbed by the tolerant extraction + corrective-retry
+ *            machinery. Revisit Super when its endpoint health clears;
+ *            OPENROUTER_MODEL_JSON can point at it today.
  *
  * `OPENROUTER_MODEL` overrides every purpose; `OPENROUTER_MODEL_<PURPOSE>`
  * overrides one (e.g. OPENROUTER_MODEL_CODE). Free-tier ids churn — re-check
- * https://openrouter.ai/collections/free-models before relying on one.
+ * the live catalog before relying on one; the fallback chain below
+ * (openrouter/free) absorbs an id that gets withdrawn or gated.
  */
 export const OPENROUTER_MODELS = {
   review: "nvidia/nemotron-3-ultra-550b-a55b:free",
-  // Was `thinkingmachines/inkling-small:free`, which OpenRouter refuses for a
-  // plain API call: "only available on agentic harnesses" (HTTP 403, routing
-  // step "Gate Free Endpoints by Agentic Harness"). That model can never work
-  // here, so the SmartPoC repair failed every time. A general free model that
-  // does answer the API, ranked for programming.
-  code: "nvidia/nemotron-3-ultra-550b-a55b:free",
-  // Was `qwen/qwen3.8-27b:free`, which OpenRouter answered with HTTP 404:
-  // "This model is unavailable for free. The paid version is available now -
-  // use this slug instead: qwen/qwen3.8-27b". A free-tier id can be withdrawn
-  // at any time, which is why the fallback chain below matters more than the
-  // choice: with one verified-working free model, all three purposes point at
-  // it rather than at an id that may have been pulled.
+  code: "poolside/laguna-s-2.1:free",
   json: "nvidia/nemotron-3-ultra-550b-a55b:free",
 } as const;
 

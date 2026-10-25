@@ -53,6 +53,24 @@ test("resolveOpenRouterModel picks the per-purpose free model, overridable by en
   );
 });
 
+test("per-purpose defaults are the 2026-10-25 live-catalog picks", () => {
+  // Pinned literally on purpose: a free-tier id churns silently, and the
+  // suite should go red the day a default changes without the catalog
+  // re-check recorded in the OPENROUTER_MODELS header comment. Facts there:
+  // Ultra is the strongest free reasoning class (1M ctx, 65,536 max
+  // completion, endpoint healthy); Laguna S 2.1 is the free list's dedicated
+  // frontier coder (262K ctx, 32,768 max completion); Nemotron 3 Super —
+  // the schema-native json candidate — was passed over because its single
+  // endpoint was flagged (status -5) while both picked models sat at 0.
+  assert.equal(OPENROUTER_MODELS.review, "nvidia/nemotron-3-ultra-550b-a55b:free");
+  assert.equal(OPENROUTER_MODELS.code, "poolside/laguna-s-2.1:free");
+  assert.equal(OPENROUTER_MODELS.json, "nvidia/nemotron-3-ultra-550b-a55b:free");
+  assert.equal(DEFAULT_OPENROUTER_MODEL, OPENROUTER_MODELS.review);
+  for (const model of Object.values(OPENROUTER_MODELS)) {
+    assert.ok(model.endsWith(":free"), `default must be a free-tier id: ${model}`);
+  }
+});
+
 test("extractJsonContent parses raw JSON", () => {
   assert.deepEqual(
     extractJsonContent('{"threatModelReport":"x","foundryTestCode":"y"}'),
