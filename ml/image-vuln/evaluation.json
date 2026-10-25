@@ -1,0 +1,422 @@
+{
+  "training": {
+    "dataset": "mwritescode/slither-audited-smart-contracts",
+    "config": "big-multilabel",
+    "seed": 20261024,
+    "trainCap": 55632,
+    "availableTrainAfterDedup": 55632,
+    "counts": {
+      "train": 55632,
+      "validation": 7358,
+      "test": 10686
+    },
+    "invalidDropped": {
+      "train": 227,
+      "validation": 30,
+      "test": 51
+    },
+    "deduplication": {
+      "train": {
+        "input": 79414,
+        "crossSplitDropped": 20460,
+        "withinSplitDropped": 3322,
+        "retained": 55632
+      },
+      "validation": {
+        "input": 10831,
+        "crossSplitDropped": 3433,
+        "withinSplitDropped": 40,
+        "retained": 7358
+      },
+      "test": {
+        "input": 15921,
+        "crossSplitDropped": 5161,
+        "withinSplitDropped": 74,
+        "retained": 10686
+      }
+    },
+    "positiveWeights": [
+      4.695331573486328,
+      3.9516689777374268,
+      1.650404930114746,
+      0.9374521374702454,
+      2.142695665359497
+    ],
+    "trainPrevalence": [
+      0.1755823940038681,
+      0.20195211470127106,
+      0.37730082869529724,
+      0.5161417722702026,
+      0.31819814443588257
+    ],
+    "selectedEpoch": 12,
+    "epochs": 12,
+    "selection": "Maximum validation macro F1; per-class thresholds maximize validation F1 over 0.05..0.95 step 0.025. Test evaluated once after selection.",
+    "history": [
+      {
+        "epoch": 1,
+        "trainLoss": 0.8789279243882305,
+        "validationMacroF1": 0.5501931864832752,
+        "thresholds": [
+          0.47500000000000014,
+          0.3500000000000001,
+          0.3750000000000001,
+          0.3750000000000001,
+          0.4250000000000001
+        ]
+      },
+      {
+        "epoch": 2,
+        "trainLoss": 0.8460176439850297,
+        "validationMacroF1": 0.5575941118674093,
+        "thresholds": [
+          0.5500000000000003,
+          0.5250000000000001,
+          0.4500000000000001,
+          0.47500000000000014,
+          0.47500000000000014
+        ]
+      },
+      {
+        "epoch": 3,
+        "trainLoss": 0.8371844786078141,
+        "validationMacroF1": 0.565851882155181,
+        "thresholds": [
+          0.5250000000000001,
+          0.5250000000000001,
+          0.4000000000000001,
+          0.47500000000000014,
+          0.4500000000000001
+        ]
+      },
+      {
+        "epoch": 4,
+        "trainLoss": 0.8257064423343043,
+        "validationMacroF1": 0.5721771090780774,
+        "thresholds": [
+          0.6000000000000002,
+          0.5500000000000003,
+          0.4250000000000001,
+          0.4500000000000001,
+          0.5250000000000001
+        ]
+      },
+      {
+        "epoch": 5,
+        "trainLoss": 0.8196403351980686,
+        "validationMacroF1": 0.574890891373357,
+        "thresholds": [
+          0.5750000000000002,
+          0.5000000000000002,
+          0.4000000000000001,
+          0.5000000000000002,
+          0.5250000000000001
+        ]
+      },
+      {
+        "epoch": 6,
+        "trainLoss": 0.8125080948833217,
+        "validationMacroF1": 0.5780311396277763,
+        "thresholds": [
+          0.5000000000000002,
+          0.5250000000000001,
+          0.4000000000000001,
+          0.4500000000000001,
+          0.47500000000000014
+        ]
+      },
+      {
+        "epoch": 7,
+        "trainLoss": 0.8070575932267414,
+        "validationMacroF1": 0.5830179702529515,
+        "thresholds": [
+          0.5750000000000002,
+          0.5000000000000002,
+          0.4000000000000001,
+          0.4000000000000001,
+          0.4500000000000001
+        ]
+      },
+      {
+        "epoch": 8,
+        "trainLoss": 0.8017843529894875,
+        "validationMacroF1": 0.5865320426346167,
+        "thresholds": [
+          0.6250000000000002,
+          0.5000000000000002,
+          0.4500000000000001,
+          0.4500000000000001,
+          0.4250000000000001
+        ]
+      },
+      {
+        "epoch": 9,
+        "trainLoss": 0.7947269523490048,
+        "validationMacroF1": 0.5906889024916097,
+        "thresholds": [
+          0.6000000000000002,
+          0.5500000000000003,
+          0.47500000000000014,
+          0.4500000000000001,
+          0.5250000000000001
+        ]
+      },
+      {
+        "epoch": 10,
+        "trainLoss": 0.7886115763425346,
+        "validationMacroF1": 0.5922106093308861,
+        "thresholds": [
+          0.5500000000000003,
+          0.47500000000000014,
+          0.4250000000000001,
+          0.4000000000000001,
+          0.4500000000000001
+        ]
+      },
+      {
+        "epoch": 11,
+        "trainLoss": 0.7818149359945529,
+        "validationMacroF1": 0.5964502889917573,
+        "thresholds": [
+          0.6000000000000002,
+          0.47500000000000014,
+          0.47500000000000014,
+          0.5000000000000002,
+          0.5000000000000002
+        ]
+      },
+      {
+        "epoch": 12,
+        "trainLoss": 0.7764106059437824,
+        "validationMacroF1": 0.600869361999133,
+        "thresholds": [
+          0.6500000000000002,
+          0.5500000000000003,
+          0.5000000000000002,
+          0.4000000000000001,
+          0.47500000000000014
+        ]
+      }
+    ],
+    "trainingSeconds": 69.12580585479736,
+    "torchVersion": "2.14.1+cpu",
+    "architecture": "3 convolution layers, average pool, linear; independent sigmoid",
+    "optimizer": "Adam lr=0.001 weight_decay=0.0001 batch=128",
+    "augmentation": "none"
+  },
+  "test": {
+    "microF1": 0.6370421974522293,
+    "macroF1": 0.5963177069240796,
+    "exactMatch": 0.29122215983529853,
+    "perClass": [
+      {
+        "class": "access-control",
+        "precision": 0.45306691449814124,
+        "recall": 0.5118110236220472,
+        "f1": 0.4806507271382795,
+        "support": 1905,
+        "averagePrecision": 0.49620577011474765,
+        "auroc": 0.7728505323920263
+      },
+      {
+        "class": "arithmetic",
+        "precision": 0.34469096671949284,
+        "recall": 0.6016597510373444,
+        "f1": 0.43828715365239296,
+        "support": 2169,
+        "averagePrecision": 0.4017839357166331,
+        "auroc": 0.7244032262002179
+      },
+      {
+        "class": "reentrancy",
+        "precision": 0.583796530234125,
+        "recall": 0.8384131591678762,
+        "f1": 0.6883129778572138,
+        "support": 4134,
+        "averagePrecision": 0.7406058537782192,
+        "auroc": 0.8164241721026917
+      },
+      {
+        "class": "unchecked-calls",
+        "precision": 0.7390597039206117,
+        "recall": 0.8162055335968379,
+        "f1": 0.7757192862631265,
+        "support": 5566,
+        "averagePrecision": 0.8497493163845579,
+        "auroc": 0.8306154975521021
+      },
+      {
+        "class": "others",
+        "precision": 0.5061430010070493,
+        "recall": 0.7324395220052463,
+        "f1": 0.5986183897093854,
+        "support": 3431,
+        "averagePrecision": 0.5821922448588929,
+        "auroc": 0.7579826051883133
+      }
+    ],
+    "allPositiveBaseline": {
+      "microF1": 0.48715226162667236,
+      "macroF1": 0.4737981071176366,
+      "exactMatch": 0.02395657870110425,
+      "perClass": [
+        {
+          "class": "access-control",
+          "precision": 0.17827063447501404,
+          "recall": 1.0,
+          "f1": 0.30259709316178224,
+          "support": 1905,
+          "averagePrecision": 0.17827063447501404,
+          "auroc": 0.5
+        },
+        {
+          "class": "arithmetic",
+          "precision": 0.2029758562605278,
+          "recall": 1.0,
+          "f1": 0.3374562427071178,
+          "support": 2169,
+          "averagePrecision": 0.2029758562605278,
+          "auroc": 0.5
+        },
+        {
+          "class": "reentrancy",
+          "precision": 0.38686131386861317,
+          "recall": 1.0,
+          "f1": 0.5578947368421052,
+          "support": 4134,
+          "averagePrecision": 0.38686131386861317,
+          "auroc": 0.5
+        },
+        {
+          "class": "unchecked-calls",
+          "precision": 0.520868425977915,
+          "recall": 1.0,
+          "f1": 0.6849618508491263,
+          "support": 5566,
+          "averagePrecision": 0.520868425977915,
+          "auroc": 0.5
+        },
+        {
+          "class": "others",
+          "precision": 0.32107430282612764,
+          "recall": 1.0,
+          "f1": 0.4860806120280513,
+          "support": 3431,
+          "averagePrecision": 0.32107430282612764,
+          "auroc": 0.5
+        }
+      ]
+    },
+    "majorityBaseline": {
+      "microF1": 0.39912516582410096,
+      "macroF1": 0.13699237016982527,
+      "exactMatch": 0.1176305446378439,
+      "perClass": [
+        {
+          "class": "access-control",
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 1905,
+          "averagePrecision": 0.17827063447501404,
+          "auroc": 0.5
+        },
+        {
+          "class": "arithmetic",
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 2169,
+          "averagePrecision": 0.2029758562605278,
+          "auroc": 0.5
+        },
+        {
+          "class": "reentrancy",
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 4134,
+          "averagePrecision": 0.38686131386861317,
+          "auroc": 0.5
+        },
+        {
+          "class": "unchecked-calls",
+          "precision": 0.520868425977915,
+          "recall": 1.0,
+          "f1": 0.6849618508491263,
+          "support": 5566,
+          "averagePrecision": 0.520868425977915,
+          "auroc": 0.5
+        },
+        {
+          "class": "others",
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 3431,
+          "averagePrecision": 0.32107430282612764,
+          "auroc": 0.5
+        }
+      ]
+    },
+    "prevalenceBaseline": {
+      "microF1": 0.39912516582410096,
+      "macroF1": 0.13699237016982527,
+      "exactMatch": 0.1176305446378439,
+      "perClass": [
+        {
+          "class": "access-control",
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 1905,
+          "averagePrecision": 0.17827063447501404,
+          "auroc": 0.5
+        },
+        {
+          "class": "arithmetic",
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 2169,
+          "averagePrecision": 0.2029758562605278,
+          "auroc": 0.5
+        },
+        {
+          "class": "reentrancy",
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 4134,
+          "averagePrecision": 0.38686131386861317,
+          "auroc": 0.5
+        },
+        {
+          "class": "unchecked-calls",
+          "precision": 0.520868425977915,
+          "recall": 1.0,
+          "f1": 0.6849618508491263,
+          "support": 5566,
+          "averagePrecision": 0.520868425977915,
+          "auroc": 0.5
+        },
+        {
+          "class": "others",
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 3431,
+          "averagePrecision": 0.32107430282612764,
+          "auroc": 0.5
+        }
+      ]
+    }
+  },
+  "thresholds": [
+    0.6500000000000002,
+    0.5500000000000003,
+    0.5000000000000002,
+    0.4000000000000001,
+    0.47500000000000014
+  ]
+}

@@ -1,0 +1,281 @@
+{
+  "schemaVersion": 1,
+  "modelId": "resnet1d-16384-epoch5-v1",
+  "architecture": "upstream-resnet1d-16384-v1",
+  "sequenceLength": 16384,
+  "normalization": "per-example L2 after zero-pad/truncate",
+  "classes": [
+    "access-control",
+    "arithmetic",
+    "reentrancy",
+    "unchecked-calls",
+    "others"
+  ],
+  "thresholds": [
+    0.5250000000000001,
+    0.47500000000000014,
+    0.2750000000000001,
+    0.3000000000000001,
+    0.47500000000000014
+  ],
+  "bytes": 14850766,
+  "sha256": "77fbcfad7d0cc378e51c0106f5bdd8e5ffc41e5cc33a687df54d5bb75e5d298b",
+  "shards": [
+    {
+      "file": "resnet1d-v1-00.bin",
+      "bytes": 1048576,
+      "sha256": "a91e8e446303550b9cfb5b4e2ec0baa2d39e0c5703388848a53330b9181f6d54"
+    },
+    {
+      "file": "resnet1d-v1-01.bin",
+      "bytes": 1048576,
+      "sha256": "b48d3bcfad591b31a48d2721f4b2c307bc8ab0149aa312221a9b8ce06602b889"
+    },
+    {
+      "file": "resnet1d-v1-02.bin",
+      "bytes": 1048576,
+      "sha256": "38eaf060c1c1f7722ed162b5ea9da382074d6d94c80736c191d141651f55908f"
+    },
+    {
+      "file": "resnet1d-v1-03.bin",
+      "bytes": 1048576,
+      "sha256": "1c8d114937482519dba84327b40ec3fa4902d93fab94d48565ecd6c43bcfe8be"
+    },
+    {
+      "file": "resnet1d-v1-04.bin",
+      "bytes": 1048576,
+      "sha256": "21919a368de130cdc867911f7490728f5561a4d3009c0df56bfca3b875ba6c31"
+    },
+    {
+      "file": "resnet1d-v1-05.bin",
+      "bytes": 1048576,
+      "sha256": "882c479a3de9486cc3712c630eeba349ac05160799335acc3495371d663ea196"
+    },
+    {
+      "file": "resnet1d-v1-06.bin",
+      "bytes": 1048576,
+      "sha256": "5e7c93124ab95f374fe5ff2deb070ba0043ad831e334ba262a4fda711ecb1e80"
+    },
+    {
+      "file": "resnet1d-v1-07.bin",
+      "bytes": 1048576,
+      "sha256": "aa197a75f2624dd5d5c4c5794079cc4b8a4c91e66ceb164049b9853e4348887d"
+    },
+    {
+      "file": "resnet1d-v1-08.bin",
+      "bytes": 1048576,
+      "sha256": "4dcd62f0e5d24fa30449f65f999eaabc3af30751a041cbf5d4eecf530a2a6db1"
+    },
+    {
+      "file": "resnet1d-v1-09.bin",
+      "bytes": 1048576,
+      "sha256": "63b926c44c3b8647eb9792b8b7ac0494cf45b9ef8d7535252d8d5f970a0c1271"
+    },
+    {
+      "file": "resnet1d-v1-10.bin",
+      "bytes": 1048576,
+      "sha256": "490ef6a7acc5e7a3758ad315abf4530b1f15b96074a16b9df5041c02ff6b295d"
+    },
+    {
+      "file": "resnet1d-v1-11.bin",
+      "bytes": 1048576,
+      "sha256": "e0e7713f3a2ebe910648ccec0c69343f5f02774f42c8232307b6d479f96de305"
+    },
+    {
+      "file": "resnet1d-v1-12.bin",
+      "bytes": 1048576,
+      "sha256": "480187d490780bca502d1e4fa10537a55380c9c8cd2bc4be36d4f2bc017fe0f3"
+    },
+    {
+      "file": "resnet1d-v1-13.bin",
+      "bytes": 1048576,
+      "sha256": "d37ce2b52ab555a23b18800caa49939f9e46c5a03f10159d67d5dae4b3bc66a2"
+    },
+    {
+      "file": "resnet1d-v1-14.bin",
+      "bytes": 170702,
+      "sha256": "f9defc046b5923ede5a1e41b2694cd59ff03287a4ac43641fb7636bf43d29c99"
+    }
+  ],
+  "checkpointSha256": "f8ddd71621d6019c3aa0a6a5578254e04002ae42fea38904823204836009895e",
+  "parityMaxAbsoluteError": 1.7881393432617188e-07,
+  "training": {
+    "samples": {
+      "train": 8192,
+      "validation": 7358,
+      "test": 10686
+    },
+    "selectedEpoch": 5,
+    "checkpointSha256": "f8ddd71621d6019c3aa0a6a5578254e04002ae42fea38904823204836009895e"
+  },
+  "evaluation": {
+    "validation": {
+      "epoch": 5,
+      "trainLoss": 0.7646741749485955,
+      "validation": {
+        "microF1": 0.6596268120056016,
+        "macroF1": 0.6213193462490864,
+        "exactMatch": 0.32440880674096223,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.5537777777777778,
+            "recall": 0.4795996920708237,
+            "f1": 0.514026402640264,
+            "support": 1299,
+            "averagePrecision": 0.5435767109199093,
+            "auroc": 0.7926172722145504
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.3887277248238707,
+            "recall": 0.6261682242990654,
+            "f1": 0.4796727179749425,
+            "support": 1498,
+            "averagePrecision": 0.4467713900439085,
+            "auroc": 0.733895706220353
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.7042866711319491,
+            "recall": 0.7543041606886657,
+            "f1": 0.7284378247315553,
+            "support": 2788,
+            "averagePrecision": 0.8206547309541111,
+            "auroc": 0.8624787695939773
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.7232082678049876,
+            "recall": 0.8471052631578947,
+            "f1": 0.7802690582959642,
+            "support": 3800,
+            "averagePrecision": 0.8613436421026439,
+            "auroc": 0.842584538918967
+          },
+          {
+            "class": "others",
+            "precision": 0.4922043010752688,
+            "recall": 0.7821443827424178,
+            "f1": 0.6041907276027059,
+            "support": 2341,
+            "averagePrecision": 0.5990017839832578,
+            "auroc": 0.7633832666499045
+          }
+        ]
+      },
+      "thresholds": [
+        0.5250000000000001,
+        0.47500000000000014,
+        0.2750000000000001,
+        0.3000000000000001,
+        0.47500000000000014
+      ],
+      "validationAtFixedHalfThreshold": {
+        "microF1": 0.6168022149160755,
+        "macroF1": 0.5897507141202629,
+        "exactMatch": 0.32930144060886113,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.5041698256254739,
+            "recall": 0.5119322555812164,
+            "f1": 0.5080213903743316,
+            "support": 1299,
+            "averagePrecision": 0.5435767109199093,
+            "auroc": 0.7926172722145504
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.4040307101727447,
+            "recall": 0.562082777036048,
+            "f1": 0.4701284198771636,
+            "support": 1498,
+            "averagePrecision": 0.4467713900439085,
+            "auroc": 0.733895706220353
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.888961038961039,
+            "recall": 0.49103299856527977,
+            "f1": 0.6326247689463955,
+            "support": 2788,
+            "averagePrecision": 0.8206547309541111,
+            "auroc": 0.8624787695939773
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.8185613359023763,
+            "recall": 0.6707894736842105,
+            "f1": 0.7373445183685277,
+            "support": 3800,
+            "averagePrecision": 0.8613436421026439,
+            "auroc": 0.842584538918967
+          },
+          {
+            "class": "others",
+            "precision": 0.5112511251125113,
+            "recall": 0.72789406236651,
+            "f1": 0.600634473034896,
+            "support": 2341,
+            "averagePrecision": 0.5990017839832578,
+            "auroc": 0.7633832666499045
+          }
+        ]
+      }
+    },
+    "test": {
+      "microF1": 0.6625647336307234,
+      "macroF1": 0.6242757045397607,
+      "exactMatch": 0.3179861501029384,
+      "perClass": [
+        {
+          "class": "access-control",
+          "precision": 0.5599755201958384,
+          "recall": 0.48031496062992124,
+          "f1": 0.5170952246397288,
+          "support": 1905,
+          "averagePrecision": 0.5630382765707815,
+          "auroc": 0.8037364436039277
+        },
+        {
+          "class": "arithmetic",
+          "precision": 0.37954607601859447,
+          "recall": 0.6399262332872291,
+          "f1": 0.4764847236525918,
+          "support": 2169,
+          "averagePrecision": 0.45597725865718675,
+          "auroc": 0.7356671680910681
+        },
+        {
+          "class": "reentrancy",
+          "precision": 0.7064854022732338,
+          "recall": 0.7668118045476536,
+          "f1": 0.7354135251130959,
+          "support": 4134,
+          "averagePrecision": 0.8272897769154715,
+          "auroc": 0.8625573211930251
+        },
+        {
+          "class": "unchecked-calls",
+          "precision": 0.7218989280245023,
+          "recall": 0.8469277757815307,
+          "f1": 0.779431216931217,
+          "support": 5566,
+          "averagePrecision": 0.8642462576902785,
+          "auroc": 0.8450433400051653
+        },
+        {
+          "class": "others",
+          "precision": 0.4979064263608229,
+          "recall": 0.7971436898863306,
+          "f1": 0.6129538323621694,
+          "support": 3431,
+          "averagePrecision": 0.6177675248080142,
+          "auroc": 0.7770033671589218
+        }
+      ]
+    },
+    "notice": "Known benchmark reused across experiments; Slither labels, not exploit ground truth."
+  }
+}

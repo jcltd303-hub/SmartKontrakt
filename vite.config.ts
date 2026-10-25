@@ -11,6 +11,8 @@ import { grokPwaPlugin } from "./scripts/grok-pwa-plugin.mjs";
 // @ts-expect-error JS plugin alongside the TS vite config
 import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
 import { isMigrationFile } from "./scripts/migration-plan.mjs";
+// @ts-expect-error JS middleware shared with native HTTP tests
+import { previewMlAssets } from "./scripts/preview-ml-assets.mjs";
 
 /** The files `src/lib/db.ts` globs — same directory, same non-recursive scope. */
 function hasGlobbedMigrations(root: string): boolean {
@@ -65,8 +67,17 @@ export default defineConfig(({ command, isPreview }) => ({
     port: 8081,
     strictPort: true,
   },
+  // Worker-only imports must be discovered before the first manual inference.
+  // Lazy discovery otherwise reloads the page and discards the active run.
+  optimizeDeps: { include: ["onnxruntime-web/wasm"] },
   resolve: { tsconfigPaths: true },
   plugins: [
+    {
+      name: "app-builder:preview-ml-assets",
+      configurePreviewServer(server) {
+        server.middlewares.use(previewMlAssets(join(server.config.root, ".vercel/output/static")));
+      },
+    },
     pgliteBootstrapPlugin(),
     // Dev-only /__app-env endpoint (read by the browser smoke test).
     appEnvPlugin(),

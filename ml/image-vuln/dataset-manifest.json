@@ -1,0 +1,87 @@
+{
+  "parquet_files": [
+    {
+      "dataset": "mwritescode/slither-audited-smart-contracts",
+      "config": "big-multilabel",
+      "split": "test",
+      "url": "https://huggingface.co/datasets/mwritescode/slither-audited-smart-contracts/resolve/refs%2Fconvert%2Fparquet/big-multilabel/test/0000.parquet",
+      "filename": "0000.parquet",
+      "size": 168430993
+    },
+    {
+      "dataset": "mwritescode/slither-audited-smart-contracts",
+      "config": "big-multilabel",
+      "split": "test",
+      "url": "https://huggingface.co/datasets/mwritescode/slither-audited-smart-contracts/resolve/refs%2Fconvert%2Fparquet/big-multilabel/test/0001.parquet",
+      "filename": "0001.parquet",
+      "size": 59995366
+    },
+    {
+      "dataset": "mwritescode/slither-audited-smart-contracts",
+      "config": "big-multilabel",
+      "split": "train",
+      "url": "https://huggingface.co/datasets/mwritescode/slither-audited-smart-contracts/resolve/refs%2Fconvert%2Fparquet/big-multilabel/train/0000.parquet",
+      "filename": "0000.parquet",
+      "size": 173286863
+    },
+    {
+      "dataset": "mwritescode/slither-audited-smart-contracts",
+      "config": "big-multilabel",
+      "split": "train",
+      "url": "https://huggingface.co/datasets/mwritescode/slither-audited-smart-contracts/resolve/refs%2Fconvert%2Fparquet/big-multilabel/train/0001.parquet",
+      "filename": "0001.parquet",
+      "size": 173575169
+    },
+    {
+      "dataset": "mwritescode/slither-audited-smart-contracts",
+      "config": "big-multilabel",
+      "split": "train",
+      "url": "https://huggingface.co/datasets/mwritescode/slither-audited-smart-contracts/resolve/refs%2Fconvert%2Fparquet/big-multilabel/train/0002.parquet",
+      "filename": "0002.parquet",
+      "size": 171414245
+    },
+    {
+      "dataset": "mwritescode/slither-audited-smart-contracts",
+      "config": "big-multilabel",
+      "split": "train",
+      "url": "https://huggingface.co/datasets/mwritescode/slither-audited-smart-contracts/resolve/refs%2Fconvert%2Fparquet/big-multilabel/train/0003.parquet",
+      "filename": "0003.parquet",
+      "size": 165433337
+    },
+    {
+      "dataset": "mwritescode/slither-audited-smart-contracts",
+      "config": "big-multilabel",
+      "split": "train",
+      "url": "https://huggingface.co/datasets/mwritescode/slither-audited-smart-contracts/resolve/refs%2Fconvert%2Fparquet/big-multilabel/train/0004.parquet",
+      "filename": "0004.parquet",
+      "size": 167730394
+    },
+    {
+      "dataset": "mwritescode/slither-audited-smart-contracts",
+      "config": "big-multilabel",
+      "split": "train",
+      "url": "https://huggingface.co/datasets/mwritescode/slither-audited-smart-contracts/resolve/refs%2Fconvert%2Fparquet/big-multilabel/train/0005.parquet",
+      "filename": "0005.parquet",
+      "size": 167971552
+    },
+    {
+      "dataset": "mwritescode/slither-audited-smart-contracts",
+      "config": "big-multilabel",
+      "split": "train",
+      "url": "https://huggingface.co/datasets/mwritescode/slither-audited-smart-contracts/resolve/refs%2Fconvert%2Fparquet/big-multilabel/train/0006.parquet",
+      "filename": "0006.parquet",
+      "size": 129098641
+    },
+    {
+      "dataset": "mwritescode/slither-audited-smart-contracts",
+      "config": "big-multilabel",
+      "split": "validation",
+      "url": "https://huggingface.co/datasets/mwritescode/slither-audited-smart-contracts/resolve/refs%2Fconvert%2Fparquet/big-multilabel/validation/0000.parquet",
+      "filename": "0000.parquet",
+      "size": 156286451
+    }
+  ],
+  "pending": [],
+  "failed": [],
+  "partial": true
+}
