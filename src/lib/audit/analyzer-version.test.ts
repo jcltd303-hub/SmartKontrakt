@@ -65,7 +65,11 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // And to 2026-10-25.3 with the gate generalization (Fix 38):
   // delegatecall / reentrancy / selfdestruct provenance + guard
   // credit — the sweep #2 treatment.
-  assert.equal(ANALYZER_BASELINE, "2026-10-25.3");
+  // And to 2026-10-25.4 with the bytecode-family fix (Fix 39):
+  // instruction-proven presence (structural CBOR strip + trailing-
+  // constant data exclusion) and operand-resolved DELEGATECALL /
+  // CALLCODE severities — the presence-proof treatment.
+  assert.equal(ANALYZER_BASELINE, "2026-10-25.4");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });

@@ -85,9 +85,25 @@ import {
  *                requires external reachability. Source-only: no
  *                finding is newly corroborated. Same inputs now
  *                produce different records, so the archive refreshes.
+ * 2026-10-25.4 — Bytecode-family fix (Fix 39): opcode presence is now
+ *                instruction-proven — the auxdata tail is stripped by
+ *                structural CBOR parsing (iterated, so embedded
+ *                contracts' tails go too) and the solc trailing-
+ *                constant word is excluded as data — after the
+ *                presence proof showed 21/72 stored bytecode-callcode
+ *                highs had no CALLCODE instruction at all. DELEGATECALL
+ *                and CALLCODE are separate findings whose severity
+ *                comes from operand resolution: calldata-derived
+ *                target high, fixed constant / proxy-slot target
+ *                informational, unresolvable target stays low with
+ *                the gap named (delegatecall sample 30/30 and
+ *                callcode 72/72 were FP-as-high). SELFDESTRUCT and
+ *                metadata severities are NOT recalibrated — presence
+ *                correctness only. Same inputs now produce different
+ *                records, so the archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-25.3";
+export const ANALYZER_BASELINE = "2026-10-25.4";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {
