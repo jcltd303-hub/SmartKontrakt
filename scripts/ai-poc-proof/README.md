@@ -137,6 +137,63 @@ keys on the recorded statuses), so re-run in the same mode that
 produced the file. `--type` composes: it narrows the selection
 first, then `--only-failed` filters within it.
 
+## CI: the nightly dry proof
+
+The workflow `.github/workflows/ai-poc-proof-dry.yml` ("AI-PoC proof
+(dry)") runs this suite's key-free half on GitHub Actions, so a
+template-layer regression turns a nightly red even when nobody ran
+the checks locally.
+
+**What it runs** — the same commands, in the same order, as a local
+verification pass:
+
+```
+npm install --no-audit --no-fund
+npm run check:fallbacks
+npm run check:fixtures
+npm run check:detectors
+node scripts/ai-poc-proof/run.mjs --dry-run
+```
+
+on Node 22 with Foundry pinned to v1.8.5 (the release the suite was
+measured against). No secrets: the dry run substitutes each type's
+fallback template for the LLM-generated PoC. Live mode is never run
+in CI; it stays a manual, key-carrying run (above).
+
+**Schedule** — nightly at 07:17 UTC, plus manual dispatch.
+
+**Run it manually** — repo → **Actions** tab → **AI-PoC proof (dry)**
+in the left sidebar → **Run workflow** → branch `main` → **Run
+workflow**. There are no inputs.
+
+**Reading a failure** — the job is expected fully green: the dry
+suite passes 47/47 and all three verifiers pass on current main, so
+a red run is a real regression, not background noise. The failing
+step names the broken gate:
+
+- *Compile every fallback harness* (`check:fallbacks`) — a fallback
+  template stopped compiling.
+- *Run the fixture corpus* (`check:fixtures`) — a fixture stopped
+  reproducing its expected result.
+- *Detector self-check* (`check:detectors`) — the detector layer's
+  own self-check failed.
+- *AI-PoC proof suite (dry run)* — at least one type's template
+  proof failed; the step log's closing summary names each failing
+  type and its verdict. The run also uploads its `results.json` as
+  the `ai-poc-proof-dry-results` artifact (run page → **Artifacts**,
+  kept 30 days) — the same file a local run writes, so it diffs
+  directly against a local reproduction.
+
+**Run the identical checks locally** — the five commands above, from
+the repo root, with Foundry v1.8.5 on PATH. They are the same gates
+run before a push; CI adds nothing and forgives nothing.
+
+**The one caveat** — never "fix" a red nightly by masking it (no
+`continue-on-error`, no forced-green step, no narrowing the suite).
+Red means a gate found something real: reproduce locally with the
+commands above, fix the template, fixture or detector, and let the
+next nightly prove it.
+
 ## Layout
 
 ```
