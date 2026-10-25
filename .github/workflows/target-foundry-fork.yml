@@ -50,3 +50,9 @@ jobs:
           set -euo pipefail
           cd foundry
           POC_TARGET="$POC_TARGET" POC_FORK_BLOCK="$FORK_BLOCK" POC_RPC_URL="$ETH_RPC_URL" forge test --match-contract TargetAccessForkTest --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
+      - name: Run malformed redemption and callback tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd foundry
+          POC_TARGET="$POC_TARGET" POC_FORK_BLOCK="$FORK_BLOCK" POC_RPC_URL="$ETH_RPC_URL" forge test --match-contract TargetRedemptionNegativeForkTest --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
