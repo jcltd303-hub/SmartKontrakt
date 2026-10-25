@@ -26,6 +26,7 @@
  * (deepAgentMaxItems) — this module runs one address.
  */
 
+import { riskScore } from "../src/lib/audit/risk.ts";
 import type { Finding, PocResult, Report, Severity } from "../src/lib/audit/types.ts";
 import type {
   DeepAgentHypothesis,
@@ -59,15 +60,6 @@ const SEV_RANK: Record<Severity, number> = {
   high: 3,
   medium: 2,
   low: 1,
-  info: 0,
-};
-
-// Risk weights — must match scoreOf() in src/lib/audit/engine.ts.
-const RISK_WEIGHT: Record<Severity, number> = {
-  critical: 28,
-  high: 14,
-  medium: 6,
-  low: 2,
   info: 0,
 };
 
@@ -146,8 +138,7 @@ function confirmedFinding(h: DeepAgentHypothesis, round: number, index: number, 
 export function applyConfirmedFindings(report: Report, confirmed: Finding[], note: string): void {
   if (confirmed.length === 0 && !note) return;
   report.findings.push(...confirmed);
-  const raw = report.findings.reduce((sum, f) => sum + (RISK_WEIGHT[f.severity] ?? 0), 0);
-  report.riskScore = Math.min(100, raw);
+  report.riskScore = riskScore(report.findings, report.resnet);
   const crit = report.findings.filter((f) => f.severity === "critical").length;
   const high = report.findings.filter((f) => f.severity === "high").length;
   const top = report.findings[0];
@@ -164,11 +155,11 @@ async function runPocAsExecution(
 ): Promise<PocExecution> {
   const r = await runPocOnce(backendUrl, address, testCode, chainId);
   return {
-    status: r.status,
+    status: r.status === "no_tests" ? "error" : r.status,
     logs: r.logs ?? "",
     durationMs: r.durationMs ?? 0,
     runAt: r.runAt ?? new Date().toISOString(),
-    error: r.error,
+    error: r.status === "no_tests" ? "Foundry executed no tests; no verification occurred." : r.error,
   };
 }
 

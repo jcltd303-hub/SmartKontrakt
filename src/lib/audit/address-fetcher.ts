@@ -467,10 +467,9 @@ async function fetchBytecodeRpc(address: string, rpcUrls: string[]): Promise<str
       const json = (await res.json()) as { result?: string; error?: unknown };
       const code = json.result;
 
-      if (typeof code === "string") sawResult = true;
-      if (code && typeof code === "string" && code !== "0x" && code.length > 4) {
-        return code;
-      }
+      if (json.error || typeof code !== "string" || !/^0x(?:[0-9a-f]{2})*$/i.test(code)) continue;
+      sawResult = true;
+      if (code.length > 2) return code;
     } catch {
       // try next RPC
     }
@@ -501,8 +500,8 @@ export async function analyzeAddress(
      * address entry — verified-source and bytecode-only alike — gets a
      * screening pass over its runtime bytecode before the report is
      * returned, and the report's riskScore includes the bounded ML
-     * term. When omitted (e.g. a caller with no model available), the
-     * audit is exactly the pre-ResNet one. Always fail-soft.
+     * term. When omitted, browsers use the shared worker runner; Node records
+     * an explicit unavailable status. Always fail-soft.
      */
     resnetRunner?: ResnetRunner;
   },
@@ -541,10 +540,19 @@ export async function analyzeAddress(
       if (gathered) {
         r.inventory.abi = gathered.abi;
         r.inventory.abiSource = gathered.source;
+      } else {
+        r.inventory.notes.push("ABI unavailable: no verified ABI or usable heuristic interface could be gathered.");
       }
     } catch {
-      // leave unset
+      r.inventory.notes.push("ABI unavailable: interface gathering failed.");
     }
+  };
+
+  const attachFullResnet = async (report: Report, code: string | null): Promise<void> => {
+    const runner = opts?.resnetRunner ?? (typeof window !== "undefined"
+      ? async (bytecode: string) => (await import("../image-ml/run-resnet-browser.ts")).runResnetBrowser(bytecode)
+      : async () => null);
+    await attachResnetToReport(report, code, runner);
   };
 
   // 1. Try Sourcify verified source
@@ -625,11 +633,9 @@ export async function analyzeAddress(
     // ResNet1D screening over the runtime bytecode fetched above — the
     // same code the Bytecode & CFG tab renders. Without the runtime
     // fetch this path would have nothing to classify: the screening
-    // consumes report.runtimeBytecode, never the source text. Skipped
-    // silently when the bytecode fetch failed (already noted above).
-    if (opts?.resnetRunner) {
-      await attachResnetToReport(report, runtimeCodeForReport(report), opts.resnetRunner);
-    }
+    // consumes report.runtimeBytecode, never the source text. Missing runtime
+    // is recorded explicitly as unavailable.
+    await attachFullResnet(report, runtimeCodeForReport(report));
     return {
       report,
       rawBody: sourcifyMatch.source,
@@ -650,10 +656,8 @@ export async function analyzeAddress(
   await attachValueAndAbi(report);
 
   // ResNet1D screening: this path's whole input IS the runtime code.
-  if (opts?.resnetRunner) {
-    await attachResnetToReport(report, runtimeCodeForReport(report, bytecode), opts.resnetRunner);
-  }
 
+  await attachFullResnet(report, bytecode);
   return {
     report,
     rawBody: bytecode,

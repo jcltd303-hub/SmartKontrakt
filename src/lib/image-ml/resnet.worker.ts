@@ -1,68 +1,38 @@
-import * as ort from "onnxruntime-web/wasm";
-import wasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
-import { download, loadResnet, prepareSequence, runtimeAssetUrl } from "./resnet";
-self.onmessage = async (event: MessageEvent<{ bytecode: string; modelUrl: string }>) => {
-  const started = performance.now();
-  try {
-    const input = prepareSequence(event.data.bytecode);
-    let modelDownloadMs = 0,
-      wasmDownloadMs = 0;
-    const [{ manifest, bytes }, wasmBytes] = await Promise.all([
-      loadResnet(event.data.modelUrl).then((value) => {
-        modelDownloadMs = performance.now() - started;
-        return value;
-      }),
-      download(runtimeAssetUrl(wasmUrl, event.data.modelUrl), 20 * 1024 * 1024).then((value) => {
-        wasmDownloadMs = performance.now() - started;
-        return value;
-      }),
-    ]);
-    ort.env.wasm.numThreads = 1;
-    ort.env.wasm.proxy = false;
-    // Explicit bounded bytes avoid MIME-dependent streaming/fallback downloads.
-    // The /wasm bundled entry already contains its matching Emscripten factory.
-    ort.env.wasm.wasmBinary = wasmBytes;
-    const sessionStarted = performance.now();
-    const session = await ort.InferenceSession.create(bytes, { executionProviders: ["wasm"] });
-    const loaded = performance.now();
-    try {
-      const output = await session.run({
-        bytecode: new ort.Tensor("float32", input, [1, 1, 16384]),
-      });
-      const scores = Array.from(output.probabilities.data as Float32Array);
-      if (scores.length !== 5 || !scores.every((v) => Number.isFinite(v) && v >= 0 && v <= 1))
-        throw new Error("Invalid ResNet output.");
-      self.postMessage({
-        ok: true,
-        modelId: manifest.modelId,
-        // Top-level identity fields for non-panel consumers
-        // (run-resnet-browser.ts builds the shared audit ResnetResult
-        // from these; the panel reads its training/evaluation records).
-        architecture: manifest.architecture,
-        checkpointSha256: manifest.checkpointSha256,
-        training: manifest.training,
-        evaluation: manifest.evaluation,
-        timing: {
-          loadMs: loaded - started,
-          inferenceMs: performance.now() - loaded,
-          modelDownloadMs,
-          wasmDownloadMs,
-          sessionMs: loaded - sessionStarted,
-        },
-        predictions: manifest.classes.map((label, i) => ({
-          label,
-          score: scores[i],
-          threshold: manifest.thresholds[i],
-          flagged: scores[i] >= manifest.thresholds[i],
-        })),
-      });
-    } finally {
-      await session.release();
-    }
-  } catch (error) {
-    self.postMessage({
-      ok: false,
-      error: error instanceof Error ? error.message : "ResNet could not run.",
-    });
-  }
+import * as ort from 'onnxruntime-web/wasm';
+import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
+import { download, loadResnet, prepareSequence, runtimeAssetUrl } from './resnet';
+import { inferAllBytes } from './all-bytes';
+let cached:{url:string;promise:Promise<{manifest:Awaited<ReturnType<typeof loadResnet>>['manifest'];session:ort.InferenceSession}>}|undefined;
+async function getModel(url:string){
+ if(cached?.url===url)return cached.promise;
+ const promise=(async()=>{
+  const [{manifest,bytes},wasmBytes]=await Promise.all([loadResnet(url),download(runtimeAssetUrl(wasmUrl,url),20*1024*1024)]);
+  ort.env.wasm.numThreads=1;ort.env.wasm.proxy=false;ort.env.wasm.wasmBinary=wasmBytes;
+  const session=await ort.InferenceSession.create(bytes,{executionProviders:['wasm']});return {manifest,session};
+ })();cached={url,promise};
+ try{return await promise;}catch(error){if(cached?.promise===promise)cached=undefined;throw error;}
+}
+let queue=Promise.resolve();
+self.onmessage=(event:MessageEvent<{id?:number;bytecode:string;modelUrl:string;allBytes?:boolean}>)=>{
+ queue=queue.then(async()=>{
+  const started=performance.now();
+  try{
+   const {manifest,session}=await getModel(event.data.modelUrl);const loaded=performance.now();
+   const predict=async(input:Float32Array)=>{
+    const tensor=new ort.Tensor('float32',input,[1,1,16384]);
+    try{
+     const output=await session.run({bytecode:tensor});
+     try{return Array.from(output.probabilities.data as Float32Array);}
+     finally{for(const value of Object.values(output))value.dispose();}
+    }finally{tensor.dispose();}
+   };
+   // Explicit legacy path preserves published prefix-checkpoint parity fixtures.
+   const result=event.data.allBytes?await inferAllBytes(event.data.bytecode,predict,manifest):null;
+   const scores=result?result.predictions.map(p=>p.score):await predict(prepareSequence(event.data.bytecode));
+   if(scores.length!==5||scores.some(v=>!Number.isFinite(v)||v<0||v>1))throw new Error('Invalid ResNet output.');
+   self.postMessage({id:event.data.id,ok:true,modelId:manifest.modelId,architecture:manifest.architecture,checkpointSha256:manifest.checkpointSha256,training:manifest.training,evaluation:manifest.evaluation,result,
+    timing:{loadMs:loaded-started,inferenceMs:performance.now()-loaded},
+    predictions:manifest.classes.map((label,i)=>({label,score:scores[i],threshold:manifest.thresholds[i],flagged:scores[i]>=manifest.thresholds[i]}))});
+  }catch(error){self.postMessage({id:event.data.id,ok:false,error:error instanceof Error?error.message:'ResNet could not run.'});}
+ });
 };

@@ -288,3 +288,28 @@ The Image ML panel now displays measured dataset F1/cohort/epoch cards, current
 ResNet input coverage, and a checkpoint-bound offline comparison disclosure.
 Missing metrics stay unavailable, and input/model changes clear result cards.
 Coverage is raw-byte coverage, not source-line or vulnerability coverage.
+
+## Current full-byte audit policy (2026-10-25)
+
+Address audits and manual ResNet runs now evaluate **every runtime byte** in consecutive
+16,384-byte windows. Only the final window is padded; each window is L2 normalized.
+Class scores are the maximum across all windows, using the unchanged checkpoint thresholds.
+There is no eight-window cap or 128 KiB ResNet input cap. RGB previews retain their own limit.
+
+This policy is experimental: thresholds and published checkpoint F1 metrics were measured
+on prefix inputs. The historical eight-window experiment above is a different policy;
+its measured regression and overlap warning remain recorded, and do not validate this
+consecutive-window policy. No retraining, threshold tuning, or new accuracy claim accompanies
+this change. More windows can increase false positives.
+
+The browser batch and Node worker reuse checked model sessions. Runtime, source (when
+verified), ABI provenance, value and existing interface/proxy evidence are gathered for each
+address. Provider or inference failures are explicit missing evidence. Successful coverage,
+window count, policy and checkpoint identity persist in `contract_scans.resnet_json`;
+failure status persists in inventory JSON and replaces old success evidence on re-audit.
+
+ML adds at most six triage points when static findings above info exist, capped within the
+static score's severity band. ML creates no findings or confirmed exploit evidence. Reviews
+and second-pass prompts include bounded ABI and ML context and detector-local snippets,
+including findings beyond the source excerpt. Existing records refresh with analyzer stamp
+`2026-10-25.1` when the version-aware address pipeline is restarted.

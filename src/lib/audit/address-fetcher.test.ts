@@ -60,7 +60,7 @@ function stubResult(): ResnetResult {
       { label: "unchecked-calls", score: 0.1, threshold: 0.3, flagged: false },
       { label: "others", score: 0.1, threshold: 0.275, flagged: false },
     ],
-    inputBytes: 100,
+    inputBytes: RUNTIME_CODE.replace(/^0x/i, "").length / 2,
     truncated: false,
     ranAt: "2026-10-24T00:00:00.000Z",
   };
@@ -156,11 +156,12 @@ test("bytecode entry: bytecode + heuristic ABI attached, resnet runs over the fe
   }
 });
 
-test("without an injected runner the audit is the pre-ResNet one (no screening, static score)", async () => {
+test("without an injected Node runner the audit records unavailable and keeps static score", async () => {
   const restore = installFetch("verified");
   try {
     const { report } = await analyzeAddress(ADDRESS, "ethereum");
-    assert.equal(report.resnet, undefined);
+    assert.equal(report.resnet, null);
+    assert.equal(report.inventory.resnetStatus?.status, "unavailable");
     assert.equal(report.riskScore, riskScore(report.findings));
   } finally {
     restore();

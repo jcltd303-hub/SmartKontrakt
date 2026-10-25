@@ -196,7 +196,7 @@ export function fullDisassembly(raw: string): string {
 export function looksLikeBytecode(input: string): boolean {
   const t = input.trim();
   if (/pragma\s+solidity|\bcontract\s+\w+|\bfunction\s+\w+/.test(t)) return false;
-  return hexToBytes(t) !== null && t.replace(/\s+/g, "").replace(/^0x/i, "").length >= 8;
+  return hexToBytes(t) !== null && t.replace(/\s+/g, "").replace(/^0x/i, "").length >= 2;
 }
 
 export function analyzeBytecode(raw: string): BytecodeReport {

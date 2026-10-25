@@ -42,7 +42,7 @@ export function evaluationSummary(training: unknown, evaluation: unknown) {
 export function inputCoverage(bytes: number) {
   if (!Number.isSafeInteger(bytes) || bytes < 1)
     throw new Error("Coverage needs a positive byte count.");
-  const used = Math.min(bytes, 16384);
+  const used = bytes;
   return { used, omitted: bytes - used, total: bytes, fraction: used / bytes };
 }
 

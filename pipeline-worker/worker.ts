@@ -404,7 +404,7 @@ async function runLoop(): Promise<void> {
       let result: Awaited<ReturnType<typeof analyzeAddress>>;
       try {
         result = await withRetry(
-          () => analyzeAddress(item.address, item.chainId, item.label, { fourbyte, resnetRunner: runResnetNode }),
+          () => analyzeAddress(item.address, item.chainId, item.label, { fourbyte, resnetRunner: runResnetNode, etherscanKey: process.env.ETHERSCAN_API_KEY }),
           {
             retries: 2,
             baseDelayMs: 2000,

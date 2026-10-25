@@ -37,13 +37,13 @@ test("invalid metadata stays unavailable while measured zero metrics remain vali
   assert.equal(value.test.micro, null);
 });
 
-test("coverage describes actual prefix bytes and omitted tail, never source-line coverage", () => {
+test("coverage includes the complete runtime across consecutive windows", () => {
   assert.deepEqual(inputCoverage(32), { used: 32, omitted: 0, total: 32, fraction: 1 });
   assert.deepEqual(inputCoverage(32768), {
-    used: 16384,
-    omitted: 16384,
+    used: 32768,
+    omitted: 0,
     total: 32768,
-    fraction: 0.5,
+    fraction: 1,
   });
   for (const invalid of [0, -1, NaN, 1.5]) assert.throws(() => inputCoverage(invalid));
 });

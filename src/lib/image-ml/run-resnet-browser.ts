@@ -1,82 +1,43 @@
-/**
- * runResnetBrowser — the browser twin of resnet-node.server.ts.
- *
- * App-side audit flows (batch pipeline, single-address fetch, pasted
- * bytecode) run IN the browser, where the Node runner cannot exist.
- * They inject this runner into analyzeAddress / attachResnetToReport
- * instead, so those entries get the same screening, the same shared
- * ResnetResult shape and the same bounded score term as worker
- * entries. It drives the exact worker the Image ML panel uses
- * (resnet.worker.ts) — one model, one manifest, one set of thresholds.
- *
- * A fresh worker is spawned per call and terminated after: the panel's
- * lifecycle is per-run too, and audit flows are user-paced (the batch
- * pipeline analyzes sequentially), so the ~1–2 s model load per entry
- * is acceptable and keeps zero shared worker state to corrupt.
- *
- * Fail-soft like every runner: no Worker support, a worker error, an
- * invalid model reply, or the timeout all resolve null ("not run").
- */
+/** Shared, serialized audit worker: model and WASM assets load once per worker. */
 import { previewPathPrefix } from "../preview-path-prefix.ts";
-import type { ResnetResult } from "../audit/resnet-result.ts";
+import { parseResnetJson, type ResnetResult } from "../audit/resnet-result.ts";
 
-type WorkerReply =
-  | {
-      ok: true;
-      modelId: string;
-      architecture: string;
-      checkpointSha256: string;
-      predictions: ResnetResult["predictions"];
-    }
-  | { ok: false; error: string };
-
+let worker: Worker | null = null;
+let queue: Promise<unknown> = Promise.resolve();
 const RUN_TIMEOUT_MS = 120_000;
 
 export function runResnetBrowser(bytecode: string): Promise<ResnetResult | null> {
-  return new Promise((resolve) => {
-    let worker: Worker | null = null;
+  const run = queue.then(() => new Promise<ResnetResult | null>((resolve, reject) => {
+    if (typeof window === "undefined" || typeof Worker === "undefined") { resolve(null); return; }
     let settled = false;
-    const finish = (value: ResnetResult | null) => {
+    const finish = (value: ResnetResult | null, error?: Error) => {
       if (settled) return;
       settled = true;
-      window.clearTimeout(timer);
-      try {
+      clearTimeout(timer);
+      if (error || !value) {
         worker?.terminate();
-      } catch {
-        // already gone
+        worker = null;
       }
-      resolve(value);
+      if (error) reject(error); else resolve(value);
     };
-    const timer = window.setTimeout(() => finish(null), RUN_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(null, new Error("ResNet inference timed out.")), RUN_TIMEOUT_MS);
     try {
-      worker = new Worker(new URL("./resnet.worker.ts", import.meta.url), { type: "module" });
-      worker.onmessage = (event: MessageEvent<WorkerReply>) => {
+      worker ??= new Worker(new URL("./resnet.worker.ts", import.meta.url), {type: "module"});
+      worker.onmessage = event => {
         const data = event.data;
-        if (!data || data.ok !== true) return finish(null);
-        try {
-          const hex = bytecode.trim().replace(/^0x/i, "");
-          const inputBytes = Math.floor(hex.length / 2);
-          finish({
-            modelId: data.modelId,
-            architecture: data.architecture,
-            checkpointSha256: data.checkpointSha256,
-            predictions: data.predictions,
-            inputBytes,
-            truncated: inputBytes > 16384,
-            ranAt: new Date().toISOString(),
-          });
-        } catch {
-          finish(null);
-        }
+        if (!data || data.ok !== true) { finish(null, new Error(data?.error || "ResNet inference failed.")); return; }
+        const result = parseResnetJson(JSON.stringify(data.result));
+        if (!result) { finish(null, new Error("Invalid ResNet inference response.")); return; }
+        finish(result);
       };
-      worker.onerror = () => finish(null);
+      worker.onerror = event => finish(null, new Error(event.message || "ResNet worker failed."));
       const prefix = previewPathPrefix(window.location.hostname, window.location.pathname) ?? "";
-      worker.postMessage({
-        bytecode,
-        modelUrl: new URL(`${prefix}/models/resnet1d-v1.json`, window.location.origin).href,
-      });
-    } catch {
-      finish(null);
+      worker.postMessage({bytecode, allBytes: true,
+        modelUrl: new URL(`${prefix}/models/resnet1d-v1.json`, window.location.origin).href});
+    } catch (error) {
+      finish(null, error instanceof Error ? error : new Error(String(error)));
     }
-  });
+  }));
+  queue = run.catch(() => undefined);
+  return run;
 }

@@ -1,3 +1,4 @@
+import { cleanReviewEvidence } from "./audit-evidence.ts";
 import { createServerFn } from "@tanstack/react-start";
 import type { Finding, Report } from "./types";
 import type { DeepAgentPriorResult } from "./deep-agent.server";
@@ -43,24 +44,27 @@ export const requestAiReview = createServerFn({ method: "POST" })
     if (!input || typeof input !== "object") {
       throw new Error("Invalid request payload");
     }
-    const { contractName, body, findings, fourbyte } = input as {
+    const { contractName, body, findings, fourbyte, inventory, resnet } = input as {
       contractName?: string;
       body?: string;
       findings?: Finding[];
       fourbyte?: unknown;
+      inventory?: unknown;
+      resnet?: unknown;
     };
     return {
       contractName: contractName || "TargetContract",
       body: typeof body === "string" ? body.slice(0, 30000) : "",
       findings: Array.isArray(findings) ? findings.slice(0, 20) : [],
       fourbyte: cleanFourbyte(fourbyte),
+      ...cleanReviewEvidence(inventory, resnet),
     };
   })
   .handler(async ({ data }) => {
     const { assertAdminToken } = await import("../admin-guard.server");
     assertAdminToken();
     const { generateAiSecurityReview } = await import("./ai-review.server");
-    return generateAiSecurityReview(data.contractName, data.body, data.findings, data.fourbyte);
+    return generateAiSecurityReview(data.contractName, data.body, data.findings, data.fourbyte, data.inventory, data.resnet);
   });
 
 /**

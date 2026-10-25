@@ -1,3 +1,4 @@
+import { auditEvidence } from "./audit-evidence.ts";
 import { writeAuditBatch } from "./bulk-persist.server";
 import { getSql, getDbConnectionState, type DbConnectionState } from "@/lib/db";
 import type { Sql } from "../sql-client.ts";
@@ -586,7 +587,7 @@ export async function secondPass(report: Report, body: string): Promise<{ text: 
             },
             {
               role: "user",
-              content: `KIND: ${report.inputKind}\nSUMMARY: ${report.summary}\nNOTES:\n${notes}\n\nSTATIC FINDINGS:\n${listed || "(none)"}\n\nINPUT:\n${excerpt}`,
+              content: `KIND: ${report.inputKind}\nSUMMARY: ${report.summary}\nNOTES:\n${notes}\n\nSTATIC FINDINGS:\n${listed || "(none)"}\n\nINPUT:\n${excerpt}\n${auditEvidence(report.inventory, report.resnet)}`,
             },
           ],
         }),

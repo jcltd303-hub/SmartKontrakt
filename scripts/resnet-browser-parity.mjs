@@ -115,8 +115,8 @@ try {
         assert.ok((await coverage.innerText()).includes("bytes read"));
         await panel.getByText("Compare offline window experiment", { exact: true }).click();
         const comparison = panel.getByRole("region", { name: "Window experiment", exact: true });
-        assert.ok((await comparison.innerText()).includes("Prefix model retained"));
-        assert.ok((await comparison.innerText()).includes("not enabled in this browser"));
+        assert.ok((await comparison.innerText()).includes("Historical experiment: prefix model was retained"));
+        assert.ok((await comparison.innerText()).includes("do not evaluate the current consecutive-window policy"));
         assert.equal(await comparison.locator("tbody tr").count(), 4);
         await page.evaluate(() => window.scrollTo(0, 0));
         await page.screenshot({
@@ -164,18 +164,27 @@ try {
     assert.ok(
       (
         await panel.getByRole("region", { name: "Bytecode coverage", exact: true }).innerText()
-      ).includes("1 byte omitted"),
+      ).includes("0 bytes omitted"),
     );
     assert.equal(
       await panel.getByRole("region", { name: "Model evaluation", exact: true }).count(),
       0,
       "editing clears result-derived evaluation cards",
     );
+    await page.evaluate(() => { window.__mlResult = null; });
+    await panel.getByRole("button", { name: "Run Image ML", exact: true }).click();
+    await panel.getByText(/Model: resnet1d-/).waitFor({timeout:120000});
+    const full = await page.evaluate(() => window.__mlResult);
+    assert.equal(full.result.inputBytes,16385);
+    assert.equal(full.result.processedBytes,16385);
+    assert.equal(full.result.windows,2);
+    assert.equal(full.result.truncated,false);
+
     await panel.getByLabel("ML model").selectOption("rgb");
     assert.equal(
       await panel.getByRole("region", { name: "Bytecode coverage", exact: true }).count(),
       0,
-      "RGB must not claim ResNet prefix coverage",
+      "RGB must not claim ResNet coverage",
     );
     await panel.getByLabel("ML model").selectOption("resnet");
     await input.fill(fixtures[0].bytecode);

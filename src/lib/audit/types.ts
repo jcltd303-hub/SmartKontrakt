@@ -97,6 +97,8 @@ export type TopicHit = {
 };
 
 export type Inventory = {
+  /** Missing/error evidence remains distinct from a quiet model. */
+  resnetStatus?: {status:"ok"|"error"|"unavailable";error?:string};
   inputKind: "source" | "bytecode";
   contractNames: string[];
   kindNote: string;

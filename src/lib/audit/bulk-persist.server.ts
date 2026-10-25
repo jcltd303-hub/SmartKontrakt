@@ -154,7 +154,7 @@ export async function writeAuditBatch(
         poc_logs=coalesce(excluded.poc_logs, contract_scans.poc_logs),
         poc_duration_ms=coalesce(excluded.poc_duration_ms, contract_scans.poc_duration_ms),
         poc_run_at=coalesce(excluded.poc_run_at, contract_scans.poc_run_at),
-        resnet_json=coalesce(excluded.resnet_json, contract_scans.resnet_json)`, [JSON.stringify(scans)]);
+        resnet_json=excluded.resnet_json`, [JSON.stringify(scans)]);
     await tx.query(`insert into scan_payloads (scan_id, body)
       select scan_id, body from jsonb_to_recordset($1::jsonb) as r(scan_id text, body text)
       on conflict (scan_id) do update set body=excluded.body`,

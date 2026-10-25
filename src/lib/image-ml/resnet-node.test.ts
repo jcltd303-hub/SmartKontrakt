@@ -43,7 +43,8 @@ test("node runner reproduces the published parity fixtures", async () => {
     }
     const bytes = Math.floor(c.bytecode.replace(/^0x/i, "").length / 2);
     assert.equal(result.inputBytes, bytes);
-    assert.equal(result.truncated, bytes > 16384);
+    assert.equal(result.truncated, false);
+    assert.equal(result.processedBytes, bytes);
   }
 });
 
@@ -51,7 +52,7 @@ test("unclassifiable input resolves null, never a throw", async () => {
   assert.equal(await runResnetNode(""), null);
   assert.equal(await runResnetNode("0x"), null);
   assert.equal(await runResnetNode("not-hex"), null);
-  assert.equal(await runResnetNode(`0x${"ab".repeat(128 * 1024 + 1)}`), null, "over the 128 KiB cap");
+
 });
 
 test("an explicit model dir that does not hold the model resolves null (no silent fallback)", async () => {
@@ -61,4 +62,24 @@ test("an explicit model dir that does not hold the model resolves null (no silen
   // (the failure is cached under its own key, not the default's).
   const dir = await resolveResnetModelDir();
   assert.ok(dir && dir.endsWith("public/models"), `default dir resolves: ${dir}`);
+});
+
+test("real Node checkpoint screens the final window above both old limits and reuses its session", async () => {
+  for (const bytes of [16385, 128 * 1024 + 1]) {
+    const code = `0x${"00".repeat(bytes - 1)}ff`;
+    const result = await runResnetNode(code);
+    assert.ok(result);
+    assert.equal(result.inputBytes, bytes);
+    assert.equal(result.processedBytes, bytes);
+    assert.equal(result.windows, Math.ceil(bytes / 16384));
+    assert.equal(result.truncated, false);
+    const tail = await runResnetNode("0xff");
+    assert.ok(tail);
+    // Max pooling must include the nonzero tail after all zero prefix windows.
+    for (const [i, prediction] of tail.predictions.entries()) {
+      assert.ok(result.predictions[i].score >= prediction.score - 1e-6);
+    }
+    const repeat = await runResnetNode(code);
+    assert.deepEqual(repeat?.predictions, result.predictions);
+  }
 });

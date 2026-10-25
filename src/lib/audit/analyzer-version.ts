@@ -59,7 +59,8 @@ import {
  *                into the fingerprint below). Same inputs now produce
  *                different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-10-24.1";
+// Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
+export const ANALYZER_BASELINE = "2026-10-25.1";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

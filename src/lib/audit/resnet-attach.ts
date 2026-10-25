@@ -13,12 +13,12 @@
  *     the audit trail Jer reads in the workbench and the archive.
  *
  * Fail-soft: no code to classify, a runner that returns null, or a
- * runner that throws all leave the report exactly as the static
- * analysis produced it. ResNet is a screening layer; the audit must
+ * runner that throws preserve static findings and record missing evidence,
+ * clearing any previous model result/bonus. ResNet is a screening layer; the audit must
  * never fail because the model did.
  */
 import { riskScore } from "./risk.ts";
-import { resnetSummaryLine, type ResnetResult } from "./resnet-result.ts";
+import { resnetSummaryLine, parseResnetJson, type ResnetResult } from "./resnet-result.ts";
 import type { Report } from "./types.ts";
 
 /** A runner screens runtime bytecode (hex, 0x optional) or returns null. */
@@ -49,18 +49,27 @@ export async function attachResnetToReport(
   code: string | null | undefined,
   runner: ResnetRunner,
 ): Promise<boolean> {
-  if (!code) return false;
-  let result: ResnetResult | null;
-  try {
-    result = await runner(code);
-  } catch {
+  const unavailable = (status: "error"|"unavailable", error:string):false => {
+    report.resnet = null;
+    report.riskScore = riskScore(report.findings);
+    report.inventory.resnetStatus = {status,error};
+    report.inventory.notes = report.inventory.notes.filter(note=>!note.startsWith("ResNet1D screening"));
+    report.inventory.notes.push(`ResNet1D screening unavailable: ${error} Missing evidence is not a negative prediction.`);
     return false;
-  }
-  if (!result) return false;
-  report.resnet = result;
-  const before = report.riskScore;
-  report.riskScore = riskScore(report.findings, result);
-  const applied = report.riskScore - before;
-  report.inventory.notes = [...report.inventory.notes, resnetSummaryLine(result, applied)];
+  };
+  if (!code) return unavailable("unavailable","No deployed runtime bytecode available.");
+  let result: ResnetResult | null;
+  try { result = await runner(code); }
+  catch { return unavailable("error","Inference failed."); }
+  if (!result) return unavailable("unavailable","The model could not evaluate the runtime.");
+  const checked = parseResnetJson(JSON.stringify(result));
+  if (!checked || checked.inputBytes !== code.trim().replace(/^0x/i,"").length/2)
+    return unavailable("error","Invalid model result or runtime coverage.");
+  report.resnet = checked;
+  report.inventory.resnetStatus = {status:"ok"};
+  const baseline = riskScore(report.findings);
+  report.riskScore = riskScore(report.findings, checked);
+  report.inventory.notes = report.inventory.notes.filter(note=>!note.startsWith("ResNet1D screening"));
+  report.inventory.notes.push(resnetSummaryLine(checked,report.riskScore-baseline));
   return true;
 }

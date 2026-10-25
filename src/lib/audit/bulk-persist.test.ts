@@ -189,3 +189,18 @@ test("records carry the analyzer stamp, and resume re-analyzes only the stale on
     assert.equal(counts.stale, 2);
   } finally { await pg.close(); }
 });
+
+test('failed rescreen replaces old model evidence instead of resurrecting it on reload',async()=>{
+ const {pg,sql}=await database();
+ try{
+  const item=record('rescreen');
+  item.report.resnet={modelId:'old',architecture:'resnet',checkpointSha256:'a'.repeat(64),predictions:[],inputBytes:1,truncated:false,ranAt:'before'};
+  await writeAuditBatch(sql,[item]);
+  item.report.resnet=null;item.report.inventory.resnetStatus={status:'error',error:'offline'};
+  item.report.riskScore=12;
+  await writeAuditBatch(sql,[item]);
+  const row=(await pg.query<{resnet_json:string|null;risk_score:number;inventory_json:string}>("select resnet_json,risk_score,inventory_json from contract_scans where id='rescreen'")).rows[0];
+  assert.equal(row.resnet_json,null);assert.equal(row.risk_score,12);
+  assert.equal(JSON.parse(row.inventory_json).resnetStatus.status,'error');
+ }finally{await pg.close();}
+});

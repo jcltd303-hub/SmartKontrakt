@@ -8,7 +8,7 @@ import { analyzeInput } from "../audit/engine.ts";
  * Simulate the phone failure mode without uninstalling anything: make
  * module resolution fail for the optional ONNX runtime package. The
  * Node runner module must still load, its screening calls must resolve
- * null, and attaching that runner must leave a report untouched.
+ * null, and attaching that runner preserves static findings while recording missing evidence.
  */
 const onnxAbsenceHook = `
 export async function resolve(specifier, context, nextResolve) {
@@ -45,7 +45,7 @@ contract Vault {
 }
 `;
 
-test("missing ONNX runtime: module loads, runner resolves null, report is byte-identical", async () => {
+test("missing ONNX runtime: module loads, runner resolves null, static audit survives with explicit status", async () => {
   const warnings: string[] = [];
   const originalWarn = console.warn;
   console.warn = (...args: unknown[]) => {
@@ -62,8 +62,10 @@ test("missing ONNX runtime: module loads, runner resolves null, report is byte-i
     const before = JSON.stringify(report);
     const attached = await attachResnetToReport(report, SOME_BYTECODE, runResnetNode);
     assert.equal(attached, false);
-    assert.equal(report.resnet, undefined);
-    assert.equal(JSON.stringify(report), before);
+    assert.equal(report.resnet, null);
+    assert.deepEqual(report.findings, JSON.parse(before).findings);
+    assert.equal(report.riskScore, JSON.parse(before).riskScore);
+    assert.equal(report.inventory.resnetStatus?.status,"unavailable");
   } finally {
     console.warn = originalWarn;
   }
