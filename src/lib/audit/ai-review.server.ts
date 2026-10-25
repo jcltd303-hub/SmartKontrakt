@@ -5,6 +5,7 @@ import { isTransientError, openRouterLimiter, withRetry } from "./rate-limit.ts"
 import { selectPocFallbacks } from "./poc-fallbacks.ts";
 import { smartbugsCategoryForDetector } from "./smartbugs.ts";
 import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte.ts";
+import { countExecutableTestFunctions } from "./poc-outcome.ts";
 
 export type AiSecurityReview = {
   threatModelReport: string;
@@ -28,18 +29,22 @@ export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions
  * 1000 after a one-time $10 top-up) and the endpoints are 4-bit quantised, so
  * the model is chosen per task rather than globally:
  *
- *   review — threat model + a complete Foundry test in one reply, and the
- *            prose second pass. Nemotron 3 Ultra (550B/55B MoE): the
- *            strongest free reasoning class in the catalog, 1M-token context
- *            (full source + findings + up to 3 injected templates), 65,536
- *            max completion against the 8,000 these calls request. Its
- *            single endpoint is healthy (status 0) and it carried Jer's
- *            59,852-address live run. Unchanged.
- *   code   — Foundry PoC synthesis, regeneration and compile repair.
- *            Laguna S 2.1 (Poolside): the free list's dedicated frontier
- *            coding model — 118B total / 8B active, 70.2% Terminal-Bench 2.1
- *            per its catalog description, 262K context, 32,768 max
- *            completion (4x the 8,000 requested). Endpoint healthy
+ *   review — the AI review's narrative call (threat model + economic
+ *            summary) and the prose second pass. Nemotron 3 Ultra
+ *            (550B/55B MoE): the strongest free reasoning class in the
+ *            catalog, 1M-token context (full source + findings), 65,536
+ *            max completion against the 4,000 the narrative call
+ *            requests. Its single endpoint is healthy (status 0) and
+ *            it carried Jer's 59,852-address live run. Unchanged.
+ *   code   — Foundry PoC synthesis, regeneration and compile repair,
+ *            plus the AI review's test-code call (the review is two
+ *            calls since the 2026-10-25 split — see NARRATIVE/CODE
+ *            budgets below). Laguna S 2.1 (Poolside): the free list's
+ *            dedicated frontier coding model — 118B total / 8B active,
+ *            70.2% Terminal-Bench 2.1 per its catalog description,
+ *            262K context, 32,768 max completion (2x the 16,000 the
+ *            review's test call requests, 4x the 8,000 the PoC calls
+ *            request). Endpoint healthy
  *            (status 0). History: was `thinkingmachines/inkling-small:free`
  *            (harness-gated — OpenRouter refuses it for plain API calls,
  *            HTTP 403), then Nemotron Ultra as the one verified-working
@@ -212,11 +217,12 @@ export function resolveOpenRouterConfig(
 /**
  * Default per-attempt timeout for the AI review call, ms.
  *
- * The review is the heaviest single generation in the codebase: the
- * prompt carries up to 12,000 chars of source, the findings, the
+ * The review is the heaviest generation in the codebase: the
+ * prompts carry up to 12,000 chars of source, the findings, the
  * fourbyte context and up to three FULL fallback templates, and the
- * reply must hold a complete threat-model report plus a complete
- * Foundry test file (max_tokens 8000). The codebase's other long
+ * two replies must hold a complete threat-model report and a
+ * complete Foundry test file (split calls since 2026-10-25 —
+ * max_tokens 4000 narrative, 16000 test code). The codebase's other long
  * generations (Deep Agent rounds, PoC repair, SmartPoC) already run
  * at 180s for comparable work; the review sat at 60s, and on the
  * shared free lane every attempt died at that budget in Jer's live
@@ -417,18 +423,17 @@ The attached fallback-library starting template (\`${startingTemplate.file}\`) i
 }
 
 /**
- * Build the OpenRouter prompt for an AI review. Exported for testing —
- * the prompt must carry the matching fallback-library template(s) as the
- * starting point for the generated PoC.
+ * The context both review calls share: the target, its source, the
+ * static findings and the fourbyte results. Identical for the
+ * narrative and the test-code call, so the split cannot starve
+ * either half of context the single call had.
  */
-export function buildAiReviewPrompt(
+function reviewPromptContext(
   contractName: string,
   body: string,
   findings: Finding[],
   fourbyte?: FourbyteResults,
-  inventory?: Partial<Inventory>,
-  resnet?: ResnetResult | null,
-): { system: string; user: string } {
+): string {
   const findingsSummary = findings
     .map(
       (f, i) =>
@@ -438,12 +443,29 @@ export function buildAiReviewPrompt(
     )
     .join("\n\n");
 
-  // Starting-point templates, matched to this audit's findings. The model
-  // ADAPTS these — it does not invent a harness from scratch.
+  return `Contract Name: ${contractName}
+
+Contract Source / Decompiled Sample (truncated to first 12,000 chars):
+\`\`\`solidity
+${body.slice(0, 12000)}
+\`\`\`
+
+Detected Static Analysis Findings:
+${findingsSummary || "No static detectors triggered."}
+${fourbyte ? formatFourbyteResultsForPrompt(fourbyte) : ""}`;
+}
+
+/**
+ * Starting-point templates, matched to this audit's findings. The
+ * model ADAPTS these — it does not invent a harness from scratch.
+ * Code-side context: only the test-code call carries it (the
+ * narrative pass never needed template sources in its prompt; they
+ * were the largest single contributor to the old combined prompt).
+ */
+function reviewTemplateSection(findings: Finding[]): string {
   const startingTemplates = selectPocFallbacks(findings, 3);
-  const templateSection =
-    startingTemplates.length > 0
-      ? `
+  if (startingTemplates.length === 0) return "";
+  return `
 
 STARTING-POINT PoC TEMPLATES — adapt, do not reinvent:
 The library below contains unadapted, unexecuted Foundry PoC starting templates matched to this audit's findings. START FROM the template(s) for the primary vulnerability: keep its setUp()/fork shape, its \`contract PoC is Test\` name, and its observable-state assertions (balances, owner, shares — never a silent low-level-call success). Adapt ONLY the TODO-marked constants / interfaces to the target's real ABI (function names, token addresses, amounts, proofs, slots). Do NOT invent a new harness, a new attacker pattern, or a new setUp. If a template's TODO cannot be adapted to the target (e.g. the function does not exist), say so in the threat model and use the next template — never fabricate an interface the target does not have.
@@ -454,36 +476,42 @@ ${startingTemplates
       `--- Template ${i + 1}: ${t.file} ---\n\`\`\`solidity\n${t.source}\n\`\`\``,
   )
   .join("\n\n")}
-`
-      : "";
+`;
+}
 
-  const userPrompt = `Contract Name: ${contractName}
-
-Contract Source / Decompiled Sample (truncated to first 12,000 chars):
-\`\`\`solidity
-${body.slice(0, 12000)}
-\`\`\`
-
-Detected Static Analysis Findings:
-${findingsSummary || "No static detectors triggered."}
-${fourbyte ? formatFourbyteResultsForPrompt(fourbyte) : ""}
-${templateSection}
+/**
+ * Build the narrative prompt for an AI review (call A of the split):
+ * the Executive Threat Model Report + the economic risk summary,
+ * returned as a JSON object holding ONLY those two prose fields.
+ * Exported for testing.
+ *
+ * The review used to be ONE call returning the threat model AND the
+ * complete Foundry test as JSON string values in a single object.
+ * That shape is what died in Jer's live run (2026-10-25): the prose
+ * report — JSON-escaped markdown, the most expensive encoding of it —
+ * ate the shared budget and the reply truncated at max_tokens with
+ * the test code unborn (`{{"threatModelReport": "# Executive Threat
+ * Model Report: xApesMarket…`, finish_reason "length"). Two calls,
+ * each with one artifact and its own budget, is the fix; the return
+ * shape of generateAiSecurityReview is unchanged.
+ */
+export function buildAiReviewPrompt(
+  contractName: string,
+  body: string,
+  findings: Finding[],
+  fourbyte?: FourbyteResults,
+  inventory?: Partial<Inventory>,
+  resnet?: ResnetResult | null,
+): { system: string; user: string } {
+  const userPrompt = `${reviewPromptContext(contractName, body, findings, fourbyte)}
 ${auditEvidence(inventory, resnet)}
 Your tasks:
 1. Provide a rigorous, concise Executive Threat Model Report grounded in the supplied evidence and finding-specific risks. Do not invent a vault, oracle, or economic exposure absent evidence.
-2. Generate a complete, compilation-ready Foundry test suite contract in Solidity (\`test/Exploit.t.sol\`) that evaluates the primary finding without presuming it is confirmed. START FROM the starting-point template(s) above: keep the template's setUp()/fork shape, its \`contract PoC is Test\` name, and its observable-state assertions, adapting ONLY the TODO-marked constants / interfaces to the target's real ABI. The test MUST:
-   - declare \`contract PoC is Test\` and \`import "forge-std/Test.sol";\`
-   - in setUp(): fork live chain state with \`vm.createSelectFork(vm.envString("POC_RPC_URL"))\` (pin a block with \`vm.envUint("POC_FORK_BLOCK")\` when it is nonzero) and attach to the live target via \`vm.envAddress("POC_TARGET")\` — never hardcode a target address
-   - choose a finding-specific observable invariant (authorization, owner, accounting, availability, or value movement as appropriate); fund an attacker only when required. Never treat a bare low-level-call success as proof
-   - use only signatures supported by the actual ABI or supplied source. Selector databases and heuristic ABI entries are hypotheses, not verified call surfaces. Do not guess destructive selectors or invent interfaces; describe missing evidence and leave the finding unconfirmed when the required surface is unavailable
-   - the finding is unconfirmed until execution demonstrates the predicted invariant violation; report confirmed, refuted, or inconclusive based on execution evidence, and never describe an unexecuted template as proven
-   - a failed assertion alone does not refute a finding: distinguish missing prerequisites, compile or infrastructure failures, inconclusive execution, and actual counterevidence. Report what the observed execution supports.
-3. Provide a 2-sentence economic risk summary.
+2. Provide a 2-sentence economic risk summary.
 
 Format your response strictly as JSON with this schema:
 {
   "threatModelReport": "Markdown string containing the threat model",
-  "foundryTestCode": "Solidity code string for the Foundry test suite",
   "economicRiskSummary": "Brief 2-sentence summary of the main economic/game-theoretic exposure"
 }`;
 
@@ -495,31 +523,95 @@ Format your response strictly as JSON with this schema:
 }
 
 /**
- * Output-token budget for one review reply (the value makeBody
- * sends). It was 6000, and 6000 is what cut replies at
- * finish_reason "length" — foundryTestCode is the largest field and
- * dies first, which is how a truncated reply surfaces as the
- * missing-fields failure. Raised to 8000: the Deep Agent already
- * requests 8000 for comparable generations (report + full PoCs),
- * and max_tokens is a cap, not a target — a reply that completes
- * naturally is unaffected, so the response contract is unchanged.
+ * Build the test-code prompt for an AI review (call B of the split):
+ * the complete Foundry test, returned as a raw fenced code block —
+ * NO JSON wrapping (JSON-escaping a whole Solidity file was pure
+ * budget waste and a shape-failure magnet). The prompt carries the
+ * same context as the narrative call, plus the starting-point
+ * templates and — when the narrative pass produced one — the threat
+ * model itself, so the test is aimed by the same analysis the single
+ * combined call would have used. Exported for testing — the prompt
+ * must carry the matching fallback-library template(s) as the
+ * starting point for the generated PoC.
  */
-export const REVIEW_MAX_TOKENS = 8000;
+export function buildAiReviewTestPrompt(
+  contractName: string,
+  body: string,
+  findings: Finding[],
+  fourbyte?: FourbyteResults,
+  inventory?: Partial<Inventory>,
+  resnet?: ResnetResult | null,
+  threatModelReport?: string,
+): { system: string; user: string } {
+  const narrativeSection = threatModelReport?.trim()
+    ? `
+
+THREAT MODEL (produced by the narrative pass over this same evidence — aim the test at the primary finding it identifies):
+${threatModelReport}`
+    : "";
+
+  const userPrompt = `${reviewPromptContext(contractName, body, findings, fourbyte)}
+${reviewTemplateSection(findings)}
+${auditEvidence(inventory, resnet)}${narrativeSection}
+Your task:
+Generate a complete, compilation-ready Foundry test suite contract in Solidity (\`test/Exploit.t.sol\`) that evaluates the primary finding without presuming it is confirmed. START FROM the starting-point template(s) above: keep the template's setUp()/fork shape, its \`contract PoC is Test\` name, and its observable-state assertions, adapting ONLY the TODO-marked constants / interfaces to the target's real ABI. The test MUST:
+   - declare \`contract PoC is Test\` and \`import "forge-std/Test.sol";\`
+   - in setUp(): fork live chain state with \`vm.createSelectFork(vm.envString("POC_RPC_URL"))\` (pin a block with \`vm.envUint("POC_FORK_BLOCK")\` when it is nonzero) and attach to the live target via \`vm.envAddress("POC_TARGET")\` — never hardcode a target address
+   - choose a finding-specific observable invariant (authorization, owner, accounting, availability, or value movement as appropriate); fund an attacker only when required. Never treat a bare low-level-call success as proof
+   - use only signatures supported by the actual ABI or supplied source. Selector databases and heuristic ABI entries are hypotheses, not verified call surfaces. Do not guess destructive selectors or invent interfaces; describe missing evidence and leave the finding unconfirmed when the required surface is unavailable
+   - the finding is unconfirmed until execution demonstrates the predicted invariant violation; report confirmed, refuted, or inconclusive based on execution evidence, and never describe an unexecuted template as proven
+   - a failed assertion alone does not refute a finding: distinguish missing prerequisites, compile or infrastructure failures, inconclusive execution, and actual counterevidence. Report what the observed execution supports.
+
+Format your response as ONLY the complete Solidity test file inside exactly one \`\`\`solidity fenced code block — no JSON, no prose before or after the block.`;
+
+  return {
+    system:
+      "You are a Principal EVM Security Auditor and White-Hat Exploit Researcher. Analyze the smart contract code / bytecode and detected vulnerabilities. Reply with only the requested Foundry test file in a single fenced code block.",
+    user: userPrompt,
+  };
+}
 
 /**
- * Fields a review reply MUST carry (truthy) to be a usable review —
- * the schema the prompt demands. `economicRiskSummary` is the only
- * optional field; it has a standing default.
+ * Output-token budgets for the review's two calls (the values
+ * makeBody sends). History: the single combined call ran at 6000,
+ * then 8000 — and 8000 still truncated (Jer's live run, 2026-10-25:
+ * the threat-model prose, JSON-escaped, ate the budget and the
+ * reply died at finish_reason "length" with the test code unborn).
+ * One artifact per call is the structural fix; the budgets are then
+ * sized to the artifact:
+ *
+ *   narrative — prose only. Observed threat-model reports run
+ *     ~1–2.5k tokens; 4000 leaves ~1.6x headroom over the top of
+ *     that range while staying tight enough that a rambling reply
+ *     still finishes as an object instead of a cut string.
+ *   test code — a complete template-adapted Foundry test file,
+ *     observed at ~3–7k tokens. 16000 is 2x the old SHARED budget
+ *     now spent on code alone, and half the code model's catalog
+ *     max completion (32,768 for poolside/laguna-s-2.1:free), so
+ *     the provider ceiling is never the binding constraint.
+ *
+ * max_tokens is a cap, not a target — a reply that completes
+ * naturally is unaffected by either value.
  */
-export const REVIEW_REQUIRED_FIELDS = ["threatModelReport", "foundryTestCode"] as const;
+export const NARRATIVE_MAX_TOKENS = 4000;
+export const CODE_MAX_TOKENS = 16000;
 
 /**
- * A reply that ARRIVED but is not a usable review object: no JSON
- * object could be extracted from it, or the extracted object is
- * missing required fields. Carries everything the corrective retry
- * and the fallback log line need — which required fields were
- * missing, which top-level keys the reply DID contain, and whether
- * the provider cut the reply at the token budget.
+ * Fields the NARRATIVE reply MUST carry (truthy) to be usable —
+ * the schema the narrative prompt demands. `economicRiskSummary`
+ * is the only other field; it is optional with a standing default.
+ * (The combined call's required set was threatModelReport +
+ * foundryTestCode; foundryTestCode is now call B's artifact.)
+ */
+export const NARRATIVE_REQUIRED_FIELDS = ["threatModelReport"] as const;
+
+/**
+ * A narrative reply that ARRIVED but is not a usable review object:
+ * no JSON object could be extracted from it, or the extracted object
+ * is missing the required field. Carries everything the corrective
+ * retry and the fallback log line need — which required fields were
+ * missing, which top-level keys the reply DID contain, whether the
+ * provider cut the reply at the token budget, and which budget.
  *
  * This failure class is distinct from a timeout or an HTTP error:
  * the call succeeded and the model answered, just not in the schema.
@@ -532,30 +624,34 @@ export class ReviewReplyError extends Error {
   readonly receivedKeys: readonly string[];
   /** finish_reason === "length": the provider cut the reply at max_tokens. */
   readonly truncated: boolean;
+  /** The max_tokens budget the failed reply was produced under. */
+  readonly maxTokens: number;
 
   constructor(args: {
     detail: string;
     missingFields: readonly string[];
     receivedKeys: readonly string[];
     truncated: boolean;
+    maxTokens?: number;
   }) {
     super(args.detail);
     this.name = "ReviewReplyError";
     this.missingFields = args.missingFields;
     this.receivedKeys = args.receivedKeys;
     this.truncated = args.truncated;
+    this.maxTokens = args.maxTokens ?? NARRATIVE_MAX_TOKENS;
   }
 
   /**
    * The corrective user message for the single retry: names the exact
    * missing fields and demands the complete JSON object with the
-   * exact schema keys and nothing else (the Deep Agent's corrective
-   * discipline, specialised to this schema). A truncated reply also
-   * gets told to be compact — the largest field is the test code, and
-   * a same-size resend would just be cut again.
+   * exact narrative schema keys and nothing else (the Deep Agent's
+   * corrective discipline, specialised to this schema). A truncated
+   * reply also gets told to be compact — a same-size resend would
+   * just be cut again.
    */
   correctiveInstruction(): string {
-    const exactKeys = [...REVIEW_REQUIRED_FIELDS, "economicRiskSummary"]
+    const exactKeys = [...NARRATIVE_REQUIRED_FIELDS, "economicRiskSummary"]
       .map((k) => `"${k}"`)
       .join(", ");
     const head =
@@ -565,40 +661,73 @@ export class ReviewReplyError extends Error {
             .join(", ")}${this.receivedKeys.length > 0 ? ` (it contained only: ${this.receivedKeys.join(", ")})` : ""}.`
         : "Your previous reply could not be parsed as a JSON review object.";
     const compact = this.truncated
-      ? ` Your previous reply was cut off at the token limit (finish_reason "length", max_tokens ${REVIEW_MAX_TOKENS}): keep the threat model concise and write a complete but more compact foundryTestCode so the entire JSON object fits in one reply.`
+      ? ` Your previous reply was cut off at the token limit (finish_reason "length", max_tokens ${this.maxTokens}): keep the threat model concise so the entire JSON object fits in one reply.`
       : "";
     return `${head} Reply with ONLY the complete JSON object with exactly these keys: ${exactKeys} — no prose, no code fences, no explanation before or after it.${compact}`;
   }
 }
 
+/**
+ * A test-code reply that ARRIVED but yields no usable Foundry test:
+ * no fenced block (and no raw code), or the extracted code declares
+ * no Test contract / carries no executable test function. The
+ * code-call sibling of ReviewReplyError — same discipline (one
+ * corrective retry, diagnosis in the fallback line), different
+ * artifact: the corrective demands exactly one fenced block, not a
+ * JSON object.
+ */
+export class ReviewCodeError extends Error {
+  /** What was wrong with the extracted code, in order found. */
+  readonly problems: readonly string[];
+  /** finish_reason === "length": the provider cut the reply at max_tokens. */
+  readonly truncated: boolean;
+
+  constructor(args: { detail: string; problems: readonly string[]; truncated: boolean }) {
+    super(args.detail);
+    this.name = "ReviewCodeError";
+    this.problems = args.problems;
+    this.truncated = args.truncated;
+  }
+
+  correctiveInstruction(): string {
+    const compact = this.truncated
+      ? ` Your previous reply was cut off at the token limit (finish_reason "length", max_tokens ${CODE_MAX_TOKENS}): write a complete but more compact test so the whole file fits in one reply.`
+      : "";
+    return (
+      `Your previous reply did not yield a usable Foundry test (${this.problems.join("; ")}). ` +
+      "Reply with ONLY the complete Solidity test file inside exactly one ```solidity fenced code block — no JSON, no prose before or after the block. " +
+      `The file must declare \`contract PoC is Test\` and contain at least one executable test function.${compact}`
+    );
+  }
+}
+
 /** The truncation marker appended to a reply-shape diagnosis. */
-function truncationNote(truncated: boolean): string {
+function truncationNote(truncated: boolean, maxTokens: number): string {
   return truncated
-    ? `; reply truncated at max_tokens ${REVIEW_MAX_TOKENS} (finish_reason "length")`
+    ? `; reply truncated at max_tokens ${maxTokens} (finish_reason "length")`
     : "";
 }
 
 /**
- * Parse + validate one review reply. Validation strictness is
- * unchanged from the original inline check (both required fields
- * truthy; economicRiskSummary defaulted) — what changed is that a
- * failure now throws a ReviewReplyError carrying the diagnosis
- * instead of a bare assertion, so the caller can spend its one
- * corrective retry and the fallback line can name the received keys.
+ * Parse + validate one NARRATIVE reply (call A). Validation
+ * strictness matches the original combined check for the fields
+ * this call owns (threatModelReport truthy; economicRiskSummary
+ * defaulted) — a failure throws a ReviewReplyError carrying the
+ * diagnosis instead of a bare assertion, so the caller can spend
+ * its one corrective retry and the fallback line can name the
+ * received keys.
  *
- * `finishReason` is the choice's finish_reason from the SAME response
- * body the content came from (postChatWithModelFallback returns the
- * raw Response, so it was always reachable — it was simply never
- * read). "length" is the truncation signal: a reply cut mid-object
- * usually fails extraction outright, but a reply the model closed
- * early (threat model only, code field empty) lands here, and only
- * finish_reason separates "model chose a wrong schema" from "model
- * ran out of tokens".
+ * `finishReason` is the choice's finish_reason from the SAME
+ * response body the content came from (postChatWithModelFallback
+ * returns the raw Response, so it was always reachable — it was
+ * simply never read). "length" is the truncation signal: only
+ * finish_reason separates "model chose a wrong schema" from
+ * "model ran out of tokens".
  */
-export function parseReviewReply(
+export function parseNarrativeReply(
   content: string,
   finishReason: string | undefined,
-): AiSecurityReview {
+): { threatModelReport: string; economicRiskSummary: string } {
   const truncated = finishReason === "length";
   let parsed: unknown;
   try {
@@ -607,8 +736,8 @@ export function parseReviewReply(
     throw new ReviewReplyError({
       detail:
         `OpenRouter reply did not yield a JSON object: ${err instanceof Error ? err.message : String(err)}` +
-        truncationNote(truncated),
-      missingFields: [...REVIEW_REQUIRED_FIELDS],
+        truncationNote(truncated, NARRATIVE_MAX_TOKENS),
+      missingFields: [...NARRATIVE_REQUIRED_FIELDS],
       receivedKeys: [],
       truncated,
     });
@@ -618,29 +747,85 @@ export function parseReviewReply(
       ? (parsed as Record<string, unknown>)
       : null;
   const receivedKeys = record ? Object.keys(record) : [];
-  const missing = REVIEW_REQUIRED_FIELDS.filter((f) => !record?.[f]);
+  const missing = NARRATIVE_REQUIRED_FIELDS.filter((f) => !record?.[f]);
   if (!record || missing.length > 0) {
-    const missingText =
-      missing.length === REVIEW_REQUIRED_FIELDS.length
-        ? `missing ${REVIEW_REQUIRED_FIELDS.join(" / ")}`
-        : `missing ${missing.join(", ")}`;
     const shape = record
       ? `reply keys: ${receivedKeys.join(", ") || "none"}`
       : `reply was a JSON ${Array.isArray(parsed) ? "array" : typeof parsed}, not an object`;
     throw new ReviewReplyError({
-      detail: `OpenRouter reply was ${missingText} (${shape})` + truncationNote(truncated),
-      missingFields: missing.length > 0 ? missing : [...REVIEW_REQUIRED_FIELDS],
+      detail:
+        `OpenRouter reply was missing ${missing.join(", ")} (${shape})` +
+        truncationNote(truncated, NARRATIVE_MAX_TOKENS),
+      missingFields: missing.length > 0 ? missing : [...NARRATIVE_REQUIRED_FIELDS],
       receivedKeys,
       truncated,
     });
   }
   return {
     threatModelReport: record.threatModelReport as string,
-    foundryTestCode: record.foundryTestCode as string,
     economicRiskSummary:
       (record.economicRiskSummary as string) || "Completed OpenRouter threat review.",
-    source: "openrouter",
   };
+}
+
+/**
+ * Extract the Foundry test source from a test-code reply — the
+ * SmartPoC extractCodeBlock lineage (smartpoc/engine.server.ts):
+ * when the reply carries several fenced blocks, prefer the first
+ * block containing executable test functions (models routinely
+ * emit a helper or attack contract first and the Test contract
+ * second); a single block wins as-is; with no fences at all, the
+ * trimmed text. Re-implemented here on the same primitives
+ * (stripThinkBlocks + countExecutableTestFunctions) rather than
+ * imported: the SmartPoC engine imports THIS module, so the import
+ * would cycle.
+ */
+export function extractReviewTestCode(text: string): string {
+  const cleaned = stripThinkBlocks(text);
+  const blocks = [...cleaned.matchAll(/```(?:solidity|sol)?\s*\n([\s\S]*?)```/gi)].map((m) =>
+    m[1].trim(),
+  );
+  if (blocks.length) {
+    return blocks.find((b) => countExecutableTestFunctions(b) > 0) ?? blocks[0]!;
+  }
+  return cleaned.trim();
+}
+
+/**
+ * Parse + validate one TEST-CODE reply (call B): the extraction
+ * above, plus the shape gate — the code must declare a Test
+ * contract and carry at least one executable test function (the
+ * same "would forge actually run a test" bar the adjudicate
+ * chain's gate applies downstream; catching a helper-only or
+ * prose reply HERE is what lets the corrective retry ask for the
+ * right thing). Failures throw ReviewCodeError with the problems
+ * named; truncation rides on finish_reason as in the narrative
+ * parser.
+ */
+export function parseTestCodeReply(content: string, finishReason: string | undefined): string {
+  const truncated = finishReason === "length";
+  const code = extractReviewTestCode(content);
+  const problems: string[] = [];
+  if (!code) {
+    problems.push("the reply contained no code");
+  } else {
+    if (!/contract\s+\w+\s+is\s+Test\b/.test(code)) {
+      problems.push("the extracted code declares no Test contract");
+    }
+    if (countExecutableTestFunctions(code) === 0) {
+      problems.push("the extracted code contains no executable test function");
+    }
+  }
+  if (problems.length > 0) {
+    throw new ReviewCodeError({
+      detail:
+        `OpenRouter test-code reply was unusable: ${problems.join("; ")}` +
+        truncationNote(truncated, CODE_MAX_TOKENS),
+      problems,
+      truncated,
+    });
+  }
+  return code;
 }
 
 export async function generateAiSecurityReview(
@@ -651,28 +836,44 @@ export async function generateAiSecurityReview(
   inventory?: Partial<Inventory>,
   resnet?: ResnetResult | null,
 ): Promise<AiSecurityReview> {
-  // The review pass uses the "review" purpose; the model itself is chosen (and
-  // fallen back through) inside postChatWithModelFallback.
-  const purpose: OpenRouterPurpose = "review";
-  const { apiKey, model } = resolveOpenRouterConfig(process.env, purpose);
+  // The split (2026-10-25): call A (narrative) runs on the "review"
+  // purpose, call B (test code) on the "code" purpose; the model for
+  // each is chosen (and fallen back through) inside
+  // postChatWithModelFallback. The API key is purpose-independent.
+  const reviewConfig = resolveOpenRouterConfig(process.env, "review");
+  const codeConfig = resolveOpenRouterConfig(process.env, "code");
   const timeoutMs = resolveOpenRouterTimeoutMs(process.env);
 
-  if (!apiKey) {
+  if (!reviewConfig.apiKey) {
     return buildFallbackReview(contractName, findings, body);
   }
+  const apiKey = reviewConfig.apiKey;
 
-  // Set when the first attempt died on the timeout and the single
-  // retry was spent — the fallback log line below reports it.
+  // Retry state for the fallback line: which call died, and which
+  // one-shot retries were spent along the way.
+  let failedCall: "narrative" | "test code" = "narrative";
+  let failedModel = reviewConfig.model;
   let timeoutRetried = false;
-  // Same for the corrective (reply-shape) retry.
+  let emptyRetried = false;
   let shapeRetried = false;
   try {
-    const { system, user } = buildAiReviewPrompt(contractName, body, findings, fourbyte, inventory, resnet);
-
     const referer =
       process.env.APP_URL?.trim() ||
       process.env.VERCEL_URL?.trim() ||
       "https://smart-kontrakt.vercel.app";
+
+    type CallSpec = {
+      kind: "narrative" | "test code";
+      purpose: OpenRouterPurpose;
+      /** The purpose's preferred model — for log lines; the wire
+       *  model is chosen per attempt by the fallback chain. */
+      model: string;
+      system: string;
+      user: string;
+      corrective?: string;
+      jsonMode: boolean;
+      maxTokens: number;
+    };
 
     // One attempt. withRetry still absorbs the transient HTTP/network
     // failures (429 / 5xx / connection errors, 3 retries as before),
@@ -683,15 +884,15 @@ export async function generateAiSecurityReview(
     // for entry after entry, downstream no_tests verdicts). The Deep
     // Agent's calls learned this first ("do not retry timeouts");
     // here the discipline is: fail the attempt fast on timeout, and
-    // let the single counted retry below handle it. `corrective`
-    // appends the reply-shape instruction used by the corrective
-    // retry further down (same shape as the Deep Agent's call).
-    const callReview = (corrective?: string): Promise<Response> =>
+    // let the single counted retry in fetchReply handle it.
+    // `corrective` appends the reply-shape instruction used by a
+    // call's corrective retry (same shape as the Deep Agent's call).
+    const callChat = (spec: CallSpec): Promise<Response> =>
       withRetry(
         async () => {
           await openRouterLimiter.acquire();
           return postChatWithModelFallback({
-            purpose,
+            purpose: spec.purpose,
             apiKey,
             timeoutMs,
             headers: {
@@ -703,15 +904,17 @@ export async function generateAiSecurityReview(
             makeBody: (candidate) => ({
               model: candidate,
               messages: [
-                { role: "system", content: system },
-                { role: "user", content: user },
-                ...(corrective
-                  ? [{ role: "user" as const, content: corrective }]
+                { role: "system", content: spec.system },
+                { role: "user", content: spec.user },
+                ...(spec.corrective
+                  ? [{ role: "user" as const, content: spec.corrective }]
                   : []),
               ],
-              response_format: { type: "json_object" },
+              // Call B asks for raw code — a JSON envelope around a
+              // whole Solidity file is pure budget waste.
+              ...(spec.jsonMode ? { response_format: { type: "json_object" } } : {}),
               temperature: 0.7,
-              max_tokens: REVIEW_MAX_TOKENS,
+              max_tokens: spec.maxTokens,
             }),
           });
         },
@@ -722,80 +925,154 @@ export async function generateAiSecurityReview(
         },
       );
 
-    // One logical review call: the HTTP call (with its own single
-    // timeout retry) plus the response read. Returns the message
-    // content AND the choice's finish_reason — "length" is the only
-    // truncation signal the provider gives, and it rides in the same
-    // body; parseReviewReply needs it to tell a cut reply apart from
-    // a wrong-schema one.
-    const fetchReviewReply = async (
-      corrective?: string,
+    // One logical call: the HTTP call plus the response read, with
+    // the one-shot transport retries — ONE on a timeout (the
+    // discipline above) and ONE on an empty completion. The empty
+    // case is new with the split batch: the provider can answer 200
+    // with no message content at all (Jer's 2026-10-25 log: "Error:
+    // OpenRouter returned no message content" → straight to the
+    // template). Nothing was generated, so a fresh attempt is the
+    // cheapest correct response. Each retry class spends at most
+    // once per logical call; the corrective retry is a NEW logical
+    // call with its own pair. Returns the message content AND the
+    // choice's finish_reason — "length" is the only truncation
+    // signal the provider gives; the parsers need it to tell a cut
+    // reply apart from a wrong-shape one.
+    const fetchReply = async (
+      spec: CallSpec,
     ): Promise<{ content: string; finishReason?: string }> => {
-      let response: Response;
-      try {
-        response = await callReview(corrective);
-      } catch (err) {
-        if (!isOpenRouterTimeoutError(err)) throw err;
-        // Exactly ONE retry on a timeout — a slow free-lane queue can
-        // clear between attempts; a second timeout means the lane is
-        // not answering at this budget today, and the template
-        // fallback (which the caller gets below) is the honest outcome.
-        timeoutRetried = true;
-        console.warn(
-          `[Kiln] OpenRouter AI review timed out (model ${model}, timeout ${timeoutMs}ms) — retrying once`,
-        );
-        response = await callReview(corrective);
-      }
+      let spentTimeoutRetry = false;
+      let spentEmptyRetry = false;
+      for (;;) {
+        let response: Response;
+        try {
+          response = await callChat(spec);
+        } catch (err) {
+          if (isOpenRouterTimeoutError(err) && !spentTimeoutRetry) {
+            // A slow free-lane queue can clear between attempts; a
+            // second timeout means the lane is not answering at this
+            // budget today, and the template fallback is the honest
+            // outcome.
+            spentTimeoutRetry = true;
+            timeoutRetried = true;
+            console.warn(
+              `[Kiln] OpenRouter AI review ${spec.kind} call timed out (model ${spec.model}, timeout ${timeoutMs}ms) — retrying once`,
+            );
+            continue;
+          }
+          throw err;
+        }
 
-      if (!response.ok) {
-        const detail = (await response.text().catch(() => "")).slice(0, 500);
-        throw new Error(`OpenRouter returned HTTP ${response.status}: ${detail}`);
-      }
+        if (!response.ok) {
+          const detail = (await response.text().catch(() => "")).slice(0, 500);
+          throw new Error(`OpenRouter returned HTTP ${response.status}: ${detail}`);
+        }
 
-      const data = (await response.json()) as {
-        choices?: Array<{
-          message?: { content?: string | null };
-          finish_reason?: string | null;
-        }>;
-      };
-      const content = data.choices?.[0]?.message?.content;
-      if (!content) {
-        throw new Error("OpenRouter returned no message content");
+        const data = (await response.json()) as {
+          choices?: Array<{
+            message?: { content?: string | null };
+            finish_reason?: string | null;
+          }>;
+        };
+        const content = data.choices?.[0]?.message?.content;
+        if (!content) {
+          if (!spentEmptyRetry) {
+            spentEmptyRetry = true;
+            emptyRetried = true;
+            console.warn(
+              `[Kiln] OpenRouter AI review ${spec.kind} call returned no message content (model ${spec.model}) — retrying once`,
+            );
+            continue;
+          }
+          throw new Error("OpenRouter returned no message content");
+        }
+        return { content, finishReason: data.choices?.[0]?.finish_reason ?? undefined };
       }
-      return { content, finishReason: data.choices?.[0]?.finish_reason ?? undefined };
     };
 
-    // A reply that arrived but is not a usable review object gets ONE
-    // corrective retry — the instruction names the exact missing
-    // fields and demands the complete JSON object with the exact
-    // schema keys. Jer's 59,852-address run (2026-10-25) showed the
-    // old behaviour: the call returned in time, validation rejected
-    // the shape ("missing threatModelReport / foundryTestCode"), and
-    // the entry went straight to the template with no diagnosis of
-    // what the reply held. A second shape failure falls back exactly
-    // as before, with the received keys in the error.
-    let review: AiSecurityReview;
+    // — Call A: the narrative (threat model + economic summary). A
+    // reply that arrived but is not a usable object gets ONE
+    // corrective retry naming the exact missing fields; a second
+    // shape failure falls back with the received keys in the error.
+    const narrativePrompt = buildAiReviewPrompt(contractName, body, findings, fourbyte, inventory, resnet);
+    const narrativeSpec: CallSpec = {
+      kind: "narrative",
+      purpose: "review",
+      model: reviewConfig.model,
+      system: narrativePrompt.system,
+      user: narrativePrompt.user,
+      jsonMode: true,
+      maxTokens: NARRATIVE_MAX_TOKENS,
+    };
+    let narrative: { threatModelReport: string; economicRiskSummary: string };
     try {
-      const first = await fetchReviewReply();
-      review = parseReviewReply(first.content, first.finishReason);
+      const first = await fetchReply(narrativeSpec);
+      narrative = parseNarrativeReply(first.content, first.finishReason);
     } catch (err) {
       if (!(err instanceof ReviewReplyError)) throw err;
       shapeRetried = true;
       console.warn(
-        `[Kiln] OpenRouter AI review reply unusable (model ${model}): ${err.message} — retrying once with a corrective instruction`,
+        `[Kiln] OpenRouter AI review narrative reply unusable (model ${reviewConfig.model}): ${err.message} — retrying once with a corrective instruction`,
       );
-      const second = await fetchReviewReply(err.correctiveInstruction());
-      review = parseReviewReply(second.content, second.finishReason);
+      const second = await fetchReply({ ...narrativeSpec, corrective: err.correctiveInstruction() });
+      narrative = parseNarrativeReply(second.content, second.finishReason);
     }
-    return review;
+
+    // — Call B: the Foundry test, aimed by call A's threat model
+    // (the single combined call generated the test conditioned on
+    // its own analysis in the same completion; the split preserves
+    // that dependency explicitly). Runs only after A succeeded —
+    // its retries never re-call A. A reply with no usable test
+    // gets ONE corrective retry demanding exactly one fenced block.
+    failedCall = "test code";
+    failedModel = codeConfig.model;
+    const testPrompt = buildAiReviewTestPrompt(
+      contractName,
+      body,
+      findings,
+      fourbyte,
+      inventory,
+      resnet,
+      narrative.threatModelReport,
+    );
+    const testSpec: CallSpec = {
+      kind: "test code",
+      purpose: "code",
+      model: codeConfig.model,
+      system: testPrompt.system,
+      user: testPrompt.user,
+      jsonMode: false,
+      maxTokens: CODE_MAX_TOKENS,
+    };
+    let foundryTestCode: string;
+    try {
+      const first = await fetchReply(testSpec);
+      foundryTestCode = parseTestCodeReply(first.content, first.finishReason);
+    } catch (err) {
+      if (!(err instanceof ReviewCodeError)) throw err;
+      shapeRetried = true;
+      console.warn(
+        `[Kiln] OpenRouter AI review test-code reply unusable (model ${codeConfig.model}): ${err.message} — retrying once with a corrective instruction`,
+      );
+      const second = await fetchReply({ ...testSpec, corrective: err.correctiveInstruction() });
+      foundryTestCode = parseTestCodeReply(second.content, second.finishReason);
+    }
+
+    return {
+      threatModelReport: narrative.threatModelReport,
+      foundryTestCode,
+      economicRiskSummary: narrative.economicRiskSummary,
+      source: "openrouter",
+    };
   } catch (err) {
-    // The fallback line must carry the whole diagnosis — model, the
-    // timeout budget in force, and whether the timeout retry was
-    // spent. The bare "aborted due to timeout" this replaced cost a
-    // screenshot round-trip to explain (2026-10-25).
+    // The fallback line must carry the whole diagnosis — WHICH call
+    // died, its model, the timeout budget in force, and which
+    // one-shot retries were spent. The bare "aborted due to timeout"
+    // this replaced cost a screenshot round-trip to explain
+    // (2026-10-25).
     console.warn(
       `[Kiln] OpenRouter AI review failed, falling back to structured template ` +
-        `(model ${model}, timeout ${timeoutMs}ms${timeoutRetried ? ", timeout retry attempted and exhausted" : ""}${shapeRetried ? ", corrective retry attempted and exhausted" : ""}): ` +
+        `(failed call: ${failedCall}, model ${failedModel}, timeout ${timeoutMs}ms${timeoutRetried ? ", timeout retry attempted and exhausted" : ""}${emptyRetried ? ", empty-reply retry attempted and exhausted" : ""}${shapeRetried ? ", corrective retry attempted and exhausted" : ""}): ` +
         `${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`,
     );
   }

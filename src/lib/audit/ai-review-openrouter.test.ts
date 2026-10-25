@@ -2,10 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildAiReviewPrompt,
+  buildAiReviewTestPrompt,
   extractJsonContent,
+  extractReviewTestCode,
   generateAiSecurityReview,
-  parseReviewReply,
+  parseNarrativeReply,
+  parseTestCodeReply,
+  ReviewCodeError,
   ReviewReplyError,
+  NARRATIVE_MAX_TOKENS,
+  CODE_MAX_TOKENS,
   resolveOpenRouterConfig,
   resolveOpenRouterModel,
   resolveOpenRouterTimeoutMs,
@@ -241,20 +247,6 @@ test("isOpenRouterTimeoutError recognises the AbortSignal.timeout shape from the
   assert.equal(isOpenRouterTimeoutError("timeout"), false);
 });
 
-const REVIEW_OK = JSON.stringify({
-  choices: [
-    {
-      message: {
-        content: JSON.stringify({
-          threatModelReport: "tm",
-          foundryTestCode: "contract PoC is Test {}",
-          economicRiskSummary: "eco",
-        }),
-      },
-    },
-  ],
-});
-
 function captureWarn(): { lines: string[]; restore: () => void } {
   const lines: string[] = [];
   const orig = console.warn;
@@ -264,64 +256,191 @@ function captureWarn(): { lines: string[]; restore: () => void } {
   return { lines, restore: () => { console.warn = orig; } };
 }
 
-async function withFetchAndEnv(
+// --- split review generation (2026-10-25): the review is TWO calls
+// now — a narrative JSON call on the "review" purpose and a raw
+// test-code call on the "code" purpose — because the single combined
+// call kept dying at the token cap (prose threat model as a JSON
+// string ate the budget; the test code was never born). The old
+// single-call tests were reworked for the split: the same
+// disciplines (one timeout retry, no retry on other transport
+// errors, one corrective retry per call, template fallback with the
+// full diagnosis) are asserted PER CALL, and fetch counts reflect
+// two logical calls. ---
+
+const NARRATIVE_REPLY = JSON.stringify({
+  threatModelReport: "tm",
+  economicRiskSummary: "eco",
+});
+
+const TEST_CODE = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "forge-std/Test.sol";
+
+contract PoC is Test {
+    function test_primaryFinding() public {
+        assertTrue(true);
+    }
+}`;
+
+const CODE_REPLY = "```solidity\n" + TEST_CODE + "\n```";
+
+function replyEnvelope(content: string, finishReason?: string): string {
+  return JSON.stringify({
+    choices: [
+      {
+        message: { content },
+        ...(finishReason ? { finish_reason: finishReason } : {}),
+      },
+    ],
+  });
+}
+
+function ok200(body: string): Response {
+  return new Response(body, { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+const NARRATIVE_OK = (): Response => ok200(replyEnvelope(NARRATIVE_REPLY, "stop"));
+const CODE_OK = (): Response => ok200(replyEnvelope(CODE_REPLY, "stop"));
+
+/** Body-recording fetch mock: the implementation sees each request
+ *  body (corrective instructions are asserted on the actual wire
+ *  text). `env` replaces the model-related environment — the
+ *  default pins the global override the way the older tests did. */
+async function withFetchBodies(
   fetchImpl: (call: number) => Promise<Response>,
-  fn: (calls: () => number) => Promise<void>,
+  fn: (calls: () => number, bodies: string[]) => Promise<void>,
+  env: Record<string, string | undefined> = { OPENROUTER_MODEL: "test/model" },
 ): Promise<void> {
   const origFetch = globalThis.fetch;
-  const savedEnv = {
-    OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
-    OPENROUTER_MODEL: process.env.OPENROUTER_MODEL,
-    OPENROUTER_TIMEOUT_MS: process.env.OPENROUTER_TIMEOUT_MS,
-  };
+  const KEYS = [
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_MODEL",
+    "OPENROUTER_MODEL_REVIEW",
+    "OPENROUTER_MODEL_CODE",
+    "OPENROUTER_MODEL_JSON",
+    "OPENROUTER_TIMEOUT_MS",
+  ] as const;
+  const saved = new Map(KEYS.map((k) => [k, process.env[k]]));
   let calls = 0;
-  globalThis.fetch = (() => fetchImpl(++calls)) as typeof fetch;
+  const bodies: string[] = [];
+  globalThis.fetch = ((_url: unknown, init?: { body?: unknown }) => {
+    bodies.push(typeof init?.body === "string" ? init.body : "");
+    return fetchImpl(++calls);
+  }) as typeof fetch;
   process.env.OPENROUTER_API_KEY = "sk-test";
-  process.env.OPENROUTER_MODEL = "test/model";
   process.env.OPENROUTER_TIMEOUT_MS = "9000";
+  for (const k of KEYS) {
+    if (k === "OPENROUTER_API_KEY" || k === "OPENROUTER_TIMEOUT_MS") continue;
+    const v = env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
   try {
-    await fn(() => calls);
+    await fn(() => calls, bodies);
   } finally {
     globalThis.fetch = origFetch;
-    for (const [k, v] of Object.entries(savedEnv)) {
+    for (const [k, v] of saved) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
   }
 }
 
-test("generateAiSecurityReview retries ONCE on a timeout and returns the LLM review", async () => {
+test("generateAiSecurityReview (split): happy path is two calls — narrative JSON, then raw test code", async () => {
   const warn = captureWarn();
   try {
-    await withFetchAndEnv(
-      async (call) => {
-        if (call === 1) {
-          throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
-        }
-        return new Response(REVIEW_OK, { status: 200, headers: { "Content-Type": "application/json" } });
-      },
-      async (calls) => {
+    await withFetchBodies(
+      async (call) => (call === 1 ? NARRATIVE_OK() : CODE_OK()),
+      async (calls, bodies) => {
         const review = await generateAiSecurityReview("Target", "contract Target {}", []);
         assert.equal(review.source, "openrouter");
         assert.equal(review.threatModelReport, "tm");
-        // Exactly two fetches: the timed-out attempt + the one retry.
-        // (Under the old predicate withRetry alone would have made 4.)
+        assert.equal(review.economicRiskSummary, "eco");
+        // The assembled return shape is the pre-split one, unchanged.
+        assert.equal(review.foundryTestCode, TEST_CODE);
         assert.equal(calls(), 2);
+        // Call A: JSON mode at the narrative budget.
+        const a = JSON.parse(bodies[0]!) as {
+          response_format?: unknown;
+          max_tokens?: number;
+          model?: string;
+        };
+        assert.deepEqual(a.response_format, { type: "json_object" });
+        assert.equal(a.max_tokens, NARRATIVE_MAX_TOKENS);
+        assert.equal(a.model, "test/model");
+        // Call B: NO response_format (raw code), the code budget,
+        // and its prompt carries call A's threat model — the aiming
+        // context the single combined call had implicitly.
+        const b = JSON.parse(bodies[1]!) as {
+          response_format?: unknown;
+          max_tokens?: number;
+          messages: Array<{ content: string }>;
+        };
+        assert.equal(b.response_format, undefined);
+        assert.equal(b.max_tokens, CODE_MAX_TOKENS);
+        const bUser = b.messages[1]!.content;
+        assert.match(bUser, /THREAT MODEL \(produced by the narrative pass/);
+        assert.ok(bUser.includes("\ntm"), "call B must carry call A's threat model");
       },
     );
   } finally {
     warn.restore();
   }
   assert.ok(
-    warn.lines.some((l) => /timed out \(model test\/model, timeout 9000ms\) — retrying once/.test(l)),
-    `retry must be logged with model + budget, got: ${warn.lines.join(" | ")}`,
+    !warn.lines.some((l) => l.includes("reply unusable") || l.includes("retrying once")),
+    `no retries on the happy path, got: ${warn.lines.join(" | ")}`,
   );
 });
 
-test("generateAiSecurityReview falls back after the retry also times out — log names model, budget, retry", async () => {
+test("generateAiSecurityReview (split): call A resolves the review purpose, call B the code purpose", async () => {
+  await withFetchBodies(
+    async (call) => (call === 1 ? NARRATIVE_OK() : CODE_OK()),
+    async (calls, bodies) => {
+      const review = await generateAiSecurityReview("Target", "contract Target {}", []);
+      assert.equal(review.source, "openrouter");
+      assert.equal(calls(), 2);
+      const a = JSON.parse(bodies[0]!) as { model?: string };
+      const b = JSON.parse(bodies[1]!) as { model?: string };
+      assert.equal(a.model, OPENROUTER_MODELS.review);
+      assert.equal(b.model, "test/code-model");
+    },
+    { OPENROUTER_MODEL_CODE: "test/code-model" },
+  );
+});
+
+test("generateAiSecurityReview (split): a timeout on call A retries ONCE, then both calls complete", async () => {
   const warn = captureWarn();
   try {
-    await withFetchAndEnv(
+    await withFetchBodies(
+      async (call) => {
+        if (call === 1) {
+          throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+        }
+        return call === 2 ? NARRATIVE_OK() : CODE_OK();
+      },
+      async (calls) => {
+        const review = await generateAiSecurityReview("Target", "contract Target {}", []);
+        assert.equal(review.source, "openrouter");
+        assert.equal(review.threatModelReport, "tm");
+        // The timed-out attempt + its one retry + call B. (Under the
+        // old withRetry predicate alone this would have been 4+.)
+        assert.equal(calls(), 3);
+      },
+    );
+  } finally {
+    warn.restore();
+  }
+  assert.ok(
+    warn.lines.some((l) => /narrative call timed out \(model test\/model, timeout 9000ms\) — retrying once/.test(l)),
+    `retry must be logged per call with model + budget, got: ${warn.lines.join(" | ")}`,
+  );
+});
+
+test("generateAiSecurityReview (split): call A timing out twice falls back before call B is ever made", async () => {
+  const warn = captureWarn();
+  try {
+    await withFetchBodies(
       async () => {
         throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
       },
@@ -336,16 +455,17 @@ test("generateAiSecurityReview falls back after the retry also times out — log
   }
   const fallback = warn.lines.find((l) => l.includes("falling back to structured template"));
   assert.ok(fallback, `expected a fallback line, got: ${warn.lines.join(" | ")}`);
+  assert.match(fallback!, /failed call: narrative/);
   assert.match(fallback!, /model test\/model/);
   assert.match(fallback!, /timeout 9000ms/);
   assert.match(fallback!, /timeout retry attempted and exhausted/);
   assert.match(fallback!, /TimeoutError/);
 });
 
-test("generateAiSecurityReview does NOT retry a non-timeout failure", async () => {
+test("generateAiSecurityReview (split): a non-timeout failure on call A is NOT retried", async () => {
   const warn = captureWarn();
   try {
-    await withFetchAndEnv(
+    await withFetchBodies(
       async () =>
         new Response('{"error":{"message":"malformed request"}}', {
           status: 400,
@@ -354,8 +474,8 @@ test("generateAiSecurityReview does NOT retry a non-timeout failure", async () =
       async (calls) => {
         const review = await generateAiSecurityReview("Target", "contract Target {}", []);
         assert.equal(review.source, "template");
-        // One fetch, straight to the fallback — today's behavior for
-        // non-timeout errors is unchanged.
+        // One fetch, straight to the fallback — behavior for
+        // non-timeout transport errors is unchanged by the split.
         assert.equal(calls(), 1);
       },
     );
@@ -364,177 +484,380 @@ test("generateAiSecurityReview does NOT retry a non-timeout failure", async () =
   }
   const fallback = warn.lines.find((l) => l.includes("falling back to structured template"));
   assert.ok(fallback);
-  assert.doesNotMatch(fallback!, /timeout retry attempted/);
+  assert.doesNotMatch(fallback!, /retry attempted/);
 });
 
-// --- review reply-shape discipline (2026-10-25): the timeout fix
-// above was not the end of it. In the same 59,852-address run the
-// review call started RETURNING in time — and validation rejected
-// the shape: "OpenRouter reply was missing threatModelReport /
-// foundryTestCode", straight to the template, with no record of
-// what the reply contained (keys renamed? wrapped? cut at the token
-// budget? an empty code field?). Now: the error carries the missing
-// fields, the received top-level keys and the truncation signal
-// (finish_reason rides in the same response body — it was always
-// reachable, just never read), and the reply gets ONE corrective
-// retry naming the exact fields before the template fallback ---
+// --- per-call reply-shape discipline (2026-10-25) --------------
+// The corrective-retry discipline from the single-call review,
+// scoped per call in the split: shape failures name what is missing
+// (narrative: fields + received keys; test code: the problems),
+// exactly ONE corrective retry per call, then today's fallback with
+// the full diagnosis and WHICH call failed. An empty completion
+// ('returned no message content') also retries once per call —
+// Jer's log showed it going straight to the fallback.
+// ---------------------------------------------------------------
 
-function replyEnvelope(content: string, finishReason?: string): string {
-  return JSON.stringify({
-    choices: [
-      {
-        message: { content },
-        ...(finishReason ? { finish_reason: finishReason } : {}),
-      },
-    ],
-  });
-}
-
-const COMPLETE_REPLY = JSON.stringify({
-  threatModelReport: "tm",
-  foundryTestCode: "contract PoC is Test {}",
-  economicRiskSummary: "eco",
+test("budget pins: each split call carries exactly one artifact", () => {
+  assert.equal(NARRATIVE_MAX_TOKENS, 4000);
+  assert.equal(CODE_MAX_TOKENS, 16000);
 });
 
-/** withFetchAndEnv, but the mock sees each request body (the
- *  corrective instruction is asserted on the actual wire text). */
-async function withFetchBodies(
-  fetchImpl: (call: number) => Promise<Response>,
-  fn: (calls: () => number, bodies: string[]) => Promise<void>,
-): Promise<void> {
-  const origFetch = globalThis.fetch;
-  const savedEnv = {
-    OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
-    OPENROUTER_MODEL: process.env.OPENROUTER_MODEL,
-    OPENROUTER_TIMEOUT_MS: process.env.OPENROUTER_TIMEOUT_MS,
-  };
-  let calls = 0;
-  const bodies: string[] = [];
-  globalThis.fetch = ((_url: unknown, init?: { body?: unknown }) => {
-    bodies.push(typeof init?.body === "string" ? init.body : "");
-    return fetchImpl(++calls);
-  }) as typeof fetch;
-  process.env.OPENROUTER_API_KEY = "sk-test";
-  process.env.OPENROUTER_MODEL = "test/model";
-  process.env.OPENROUTER_TIMEOUT_MS = "9000";
-  try {
-    await fn(() => calls, bodies);
-  } finally {
-    globalThis.fetch = origFetch;
-    for (const [k, v] of Object.entries(savedEnv)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
-}
-
-function ok200(body: string): Response {
-  return new Response(body, { status: 200, headers: { "Content-Type": "application/json" } });
-}
-
-test("parseReviewReply: a complete object passes; a missing field throws the diagnosis", () => {
-  const ok = parseReviewReply(COMPLETE_REPLY, "stop");
-  assert.equal(ok.source, "openrouter");
+test("parseNarrativeReply: a complete object passes; a missing field throws the diagnosis", () => {
+  const ok = parseNarrativeReply(NARRATIVE_REPLY, "stop");
   assert.equal(ok.threatModelReport, "tm");
+  assert.equal(ok.economicRiskSummary, "eco");
+  // economicRiskSummary is defaulted, not required.
+  assert.equal(
+    parseNarrativeReply(JSON.stringify({ threatModelReport: "tm" }), "stop").economicRiskSummary,
+    "Completed OpenRouter threat review.",
+  );
   assert.throws(
-    () =>
-      parseReviewReply(
-        JSON.stringify({ threatModelReport: "tm", economicRiskSummary: "eco" }),
-        "stop",
-      ),
+    () => parseNarrativeReply(JSON.stringify({ economicRiskSummary: "eco" }), "stop"),
     (err: unknown) => {
       assert.ok(err instanceof ReviewReplyError);
-      assert.deepEqual(err.missingFields, ["foundryTestCode"]);
-      assert.deepEqual(err.receivedKeys, ["threatModelReport", "economicRiskSummary"]);
+      assert.deepEqual(err.missingFields, ["threatModelReport"]);
+      assert.deepEqual(err.receivedKeys, ["economicRiskSummary"]);
       assert.equal(err.truncated, false);
-      assert.match(err.message, /missing foundryTestCode/);
-      assert.match(err.message, /reply keys: threatModelReport, economicRiskSummary/);
+      assert.match(err.message, /missing threatModelReport/);
+      assert.match(err.message, /reply keys: economicRiskSummary/);
       return true;
     },
   );
-  // A non-object JSON reply (array wrap) is the same failure class,
-  // named as such — never a bare "missing fields".
+  // The model sometimes wraps the object in a one-element array —
+  // still a shape failure, with the array called out.
   assert.throws(
-    () => parseReviewReply(JSON.stringify([{ threatModelReport: "tm" }]), "stop"),
+    () => parseNarrativeReply(JSON.stringify([{ threatModelReport: "tm" }]), "stop"),
     (err: unknown) => {
       assert.ok(err instanceof ReviewReplyError);
       assert.match(err.message, /JSON array, not an object/);
-      assert.deepEqual(err.missingFields, ["threatModelReport", "foundryTestCode"]);
+      assert.deepEqual(err.missingFields, ["threatModelReport"]);
+      return true;
+    },
+  );
+  // Truncation is carried with the NARRATIVE budget in the note.
+  assert.throws(
+    () => parseNarrativeReply(JSON.stringify({ economicRiskSummary: "eco" }), "length"),
+    (err: unknown) => {
+      assert.ok(err instanceof ReviewReplyError);
+      assert.equal(err.truncated, true);
+      assert.equal(err.maxTokens, NARRATIVE_MAX_TOKENS);
+      assert.match(err.message, /truncated at max_tokens 4000/);
       return true;
     },
   );
 });
 
-test("generateAiSecurityReview: a complete reply takes exactly one call, no corrective retry", async () => {
+test("parseTestCodeReply: fenced Test code passes; the Test fence wins over a helper fence", () => {
+  assert.equal(parseTestCodeReply(CODE_REPLY, "stop"), TEST_CODE);
+  const twoFences =
+    "```solidity\ncontract Helper {\n    function poke() public pure returns (uint256) { return 1; }\n}\n```\n\n```solidity\n" +
+    TEST_CODE +
+    "\n```";
+  assert.equal(parseTestCodeReply(twoFences, "stop"), TEST_CODE);
+  // Raw unfenced code is accepted too (extractCodeBlock lineage).
+  assert.equal(parseTestCodeReply(TEST_CODE, "stop"), TEST_CODE);
+  assert.equal(extractReviewTestCode("no fences at all"), "no fences at all");
+});
+
+test("parseTestCodeReply: prose and helper-only replies throw ReviewCodeError naming the problems", () => {
+  assert.throws(
+    () => parseTestCodeReply("no code here", "stop"),
+    (err: unknown) => {
+      assert.ok(err instanceof ReviewCodeError);
+      assert.match(err.message, /test-code reply was unusable/);
+      assert.match(err.message, /declares no Test contract/);
+      assert.match(err.message, /no executable test function/);
+      assert.match(err.correctiveInstruction(), /exactly one ```solidity fenced code block/);
+      return true;
+    },
+  );
+  assert.throws(
+    () =>
+      parseTestCodeReply(
+        "```solidity\ncontract Helper {\n    function poke() public pure returns (uint256) { return 1; }\n}\n```",
+        "length",
+      ),
+    (err: unknown) => {
+      assert.ok(err instanceof ReviewCodeError);
+      assert.equal(err.truncated, true);
+      assert.match(err.message, /truncated at max_tokens 16000/);
+      assert.match(err.correctiveInstruction(), /more compact test/);
+      return true;
+    },
+  );
+});
+
+test("generateAiSecurityReview (split): a narrative reply missing threatModelReport gets ONE corrective retry scoped to call A", async () => {
   const warn = captureWarn();
   try {
     await withFetchBodies(
-      async () => ok200(replyEnvelope(COMPLETE_REPLY, "stop")),
+      async (call) => {
+        if (call === 1) {
+          return ok200(replyEnvelope(JSON.stringify({ economicRiskSummary: "eco", summary: "x" }), "stop"));
+        }
+        if (call === 2) return NARRATIVE_OK();
+        return CODE_OK();
+      },
+      async (calls, bodies) => {
+        const review = await generateAiSecurityReview("Target", "contract Target {}", []);
+        assert.equal(review.source, "openrouter");
+        assert.equal(calls(), 3);
+        // The retry's last user message names the missing field and
+        // the exact required keys — asserted on the wire text.
+        const second = JSON.parse(bodies[1]!) as { messages: Array<{ content: string }> };
+        const corrective = second.messages[second.messages.length - 1]!.content;
+        assert.match(corrective, /missing "threatModelReport"/);
+        assert.match(corrective, /exactly these keys: "threatModelReport", "economicRiskSummary"/);
+        assert.match(corrective, /ONLY the complete JSON object/);
+        // The first request carried no corrective message.
+        const first = JSON.parse(bodies[0]!) as { messages: unknown[] };
+        assert.equal(first.messages.length, 2);
+        // Call B ran exactly once, after A completed (bodies[2] is
+        // the code call — no response_format).
+        const third = JSON.parse(bodies[2]!) as { response_format?: unknown };
+        assert.equal(third.response_format, undefined);
+      },
+    );
+  } finally {
+    warn.restore();
+  }
+  const retryLine = warn.lines.find((l) => l.includes("narrative reply unusable"));
+  assert.ok(retryLine, `expected a shape-retry line, got: ${warn.lines.join(" | ")}`);
+  assert.match(retryLine!, /missing threatModelReport/);
+  assert.match(retryLine!, /reply keys: economicRiskSummary, summary/);
+  assert.match(retryLine!, /retrying once with a corrective instruction/);
+});
+
+test("generateAiSecurityReview (split): narrative shape failure twice falls back — call B never runs, log names the received keys", async () => {
+  const warn = captureWarn();
+  try {
+    await withFetchBodies(
+      async () => ok200(replyEnvelope(JSON.stringify({ summary: "not a review" }), "stop")),
+      async (calls) => {
+        const review = await generateAiSecurityReview("Target", "contract Target {}", []);
+        assert.equal(review.source, "template");
+        // Two narrative attempts, ZERO code calls.
+        assert.equal(calls(), 2);
+      },
+    );
+  } finally {
+    warn.restore();
+  }
+  const fallback = warn.lines.find((l) => l.includes("falling back to structured template"));
+  assert.ok(fallback, `expected a fallback line, got: ${warn.lines.join(" | ")}`);
+  assert.match(fallback!, /failed call: narrative/);
+  assert.match(fallback!, /missing threatModelReport/);
+  assert.match(fallback!, /reply keys: summary/);
+  assert.match(fallback!, /corrective retry attempted and exhausted/);
+});
+
+test("generateAiSecurityReview (split): a truncated narrative reply is named as truncation and the retry demands concision", async () => {
+  const warn = captureWarn();
+  try {
+    await withFetchBodies(
+      async (call) => {
+        if (call === 1) return ok200(replyEnvelope(JSON.stringify({ economicRiskSummary: "eco" }), "length"));
+        if (call === 2) return NARRATIVE_OK();
+        return CODE_OK();
+      },
+      async (calls, bodies) => {
+        const review = await generateAiSecurityReview("Target", "contract Target {}", []);
+        assert.equal(review.source, "openrouter");
+        assert.equal(calls(), 3);
+        const second = JSON.parse(bodies[1]!) as { messages: Array<{ content: string }> };
+        const corrective = second.messages[second.messages.length - 1]!.content;
+        assert.match(corrective, /cut off at the token limit/);
+        assert.match(corrective, /keep the threat model concise/);
+      },
+    );
+  } finally {
+    warn.restore();
+  }
+  const retryLine = warn.lines.find((l) => l.includes("narrative reply unusable"));
+  assert.ok(retryLine, `expected a shape-retry line, got: ${warn.lines.join(" | ")}`);
+  assert.match(retryLine!, /truncated at max_tokens 4000/);
+  assert.match(retryLine!, /finish_reason "length"/);
+});
+
+test("generateAiSecurityReview (split): a test-code reply with no fenced Test code gets ONE corrective retry; call A is not re-called", async () => {
+  const warn = captureWarn();
+  try {
+    await withFetchBodies(
+      async (call) => {
+        if (call === 1) return NARRATIVE_OK();
+        if (call === 2) return ok200(replyEnvelope("Here is the test you asked for — it reenters the vault.", "stop"));
+        return CODE_OK();
+      },
+      async (calls, bodies) => {
+        const review = await generateAiSecurityReview("Target", "contract Target {}", []);
+        assert.equal(review.source, "openrouter");
+        assert.equal(review.foundryTestCode, TEST_CODE);
+        assert.equal(calls(), 3);
+        // The corrective demands exactly one fenced block, no JSON.
+        const third = JSON.parse(bodies[2]!) as { messages: Array<{ content: string }> };
+        const corrective = third.messages[third.messages.length - 1]!.content;
+        assert.match(corrective, /exactly one ```solidity fenced code block/);
+        assert.match(corrective, /no JSON, no prose/);
+        // Exactly ONE request in the whole run carried
+        // response_format — call A ran once and was never redone.
+        const jsonCalls = bodies.filter(
+          (b) => (JSON.parse(b) as { response_format?: unknown }).response_format !== undefined,
+        );
+        assert.equal(jsonCalls.length, 1);
+      },
+    );
+  } finally {
+    warn.restore();
+  }
+  const retryLine = warn.lines.find((l) => l.includes("test-code reply unusable"));
+  assert.ok(retryLine, `expected a shape-retry line, got: ${warn.lines.join(" | ")}`);
+  assert.match(retryLine!, /declares no Test contract/);
+});
+
+test("generateAiSecurityReview (split): call B extraction prefers the fence containing the Test contract", async () => {
+  await withFetchBodies(
+    async (call) =>
+      call === 1
+        ? NARRATIVE_OK()
+        : ok200(
+            replyEnvelope(
+              "```solidity\ncontract Helper {\n    function poke() public pure returns (uint256) { return 1; }\n}\n```\n\n```solidity\n" +
+                TEST_CODE +
+                "\n```",
+              "stop",
+            ),
+          ),
+    async (calls) => {
+      const review = await generateAiSecurityReview("Target", "contract Target {}", []);
+      assert.equal(review.source, "openrouter");
+      assert.equal(review.foundryTestCode, TEST_CODE);
+      // No corrective retry was needed — first code reply sufficed.
+      assert.equal(calls(), 2);
+    },
+  );
+});
+
+test("generateAiSecurityReview (split): a helper-only fence from call B is a shape failure and retries correctively", async () => {
+  const warn = captureWarn();
+  try {
+    await withFetchBodies(
+      async (call) => {
+        if (call === 1) return NARRATIVE_OK();
+        if (call === 2) {
+          return ok200(
+            replyEnvelope(
+              "```solidity\ncontract Helper {\n    function poke() public pure returns (uint256) { return 1; }\n}\n```",
+              "stop",
+            ),
+          );
+        }
+        return CODE_OK();
+      },
       async (calls) => {
         const review = await generateAiSecurityReview("Target", "contract Target {}", []);
         assert.equal(review.source, "openrouter");
-        assert.equal(review.foundryTestCode, "contract PoC is Test {}");
-        assert.equal(calls(), 1);
+        assert.equal(review.foundryTestCode, TEST_CODE);
+        assert.equal(calls(), 3);
+      },
+    );
+  } finally {
+    warn.restore();
+  }
+  const retryLine = warn.lines.find((l) => l.includes("test-code reply unusable"));
+  assert.ok(retryLine, `expected a shape-retry line, got: ${warn.lines.join(" | ")}`);
+  assert.match(retryLine!, /declares no Test contract/);
+  assert.match(retryLine!, /no executable test function/);
+});
+
+test("generateAiSecurityReview (split): truncation on call B is named in logs with the code budget", async () => {
+  const warn = captureWarn();
+  try {
+    await withFetchBodies(
+      async (call) => {
+        if (call === 1) return NARRATIVE_OK();
+        if (call === 2) {
+          return ok200(
+            replyEnvelope(
+              "Here is the adapted test:\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport \"forge-std/Test.sol\";\n\ncontract PoC is Test {\n    function setUp() public {\n        vm.createSelectFork(vm.envString(\"POC_R",
+              "length",
+            ),
+          );
+        }
+        return CODE_OK();
+      },
+      async (calls, bodies) => {
+        const review = await generateAiSecurityReview("Target", "contract Target {}", []);
+        assert.equal(review.source, "openrouter");
+        assert.equal(calls(), 3);
+        const third = JSON.parse(bodies[2]!) as { messages: Array<{ content: string }> };
+        const corrective = third.messages[third.messages.length - 1]!.content;
+        assert.match(corrective, /cut off at the token limit/);
+        assert.match(corrective, /more compact test/);
+      },
+    );
+  } finally {
+    warn.restore();
+  }
+  const retryLine = warn.lines.find((l) => l.includes("test-code reply unusable"));
+  assert.ok(retryLine, `expected a shape-retry line, got: ${warn.lines.join(" | ")}`);
+  assert.match(retryLine!, /truncated at max_tokens 16000/);
+  assert.match(retryLine!, /finish_reason "length"/);
+});
+
+test("generateAiSecurityReview (split): an empty completion on call A is retried once, then succeeds", async () => {
+  const warn = captureWarn();
+  try {
+    await withFetchBodies(
+      async (call) => {
+        if (call === 1) return ok200(replyEnvelope("", "stop"));
+        if (call === 2) return NARRATIVE_OK();
+        return CODE_OK();
+      },
+      async (calls) => {
+        const review = await generateAiSecurityReview("Target", "contract Target {}", []);
+        assert.equal(review.source, "openrouter");
+        assert.equal(calls(), 3);
       },
     );
   } finally {
     warn.restore();
   }
   assert.ok(
-    !warn.lines.some((l) => l.includes("reply unusable")),
-    `no corrective retry may fire on a complete reply, got: ${warn.lines.join(" | ")}`,
+    warn.lines.some((l) => /narrative call returned no message content \(model test\/model\) — retrying once/.test(l)),
+    `empty retry must be logged per call, got: ${warn.lines.join(" | ")}`,
   );
 });
 
-test("generateAiSecurityReview: missing-fields reply gets ONE corrective retry naming the exact fields", async () => {
+test("generateAiSecurityReview (split): an empty completion on call B is retried once, then succeeds", async () => {
   const warn = captureWarn();
   try {
     await withFetchBodies(
-      async (call) =>
-        call === 1
-          ? ok200(
-              replyEnvelope(
-                JSON.stringify({ threatModelReport: "tm", economicRiskSummary: "eco" }),
-                "stop",
-              ),
-            )
-          : ok200(replyEnvelope(COMPLETE_REPLY, "stop")),
-      async (calls, bodies) => {
+      async (call) => {
+        if (call === 1) return NARRATIVE_OK();
+        if (call === 2) return ok200(replyEnvelope("", "stop"));
+        return CODE_OK();
+      },
+      async (calls) => {
         const review = await generateAiSecurityReview("Target", "contract Target {}", []);
         assert.equal(review.source, "openrouter");
-        assert.equal(review.foundryTestCode, "contract PoC is Test {}");
-        assert.equal(calls(), 2);
-        // The corrective instruction rides in the second request's
-        // messages and names the missing field + the exact schema
-        // keys. (Asserted on the DECODED body — on the wire the
-        // quotes are JSON-escaped.)
-        const second = JSON.parse(bodies[1]!) as { messages: Array<{ content: string }> };
-        const corrective = second.messages[second.messages.length - 1]!.content;
-        assert.match(corrective, /missing "foundryTestCode"/);
-        assert.match(
-          corrective,
-          /exactly these keys: "threatModelReport", "foundryTestCode", "economicRiskSummary"/,
-        );
-        assert.match(corrective, /ONLY the complete JSON object/);
-        // The first request carries no corrective message at all.
-        const first = JSON.parse(bodies[0]!) as { messages: Array<{ content: string }> };
-        assert.equal(first.messages.length, 2);
+        assert.equal(review.foundryTestCode, TEST_CODE);
+        assert.equal(calls(), 3);
       },
     );
   } finally {
     warn.restore();
   }
-  const retryLine = warn.lines.find((l) => l.includes("reply unusable"));
-  assert.ok(retryLine, `expected the corrective-retry line, got: ${warn.lines.join(" | ")}`);
-  assert.match(retryLine!, /missing foundryTestCode/);
-  assert.match(retryLine!, /reply keys: threatModelReport, economicRiskSummary/);
+  assert.ok(
+    warn.lines.some((l) => /test code call returned no message content \(model test\/model\) — retrying once/.test(l)),
+    `empty retry must be logged per call, got: ${warn.lines.join(" | ")}`,
+  );
 });
 
-test("generateAiSecurityReview: missing fields twice falls back — the log names the keys the reply DID contain", async () => {
+test("generateAiSecurityReview (split): empty completions twice on call A fall back, naming the empty retry", async () => {
   const warn = captureWarn();
   try {
     await withFetchBodies(
-      async () => ok200(replyEnvelope(JSON.stringify({ summary: "not a review" }), "stop")),
+      async () => ok200(replyEnvelope("", "stop")),
       async (calls) => {
         const review = await generateAiSecurityReview("Target", "contract Target {}", []);
         assert.equal(review.source, "template");
@@ -546,46 +869,11 @@ test("generateAiSecurityReview: missing fields twice falls back — the log name
   }
   const fallback = warn.lines.find((l) => l.includes("falling back to structured template"));
   assert.ok(fallback, `expected a fallback line, got: ${warn.lines.join(" | ")}`);
-  assert.match(fallback!, /missing threatModelReport \/ foundryTestCode/);
-  assert.match(fallback!, /reply keys: summary/);
-  assert.match(fallback!, /corrective retry attempted and exhausted/);
+  assert.match(fallback!, /failed call: narrative/);
+  assert.match(fallback!, /empty-reply retry attempted and exhausted/);
+  assert.match(fallback!, /OpenRouter returned no message content/);
 });
-
-test("generateAiSecurityReview: a finish_reason=length reply is named as truncation and the retry demands compact code", async () => {
-  const warn = captureWarn();
-  try {
-    await withFetchBodies(
-      async (call) =>
-        call === 1
-          ? ok200(
-              replyEnvelope(
-                JSON.stringify({ threatModelReport: "tm", economicRiskSummary: "eco" }),
-                "length",
-              ),
-            )
-          : ok200(replyEnvelope(COMPLETE_REPLY, "stop")),
-      async (calls, bodies) => {
-        const review = await generateAiSecurityReview("Target", "contract Target {}", []);
-        assert.equal(review.source, "openrouter");
-        assert.equal(calls(), 2);
-        // The corrective instruction for a truncated reply also tells
-        // the model WHY compactness matters (same-size resend = cut again).
-        const second = JSON.parse(bodies[1]!) as { messages: Array<{ content: string }> };
-        const corrective = second.messages[second.messages.length - 1]!.content;
-        assert.match(corrective, /cut off at the token limit/);
-        assert.match(corrective, /more compact foundryTestCode/);
-      },
-    );
-  } finally {
-    warn.restore();
-  }
-  const retryLine = warn.lines.find((l) => l.includes("reply unusable"));
-  assert.ok(retryLine, `expected the corrective-retry line, got: ${warn.lines.join(" | ")}`);
-  assert.match(retryLine!, /truncated at max_tokens 8000/);
-  assert.match(retryLine!, /finish_reason "length"/);
-});
-
-test("buildAiReviewPrompt labels corrected detectors with their mechanism class and right template", () => {
+test("review prompts label corrected detectors with their mechanism class and right template", () => {
   const finding = (detector: string, title: string, summary: string) =>
     ({
       id: `audit-${detector}`,
@@ -608,10 +896,18 @@ test("buildAiReviewPrompt labels corrected detectors with their mechanism class 
     ["shadowing", "SmartBugs: other", "33-shadowing-mismatch.t.sol"],
   ] as const;
   for (const [detector, label, template] of cases) {
-    const { user } = buildAiReviewPrompt("Target", "contract Target {}", [
+    // Templates live in the TEST-CODE prompt in the split (the
+    // narrative call never needed them).
+    const { user } = buildAiReviewTestPrompt("Target", "contract Target {}", [
       finding(detector, `${detector} finding`, `${detector} summary`),
     ]);
     assert.ok(user.includes(label), `${detector}: prompt must carry "${label}"`);
     assert.ok(user.includes(`--- Template 1: ${template} ---`), `${detector}: prompt must inject ${template} first`);
+    // The narrative prompt carries the same findings context (labels
+    // included) through the shared context builder.
+    const narrative = buildAiReviewPrompt("Target", "contract Target {}", [
+      finding(detector, `${detector} finding`, `${detector} summary`),
+    ]);
+    assert.ok(narrative.user.includes(label), `${detector}: narrative prompt must carry "${label}"`);
   }
 });

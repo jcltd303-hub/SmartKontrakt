@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAiReviewPrompt, generateAiSecurityReview } from './ai-review.server.ts';
+import { buildAiReviewPrompt, buildAiReviewTestPrompt, generateAiSecurityReview } from './ai-review.server.ts';
 import { selectPocFallbacks } from './poc-fallbacks.ts';
 import { buildPocGenerationPrompt } from './smartpoc/prompts.ts';
 import type { Finding } from './types.ts';
@@ -11,7 +11,11 @@ test('unregistered detector cannot inherit unrelated other-category templates', 
   assert.ok(selectPocFallbacks([{ detector: 'reentrancy', severity: 'high' }]).length > 0);
 });
 test('review asks for evidence appropriate to the finding without selector guessing or preconfirmation', () => {
-  const { user } = buildAiReviewPrompt('Target', 'contract Target {}', [finding]);
+  // Split review (2026-10-25): the observable-invariant / fork
+  // instructions live in the TEST-CODE call's prompt now — that is
+  // the call that writes the test. The narrative prompt keeps the
+  // shared contract/inventory context (pinned in the tests below).
+  const { user } = buildAiReviewTestPrompt('Target', 'contract Target {}', [finding]);
   assert.doesNotMatch(user, /assert a balance\/profit change|try at least kill\(\)|tests and confirms the primary vulnerability|proven, fork-ready/i);
   assert.match(user, /finding-specific observable invariant/i);
   assert.match(user, /actual ABI|gathered ABI/i);
