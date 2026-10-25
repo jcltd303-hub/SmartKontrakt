@@ -2,6 +2,7 @@ import type { AddressValue } from "./value.ts";
 import type { LiveStateReport } from "./live-state.ts";
 import type { PocProvenance } from "./poc-outcome.ts";
 import type { FpMatch } from "./fp-signatures.ts";
+import type { ResnetResult } from "./resnet-result.ts";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -167,6 +168,17 @@ export type Report = {
   findings: Finding[];
   aiNarrative: string | null;
   aiStatus: "ok" | "unavailable" | "error";
+  /**
+   * ResNet1D bytecode screening (resnet-result.ts), attached during the
+   * audit — by analyzeAddress when the caller injects a runner (the
+   * pipeline worker's Node runner; the browser worker for app flows) or
+   * by runAndStore for pasted-bytecode saves. Unlike runtimeBytecode this
+   * DOES persist (contract_scans.resnet_json, migration 0018) — it is a
+   * small JSON verdict, and the report's riskScore already includes its
+   * bounded bonus. Null/absent = not run (no runtime bytecode available,
+   * or the model was unavailable in that environment — always fail-soft).
+   */
+  resnet?: ResnetResult | null;
   /** The contract the analysis actually scoped to (Item 2 selection:
    * onlyContract / deployed-name match / unique most-derived contract),
    * or null when every contract in the file was analyzed. In-memory

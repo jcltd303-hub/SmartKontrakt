@@ -21,6 +21,24 @@ For each address in your file, in order:
 Rate limits come free from the reused lib modules: RPC 5/s, Sourcify 2/s,
 OpenRouter 60/min.
 
+### ResNet1D screening (inside step 1)
+
+Every entry also gets a ResNet1D pass over its runtime bytecode, inside
+`analyzeAddress` — the worker injects the Node runner
+(`src/lib/image-ml/resnet-node.server.ts`, the same ONNX model the
+browser's Image ML panel runs). The result is stored on the record
+(`contract_scans.resnet_json`, migration 0018), noted in the report's
+inventory, and folded into the risk score as a bounded term (at most
++6, only when static analysis found something above info — see
+`src/lib/audit/resnet-result.ts`). Cost: a one-time ~1s model load per
+worker process, then ~0.2–0.5s per entry, serialized.
+
+Model files resolve from `public/models/` in the repo checkout;
+`SMARTKONTRAKT_RESNET_MODEL_DIR` overrides the directory. Fail-soft by
+design: if the model is missing or broken, entries are analyzed and
+stored exactly as before, with no `resnet_json` — screening never
+fails an item.
+
 ## Setup
 
 1. Install Node + npm + git in proot Ubuntu (once):

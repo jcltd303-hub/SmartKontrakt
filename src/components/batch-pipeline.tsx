@@ -26,6 +26,7 @@ import {
 import { AsyncBatchWriter, ByteLruCache } from "@/lib/audit/batch-writer";
 import { withRetry } from "@/lib/audit/rate-limit";
 import { runSecondPassFn } from "@/lib/audit/ai.functions";
+import { runResnetBrowser } from "@/lib/image-ml/run-resnet-browser";
 import { BatchQueue, retargetBatchQueue } from "@/lib/audit/batch-queue";
 import { initializeBatchQueue, saveBatchCheckpoint } from "@/lib/audit/batch-checkpoint";
 import type { Report } from "@/lib/audit/types";
@@ -381,7 +382,9 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
 
     setInspectingAddr(item.address);
     try {
-      const fresh = await analyzeAddress(item.address, item.chainId, item.label);
+      const fresh = await analyzeAddress(item.address, item.chainId, item.label, {
+        resnetRunner: runResnetBrowser,
+      });
       reportCacheRef.current.set(`${item.chainId}:${item.address.toLowerCase()}`, {
         report: fresh.report,
         rawBody: fresh.rawBody,
@@ -442,7 +445,9 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
         // failure here is a transient provider hiccup, not a dead address.
         let result: Awaited<ReturnType<typeof analyzeAddress>>;
         try {
-          result = await withRetry(() => analyzeAddress(item.address, item.chainId, item.label), {
+          result = await withRetry(() => analyzeAddress(item.address, item.chainId, item.label, {
+            resnetRunner: runResnetBrowser,
+          }), {
             retries: 2, baseDelayMs: 2000, retryOn: () => true,
           });
         } catch (err) {

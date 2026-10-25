@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildAiReviewPrompt,
   extractJsonContent,
   resolveOpenRouterConfig,
   resolveOpenRouterModel,
@@ -114,4 +115,42 @@ test("failures that are NOT about the model are left to the caller", () => {
   assert.equal(isModelUnavailable(429, "rate limit exceeded"), false);
   // A missing model is worth another model, though.
   assert.equal(isModelUnavailable(404, "No endpoints found for the model"), true);
+});
+
+// Prompt-path pins from the full detector audit (2026-10-24): a finding's
+// SmartBugs label in buildAiReviewPrompt comes from
+// smartbugsCategoryForDetector, and three detectors carried labels that
+// contradicted their own mechanisms (and their templates' index labels),
+// so the model was told the wrong vulnerability class while being handed
+// the right template. Before: token-drain -> unchecked_low_level_calls,
+// msg-value-loop -> denial_of_service, shadowing -> access_control.
+test("buildAiReviewPrompt labels corrected detectors with their mechanism class and right template", () => {
+  const finding = (detector: string, title: string, summary: string) =>
+    ({
+      id: `audit-${detector}`,
+      severity: "high",
+      swc: null,
+      title,
+      confidence: "high",
+      detector,
+      summary,
+      walkthrough: "",
+      exploitSolidity: "",
+      remediationSolidity: "",
+      locationFn: "f",
+      locationLine: 1,
+      snippet: "",
+    }) as Parameters<typeof buildAiReviewPrompt>[2][number];
+  const cases = [
+    ["token-drain", "SmartBugs: access_control", "46-token-rescue.t.sol"],
+    ["msg-value-loop", "SmartBugs: other", "22-msg-value-loop.t.sol"],
+    ["shadowing", "SmartBugs: other", "33-shadowing-mismatch.t.sol"],
+  ] as const;
+  for (const [detector, label, template] of cases) {
+    const { user } = buildAiReviewPrompt("Target", "contract Target {}", [
+      finding(detector, `${detector} finding`, `${detector} summary`),
+    ]);
+    assert.ok(user.includes(label), `${detector}: prompt must carry "${label}"`);
+    assert.ok(user.includes(`--- Template 1: ${template} ---`), `${detector}: prompt must inject ${template} first`);
+  }
 });

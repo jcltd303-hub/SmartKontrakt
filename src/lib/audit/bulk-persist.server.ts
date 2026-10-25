@@ -84,6 +84,11 @@ export async function writeAuditBatch(
       poc_logs: r.pocResult?.logs ?? null,
       poc_duration_ms: r.pocResult?.durationMs ?? null,
       poc_run_at: r.pocResult?.runAt ?? null,
+      // ResNet1D screening verdict (migration 0018). Null when the
+      // screening did not run for this record; coalesced on conflict
+      // like the PoC columns so a re-save without a runner never
+      // clears a stored result (loaded scans carry it back in anyway).
+      resnet_json: r.report.resnet ? JSON.stringify(r.report.resnet) : null,
     };
   });
   const findings = records.flatMap((r) => r.report.findings.map((f, ord) => ({
@@ -115,7 +120,7 @@ export async function writeAuditBatch(
         source_origin, is_rag_indexed, risk_score, critical_count, high_count, medium_count,
         low_count, info_count, summary, inventory_json, ai_narrative, ai_status, unparsed,
         balance_wei, value_usd, value_json, abi_json, abi_source, analyzer_version,
-        poc_status, poc_logs, poc_duration_ms, poc_run_at
+        poc_status, poc_logs, poc_duration_ms, poc_run_at, resnet_json
       ) select * from jsonb_to_recordset($1::jsonb) as r(
         id text, label text, input_kind text, contract_name text, target_address text,
         chain_id text, compiler_version text, proxy_info_json text, probes_json text,
@@ -125,7 +130,8 @@ export async function writeAuditBatch(
         inventory_json text, ai_narrative text, ai_status text, unparsed boolean,
         balance_wei text, value_usd numeric, value_json text, abi_json text, abi_source text,
         analyzer_version text,
-        poc_status text, poc_logs text, poc_duration_ms integer, poc_run_at timestamptz
+        poc_status text, poc_logs text, poc_duration_ms integer, poc_run_at timestamptz,
+        resnet_json text
       ) on conflict (id) do update set
         label=excluded.label, input_kind=excluded.input_kind, contract_name=excluded.contract_name,
         target_address=excluded.target_address, chain_id=excluded.chain_id,
@@ -147,7 +153,8 @@ export async function writeAuditBatch(
         poc_status=coalesce(excluded.poc_status, contract_scans.poc_status),
         poc_logs=coalesce(excluded.poc_logs, contract_scans.poc_logs),
         poc_duration_ms=coalesce(excluded.poc_duration_ms, contract_scans.poc_duration_ms),
-        poc_run_at=coalesce(excluded.poc_run_at, contract_scans.poc_run_at)`, [JSON.stringify(scans)]);
+        poc_run_at=coalesce(excluded.poc_run_at, contract_scans.poc_run_at),
+        resnet_json=coalesce(excluded.resnet_json, contract_scans.resnet_json)`, [JSON.stringify(scans)]);
     await tx.query(`insert into scan_payloads (scan_id, body)
       select scan_id, body from jsonb_to_recordset($1::jsonb) as r(scan_id text, body text)
       on conflict (scan_id) do update set body=excluded.body`,

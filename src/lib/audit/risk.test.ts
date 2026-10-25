@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { riskScore, riskBand, riskBandForChunk, RISK_LABEL, worstFinding, SEVERITY_FLOOR } from "./risk.ts";
+import { riskScore, riskBand, riskBandForChunk, RISK_LABEL, worstFinding, SEVERITY_FLOOR, MAX_RESNET_BONUS } from "./risk.ts";
 import type { Finding, Severity } from "./types.ts";
+import { resnetRiskBonus, type ResnetResult } from "./resnet-result.ts";
 
 function f(severity: Severity, over: Partial<Finding> = {}): Finding {
   return {
@@ -102,5 +103,72 @@ test("every band has a label, so no surface has to invent one", () => {
   for (const band of ["critical", "high", "medium", "low", "none"] as const) {
     assert.equal(typeof RISK_LABEL[band], "string");
     assert.ok(RISK_LABEL[band].length > 0);
+  }
+});
+
+// ---- ResNet1D term (resnet coverage batch) -------------------------------
+// The ML result is a bounded pressure term under the calibration gates:
+// it amplifies existing static signal and can never create it.
+
+function ml(scores: number[]): ResnetResult {
+  const thresholds = [0.575, 0.45, 0.5, 0.3, 0.275];
+  const labels = ["access-control", "arithmetic", "reentrancy", "unchecked-calls", "others"];
+  return {
+    modelId: "resnet1d-test",
+    architecture: "upstream-resnet1d-16384-v1",
+    checkpointSha256: "b".repeat(64),
+    predictions: labels.map((label, i) => ({
+      label,
+      score: scores[i],
+      threshold: thresholds[i],
+      flagged: scores[i] >= thresholds[i],
+    })),
+    inputBytes: 1000,
+    truncated: false,
+    ranAt: "2026-10-24T00:00:00.000Z",
+  };
+}
+
+const ML_MAX = ml([0.99, 0.99, 0.99, 0.99, 0.99]);
+const ML_QUIET = ml([0.05, 0.05, 0.05, 0.05, 0.05]);
+
+test("resnet cannot mint risk: findings-free and info-only reports are untouched", () => {
+  assert.equal(riskScore([], ML_MAX), 0);
+  assert.equal(riskScore([f("info")], ML_MAX), 0);
+  assert.equal(riskBand(riskScore([], ML_MAX)), "none");
+});
+
+test("resnet raises a real finding's score by exactly its bounded term", () => {
+  const oneDecisiveFlag = ml([0.1, 0.1, 0.99, 0.1, 0.1]);
+  assert.equal(resnetRiskBonus(oneDecisiveFlag), 4);
+  assert.equal(riskScore([f("high")], oneDecisiveFlag), riskScore([f("high")]) + 4);
+  assert.equal(riskScore([f("high")], ML_QUIET), riskScore([f("high")]));
+  assert.equal(riskScore([f("high")], null), riskScore([f("high")]));
+  assert.equal(riskScore([f("high")], undefined), riskScore([f("high")]));
+});
+
+test("resnet alone can never reach the critical band — the gates hold", () => {
+  // The strongest possible ML result on the strongest non-critical
+  // static report still lands short of 75: a critical requires a
+  // critical (or heavily corroborated high) FINDING, not a score.
+  const bestHigh = riskScore([f("high")], ML_MAX);
+  assert.ok(bestHigh < 75, `high + max resnet scored ${bestHigh}`);
+  assert.notEqual(riskBand(bestHigh), "critical");
+  assert.ok(riskScore([f("medium")], ML_MAX) < 50, "medium + max resnet stays below the high band");
+  assert.ok(riskScore([f("low")], ML_MAX) < 25, "low + max resnet stays below the medium band");
+});
+
+test("the resnet delta never exceeds MAX_RESNET_BONUS, at any severity mix", () => {
+  const mixes: Finding[][] = [
+    [f("low")],
+    [f("medium"), f("low")],
+    [f("high"), f("medium"), f("medium")],
+    [f("critical")],
+    [f("critical", { pocStatus: "passed" }), f("high"), f("high")],
+    Array.from({ length: 12 }, () => f("medium")),
+  ];
+  for (const findings of mixes) {
+    const delta = riskScore(findings, ML_MAX) - riskScore(findings);
+    assert.ok(delta >= 0 && delta <= MAX_RESNET_BONUS, `delta ${delta} out of bounds`);
   }
 });

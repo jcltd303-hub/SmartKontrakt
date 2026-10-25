@@ -32,6 +32,7 @@ import { SMARTBUGS_BY_DETECTOR } from "./smartbugs.ts";
 import {
   CONFIRMED_EXPLOIT_BONUS,
   MAX_COMPOUND_BONUS,
+  MAX_RESNET_BONUS,
   MAX_VOLUME_BONUS,
   SEVERITY_FLOOR,
 } from "./risk.ts";
@@ -51,8 +52,14 @@ import {
  *                low, and the standard proxy upgrade/initialize
  *                surface no longer raises criticals. Same inputs now
  *                produce different records, so the archive refreshes.
+ * 2026-10-24.1 — ResNet1D screening runs inside the audit for every
+ *                entry (new pipeline stage): the record gains
+ *                resnet_json (migration 0018) and risk scores gain
+ *                the bounded ML term (MAX_RESNET_BONUS, also hashed
+ *                into the fingerprint below). Same inputs now produce
+ *                different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-10-23.1";
+export const ANALYZER_BASELINE = "2026-10-24.1";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {
@@ -60,7 +67,7 @@ export function analyzerFingerprint(): string {
   const material = JSON.stringify({
     detectors,
     categories: detectors.map((d) => SMARTBUGS_BY_DETECTOR[d]),
-    scoring: { SEVERITY_FLOOR, MAX_VOLUME_BONUS, CONFIRMED_EXPLOIT_BONUS, MAX_COMPOUND_BONUS },
+    scoring: { SEVERITY_FLOOR, MAX_VOLUME_BONUS, CONFIRMED_EXPLOIT_BONUS, MAX_COMPOUND_BONUS, MAX_RESNET_BONUS },
   });
   return sha3_256(material).slice(0, 16);
 }

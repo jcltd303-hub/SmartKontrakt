@@ -1006,10 +1006,10 @@ export const POC_FALLBACK_CATALOG: Array<{
     "detectors": [
       "token-drain"
     ],
-    "smartbugs": "unchecked_low_level_calls",
+    "smartbugs": "access_control",
     "provenance": {
       "kind": "modelled",
-      "category": "unchecked_low_level_calls",
+      "category": "access_control",
       "sources": [],
       "note": "No SmartBugs Curated contract covers this class (the dataset has no unprotected token-rescue case). Modelled from the category's mechanics plus a fork-verified field case; no dataset port exists."
     }
@@ -1040,25 +1040,26 @@ export const POC_FALLBACK_BY_SMARTBUGS: Record<string, string[]> = {
     "27-extcodesize-bypass.t.sol",
     "28-centralization-owner-rug.t.sol",
     "32-storage-collision-upgrade.t.sol",
-    "33-shadowing-mismatch.t.sol",
     "36-merkle-double-claim.t.sol",
-    "38-governance-flash-vote.t.sol"
+    "38-governance-flash-vote.t.sol",
+    "46-token-rescue.t.sol"
   ],
   "unchecked_low_level_calls": [
     "12-selfdestruct.t.sol",
     "13-unchecked-call.t.sol",
     "14-erc20-unchecked-bool.t.sol",
     "39-dos.t.sol",
-    "41-create2-metamorphic.t.sol",
-    "46-token-rescue.t.sol"
+    "41-create2-metamorphic.t.sol"
   ],
   "other": [
     "15-fee-on-transfer.t.sol",
     "16-oracle-manipulation.t.sol",
     "18-signature-replay.t.sol",
     "19-signature-malleability.t.sol",
+    "22-msg-value-loop.t.sol",
     "25-encode-packed-collision.t.sol",
     "32-storage-collision-upgrade.t.sol",
+    "33-shadowing-mismatch.t.sol",
     "34-private-secret-onchain.t.sol",
     "40-erc4626-inflation.t.sol",
     "41-create2-metamorphic.t.sol",
@@ -1074,7 +1075,6 @@ export const POC_FALLBACK_BY_SMARTBUGS: Record<string, string[]> = {
   ],
   "denial_of_service": [
     "21-strict-balance-dos.t.sol",
-    "22-msg-value-loop.t.sol",
     "29-locked-ether.t.sol",
     "28-centralization-owner-rug.t.sol",
     "30-zero-address-brick.t.sol",

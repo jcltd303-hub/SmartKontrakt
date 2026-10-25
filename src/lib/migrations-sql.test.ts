@@ -66,3 +66,8 @@ test("embedded 0017 creates fp_signatures keyed by signature with the decision v
   assert.match(sql, /signature_key text primary key/i);
   assert.match(sql, /'candidate', 'confirmed', 'dismissed'/i);
 });
+
+test("embedded 0018 adds the resnet_json verdict column to contract_scans", () => {
+  const sql = EMBEDDED_MIGRATIONS["0018_resnet_result.sql"];
+  assert.match(sql, /alter table contract_scans add column if not exists resnet_json text/i);
+});

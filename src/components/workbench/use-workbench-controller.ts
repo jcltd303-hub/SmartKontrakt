@@ -1,6 +1,8 @@
 import { classifyPocEvidence } from "@/lib/audit/poc-evidence";
 import { downloadFile } from "@/lib/download-file";
 import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit/address-fetcher";
+import { attachResnetToReport } from "@/lib/audit/resnet-attach";
+import { runResnetBrowser } from "@/lib/image-ml/run-resnet-browser";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
 import { requestAiReview, requestDeepAgentRound, requestPocRepair } from "@/lib/audit/ai.functions";
 import { fullDisassembly, looksLikeBytecode } from "@/lib/audit/bytecode";
@@ -274,6 +276,16 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
           .then((fourbyte) => {
             applyFourbyteResults(generated, fourbyte);
             setReport({ ...generated });
+          })
+          .catch(() => undefined);
+
+        // ResNet1D screening for pasted bytecode — same attach the
+        // address paths get inside analyzeAddress, here run directly
+        // over the pasted body (fire-and-forget like the fourbyte
+        // enrichment: the static audit stands without it).
+        attachResnetToReport(generated, bodyToAnalyze, runResnetBrowser)
+          .then((attached) => {
+            if (attached) setReport({ ...generated });
           })
           .catch(() => undefined);
       }
@@ -724,7 +736,9 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     setIsFetchingAddress(true);
     setAddressFetchError(null);
     try {
-      const res = await analyzeAddress(clean, singleAddressChain);
+      const res = await analyzeAddress(clean, singleAddressChain, undefined, {
+        resnetRunner: runResnetBrowser,
+      });
       // Resolve unknown selectors + event topics against the 4byte
       // tables (server-side DB lookup). Best-effort: the audit stands
       // without it, and the enriched report is what AI / Deep Agent /

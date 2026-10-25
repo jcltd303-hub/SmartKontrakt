@@ -1,0 +1,18 @@
+-- Migration 0018: ResNet1D screening result on contract_scans.
+--
+-- Every audit entry with runtime bytecode now gets a ResNet1D pass
+-- during the audit itself (analyzeAddress with an injected runner —
+-- the pipeline worker's Node runner, the browser worker for app
+-- flows — or runAndStore for pasted-bytecode saves), not only when a
+-- user opens the bytecode tab and clicks Run. The result is a small
+-- JSON verdict (model id, checkpoint hash, per-class scores against
+-- the manifest thresholds, input size, truncation flag, run time),
+-- stored here in the shape of src/lib/audit/resnet-result.ts.
+--
+-- The report's risk_score already includes the model's bounded score
+-- term (at most +6, findings required, severity floors untouched —
+-- see resnet-result.ts); this column is the durable evidence for
+-- that term, so a stored score can always be explained after the
+-- fact. Null = screening did not run for this record (no runtime
+-- bytecode, or the model was unavailable in that environment).
+alter table contract_scans add column if not exists resnet_json text;

@@ -21,6 +21,10 @@
  */
 import type { Finding, Severity } from "./types.ts";
 import { severityRank } from "./severity.ts";
+import { resnetRiskBonus, type ResnetResult } from "./resnet-result.ts";
+
+/** Re-exported so the analyzer fingerprint hashes this constant too. */
+export { MAX_RESNET_BONUS } from "./resnet-result.ts";
 
 export type RiskBand = "critical" | "high" | "medium" | "low" | "none";
 
@@ -51,8 +55,24 @@ export function worstFinding(findings: Finding[]): Finding | null {
 /**
  * 0-100 risk index. Dominance-first: the worst finding sets the floor, the rest
  * add diminishing pressure, and reproduced exploits add proof weight.
+ *
+ * The optional ResNet1D result (resnet-result.ts) adds one more bounded
+ * pressure term, and nothing else:
+ *   - it is consulted ONLY here, and only when static analysis found
+ *     something above info — a findings-free report scores 0 and an
+ *     info-only report is untouched, no matter what the model flags,
+ *     so ResNet alone can never mint risk out of nothing;
+ *   - it can add at most MAX_RESNET_BONUS (6) points. That can move a
+ *     score within a band, or just over an edge when the static terms
+ *     already sit near it — the same behaviour the volume term has —
+ *     but it can never substitute for a finding: reaching the critical
+ *     band (>= 75) still requires a static score of at least 69, which
+ *     itself requires real high/critical findings, and critical
+ *     findings come only from the detectors under the
+ *     severity-calibration gates;
+ *   - it never lowers a score and never touches a finding's severity.
  */
-export function riskScore(findings: Finding[]): number {
+export function riskScore(findings: Finding[], resnet?: ResnetResult | null): number {
   if (findings.length === 0) return 0;
 
   const worst = worstFinding(findings);
@@ -71,6 +91,11 @@ export function riskScore(findings: Finding[]): number {
     score += CONFIRMED_EXPLOIT_BONUS;
     if (confirmed > 1) score += Math.min(MAX_COMPOUND_BONUS, (confirmed - 1) * 3);
   }
+
+  // ResNet1D screening term — bounded ML pressure, see the header above.
+  // The floor guard is the gate: info-severity "findings" are notes, not
+  // signal, so a report whose worst finding is info gets no ML term.
+  if (SEVERITY_FLOOR[worst.severity] > 0) score += resnetRiskBonus(resnet);
 
   return Math.max(0, Math.min(100, Math.round(score)));
 }

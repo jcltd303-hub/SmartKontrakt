@@ -35,6 +35,11 @@ self.onmessage = async (event: MessageEvent<{ bytecode: string; modelUrl: string
       self.postMessage({
         ok: true,
         modelId: manifest.modelId,
+        // Top-level identity fields for non-panel consumers
+        // (run-resnet-browser.ts builds the shared audit ResnetResult
+        // from these; the panel reads its training/evaluation records).
+        architecture: manifest.architecture,
+        checkpointSha256: manifest.checkpointSha256,
         training: manifest.training,
         evaluation: manifest.evaluation,
         timing: {

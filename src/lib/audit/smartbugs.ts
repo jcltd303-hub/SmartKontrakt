@@ -123,7 +123,11 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "assembly-param-sstore": "access_control",
   extcodesize: "access_control",
   centralization: "access_control",
-  shadowing: "access_control",
+  // SWC-105: a token-moving function with no access check (remediation is
+  // onlyOwner; template 46's header is "has no access check"). No low-level
+  // call is involved — transfer/safeTransfer are high-level ERC-20 calls —
+  // so this is access_control, not unchecked_low_level_calls.
+  "token-drain": "access_control",
   "rtl-override": "access_control",
   // arithmetic
   "unchecked-block": "arithmetic",
@@ -134,7 +138,6 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "erc20-unchecked": "unchecked_low_level_calls",
   selfdestruct: "unchecked_low_level_calls",
   "bytecode-selfdestruct": "unchecked_low_level_calls",
-  "token-drain": "unchecked_low_level_calls",
   // denial_of_service
   "strict-balance": "denial_of_service",
   "eth-gas-stipend": "denial_of_service",
@@ -142,7 +145,6 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "gas-estimator-dos": "denial_of_service",
   "locked-ether": "denial_of_service",
   "zero-address": "denial_of_service",
-  "msg-value-loop": "denial_of_service",
   // bad_randomness
   "weak-randomness": "bad_randomness",
   // time_manipulation
@@ -164,6 +166,17 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "fee-on-transfer": "other",
   "storage-gap": "other",
   "external-contract-referencing": "other",
+  // A name-resolution bug (the write lands in the shadow variable), not a
+  // modifier/tx.origin failure — template 33's own index label is "other".
+  shadowing: "other",
+  // The same msg.value credited per loop iteration (value extraction),
+  // not computation exhaustion — template 22's own index label is "other".
+  "msg-value-loop": "other",
+  // Analyzer meta-findings (engine.ts `parse`, detect.ts `report-cap`):
+  // not vulnerabilities at all; "other" keeps the map total over every
+  // emitted detector instead of silently defaulting in prompts.
+  parse: "other",
+  "report-cap": "other",
   "bytecode-create2": "other",
   "bytecode-metadata": "other",
   "missing-event": "other",

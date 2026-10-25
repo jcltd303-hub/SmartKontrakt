@@ -146,6 +146,12 @@ const {
   WORKER_DEEP_AGENT_DEFAULT_MIN_SEVERITY,
   WORKER_DEEP_AGENT_MAX_ROUNDS,
 } = await import("./deep-agent.ts");
+// ResNet1D screening (Node runner) — injected into analyzeAddress so every
+// pipeline entry is screened over its runtime bytecode during the audit
+// and the stored risk score carries the bounded ML term. Fail-soft: when
+// the model files are unavailable the runner resolves null and entries
+// are stored exactly as before (see src/lib/audit/resnet-result.ts).
+const { runResnetNode } = await import("../src/lib/image-ml/resnet-node.server.ts");
 
 // ------------------------------------------------------------------ config --
 const PORT = Number.parseInt(process.env.PORT ?? "8788", 10) || 8788;
@@ -398,7 +404,7 @@ async function runLoop(): Promise<void> {
       let result: Awaited<ReturnType<typeof analyzeAddress>>;
       try {
         result = await withRetry(
-          () => analyzeAddress(item.address, item.chainId, item.label, { fourbyte }),
+          () => analyzeAddress(item.address, item.chainId, item.label, { fourbyte, resnetRunner: runResnetNode }),
           {
             retries: 2,
             baseDelayMs: 2000,

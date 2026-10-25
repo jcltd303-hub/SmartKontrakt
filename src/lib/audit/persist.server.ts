@@ -41,6 +41,8 @@ import {
   dispositionsByFindingId,
 } from "./dispositions.server.ts";
 import { fpMatchForFinding, type FpSignature } from "./fp-signatures.ts";
+import { parseResnetJson } from "./resnet-result.ts";
+import { attachResnetToReport, runtimeCodeForReport } from "./resnet-attach.ts";
 import {
   getConfirmedFpSignatureRows,
   refreshFpSignatures,
@@ -131,6 +133,8 @@ type ScanRow = {
   poc_logs?: string | null;
   poc_duration_ms?: number | null;
   poc_run_at?: string | null;
+  /** ResNet1D verdict JSON (migration 0018); absent on pre-0018 rows. */
+  resnet_json?: string | null;
   created_at: string;
   unparsed?: boolean;
 };
@@ -289,6 +293,7 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
            balance_wei, value_usd, abi_json, abi_source, analyzer_version,
            summary, inventory_json, ai_narrative, ai_status, unparsed,
            poc_status, poc_logs, poc_duration_ms, poc_run_at::text as poc_run_at,
+           resnet_json,
            created_at::text as created_at
     from contract_scans
     where id = ${id}
@@ -370,6 +375,10 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
     findings,
     aiNarrative: row.ai_narrative,
     aiStatus,
+    // ResNet1D verdict (migration 0018): the stored score already
+    // includes its bonus; this restores the evidence beside it.
+    // Fail-soft — a malformed value reads as "not run".
+    resnet: parseResnetJson(row.resnet_json),
     // Item 3: same derivation as the list query, from the findings rows.
     unparsed,
   };
@@ -595,6 +604,22 @@ export async function secondPass(report: Report, body: string): Promise<{ text: 
 
 export async function runAndStore(input: { label: string; body: string }): Promise<StoredScan> {
   const report = analyzeInput(input.body, input.label);
+  // ResNet1D screening for pasted-bytecode saves (the address paths get
+  // theirs inside analyzeAddress): this is the one save path that
+  // re-analyzes server-side, so the Node runner attaches here. Pasted
+  // SOURCE has no runtime code — runtimeCodeForReport returns null and
+  // the report is saved exactly as analyzed. Fail-soft throughout.
+  // The runner is imported lazily: it pulls the ONNX runtime, which no
+  // other consumer of this module should have to load.
+  const code = runtimeCodeForReport(report, input.body);
+  if (code) {
+    try {
+      const { runResnetNode } = await import("../image-ml/resnet-node.server.ts");
+      await attachResnetToReport(report, code, runResnetNode);
+    } catch {
+      // model unavailable in this environment — save without screening
+    }
+  }
   // saveComprehensiveRecord runs the OpenRouter second pass.
   return saveComprehensiveRecord({
     label: input.label,

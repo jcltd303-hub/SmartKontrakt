@@ -30,6 +30,9 @@ async function database() {
     // schema must carry the column or every bulk write fails on it.
     // (0015 is dispositions-only; nothing under test here reads it.)
     "0016_finding_corroborated.sql",
+    // 0018: writeAuditBatch writes contract_scans.resnet_json — same
+    // harness-schema requirement as 0016.
+    "0018_resnet_result.sql",
   ]) {
     await pg.exec(await readFile(new URL(`../../../migrations/${f}`, import.meta.url), "utf8"));
   }

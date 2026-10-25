@@ -18,6 +18,10 @@ import {
   POC_NOT_POCABLE_DETECTORS,
   selectPocFallbacks,
 } from "./poc-fallbacks.ts";
+import {
+  SMARTBUGS_BY_DETECTOR,
+  smartbugsCategoryForDetector,
+} from "./smartbugs.ts";
 
 const filesOf = (picks: Array<{ file: string }>) => picks.map((p) => p.file);
 const pick = (detector: string, severity = "high", max = 3) =>
@@ -334,5 +338,184 @@ describe("selection ratchet — every ai-poc-proof type's own template is the to
 
   it("11 is top pick for its other home detector (bytecode-proxy)", () => {
     assert.equal(topPickFor("bytecode-proxy"), "11-proxy-uninitialized-implementation.t.sol");
+  });
+});
+
+// ---------------------------------------------------------------------
+// Per-DETECTOR mechanism ratchet (full detector audit, 2026-10-24).
+//
+// The ratchet above pins per-TYPE top picks (the ai-poc-proof manifest
+// pairs each template type with one detector). This block pins per-
+// DETECTOR behavior for EVERY detector the engine emits — the literal
+// `detector:` ids in detect.ts + bytecode.ts + engine.ts, plus the two
+// ids bytecode.ts constructs dynamically (the DELEGATECALL/CALLCODE
+// ternary). For each detector it asserts, from the templates' own
+// mechanism descriptions (index.json scenarios + template @notice
+// headers):
+//
+//   1. TOTALITY: the detector has an explicit SmartBugs category (the
+//      smartbugs.ts docstring claims the map is total over the
+//      emitted detectors — before this audit `report-cap` (detect.ts)
+//      and `parse` (engine.ts) were missing and silently defaulted
+//      to "other" in every prompt that labelled them).
+//   2. TOP PICK: selectPocFallbacks(detector, 1) is the mechanism-
+//      correct dedicated harness, or [] for a not-PoC-able detector.
+//      Exactly one detector has no direct map and reaches its pick
+//      through the category list: zero-slippage-swap, whose
+//      front_running list [17, 43] is its mechanism-correct pair.
+//   3. CATEGORY: three detectors whose SmartBugs category contradicted
+//      BOTH the category definitions in smartbugs.ts AND their own
+//      templates' index labels are pinned to the corrected values:
+//      - token-drain: the detector requires a token transfer with NO
+//        ACCESS CHECK (SWC-105; remediation is onlyOwner; template 46
+//        header: "has no access check"). It involves no low-level
+//        call at all — transfer/safeTransfer are high-level ERC-20
+//        calls — so unchecked_low_level_calls (defined in
+//        smartbugs.ts as an unchecked call()/send() FAILURE) was
+//        wrong; access_control is the class.
+//      - msg-value-loop: the mechanism is the same msg.value credited
+//        per loop iteration (value extraction). denial_of_service is
+//        defined as overwhelming computation; template 22's own index
+//        label and provenance both say "other".
+//      - shadowing: a name-resolution bug (write lands in the shadow
+//        variable). access_control is defined as modifier failure /
+//        tx.origin use — neither is present; template 33's own index
+//        label and provenance both say "other".
+// ---------------------------------------------------------------------
+
+function emittedDetectors(): string[] {
+  const ids = new Set<string>();
+  for (const rel of ["./detect.ts", "./bytecode.ts", "./engine.ts"]) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    for (const m of src.matchAll(/detector:\s*"([^"]+)"/g)) ids.add(m[1]);
+  }
+  // bytecode.ts constructs these two dynamically:
+  //   detector: deleg > 0 ? "bytecode-delegatecall" : "bytecode-callcode"
+  const bytecodeSrc = readFileSync(new URL("./bytecode.ts", import.meta.url), "utf8");
+  assert.ok(bytecodeSrc.includes('"bytecode-delegatecall"'), "dynamic bytecode-delegatecall id moved — update the audit set");
+  assert.ok(bytecodeSrc.includes('"bytecode-callcode"'), "dynamic bytecode-callcode id moved — update the audit set");
+  ids.add("bytecode-delegatecall");
+  ids.add("bytecode-callcode");
+  return [...ids].sort();
+}
+
+/** Detector -> mechanism-correct top pick (null = not-PoC-able, []). */
+const EXPECTED_TOP_PICK: Record<string, string | null> = {
+  "assembly-param-sstore": "26-assembly-arbitrary-sstore.t.sol",
+  "assembly-sstore": "26-assembly-arbitrary-sstore.t.sol",
+  "balance-as-price": "16-oracle-manipulation.t.sol",
+  "bytecode-callcode": "10-delegatecall-takeover.t.sol",
+  "bytecode-create2": "41-create2-metamorphic.t.sol",
+  "bytecode-delegatecall": "10-delegatecall-takeover.t.sol",
+  "bytecode-metadata": null,
+  "bytecode-origin": "09-tx-origin-phishing.t.sol",
+  "bytecode-proxy": "11-proxy-uninitialized-implementation.t.sol",
+  "bytecode-reentrancy-shape": null,
+  "bytecode-selfdestruct": "12-selfdestruct.t.sol",
+  "bytecode-timestamp": "45-timestamp-dependence.t.sol",
+  "bytecode-unchecked-call": "13-unchecked-call.t.sol",
+  centralization: "28-centralization-owner-rug.t.sol",
+  "default-visibility": "07b-unprotected-visibility.t.sol",
+  delegatecall: "10-delegatecall-takeover.t.sol",
+  "div-before-mul": "24-div-before-mul.t.sol",
+  "encode-packed": "25-encode-packed-collision.t.sol",
+  "erc20-unchecked": "14-erc20-unchecked-bool.t.sol",
+  "eth-gas-stipend": "31-gas-assumptions.t.sol",
+  extcodesize: "27-extcodesize-bypass.t.sol",
+  "fee-on-transfer": "15-fee-on-transfer.t.sol",
+  "floating-pragma": null,
+  "gas-estimator-dos": "39-dos.t.sol",
+  "hardcoded-gas": "31-gas-assumptions.t.sol",
+  "locked-ether": "29-locked-ether.t.sol",
+  "missing-event": null,
+  "msg-value-loop": "22-msg-value-loop.t.sol",
+  "old-compiler": null,
+  "oracle-spot": "16-oracle-manipulation.t.sol",
+  parse: null,
+  "private-secret": "34-private-secret-onchain.t.sol",
+  "read-only-reentrancy": "05-reentrancy-read-only.t.sol",
+  reentrancy: "01-reentrancy-classic.t.sol",
+  "report-cap": null,
+  "rtl-override": null,
+  selfdestruct: "12-selfdestruct.t.sol",
+  shadowing: "33-shadowing-mismatch.t.sol",
+  "signature-malleability": "19-signature-malleability.t.sol",
+  "signature-replay": "18-signature-replay.t.sol",
+  slippage: "17-slippage-sandwich.t.sol",
+  "storage-gap": "32-storage-collision-upgrade.t.sol",
+  "strict-balance": "21-strict-balance-dos.t.sol",
+  timestamp: "45-timestamp-dependence.t.sol",
+  "token-drain": "46-token-rescue.t.sol",
+  "tx-origin": "09-tx-origin-phishing.t.sol",
+  "unchecked-block": "23-unchecked-arithmetic-wrap.t.sol",
+  "unchecked-call": "13-unchecked-call.t.sol",
+  "unprotected-admin": "07-unprotected-admin.t.sol",
+  "unprotected-ether": "06-open-drain.t.sol",
+  "unprotected-initializer": "08-unprotected-initializer.t.sol",
+  "weak-randomness": "20-chain-randomness-timestamp.t.sol",
+  "zero-address": "30-zero-address-brick.t.sol",
+  "zero-slippage-swap": "17-slippage-sandwich.t.sol",
+};
+
+describe("per-detector mechanism ratchet — every emitted detector", () => {
+  it("the audit table covers exactly the emitted detector set (no silent rot)", () => {
+    assert.deepEqual(Object.keys(EXPECTED_TOP_PICK).sort(), emittedDetectors());
+  });
+
+  it("every emitted detector has an explicit SmartBugs category (totality)", () => {
+    for (const detector of emittedDetectors()) {
+      assert.ok(
+        SMARTBUGS_BY_DETECTOR[detector],
+        `${detector} is emitted by the engine but has no SMARTBUGS_BY_DETECTOR entry — prompts silently label it "other"`,
+      );
+    }
+  });
+
+  it("every emitted detector's top pick is its mechanism-correct harness (or [] when not-PoC-able)", () => {
+    for (const [detector, expected] of Object.entries(EXPECTED_TOP_PICK)) {
+      assert.equal(
+        topPickFor(detector),
+        expected,
+        `${detector}: top pick must be ${expected ?? "[] (not-PoC-able)"}`,
+      );
+    }
+  });
+
+  it("zero-slippage-swap is the one category-fallthrough detector, and its list is mechanism-correct", () => {
+    // No direct map in index.json (17 claims only `slippage`); selection
+    // falls through to the front_running category list [17, 43].
+    assert.equal(POC_FALLBACK_BY_DETECTOR["zero-slippage-swap"], undefined);
+    assert.deepEqual(pick("zero-slippage-swap", "high", 3), [
+      "17-slippage-sandwich.t.sol",
+      "43-front-running.t.sol",
+    ]);
+    // And it is the ONLY emitted, PoC-able detector in that position.
+    for (const detector of emittedDetectors()) {
+      if (detector === "zero-slippage-swap") continue;
+      if (POC_NOT_POCABLE_DETECTORS.includes(detector)) continue;
+      assert.ok(
+        POC_FALLBACK_BY_DETECTOR[detector]?.length,
+        `${detector} unexpectedly has no direct map — it would inherit its whole category list`,
+      );
+    }
+  });
+
+  it("category corrections: token-drain is access_control, msg-value-loop and shadowing are other", () => {
+    assert.equal(smartbugsCategoryForDetector("token-drain"), "access_control");
+    assert.equal(smartbugsCategoryForDetector("msg-value-loop"), "other");
+    assert.equal(smartbugsCategoryForDetector("shadowing"), "other");
+    // The corrected categories agree with the templates' own index labels.
+    for (const [detector, file] of [
+      ["token-drain", "46-token-rescue.t.sol"],
+      ["msg-value-loop", "22-msg-value-loop.t.sol"],
+      ["shadowing", "33-shadowing-mismatch.t.sol"],
+    ] as const) {
+      const entry = POC_FALLBACK_CATALOG.find((e) => e.file === file);
+      assert.equal(entry?.smartbugs, smartbugsCategoryForDetector(detector), `${detector} vs ${file}`);
+    }
+    // Selection is unchanged for all three: the direct maps still rule.
+    assert.equal(topPickFor("token-drain"), "46-token-rescue.t.sol");
+    assert.equal(topPickFor("msg-value-loop"), "22-msg-value-loop.t.sol");
+    assert.equal(topPickFor("shadowing"), "33-shadowing-mismatch.t.sol");
   });
 });

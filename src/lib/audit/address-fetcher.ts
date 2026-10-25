@@ -7,6 +7,7 @@ import { fetchAddressValue } from "./value.ts";
 import { gatherAbi } from "./abi.ts";
 import { gatherLiveState } from "./live-state.ts";
 import { enrichReportFourbyte, type FourbyteLookup } from "./fourbyte.ts";
+import { attachResnetToReport, runtimeCodeForReport, type ResnetRunner } from "./resnet-attach.ts";
 
 export type SupportedChain = {
   id: string;
@@ -489,7 +490,22 @@ export async function analyzeAddress(
   address: string,
   chainId = "ethereum",
   customLabel?: string,
-  opts?: { fourbyte?: FourbyteLookup; deployedName?: string | null; etherscanKey?: string },
+  opts?: {
+    fourbyte?: FourbyteLookup;
+    deployedName?: string | null;
+    etherscanKey?: string;
+    /**
+     * ResNet1D runner, injected per environment (the worker passes the
+     * Node runner from image-ml/resnet-node.server.ts; browser audit
+     * flows pass image-ml/run-resnet-browser.ts). When supplied, EVERY
+     * address entry — verified-source and bytecode-only alike — gets a
+     * screening pass over its runtime bytecode before the report is
+     * returned, and the report's riskScore includes the bounded ML
+     * term. When omitted (e.g. a caller with no model available), the
+     * audit is exactly the pre-ResNet one. Always fail-soft.
+     */
+    resnetRunner?: ResnetRunner;
+  },
 ): Promise<{ report: Report; rawBody: string; inputKind: "source" | "bytecode" }> {
   if (!isValidEvmAddress(address)) {
     throw new Error(`Invalid EVM address format: ${address}`);
@@ -606,6 +622,14 @@ export async function analyzeAddress(
         // evidence is best-effort — the audit stands without it
       }
     }
+    // ResNet1D screening over the runtime bytecode fetched above — the
+    // same code the Bytecode & CFG tab renders. Without the runtime
+    // fetch this path would have nothing to classify: the screening
+    // consumes report.runtimeBytecode, never the source text. Skipped
+    // silently when the bytecode fetch failed (already noted above).
+    if (opts?.resnetRunner) {
+      await attachResnetToReport(report, runtimeCodeForReport(report), opts.resnetRunner);
+    }
     return {
       report,
       rawBody: sourcifyMatch.source,
@@ -624,6 +648,11 @@ export async function analyzeAddress(
 
   if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
   await attachValueAndAbi(report);
+
+  // ResNet1D screening: this path's whole input IS the runtime code.
+  if (opts?.resnetRunner) {
+    await attachResnetToReport(report, runtimeCodeForReport(report, bytecode), opts.resnetRunner);
+  }
 
   return {
     report,
