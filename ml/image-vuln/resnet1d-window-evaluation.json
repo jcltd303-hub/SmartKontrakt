@@ -1,0 +1,658 @@
+{
+  "schemaVersion": 1,
+  "reportKind": "resnet-window-evaluation-v1",
+  "checkpointSha256": "a488b44abc0021499406012c8a8f22d08bba927a07d01e51458509f632657eae",
+  "selectedEpoch": 2,
+  "trainingProtocol": {
+    "architecture": "upstream-resnet1d-16384-v1",
+    "classes": [
+      "access-control",
+      "arithmetic",
+      "reentrancy",
+      "unchecked-calls",
+      "others"
+    ],
+    "seed": 20261024,
+    "batchSize": 16,
+    "trainCap": 55632,
+    "counts": {
+      "train": 55626,
+      "validation": 7358,
+      "test": 10686
+    },
+    "candidateFingerprint": "16384-byte padded/truncated integer vector divided by gcd, then SHA256; protects proportional L2 inputs",
+    "sequenceLength": 16384,
+    "normalization": "per-example L2 after zero-pad/truncate",
+    "optimizer": "Adam lr=.001 weight_decay=.0001; weighted BCE from train only",
+    "contentHashes": {
+      "train": "488d821ab9d35f75ab3315a04cae0f82b4fafd55f60c74e453703244b066742c",
+      "validation": "ad0a55b8c61bff8a94a5ab827de97ed12c217312339d7c113aadc63e1cf6ea5e",
+      "test": "f1bf91a806ce473ec78231a8a7478dc0a8eb29a9960bf94fede4a915fbe96ade"
+    },
+    "torchVersion": "2.14.1+cpu",
+    "threads": 8
+  },
+  "contentHashes": {
+    "train": "488d821ab9d35f75ab3315a04cae0f82b4fafd55f60c74e453703244b066742c",
+    "validation": "ad0a55b8c61bff8a94a5ab827de97ed12c217312339d7c113aadc63e1cf6ea5e",
+    "test": "f1bf91a806ce473ec78231a8a7478dc0a8eb29a9960bf94fede4a915fbe96ade"
+  },
+  "experiment": {
+    "windowBytes": 16384,
+    "maxWindows": 8,
+    "batchWindows": 16,
+    "aggregation": "per-class maximum probability",
+    "thresholdSelection": "Validation-only per-class F1 over .05..95 step.025; frozen before test scoring",
+    "trainingChanged": false
+  },
+  "inputAudit": {
+    "validationTrainingOverlapContracts": 0,
+    "testTrainingOverlapContracts": 0,
+    "validationTestSharedFingerprints": 1,
+    "trainingUniquePrefixes": 55614,
+    "validationUniqueWindows": 8353,
+    "testUniqueWindows": 12178
+  },
+  "decision": {
+    "criterion": "Both validation micro/macro F1 strictly improve and no train-prefix/held-out-window or validation/test window collisions",
+    "validationImproved": false,
+    "inputAuditPassed": false,
+    "eligibleOnValidationAndInputAudit": false,
+    "deploymentVerified": false,
+    "browserAction": "Keep verified prefix inference; this is an offline experiment, not browser deployment"
+  },
+  "coverage": {
+    "validation": {
+      "contracts": 7358,
+      "windows": 8354,
+      "rawBytes": 68297125,
+      "coveredBytes": 68297125,
+      "partiallyCoveredContracts": 0,
+      "minCoverageFraction": 1.0,
+      "meanCoverageFraction": 1.0,
+      "seconds": 80.23976755399997
+    },
+    "test": {
+      "contracts": 10686,
+      "windows": 12178,
+      "rawBytes": 99673793,
+      "coveredBytes": 99673793,
+      "partiallyCoveredContracts": 0,
+      "minCoverageFraction": 1.0,
+      "meanCoverageFraction": 1.0,
+      "seconds": 120.57695901199997
+    }
+  },
+  "novelty": {
+    "definition": "Exact opcode-skeleton membership in train OR validation; not semantic-family isolation",
+    "seenSkeleton": {
+      "count": 2879,
+      "orderedAddressSha256": "b621dba0c86e7bba284779beb3e2aad4dac450c890e5bc60fd6409870e963cbc"
+    },
+    "unseenSkeleton": {
+      "count": 7807,
+      "orderedAddressSha256": "8a53c27bcc3be573fa6ea441aa536b56b7f983cd45e0be9867df15387c5fb429"
+    },
+    "testOrderedAddressSha256": "c1e43be58e9f4bbc451a1dfff13e1767f7fc9823b9afcebe22f21522526d9bd3"
+  },
+  "models": {
+    "prefix": {
+      "validation": {
+        "microF1": 0.7374643130001206,
+        "macroF1": 0.7039670826841037,
+        "exactMatch": 0.4688774123403099,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.5579710144927537,
+            "recall": 0.6520400307929176,
+            "f1": 0.6013489527866525,
+            "support": 1299,
+            "averagePrecision": 0.6550396566119695,
+            "auroc": 0.8631943700646493
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.6673992673992674,
+            "recall": 0.6081441922563418,
+            "f1": 0.6363953894516242,
+            "support": 1498,
+            "averagePrecision": 0.6922793230185909,
+            "auroc": 0.8591077067489303
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.7752570010634526,
+            "recall": 0.7844332855093257,
+            "f1": 0.7798181494027456,
+            "support": 2788,
+            "averagePrecision": 0.8835937269213501,
+            "auroc": 0.9040644650879511
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.7786311271741586,
+            "recall": 0.9071052631578947,
+            "f1": 0.8379725294761152,
+            "support": 3800,
+            "averagePrecision": 0.9276058980194417,
+            "auroc": 0.9151778793526819
+          },
+          {
+            "class": "others",
+            "precision": 0.5903054448871182,
+            "recall": 0.7595044852627082,
+            "f1": 0.6643003923033812,
+            "support": 2341,
+            "averagePrecision": 0.6926821819750073,
+            "auroc": 0.8305373009001348
+          }
+        ]
+      },
+      "test": {
+        "microF1": 0.7361406958326506,
+        "macroF1": 0.7003373145916977,
+        "exactMatch": 0.4619127830806663,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.552286102308737,
+            "recall": 0.6404199475065617,
+            "f1": 0.5930967428293632,
+            "support": 1905,
+            "averagePrecision": 0.6622568176340915,
+            "auroc": 0.8621991946941037
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.6404878048780488,
+            "recall": 0.6053480866758875,
+            "f1": 0.6224223749703721,
+            "support": 2169,
+            "averagePrecision": 0.6977286517728156,
+            "auroc": 0.8628834593444306
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.7822619623006283,
+            "recall": 0.7830188679245284,
+            "f1": 0.7826402321083172,
+            "support": 4134,
+            "averagePrecision": 0.888912849336885,
+            "auroc": 0.9088838545478604
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.7765226682949168,
+            "recall": 0.9139417894358606,
+            "f1": 0.8396467772550962,
+            "support": 5566,
+            "averagePrecision": 0.9321577980183934,
+            "auroc": 0.9204219114938915
+          },
+          {
+            "class": "others",
+            "precision": 0.587010078387458,
+            "recall": 0.7639172252987467,
+            "f1": 0.6638804457953394,
+            "support": 3431,
+            "averagePrecision": 0.6988308382856494,
+            "auroc": 0.8318870733276542
+          }
+        ]
+      },
+      "thresholds": [
+        0.5750000000000002,
+        0.4500000000000001,
+        0.5000000000000002,
+        0.3000000000000001,
+        0.2750000000000001
+      ],
+      "testAtFixedHalfThreshold": {
+        "microF1": 0.7273996915825308,
+        "macroF1": 0.6895166241361118,
+        "exactMatch": 0.47379749204566723,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.5076982294072363,
+            "recall": 0.6923884514435695,
+            "f1": 0.5858316677770375,
+            "support": 1905,
+            "averagePrecision": 0.6622568176340915,
+            "auroc": 0.8621991946941037
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.6885913853317811,
+            "recall": 0.545412632549562,
+            "f1": 0.6086956521739131,
+            "support": 2169,
+            "averagePrecision": 0.6977286517728156,
+            "auroc": 0.8628834593444306
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.7822619623006283,
+            "recall": 0.7830188679245284,
+            "f1": 0.7826402321083172,
+            "support": 4134,
+            "averagePrecision": 0.888912849336885,
+            "auroc": 0.9088838545478604
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.8274475524475524,
+            "recall": 0.8503413582464966,
+            "f1": 0.8387382597908913,
+            "support": 5566,
+            "averagePrecision": 0.9321577980183934,
+            "auroc": 0.9204219114938915
+          },
+          {
+            "class": "others",
+            "precision": 0.6782608695652174,
+            "recall": 0.5910813174001749,
+            "f1": 0.6316773088304003,
+            "support": 3431,
+            "averagePrecision": 0.6988308382856494,
+            "auroc": 0.8318870733276542
+          }
+        ]
+      },
+      "seenSkeleton": {
+        "count": 2879,
+        "metrics": {
+          "microF1": 0.8606942270509161,
+          "macroF1": 0.8349217387559348,
+          "exactMatch": 0.6599513720041681,
+          "perClass": [
+            {
+              "class": "access-control",
+              "precision": 0.7905027932960894,
+              "recall": 0.8202898550724638,
+              "f1": 0.8051209103840683,
+              "support": 690,
+              "averagePrecision": 0.8842913684822291,
+              "auroc": 0.9522666031077655
+            },
+            {
+              "class": "arithmetic",
+              "precision": 0.8045602605863192,
+              "recall": 0.771875,
+              "f1": 0.7878787878787878,
+              "support": 640,
+              "averagePrecision": 0.8996562488114759,
+              "auroc": 0.9562821013845467
+            },
+            {
+              "class": "reentrancy",
+              "precision": 0.9447779111644657,
+              "recall": 0.9352346999405823,
+              "f1": 0.9399820842042401,
+              "support": 1683,
+              "averagePrecision": 0.9868709514619902,
+              "auroc": 0.9798267944047996
+            },
+            {
+              "class": "unchecked-calls",
+              "precision": 0.8275469550369948,
+              "recall": 0.9284802043422733,
+              "f1": 0.8751128498344869,
+              "support": 1566,
+              "averagePrecision": 0.9662910846924563,
+              "auroc": 0.9552344712809036
+            },
+            {
+              "class": "others",
+              "precision": 0.73989898989899,
+              "recall": 0.7951153324287653,
+              "f1": 0.7665140614780902,
+              "support": 737,
+              "averagePrecision": 0.8406183644140263,
+              "auroc": 0.9306206426487375
+            }
+          ]
+        }
+      },
+      "unseenSkeleton": {
+        "count": 7807,
+        "metrics": {
+          "microF1": 0.6836199867997049,
+          "macroF1": 0.6353083018663076,
+          "exactMatch": 0.3888817727680287,
+          "perClass": [
+            {
+              "class": "access-control",
+              "precision": 0.43804420629604823,
+              "recall": 0.5382716049382716,
+              "f1": 0.48301329394387,
+              "support": 1215,
+              "averagePrecision": 0.5052854082859821,
+              "auroc": 0.8057393423628592
+            },
+            {
+              "class": "arithmetic",
+              "precision": 0.5703342618384402,
+              "recall": 0.5356442119032047,
+              "f1": 0.5524451939291737,
+              "support": 1529,
+              "averagePrecision": 0.5891670072033613,
+              "auroc": 0.8139727090001087
+            },
+            {
+              "class": "reentrancy",
+              "precision": 0.6727346278317152,
+              "recall": 0.6784985720114239,
+              "f1": 0.6756043063172862,
+              "support": 2451,
+              "averagePrecision": 0.7752471082094021,
+              "auroc": 0.8576033497781307
+            },
+            {
+              "class": "unchecked-calls",
+              "precision": 0.7578222778473092,
+              "recall": 0.90825,
+              "f1": 0.8262451671594269,
+              "support": 4000,
+              "averagePrecision": 0.9150150951548118,
+              "auroc": 0.9052978066719201
+            },
+            {
+              "class": "others",
+              "precision": 0.5540430166076776,
+              "recall": 0.7553823311061618,
+              "f1": 0.6392335479817811,
+              "support": 2694,
+              "averagePrecision": 0.6582044705364428,
+              "auroc": 0.7879881275599078
+            }
+          ]
+        }
+      }
+    },
+    "windows": {
+      "validation": {
+        "microF1": 0.7359093086380329,
+        "macroF1": 0.7026543257199359,
+        "exactMatch": 0.46561565642837727,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.5396725440806045,
+            "recall": 0.6597382602001539,
+            "f1": 0.5936958780741254,
+            "support": 1299,
+            "averagePrecision": 0.6409343262889766,
+            "auroc": 0.8594731991968633
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.6549789621318373,
+            "recall": 0.6234979973297731,
+            "f1": 0.6388508891928865,
+            "support": 1498,
+            "averagePrecision": 0.6937173192480615,
+            "auroc": 0.8597064573014304
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.7734181689642984,
+            "recall": 0.7847919655667145,
+            "f1": 0.7790635570589283,
+            "support": 2788,
+            "averagePrecision": 0.8829149614343895,
+            "auroc": 0.9037366299457819
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.7784795849311978,
+            "recall": 0.908157894736842,
+            "f1": 0.8383335357706789,
+            "support": 3800,
+            "averagePrecision": 0.9268156605371618,
+            "auroc": 0.9147737123162036
+          },
+          {
+            "class": "others",
+            "precision": 0.5862295081967213,
+            "recall": 0.7637761640324647,
+            "f1": 0.6633277685030606,
+            "support": 2341,
+            "averagePrecision": 0.6938601337885497,
+            "auroc": 0.8303272504411955
+          }
+        ]
+      },
+      "test": {
+        "microF1": 0.7351348424130835,
+        "macroF1": 0.7000843308393737,
+        "exactMatch": 0.45826314804416995,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.5310880829015544,
+            "recall": 0.6456692913385826,
+            "f1": 0.5828002842928216,
+            "support": 1905,
+            "averagePrecision": 0.6457365015255139,
+            "auroc": 0.857587770780446
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.6342141863699583,
+            "recall": 0.6307053941908713,
+            "f1": 0.6324549237170597,
+            "support": 2169,
+            "averagePrecision": 0.7040852828630872,
+            "auroc": 0.8667494019635722
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.7802647412755715,
+            "recall": 0.7842283502660861,
+            "f1": 0.7822415249125347,
+            "support": 4134,
+            "averagePrecision": 0.8886095521807227,
+            "auroc": 0.9086557290476013
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.7758489416780874,
+            "recall": 0.9153790873158462,
+            "f1": 0.8398582378636775,
+            "support": 5566,
+            "averagePrecision": 0.9313742406260268,
+            "auroc": 0.9199545440509342
+          },
+          {
+            "class": "others",
+            "precision": 0.5825242718446602,
+            "recall": 0.7694549693966773,
+            "f1": 0.6630666834107748,
+            "support": 3431,
+            "averagePrecision": 0.7005873263590994,
+            "auroc": 0.8318900863553834
+          }
+        ]
+      },
+      "thresholds": [
+        0.5750000000000002,
+        0.4500000000000001,
+        0.5000000000000002,
+        0.3000000000000001,
+        0.2750000000000001
+      ],
+      "testAtFixedHalfThreshold": {
+        "microF1": 0.7280284007273357,
+        "macroF1": 0.6916827588001648,
+        "exactMatch": 0.4730488489612577,
+        "perClass": [
+          {
+            "class": "access-control",
+            "precision": 0.49607182940516276,
+            "recall": 0.6960629921259842,
+            "f1": 0.5792922673656619,
+            "support": 1905,
+            "averagePrecision": 0.6457365015255139,
+            "auroc": 0.857587770780446
+          },
+          {
+            "class": "arithmetic",
+            "precision": 0.6812227074235808,
+            "recall": 0.5753803596127247,
+            "f1": 0.6238440389902524,
+            "support": 2169,
+            "averagePrecision": 0.7040852828630872,
+            "auroc": 0.8667494019635722
+          },
+          {
+            "class": "reentrancy",
+            "precision": 0.7802647412755715,
+            "recall": 0.7842283502660861,
+            "f1": 0.7822415249125347,
+            "support": 4134,
+            "averagePrecision": 0.8886095521807227,
+            "auroc": 0.9086557290476013
+          },
+          {
+            "class": "unchecked-calls",
+            "precision": 0.8257088189250305,
+            "recall": 0.8528566295364715,
+            "f1": 0.839063190455148,
+            "support": 5566,
+            "averagePrecision": 0.9313742406260268,
+            "auroc": 0.9199545440509342
+          },
+          {
+            "class": "others",
+            "precision": 0.675568743818002,
+            "recall": 0.5972019819294666,
+            "f1": 0.6339727722772277,
+            "support": 3431,
+            "averagePrecision": 0.7005873263590994,
+            "auroc": 0.8318900863553834
+          }
+        ]
+      },
+      "seenSkeleton": {
+        "count": 2879,
+        "metrics": {
+          "microF1": 0.8577960676726109,
+          "macroF1": 0.8315549371201758,
+          "exactMatch": 0.6554359152483501,
+          "perClass": [
+            {
+              "class": "access-control",
+              "precision": 0.7526595744680851,
+              "recall": 0.8202898550724638,
+              "f1": 0.7850208044382802,
+              "support": 690,
+              "averagePrecision": 0.8671843847452458,
+              "auroc": 0.9471441529121232
+            },
+            {
+              "class": "arithmetic",
+              "precision": 0.7981072555205048,
+              "recall": 0.790625,
+              "f1": 0.7943485086342229,
+              "support": 640,
+              "averagePrecision": 0.9019470598818203,
+              "auroc": 0.9561006587762394
+            },
+            {
+              "class": "reentrancy",
+              "precision": 0.9402985074626866,
+              "recall": 0.9358288770053476,
+              "f1": 0.9380583680762359,
+              "support": 1683,
+              "averagePrecision": 0.9867921663093818,
+              "auroc": 0.9796777533350425
+            },
+            {
+              "class": "unchecked-calls",
+              "precision": 0.8272727272727273,
+              "recall": 0.929757343550447,
+              "f1": 0.8755261575466026,
+              "support": 1566,
+              "averagePrecision": 0.965749348084902,
+              "auroc": 0.9544699385942131
+            },
+            {
+              "class": "others",
+              "precision": 0.7355889724310777,
+              "recall": 0.7964721845318861,
+              "f1": 0.7648208469055374,
+              "support": 737,
+              "averagePrecision": 0.8384607996410769,
+              "auroc": 0.9297477471314171
+            }
+          ]
+        }
+      },
+      "unseenSkeleton": {
+        "count": 7807,
+        "metrics": {
+          "microF1": 0.683540408508674,
+          "macroF1": 0.6368063643924674,
+          "exactMatch": 0.3855514282054566,
+          "perClass": [
+            {
+              "class": "access-control",
+              "precision": 0.42455242966751916,
+              "recall": 0.5465020576131687,
+              "f1": 0.47786973731558113,
+              "support": 1215,
+              "averagePrecision": 0.4910968078123759,
+              "auroc": 0.8012903781613329
+            },
+            {
+              "class": "arithmetic",
+              "precision": 0.5659881812212738,
+              "recall": 0.5637671680837149,
+              "f1": 0.564875491480996,
+              "support": 1529,
+              "averagePrecision": 0.5993785549639233,
+              "auroc": 0.8207031582877576
+            },
+            {
+              "class": "reentrancy",
+              "precision": 0.6721774193548387,
+              "recall": 0.6801305589555283,
+              "f1": 0.6761306023119042,
+              "support": 2451,
+              "averagePrecision": 0.7751978405553022,
+              "auroc": 0.8574717182695697
+            },
+            {
+              "class": "unchecked-calls",
+              "precision": 0.7570210110255877,
+              "recall": 0.90975,
+              "f1": 0.8263881003747019,
+              "support": 4000,
+              "averagePrecision": 0.914253966501355,
+              "auroc": 0.9051315996847912
+            },
+            {
+              "class": "others",
+              "precision": 0.549812533476165,
+              "recall": 0.7620638455827765,
+              "f1": 0.6387678904791537,
+              "support": 2694,
+              "averagePrecision": 0.6611674869180995,
+              "auroc": 0.7885414720124009
+            }
+          ]
+        }
+      }
+    }
+  },
+  "elapsedSeconds": 290.503280918,
+  "limitations": [
+    "Known/reused validation and test benchmark with automated Slither labels; not independent exploit ground truth.",
+    "Window max aggregation reuses a prefix-trained model; tail distribution was not part of training.",
+    "At most8 windows; code longer than131072 bytes can contain uncovered gaps.",
+    "Exact skeleton novelty is not semantic-family-disjoint training or evaluation. Slices never select the model.",
+    "No browser window inference or deployment is claimed by this experiment."
+  ]
+}

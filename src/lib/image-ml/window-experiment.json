@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "checkpointSha256": "a488b44abc0021499406012c8a8f22d08bba927a07d01e51458509f632657eae",
+  "prefix": {
+    "validation": {
+      "microF1": 0.7374643130001206,
+      "macroF1": 0.7039670826841037
+    },
+    "test": {
+      "microF1": 0.7361406958326506,
+      "macroF1": 0.7003373145916977
+    }
+  },
+  "windows": {
+    "validation": {
+      "microF1": 0.7359093086380329,
+      "macroF1": 0.7026543257199359
+    },
+    "test": {
+      "microF1": 0.7351348424130835,
+      "macroF1": 0.7000843308393737
+    }
+  },
+  "validationImproved": false,
+  "inputAuditPassed": false,
+  "overlappingTrainingContracts": 0,
+  "sharedValidationTestWindows": 1,
+  "seenSkeletonCount": 2879,
+  "unseenSkeletonCount": 7807
+}
