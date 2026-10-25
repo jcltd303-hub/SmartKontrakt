@@ -48,6 +48,10 @@ class WindowEvaluationTests(unittest.TestCase):
         self.assertEqual(summary['windows']['test']['microF1'],report['models']['windows']['test']['microF1'])
         self.assertEqual(summary['sharedValidationTestWindows'],report['inputAudit']['validationTestSharedFingerprints'])
         self.assertEqual(summary['unseenSkeletonCount'],report['novelty']['unseenSkeleton']['count'])
+        committed=Path(__file__).resolve().parents[2]/'src/lib/image-ml/window-experiment.json'
+        self.assertEqual(json.dumps(summary,sort_keys=True),
+                         json.dumps(json.loads(committed.read_text()),sort_keys=True),
+                         'Committed UI summary must exactly match the measured report')
         self.assertEqual(report,original)
 
 
