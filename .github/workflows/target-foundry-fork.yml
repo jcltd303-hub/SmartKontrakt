@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      POC_TARGET: "0x53b59fb7906367c8d44b694a2f82fedd4911458c"
+      POC_TARGET: "0xc7eacdd1e755d2823463abc4434ca445f752b336"
       ETH_RPC_URL: ${{ secrets.ETH_RPC_URL != '' && secrets.ETH_RPC_URL || 'https://ethereum-rpc.publicnode.com' }}
     steps:
       - uses: actions/checkout@v5
@@ -38,6 +38,14 @@ jobs:
           test "$CODE" != "0x"
           echo "Target has deployed bytecode (length ${#CODE})"
           cast call "$POC_TARGET" 'supportsInterface(bytes4)(bool)' 0x01ffc9a7 --block "$BLOCK" --rpc-url "$ETH_RPC_URL"
+      - name: Identify target contract interface
+        shell: bash
+        run: |
+          set +e
+          cast call "$POC_TARGET" 'owner()(address)' --rpc-url "$ETH_RPC_URL" --block "$FORK_BLOCK"
+          cast call "$POC_TARGET" 'KAILUA_TREASURY()(address)' --rpc-url "$ETH_RPC_URL" --block "$FORK_BLOCK"
+          cast call "$POC_TARGET" 'version()(string)' --rpc-url "$ETH_RPC_URL" --block "$FORK_BLOCK"
+          exit 0
       - name: Run fork sanity test
         shell: bash
         run: |
@@ -45,18 +53,21 @@ jobs:
           cd foundry
           POC_TARGET="$POC_TARGET" POC_FORK_BLOCK="$FORK_BLOCK" POC_RPC_URL="$ETH_RPC_URL" forge test --match-test test_forkSanity --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
       - name: Run target-specific authorization tests
+        if: false # Previous Manifold-only checks; not suitable for Kailua address
         shell: bash
         run: |
           set -euo pipefail
           cd foundry
           POC_TARGET="$POC_TARGET" POC_FORK_BLOCK="$FORK_BLOCK" POC_RPC_URL="$ETH_RPC_URL" forge test --match-contract TargetAccessForkTest --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
       - name: Run malformed redemption and callback tests
+        if: false # Previous Manifold-only checks
         shell: bash
         run: |
           set -euo pipefail
           cd foundry
           POC_TARGET="$POC_TARGET" POC_FORK_BLOCK="$FORK_BLOCK" POC_RPC_URL="$ETH_RPC_URL" forge test --match-contract TargetRedemptionNegativeForkTest --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
       - name: Run valid redemption accounting and adversarial token tests
+        if: false # Previous Manifold-only checks
         shell: bash
         run: |
           set -euo pipefail
