@@ -118,6 +118,7 @@ try {
         assert.ok((await comparison.innerText()).includes("Prefix model retained"));
         assert.ok((await comparison.innerText()).includes("not enabled in this browser"));
         assert.equal(await comparison.locator("tbody tr").count(), 4);
+        await page.evaluate(() => window.scrollTo(0, 0));
         await page.screenshot({
           fullPage: true,
           path: `/workspace/screenshots/image-ml/${mode}-resnet-${name}.png`,
@@ -155,7 +156,7 @@ try {
         assert.equal(
           layout.documentWidth > layout.viewport,
           false,
-          "insight cards must not overflow the page",
+          "the Bytecode view must not overflow the page",
         );
       }
     }

@@ -20,7 +20,7 @@ export function BytecodeCoverage({ bytes }: { bytes: number }) {
         aria-label="Raw bytecode included in ResNet input"
         value={coverage.used}
         max={coverage.total}
-        className="mt-3 h-2 w-full accent-amber"
+        className="mt-3 h-2 w-full appearance-none overflow-hidden rounded-full bg-line [&::-webkit-progress-bar]:bg-line [&::-webkit-progress-value]:bg-amber [&::-moz-progress-bar]:bg-amber"
       />
       <div className="mt-2 flex flex-wrap justify-between gap-2 text-xs text-muted">
         <span>{samples(coverage.used)} bytes read</span>
@@ -65,7 +65,13 @@ export function ModelEvaluation({
         {scores.map(([label, value]) => (
           <div key={label} className="min-w-0 rounded-md bg-surface-2 p-3">
             <dt className="text-xs leading-relaxed text-muted">{label}</dt>
-            <dd className="mt-1 font-mono text-lg font-medium">{f1(value)}</dd>
+            <dd
+              className={
+                value === null ? "mt-1 text-xs text-muted" : "mt-1 font-mono text-lg font-medium"
+              }
+            >
+              {f1(value)}
+            </dd>
           </div>
         ))}
       </dl>

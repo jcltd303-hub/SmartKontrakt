@@ -32,7 +32,9 @@ export function BytecodeTab({
     <>
       {activeTab === "bytecode" && (
         <div className="bg-[#1c1a16] border border-[#3a3428] rounded-xl p-4 flex flex-col gap-4">
-          <ImageVulnerabilityPanel bytecode={selectImageBytecode(contractBody, report?.runtimeBytecode)} />
+          <ImageVulnerabilityPanel
+            bytecode={selectImageBytecode(contractBody, report?.runtimeBytecode)}
+          />
           {/* Bytecode Meta Stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             <div className="p-3 bg-[#26231c] border border-[#3a3428] rounded-lg text-center font-mono">
@@ -105,7 +107,7 @@ export function BytecodeTab({
 
           {/* Disassembly Stream vs CFG View Toggle */}
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-1 bg-[#26231c] p-1 rounded-lg border border-[#3a3428]">
                 <button
                   onClick={() => setBytecodeSubView("stream")}
@@ -136,7 +138,7 @@ export function BytecodeTab({
                   placeholder="Search opcode (e.g. JUMP, CALL)..."
                   value={disasmFilter}
                   onChange={(e) => setDisasmFilter(e.target.value)}
-                  className="bg-[#12110e] border border-[#3a3428] rounded px-2 py-0.5 text-xs text-[#f4efe6] font-mono focus:outline-none focus:border-[#e8a54b]"
+                  className="min-w-0 w-full sm:w-auto bg-[#12110e] border border-[#3a3428] rounded px-2 py-0.5 text-xs text-[#f4efe6] font-mono focus:outline-none focus:border-[#e8a54b]"
                 />
               )}
             </div>
