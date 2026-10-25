@@ -36,7 +36,29 @@ try {
       );
     }
     assert.equal(await panel.locator("canvas").count(), 2);
-    await panel.screenshot({ path: `/workspace/screenshots/image-ml/${mode}-${name}.png` });
+    const evaluation = panel.getByRole("region", { name: "Model evaluation", exact: true });
+    assert.ok(
+      (await evaluation.innerText()).includes("Unavailable"),
+      "RGB does not invent validation micro F1",
+    );
+    assert.equal(
+      await panel.getByRole("region", { name: "Bytecode coverage", exact: true }).count(),
+      0,
+    );
+    assert.equal(
+      await panel.getByText("Compare offline window experiment", { exact: true }).count(),
+      0,
+    );
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+      "RGB insights must fit the mobile page",
+    );
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({
+      fullPage: true,
+      path: `/workspace/screenshots/image-ml/${mode}-${name}.png`,
+    });
     await page
       .getByPlaceholder("// Paste Solidity contract or runtime bytecode (0x...)...")
       .fill("contract Changed {}");

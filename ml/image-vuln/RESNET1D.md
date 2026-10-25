@@ -250,3 +250,41 @@ Built first-fixture load/inference was .449/.115 seconds desktop and .490/.128
 seconds in the mobile viewport on the local CI runner; physical-phone performance
 and internet download speed are not measured. CI40154712022 and artifact/browser
 40154712044 passed. These verify the PR candidate; main changes after merge.
+
+
+## Offline window and novelty experiment
+
+`evaluate_resnet_windows.py` reuses the exact full-cohort selected epoch2 weights
+and fixed cohorts. Up to8 evenly spaced raw-byte windows of16384 bytes are
+individually zero-padded/L2-normalized, with class-wise maximum probabilities.
+At most16 windows are encoded per inference batch. Window thresholds use the
+existing validation-only grid and the decision is frozen before test scoring.
+No retraining or browser window inference is claimed.
+
+| Input method | Validation micro/macro F1 | Known-test micro/macro F1 |
+|---|---:|---:|
+| Current prefix | .7375 / .7040 | .7361 / .7003 |
+| Offline windows | .7359 / .7027 | .7351 / .7001 |
+
+Windows did not improve both validation metrics. They also introduce one
+shared validation/test window fingerprint; none of the held-out windows match
+actual training-prefix inputs. The predeclared input-audit gate rejects this
+candidate without dropping contracts. The verified prefix model is retained.
+Windows covered all raw bytes in these held-out cohorts:8354 validation and12178
+test windows. Longer inputs above131072 bytes may still have uncovered gaps.
+
+Exact opcode-skeleton diagnostics partition10686 known-test contracts into2879
+seen in training or validation and7807 unseen. This is not semantic-family
+isolation; slice scores never select the model. The complete measured results,
+per-class and fixed-threshold metrics, content hashes and timing are preserved
+in `resnet1d-window-evaluation.json`. The existing prefix validation/test metrics
+were reproduced before accepting this report.
+
+```bash
+python ml/image-vuln/evaluate_resnet_windows.py --cache DATA --checkpoint BUNDLE/selected.pt --report ml/image-vuln/resnet1d-evaluation.json --output ml/image-vuln/resnet1d-window-evaluation.json --ui-summary src/lib/image-ml/window-experiment.json
+```
+
+The Image ML panel now displays measured dataset F1/cohort/epoch cards, current
+ResNet input coverage, and a checkpoint-bound offline comparison disclosure.
+Missing metrics stay unavailable, and input/model changes clear result cards.
+Coverage is raw-byte coverage, not source-line or vulnerability coverage.

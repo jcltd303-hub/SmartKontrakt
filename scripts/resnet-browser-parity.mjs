@@ -4,6 +4,7 @@ import { chromium } from "playwright";
 const base = process.argv[2] ?? "http://127.0.0.1:8080/";
 const mode = process.argv[3] ?? "dev";
 const fixtures = JSON.parse(readFileSync("public/models/resnet1d-v1-parity.json", "utf8")).cases;
+const modelManifest = JSON.parse(readFileSync("public/models/resnet1d-v1.json", "utf8"));
 const browser = await chromium.launch({ headless: true });
 const results = [];
 mkdirSync("/workspace/screenshots/image-ml", { recursive: true });
@@ -98,11 +99,86 @@ try {
       );
       results.push({ viewport: name, fixture: index, ...result.timing });
       console.log(`${mode} ${name} fixture ${index}: parity passed`, JSON.stringify(result.timing));
-      if (index === 0)
-        await panel.screenshot({
+      if (index === 0) {
+        const evaluation = panel.getByRole("region", { name: "Model evaluation", exact: true });
+        assert.ok(
+          (await evaluation.innerText()).includes(
+            modelManifest.evaluation.validation.validation.microF1.toFixed(4),
+          ),
+        );
+        assert.ok(
+          (await evaluation.innerText()).includes(
+            modelManifest.training.samples.train.toLocaleString("en-US"),
+          ),
+        );
+        const coverage = panel.getByRole("region", { name: "Bytecode coverage", exact: true });
+        assert.ok((await coverage.innerText()).includes("bytes read"));
+        await panel.getByText("Compare offline window experiment", { exact: true }).click();
+        const comparison = panel.getByRole("region", { name: "Window experiment", exact: true });
+        assert.ok((await comparison.innerText()).includes("Prefix model retained"));
+        assert.ok((await comparison.innerText()).includes("not enabled in this browser"));
+        assert.equal(await comparison.locator("tbody tr").count(), 4);
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({
+          fullPage: true,
           path: `/workspace/screenshots/image-ml/${mode}-resnet-${name}.png`,
         });
+        const layout = await page.evaluate(() => ({
+          viewport: innerWidth,
+          documentWidth: document.documentElement.scrollWidth,
+          offenders: [...document.querySelectorAll("body *")]
+            .filter((element) => {
+              const rect = element.getBoundingClientRect();
+              return rect.width > 0 && (rect.right > innerWidth + 1 || rect.left < -1);
+            })
+            .filter((element) => {
+              let right = element.getBoundingClientRect().right;
+              for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+                if (
+                  ["auto", "scroll", "hidden", "clip"].includes(getComputedStyle(parent).overflowX)
+                )
+                  right = Math.min(right, parent.getBoundingClientRect().right);
+              }
+              return right > innerWidth + 1;
+            })
+            .slice(-25)
+            .map((element) => ({
+              tag: element.tagName,
+              className: String(element.className),
+              width: element.getBoundingClientRect().width,
+              left: element.getBoundingClientRect().left,
+              right: element.getBoundingClientRect().right,
+              text: element.textContent?.slice(0, 80),
+            })),
+        }));
+        if (layout.documentWidth > layout.viewport)
+          console.log("Overflow diagnostic", JSON.stringify(layout));
+        assert.equal(
+          layout.documentWidth > layout.viewport,
+          false,
+          "the Bytecode view must not overflow the page",
+        );
+      }
     }
+    await input.fill("0x" + "ff".repeat(16385));
+    assert.ok(
+      (
+        await panel.getByRole("region", { name: "Bytecode coverage", exact: true }).innerText()
+      ).includes("1 byte omitted"),
+    );
+    assert.equal(
+      await panel.getByRole("region", { name: "Model evaluation", exact: true }).count(),
+      0,
+      "editing clears result-derived evaluation cards",
+    );
+    await panel.getByLabel("ML model").selectOption("rgb");
+    assert.equal(
+      await panel.getByRole("region", { name: "Bytecode coverage", exact: true }).count(),
+      0,
+      "RGB must not claim ResNet prefix coverage",
+    );
+    await panel.getByLabel("ML model").selectOption("resnet");
+    await input.fill(fixtures[0].bytecode);
     // Cancel while a fresh worker loads; editing also clears both successful and in-flight results.
     // Hold the actual download so fast inference cannot remove Cancel before clicking it.
     let releaseDownload;
