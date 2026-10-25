@@ -425,7 +425,17 @@ async function runLoop(): Promise<void> {
         }
       }
       status.current = item.address;
-      const scanId = randomUUID();
+      // The scan id is stable per item across pause/resume: if a flush
+      // fails after this item's record was queued (the auto-PoC flush —
+      // the one flush that runs with the current record already in
+      // `pending`), the run parks with the item un-advanced, and the
+      // resumed attempt re-queues a record for the same item. Reusing
+      // the id makes that second queue an upsert of the same dossier
+      // (writeAuditBatch keys on conflict (id)) instead of a duplicate
+      // scan row for one address. A fresh /start builds fresh items, so
+      // ids never leak across runs.
+      const scanId = item.scanId ?? randomUUID();
+      item.scanId = scanId;
 
       // Proxy detection + view probes start now so they run in parallel
       // with the analysis; both are best-effort and never fail the item.

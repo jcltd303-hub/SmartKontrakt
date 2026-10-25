@@ -38,7 +38,14 @@ export async function savedScanVersions(
     where lower(target_address) = any(${addrs}::text[])
   `;
   for (const r of rows) {
-    const key = `${r.chain_id}:${r.addr}`;
+    // Keys are (chain, lower-address) in the canonical chain spelling.
+    // The chain is lowercased on BOTH sides of every comparison (here
+    // for stored rows, in shouldSkipInRun and the worker for wanted
+    // items): a row saved under a case variant ("Ethereum") is the same
+    // chain as "ethereum", and keying on the raw stored spelling would
+    // make that row invisible to the skip check forever. A missing
+    // chain reads as "ethereum", the same default scan-archive uses.
+    const key = `${(r.chain_id || "ethereum").toLowerCase()}:${r.addr}`;
     if (r.analyzer_version === current) currentSet.add(key);
     else if (!currentSet.has(key)) staleSet.add(key);
   }
@@ -88,7 +95,7 @@ export async function shouldSkipInRun(
   if (refresh === "all") return false;
   try {
     const { current: currentSet, stale: staleSet } = await savedScanVersions(sql, [wanted], current);
-    const key = `${wanted.chainId}:${wanted.address.toLowerCase()}`;
+    const key = `${wanted.chainId.toLowerCase()}:${wanted.address.toLowerCase()}`;
     if (refresh === "none") return currentSet.has(key) || staleSet.has(key);
     return currentSet.has(key);
   } catch {
@@ -97,19 +104,39 @@ export async function shouldSkipInRun(
 }
 
 /**
- * Preflight: the freshness skip reads `analyzer_version` and every save writes
- * it, so migration 0014 must be applied first. Fail with the fix rather than a
- * raw "column analyzer_version does not exist" from deep inside a flush.
+ * Preflight: the columns a pipeline run actually depends on must exist
+ * before it starts —
+ *   contract_scans.analyzer_version (0014): the freshness skip reads it
+ *     and every save writes it;
+ *   findings.corroborated (0016): every bulk save writes it;
+ *   contract_scans.resnet_json (0018): every bulk save writes it.
+ * Checking only the 0014 column (the original gate) let a database that
+ * predates 0016/0018 start a run whose every flush then failed deep
+ * inside the batch writer with a raw "column does not exist" — the run
+ * parked with no hint that migrations were the fix. Fail here instead,
+ * naming each missing column and its migration. Reconnecting the
+ * database in the app applies EVERY pending embedded migration, so the
+ * one instruction covers all three.
  */
+const REQUIRED_SCHEMA_COLUMNS: { table: string; column: string; migration: string }[] = [
+  { table: "contract_scans", column: "analyzer_version", migration: "0014" },
+  { table: "findings", column: "corroborated", migration: "0016" },
+  { table: "contract_scans", column: "resnet_json", migration: "0018" },
+];
+
 export async function assertFreshnessSchema(sql: Sql): Promise<void> {
-  const rows = await sql<{ ok: boolean }>`
-    select exists (
-      select 1 from information_schema.columns
-      where table_name = 'contract_scans' and column_name = 'analyzer_version'
-    ) as ok`;
-  if (!rows[0]?.ok) {
+  const rows = await sql<{ table_name: string; column_name: string }>`
+    select table_name, column_name from information_schema.columns
+    where (table_name = 'contract_scans' and column_name in ('analyzer_version', 'resnet_json'))
+       or (table_name = 'findings' and column_name = 'corroborated')`;
+  const present = new Set(rows.map((r) => `${r.table_name}.${r.column_name}`));
+  const missing = REQUIRED_SCHEMA_COLUMNS.filter((c) => !present.has(`${c.table}.${c.column}`));
+  if (missing.length > 0) {
+    const list = missing
+      .map((c) => `${c.table}.${c.column} (migration ${c.migration} not applied)`)
+      .join(", ");
     throw new Error(
-      "contract_scans.analyzer_version is missing (migration 0014 not applied). " +
+      `Required schema column(s) missing: ${list}. ` +
       "Apply migrations by reconnecting the Supabase database in the app " +
       "(Connect to Supabase), then start the run again.",
     );

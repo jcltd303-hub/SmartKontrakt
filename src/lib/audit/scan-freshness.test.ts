@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createSqlClient } from "../sql-client.ts";
 import type { Sql } from "../sql-client.ts";
-import { savedScanVersions, shouldSkipInRun } from "./scan-freshness.server.ts";
+import { assertFreshnessSchema, savedScanVersions, shouldSkipInRun } from "./scan-freshness.server.ts";
 
 /**
  * In-run dedupe (2026-10-22, improvement #1 narrowed): the worker's
@@ -82,6 +82,51 @@ test("shouldSkipInRun: a failing check fails open (proceed), under every policy"
   }
 });
 
+test("savedScanVersions: current rows classify current; stale and NULL rows classify stale", async () => {
+  const B_LOWER = B.toLowerCase();
+  const { sql } = fakeDb([
+    { chain_id: "ethereum", addr: A.toLowerCase(), analyzer_version: STAMP },
+    { chain_id: "ethereum", addr: B_LOWER, analyzer_version: OLD_STAMP },
+    { chain_id: "ethereum", addr: "0xcccc", analyzer_version: null },
+  ]);
+  const { current, stale } = await savedScanVersions(
+    sql,
+    [item(A), item(B), item("0xCCCC")],
+    STAMP,
+  );
+  assert.deepEqual([...current], [`ethereum:${A.toLowerCase()}`]);
+  assert.deepEqual(
+    [...stale].sort(),
+    [`ethereum:${B_LOWER}`, "ethereum:0xcccc"],
+  );
+});
+
+test("savedScanVersions: a row stamped with the pre-ResNet stamp is stale, never current", async () => {
+  // The literal stamp the analyzer wrote before the ResNet batch
+  // (baseline 2026-10-23.1; derivation pinned in analyzer-version.test).
+  // Rows carrying it were never screened and their scores lack the ML
+  // term — the /start classification must route them to re-analysis.
+  const PRE_RESNET = "2026-10-23.1+26069e703d4873b4";
+  const { sql } = fakeDb([{ chain_id: "ethereum", addr: A.toLowerCase(), analyzer_version: PRE_RESNET }]);
+  const { current, stale } = await savedScanVersions(sql, [item(A)], STAMP);
+  assert.equal(current.size, 0);
+  assert.deepEqual([...stale], [`ethereum:${A.toLowerCase()}`]);
+});
+
+test("savedScanVersions: chain case never splits a key (stored 'Ethereum' matches wanted 'ethereum')", async () => {
+  // Regression: keys were built from the raw stored chain_id, so a row
+  // saved under a case variant produced key "Ethereum:0x…" and the
+  // worker's wanted key "ethereum:0x…" never matched — the current row
+  // was invisible to the skip check and re-analyzed on every run.
+  const { sql } = fakeDb([{ chain_id: "Ethereum", addr: A.toLowerCase(), analyzer_version: STAMP }]);
+  const { current } = await savedScanVersions(sql, [item(A)], STAMP);
+  assert.deepEqual([...current], [`ethereum:${A.toLowerCase()}`]);
+  // And the mirror image through the in-run check: wanted in a case
+  // variant, stored canonical.
+  const { sql: sql2 } = fakeDb([{ chain_id: "ethereum", addr: A.toLowerCase(), analyzer_version: STAMP }]);
+  assert.equal(await shouldSkipInRun(sql2, item(A, "Ethereum"), "stale", STAMP), true);
+});
+
 test("savedScanVersions unchanged: a key with any current row is never stale", async () => {
   const { sql } = fakeDb([
     { chain_id: "ethereum", addr: A.toLowerCase(), analyzer_version: OLD_STAMP },
@@ -90,6 +135,51 @@ test("savedScanVersions unchanged: a key with any current row is never stale", a
   const { current, stale } = await savedScanVersions(sql, [item(A)], STAMP);
   assert.equal(current.has(`ethereum:${A.toLowerCase()}`), true);
   assert.equal(stale.has(`ethereum:${A.toLowerCase()}`), false);
+});
+
+// ------------------------------------------------------ schema preflight --
+// assertFreshnessSchema gates /start on the columns a run actually
+// reads/writes: analyzer_version (0014, the skip itself), findings'
+// corroborated (0016, every bulk save), resnet_json (0018, every bulk
+// save). The original gate checked only 0014 — a pre-0016/0018 database
+// passed it and then failed every flush with a raw column error.
+
+function fakeSchema(present: string[]): Sql {
+  const rows = present.map((p) => {
+    const [table_name, column_name] = p.split(".") as [string, string];
+    return { table_name, column_name };
+  });
+  return createSqlClient((async () => rows) as never);
+}
+
+const ALL_SCHEMA = [
+  "contract_scans.analyzer_version",
+  "findings.corroborated",
+  "contract_scans.resnet_json",
+];
+
+test("assertFreshnessSchema: passes when every required column exists", async () => {
+  await assertFreshnessSchema(fakeSchema(ALL_SCHEMA));
+});
+
+test("assertFreshnessSchema: a missing post-0014 column fails the gate, naming its migration", async () => {
+  await assert.rejects(
+    assertFreshnessSchema(fakeSchema(ALL_SCHEMA.filter((c) => c !== "contract_scans.resnet_json"))),
+    /resnet_json.*migration 0018/,
+  );
+  await assert.rejects(
+    assertFreshnessSchema(fakeSchema(ALL_SCHEMA.filter((c) => c !== "findings.corroborated"))),
+    /corroborated.*migration 0016/,
+  );
+});
+
+test("assertFreshnessSchema: the original 0014 check still fires (message preserved in substance)", async () => {
+  await assert.rejects(
+    assertFreshnessSchema(fakeSchema(ALL_SCHEMA.filter((c) => c !== "contract_scans.analyzer_version"))),
+    /analyzer_version.*migration 0014 not applied/,
+  );
+  // Nothing present: every missing column is named in one error.
+  await assert.rejects(assertFreshnessSchema(fakeSchema([])), /0014.*0016.*0018/s);
 });
 
 // ------------------------------------------------------ loop simulation --
@@ -106,10 +196,12 @@ async function simulate(
   refresh: string,
   sql: Sql,
   afterItem?: (index: number) => void | Promise<void>,
-): Promise<{ analyzed: number; dupes: number }> {
+  opts?: { failOnce?: Set<string> },
+): Promise<{ analyzed: number; dupes: number; attempts: number }> {
   const seen = new Set<string>();
   let analyzed = 0;
   let dupes = 0;
+  let attempts = 0;
   for (let idx = 0; idx < items.length; idx++) {
     const it = items[idx]!;
     if (it.status === "skipped") continue;
@@ -125,12 +217,21 @@ async function simulate(
       dupes++;
       continue;
     }
+    attempts++;
+    // A failed analysis (worker.ts catch path): the item counts as
+    // failed, the index advances, and the key is deliberately NOT added
+    // to the seen set — a later twin still gets its own attempt.
+    if (opts?.failOnce?.has(key)) {
+      opts.failOnce.delete(key);
+      it.status = "failed";
+      continue;
+    }
     analyzed++;
     it.status = "completed";
     seen.add(key);
     if (afterItem) await afterItem(idx);
   }
-  return { analyzed, dupes };
+  return { analyzed, dupes, attempts };
 }
 
 const simItem = (address: string): SimItem => ({ chainId: "ethereum", address, status: "pending" });
@@ -183,4 +284,34 @@ test("loop: a throwing check fails open — the item is processed", async () => 
   assert.equal(analyzed, 1);
   assert.equal(dupes, 0);
   assert.equal(items[0]!.status, "completed");
+});
+
+test("loop: a FAILED item is not deduped — its twin gets its own attempt", async () => {
+  // The worker's failure path (non-RPC analyze error) advances the
+  // index without adding the key to runSeen, so a twin later in the
+  // file is a fresh attempt, not a dupe. (An RpcUnavailableError is the
+  // opposite case — it parks the run with the index NOT advanced; that
+  // path lives in worker.ts and is not part of this simulation.)
+  const { sql } = fakeDb([]);
+  const items = [simItem(A), simItem(A.toLowerCase())];
+  const key = `ethereum:${A.toLowerCase()}`;
+  const { analyzed, dupes, attempts } = await simulate(items, "stale", sql, undefined, {
+    failOnce: new Set([key]),
+  });
+  assert.equal(attempts, 2);
+  assert.equal(analyzed, 1);
+  assert.equal(dupes, 0);
+  assert.equal(items[0]!.status, "failed");
+  assert.equal(items[1]!.status, "completed");
+});
+
+test("loop: cross-chain twins are independent — neither dedupes the other", async () => {
+  const { sql } = fakeDb([]);
+  const items: SimItem[] = [
+    { chainId: "ethereum", address: A, status: "pending" },
+    { chainId: "bsc", address: A, status: "pending" },
+  ];
+  const { analyzed, dupes } = await simulate(items, "stale", sql);
+  assert.equal(analyzed, 2);
+  assert.equal(dupes, 0);
 });

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { analyzeAddress } from "./address-fetcher.ts";
+import { analyzeAddress, countValidAddresses, parseAddressList } from "./address-fetcher.ts";
 import { riskScore } from "./risk.ts";
 import type { ResnetResult } from "./resnet-result.ts";
 
@@ -60,7 +60,7 @@ function stubResult(): ResnetResult {
       { label: "unchecked-calls", score: 0.1, threshold: 0.3, flagged: false },
       { label: "others", score: 0.1, threshold: 0.275, flagged: false },
     ],
-    inputBytes: RUNTIME_CODE.replace(/^0x/i, "").length / 2,
+    inputBytes: 100,
     truncated: false,
     ranAt: "2026-10-24T00:00:00.000Z",
   };
@@ -156,14 +156,48 @@ test("bytecode entry: bytecode + heuristic ABI attached, resnet runs over the fe
   }
 });
 
-test("without an injected Node runner the audit records unavailable and keeps static score", async () => {
+test("without an injected runner the audit is the pre-ResNet one (no screening, static score)", async () => {
   const restore = installFetch("verified");
   try {
     const { report } = await analyzeAddress(ADDRESS, "ethereum");
-    assert.equal(report.resnet, null);
-    assert.equal(report.inventory.resnetStatus?.status, "unavailable");
+    assert.equal(report.resnet, undefined);
     assert.equal(report.riskScore, riskScore(report.findings));
   } finally {
     restore();
   }
+});
+
+// ------------------------------------------------------------ parse / skip keys --
+// The pipeline's skip logic keys everything on (chain, address). These
+// pins cover how parseAddressList — the one place file items are born —
+// builds that key space (skip-audit, 2026-10-25).
+
+const PARSE_A = "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa";
+
+test("parseAddressList: the same address on two chains is two entries, not a duplicate", () => {
+  // Regression: dedupe keyed on the address alone silently dropped the
+  // second chain's entry, so that chain's scan never ran and its saved
+  // row never existed to skip against.
+  const items = parseAddressList(`${PARSE_A},Token,ethereum\n${PARSE_A},Token,bsc\n`, "ethereum");
+  assert.equal(items.length, 2);
+  assert.deepEqual(items.map((i) => i.chainId), ["ethereum", "bsc"]);
+  assert.equal(countValidAddresses(`${PARSE_A},Token,ethereum\n${PARSE_A},Token,bsc\n`, "ethereum"), 2);
+});
+
+test("parseAddressList: a true duplicate (same chain, any address case) collapses to one", () => {
+  const items = parseAddressList(`${PARSE_A}\n${PARSE_A.toLowerCase()}\n${PARSE_A.toUpperCase().replace("0X", "0x")}\n`, "ethereum");
+  assert.equal(items.length, 1);
+  assert.equal(countValidAddresses(`${PARSE_A}\n${PARSE_A.toLowerCase()}\n`, "ethereum"), 1);
+});
+
+test("parseAddressList: the default chain is canonicalized (case, name, numeric id)", () => {
+  // A non-canonical default ("Ethereum", "1") used to pass through
+  // verbatim as item.chainId, so skip keys never matched the stored
+  // "ethereum" rows and saves wrote a divergent chain_id.
+  assert.equal(parseAddressList(`${PARSE_A}\n`, "Ethereum")[0]?.chainId, "ethereum");
+  assert.equal(parseAddressList(`${PARSE_A}\n`, "1")[0]?.chainId, "ethereum");
+  assert.equal(parseAddressList(`${PARSE_A}\n`, "BSC")[0]?.chainId, "bsc");
+  assert.equal(parseAddressList(`${PARSE_A}\n`, "56")[0]?.chainId, "bsc");
+  // A per-line chain hint still wins over the default.
+  assert.equal(parseAddressList(`${PARSE_A},Token,bsc\n`, "Ethereum")[0]?.chainId, "bsc");
 });

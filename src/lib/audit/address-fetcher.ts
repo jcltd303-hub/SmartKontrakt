@@ -98,6 +98,31 @@ export const ALL_RPC_URLS: string[] = Array.from(
   new Set(SUPPORTED_CHAINS.flatMap((c) => c.rpcUrls))
 );
 
+/**
+ * Resolve a user-supplied chain reference — a canonical id ("ethereum"),
+ * a case variant ("Ethereum"), a display name ("BNB Smart Chain"), or a
+ * numeric chain id ("1", "56") — to the canonical SUPPORTED_CHAINS id.
+ * Unknown values pass through trimmed: a chain this build does not know
+ * keeps its caller-supplied spelling rather than being silently remapped.
+ *
+ * Every (chain, address) key in the system — the saved-scan skip check,
+ * the in-run dedupe set, the chain_id written on save — is built from
+ * the chain id, so a non-canonical spelling ("Ethereum", "1") would
+ * never match the stored "ethereum" rows: the entry would re-analyze
+ * forever and save under a divergent chain_id. Canonicalizing at parse
+ * time (the one place file items are born) keeps every key downstream
+ * in the canonical spelling.
+ */
+export function canonicalChainId(raw?: string | null): string {
+  const needle = (raw ?? "").trim();
+  if (!needle) return "ethereum";
+  const lower = needle.toLowerCase();
+  const match = SUPPORTED_CHAINS.find(
+    (c) => c.id.toLowerCase() === lower || c.name.toLowerCase().includes(lower) || String(c.chainId) === needle
+  );
+  return match ? match.id : needle;
+}
+
 export function getRpcsForChain(chainIdOrName?: string): string[] {
   if (!chainIdOrName) return SUPPORTED_CHAINS[0].rpcUrls;
   const needle = chainIdOrName.toLowerCase().trim();
@@ -303,7 +328,7 @@ export function extractFirstColAddress(line: string): { address: string; label?:
  * High-performance, zero-allocation line scanner to count valid EVM addresses
  * in the first column of CSV or multiline text.
  */
-export function countValidAddresses(text: string): number {
+export function countValidAddresses(text: string, defaultChainId = "ethereum"): number {
   if (!text) return 0;
   let count = 0;
   const seen = new Set<string>();
@@ -316,8 +341,11 @@ export function countValidAddresses(text: string): number {
 
     const line = text.slice(start, end);
     const parsed = extractFirstColAddress(line);
-    if (parsed && !seen.has(parsed.address)) {
-      seen.add(parsed.address);
+    // Dedupe key is (chain, address), exactly as parseAddressList builds
+    // items: the same address on two chains is two entries, not a dupe.
+    const key = parsed ? `${parsed.chainIdHint || canonicalChainId(defaultChainId)}:${parsed.address}` : null;
+    if (parsed && key && !seen.has(key)) {
+      seen.add(key);
       count++;
     }
 
@@ -352,11 +380,17 @@ export function parseAddressList(
 
     const line = text.slice(start, end);
     const parsed = extractFirstColAddress(line);
-    if (parsed && !seen.has(parsed.address)) {
-      seen.add(parsed.address);
+    // Dedupe key is (chain, address): the same address listed for two
+    // chains is two entries (its scans, saves and skip keys are all
+    // chain-scoped), while a true duplicate — same chain, any address
+    // case — collapses to the first occurrence. Keying on the address
+    // alone silently dropped the second chain's entry.
+    const chainId = parsed ? parsed.chainIdHint || canonicalChainId(defaultChainId) : null;
+    const dedupeKey = parsed && chainId ? `${chainId}:${parsed.address}` : null;
+    if (parsed && chainId && dedupeKey && !seen.has(dedupeKey)) {
+      seen.add(dedupeKey);
       const lowerAddr = parsed.address;
       const label = parsed.label || `Contract ${lowerAddr.slice(0, 6)}...${lowerAddr.slice(-4)}`;
-      const chainId = parsed.chainIdHint || defaultChainId;
 
       items.push({
         id: `addr-${lowerAddr}-${lineIdx}`,
@@ -467,9 +501,10 @@ async function fetchBytecodeRpc(address: string, rpcUrls: string[]): Promise<str
       const json = (await res.json()) as { result?: string; error?: unknown };
       const code = json.result;
 
-      if (json.error || typeof code !== "string" || !/^0x(?:[0-9a-f]{2})*$/i.test(code)) continue;
-      sawResult = true;
-      if (code.length > 2) return code;
+      if (typeof code === "string") sawResult = true;
+      if (code && typeof code === "string" && code !== "0x" && code.length > 4) {
+        return code;
+      }
     } catch {
       // try next RPC
     }
@@ -500,8 +535,8 @@ export async function analyzeAddress(
      * address entry — verified-source and bytecode-only alike — gets a
      * screening pass over its runtime bytecode before the report is
      * returned, and the report's riskScore includes the bounded ML
-     * term. When omitted, browsers use the shared worker runner; Node records
-     * an explicit unavailable status. Always fail-soft.
+     * term. When omitted (e.g. a caller with no model available), the
+     * audit is exactly the pre-ResNet one. Always fail-soft.
      */
     resnetRunner?: ResnetRunner;
   },
@@ -540,19 +575,10 @@ export async function analyzeAddress(
       if (gathered) {
         r.inventory.abi = gathered.abi;
         r.inventory.abiSource = gathered.source;
-      } else {
-        r.inventory.notes.push("ABI unavailable: no verified ABI or usable heuristic interface could be gathered.");
       }
     } catch {
-      r.inventory.notes.push("ABI unavailable: interface gathering failed.");
+      // leave unset
     }
-  };
-
-  const attachFullResnet = async (report: Report, code: string | null): Promise<void> => {
-    const runner = opts?.resnetRunner ?? (typeof window !== "undefined"
-      ? async (bytecode: string) => (await import("../image-ml/run-resnet-browser.ts")).runResnetBrowser(bytecode)
-      : async () => null);
-    await attachResnetToReport(report, code, runner);
   };
 
   // 1. Try Sourcify verified source
@@ -633,9 +659,11 @@ export async function analyzeAddress(
     // ResNet1D screening over the runtime bytecode fetched above — the
     // same code the Bytecode & CFG tab renders. Without the runtime
     // fetch this path would have nothing to classify: the screening
-    // consumes report.runtimeBytecode, never the source text. Missing runtime
-    // is recorded explicitly as unavailable.
-    await attachFullResnet(report, runtimeCodeForReport(report));
+    // consumes report.runtimeBytecode, never the source text. Skipped
+    // silently when the bytecode fetch failed (already noted above).
+    if (opts?.resnetRunner) {
+      await attachResnetToReport(report, runtimeCodeForReport(report), opts.resnetRunner);
+    }
     return {
       report,
       rawBody: sourcifyMatch.source,
@@ -656,8 +684,10 @@ export async function analyzeAddress(
   await attachValueAndAbi(report);
 
   // ResNet1D screening: this path's whole input IS the runtime code.
+  if (opts?.resnetRunner) {
+    await attachResnetToReport(report, runtimeCodeForReport(report, bytecode), opts.resnetRunner);
+  }
 
-  await attachFullResnet(report, bytecode);
   return {
     report,
     rawBody: bytecode,

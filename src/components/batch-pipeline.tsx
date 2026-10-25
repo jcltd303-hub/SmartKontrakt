@@ -209,8 +209,8 @@ export function BatchPipeline({ onInspectItem, active = true }: BatchPipelinePro
   // Ultra-fast zero-allocation address count
   const parsedCount = useMemo(() => {
     if (fileMeta) return fileMeta.count;
-    return countValidAddresses(inputText);
-  }, [inputText, fileMeta]);
+    return countValidAddresses(inputText, selectedChainId);
+  }, [inputText, fileMeta, selectedChainId]);
 
   // Parse text into queue
   const handleLoadNewBatch = () => {
