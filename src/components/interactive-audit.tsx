@@ -1,37 +1,44 @@
 import { PocEvidenceBadge } from "@/components/poc-evidence-badge";
 import { classifyPocEvidence } from "@/lib/audit/poc-evidence";
 import { useState, useMemo } from "react";
-import { Terminal, Play, Wand2, CheckCircle2, RefreshCcw, FileCode, Cpu, Globe, RotateCw, AlertTriangle, ShieldCheck } from "lucide-react";
+import { Terminal, Play, Wand2, CheckCircle2, RefreshCcw, FileCode, Cpu, Globe, RotateCw, AlertTriangle, ShieldCheck, Download } from "lucide-react";
 import { runPocOnBackend, runPocWithRpcRetries, getBackendUrl, isPocCompileError, isRpcOrForkFailure, type RpcRetryProgress } from "@/lib/audit/foundry-backend";
 import { requestPocRepair } from "@/lib/audit/ai.functions";
-import { SUPPORTED_CHAINS, getRpcsForChain } from "@/lib/audit/address-fetcher";
+import { SUPPORTED_CHAINS, getRpcsForChain, isValidEvmAddress } from "@/lib/audit/address-fetcher";
 import { saveSmartPocResult } from "@/lib/audit/smart-poc-save";
 import { getStoredSupabaseConfig } from "@/lib/supabase";
 import type { PocResult } from "@/lib/audit/types";
+import { interactiveBoxMismatch, type InteractiveSourceState } from "@/lib/audit/interactive-source";
 
-export function InteractiveAuditTab() {
-  const [solidityCode, setSolidityCode] = useState<string>(
-    `// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+export type InteractiveAuditTabProps = {
+  /** Shared workbench selection: the address both tabs read/write. */
+  address: string;
+  chainId: string;
+  onAddressChange: (value: string) => void;
+  onChainChange: (value: string) => void;
+  /** The source box state (lifted to the workbench controller). */
+  source: InteractiveSourceState;
+  onSourceChange: (code: string) => void;
+  /** Fetch the selected address's source into the box. */
+  onLoadSource: () => void;
+};
 
-import "forge-std/Test.sol";
-
-contract Vault {
-    mapping(address => uint256) public balances;
-    
-    function deposit() external payable {
-        balances[msg.sender] += msg.value;
-    }
-    
-    function withdraw(uint256 amount) external {
-        require(balances[msg.sender] >= amount, "Insufficient balance");
-        (bool success, ) = msg.sender.call{value: amount}("");
-        require(success, "Transfer failed");
-        balances[msg.sender] -= amount; // Vulnerability: State update after external call!
-    }
-}
-`
-  );
+export function InteractiveAuditTab({
+  address,
+  chainId,
+  onAddressChange,
+  onChainChange,
+  source,
+  onSourceChange,
+  onLoadSource,
+}: InteractiveAuditTabProps) {
+  // The box content and the PoC target come from the shared workbench
+  // selection; everything below consumes them exactly as the old local
+  // state did (the source is the repair body, the target is forked).
+  const solidityCode = source.code;
+  const targetAddress = address;
+  const selectedChainId = chainId;
+  const mismatchNotice = interactiveBoxMismatch(source, address);
 
   const [testCode, setTestCode] = useState<string>(
     `// SPDX-License-Identifier: MIT
@@ -56,8 +63,6 @@ contract PoC is Test {
 `
   );
 
-  const [targetAddress, setTargetAddress] = useState<string>("0x000000000000000000000000000000000000dead");
-  const [selectedChainId, setSelectedChainId] = useState<string>("ethereum");
   const [customRpcUrl, setCustomRpcUrl] = useState<string>("");
   const [autoRetryAllRpcs, setAutoRetryAllRpcs] = useState<boolean>(true);
   const [saveNotice, setSaveNotice] = useState("");
@@ -185,9 +190,45 @@ contract PoC is Test {
           <p className="text-xs text-[#a39886]">
             Modify the contract source code below to experiment with custom audit scenarios and vulnerabilities.
           </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={onLoadSource}
+              disabled={source.status === "loading" || !isValidEvmAddress(targetAddress.trim())}
+              title="Fetch the target address's source (Sourcify / explorer) into this box"
+              className="px-2.5 py-1.5 bg-[#2a251c] hover:bg-[#3a3428] border border-[#3a3428] text-[#f4efe6] font-bold text-xs rounded flex items-center gap-1.5 transition-colors disabled:opacity-50"
+            >
+              {source.status === "loading" ? (
+                <RefreshCcw className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Download className="w-3.5 h-3.5" />
+              )}
+              <span>{source.status === "loading" ? "Loading source…" : "Load source by address"}</span>
+            </button>
+            {source.codeForAddress && (
+              <span className="text-[10px] font-mono px-2 py-1 rounded bg-[#12110e] border border-[#3a3428] text-[#a39886]">
+                Source loaded for {source.codeForAddress.slice(0, 10)}…{source.codeForAddress.slice(-6)}
+                {source.edited ? " (edited)" : ""}
+              </span>
+            )}
+          </div>
+          {source.status === "error" && source.error && (
+            <p className="text-xs text-rose-300 bg-rose-950/40 border border-rose-800/60 rounded p-2.5">
+              Source load failed: {source.error}
+            </p>
+          )}
+          {source.notice && (
+            <p className="text-xs text-amber-300 bg-amber-950/40 border border-amber-800/60 rounded p-2.5">
+              {source.notice}
+            </p>
+          )}
+          {mismatchNotice && source.status !== "error" && (
+            <p className="text-xs text-amber-300 bg-amber-950/40 border border-amber-800/60 rounded p-2.5">
+              {mismatchNotice}
+            </p>
+          )}
           <textarea
             value={solidityCode}
-            onChange={(e) => setSolidityCode(e.target.value)}
+            onChange={(e) => onSourceChange(e.target.value)}
             rows={14}
             className="w-full font-mono text-xs bg-[#12110e] border border-[#3a3428] text-[#f4efe6] rounded-lg p-3 focus:outline-none focus:border-[#e8a54b]"
           />
@@ -225,7 +266,7 @@ contract PoC is Test {
               <select
                 value={selectedChainId}
                 onChange={(e) => {
-                  setSelectedChainId(e.target.value);
+                  onChainChange(e.target.value);
                   setCustomRpcUrl("");
                 }}
                 className="w-full bg-[#12110e] border border-[#3a3428] text-xs font-mono text-[#f4efe6] px-2 py-1.5 rounded focus:outline-none focus:border-[#e8a54b]"
@@ -283,7 +324,7 @@ contract PoC is Test {
               <input
                 type="text"
                 value={targetAddress}
-                onChange={(e) => setTargetAddress(e.target.value)}
+                onChange={(e) => onAddressChange(e.target.value)}
                 placeholder="Target 0x..."
                 className="bg-[#12110e] border border-[#3a3428] text-xs font-mono text-[#f4efe6] px-2 py-1 rounded w-36"
               />

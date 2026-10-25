@@ -67,6 +67,9 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     handleFetchSingleAddress,
     isFetchingAddress,
     addressFetchError,
+    interactiveSource,
+    handleInteractiveSourceChange,
+    handleLoadInteractiveSource,
     proxyInfo,
     handleSelectSample,
     selectedSampleId,
@@ -181,7 +184,15 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
             }}
           />
         ) : workbenchMode === "interactive" ? (
-          <InteractiveAuditTab />
+          <InteractiveAuditTab
+            address={singleAddress}
+            chainId={singleAddressChain}
+            onAddressChange={setSingleAddress}
+            onChainChange={setSingleAddressChain}
+            source={interactiveSource}
+            onSourceChange={handleInteractiveSourceChange}
+            onLoadSource={handleLoadInteractiveSource}
+          />
         ) : workbenchMode === "poc-audits" ? (
           <RecentPocAudits onLoadScanInWorkbench={handleLoadStoredScanById} />
         ) : (

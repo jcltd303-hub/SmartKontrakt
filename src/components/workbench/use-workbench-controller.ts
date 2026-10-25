@@ -16,6 +16,15 @@ import {
 } from "@/lib/audit/foundry-backend";
 import { applyFourbyteResults, fourbyteResultsFromReport } from "@/lib/audit/fourbyte";
 import { resolveFourbyte } from "@/lib/audit/fourbyte.functions";
+import {
+  applyInteractiveEdit,
+  applyInteractiveLoadError,
+  applyWorkbenchPrefill,
+  beginInteractiveLoad,
+  initialInteractiveSource,
+  settleInteractiveLoad,
+  type InteractiveSourceState,
+} from "@/lib/audit/interactive-source";
 import type { ScanSummary, StoredScan } from "@/lib/audit/persist.server";
 import { selectPocFallbacks } from "@/lib/audit/poc-fallbacks";
 import { externalTokenCandidate } from "@/lib/audit/poc-audit-llm";
@@ -70,11 +79,32 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
   const [singleAddressChain, setSingleAddressChain] = useState<string>("ethereum");
   const [isFetchingAddress, setIsFetchingAddress] = useState<boolean>(false);
   const [addressFetchError, setAddressFetchError] = useState<string | null>(null);
+  // The address the current contractBody was loaded for (single-address
+  // fetch, stored scan, pipeline inspect) — null whenever the body did
+  // not come from an address load. The Interactive tab's prefill trusts
+  // only this pairing, never the bare address field, so a typed-but-
+  // never-fetched address can't dress the sample/pasted body up as that
+  // contract's source.
+  const [bodyLoadedForAddress, setBodyLoadedForAddress] = useState<string | null>(null);
 
   // Input state
   const [selectedSampleId, setSelectedSampleId] = useState<string>("relic");
-  const [contractBody, setContractBody] = useState<string>(defaultSample.body);
+  const [contractBody, setContractBodyRaw] = useState<string>(defaultSample.body);
   const [contractLabel, setContractLabel] = useState<string>(defaultSample.label);
+  // External body replacement (editor typing/clear, RAG hand-off): the
+  // body no longer provably belongs to the address it was loaded for.
+  // Internal load paths use setContractBodyRaw + setBodyLoadedForAddress.
+  const setContractBody = (body: string) => {
+    setContractBodyRaw(body);
+    setBodyLoadedForAddress(null);
+  };
+
+  // Interactive Audit & PoC source-box state, lifted here so it survives
+  // mode switches and the prefill can protect user edits (the rules live
+  // in lib/audit/interactive-source.ts).
+  const [interactiveSource, setInteractiveSource] = useState<InteractiveSourceState>(() =>
+    initialInteractiveSource(),
+  );
 
   // Analysis state initialized synchronously for identical SSR & Client hydration
   const [report, setReport] = useState<Report>(() =>
@@ -413,7 +443,8 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
   // Load a stored scan from Local DB Records
   const handleLoadStoredScan = (scan: StoredScan) => {
     setSelectedSampleId("custom");
-    setContractBody(scan.body);
+    setContractBodyRaw(scan.body);
+    setBodyLoadedForAddress(scan.targetAddress ?? null);
     setContractLabel(scan.label);
     setReport(scan.report);
     setFindingAdjudications({});
@@ -723,7 +754,8 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
   // Handle sample selection
   const handleSelectSample = (sample: Sample) => {
     setSelectedSampleId(sample.id);
-    setContractBody(sample.body);
+    setContractBodyRaw(sample.body);
+    setBodyLoadedForAddress(null);
     setContractLabel(sample.label);
     handleRunAnalysis(sample.body, sample.label);
   };
@@ -761,7 +793,8 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
         // Enrichment failed — keep the un-enriched report.
       }
       setSelectedSampleId("custom");
-      setContractBody(res.rawBody);
+      setContractBodyRaw(res.rawBody);
+      setBodyLoadedForAddress(clean);
       setContractLabel(res.report.label);
       setReport(res.report);
       setActiveTab("findings");
@@ -784,15 +817,15 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
 
   // Inspect item from batch pipeline in workbench
   const handleInspectPipelineItem = (pipelineReport: Report, rawBody: string, label: string) => {
+    // If label or id looks like an address, try proxy detection
+    const match = label.match(/0x[0-9a-fA-F]{40}/);
     setSelectedSampleId("custom");
-    setContractBody(rawBody);
+    setContractBodyRaw(rawBody);
+    setBodyLoadedForAddress(match?.[0] ?? null);
     setContractLabel(label);
     setReport(pipelineReport);
     setWorkbenchMode("audit");
     setActiveTab("findings");
-
-    // If label or id looks like an address, try proxy detection
-    const match = label.match(/0x[0-9a-fA-F]{40}/);
     if (match && match[0]) {
       setSingleAddress(match[0]);
       detectProxyArchitecture(match[0], singleAddressChain)
@@ -801,6 +834,41 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
       probeContractInterfaces(match[0], singleAddressChain)
         .then((pr) => setProbes(pr))
         .catch(() => setProbes([]));
+    }
+  };
+
+  // ---- Interactive Audit & PoC: source box --------------------------------
+  const handleInteractiveSourceChange = (code: string) => {
+    setInteractiveSource((s) => applyInteractiveEdit(s, code));
+  };
+
+  // Load the shared selected address's source into the interactive box.
+  // This is the audit tab's own fetch path — analyzeAddress with the
+  // browser ResNet runner, same arguments as handleFetchSingleAddress —
+  // but the result fills ONLY the interactive box: the workbench's body,
+  // report and saved-record flow are untouched, so experimenting in the
+  // sandbox can never corrupt the audit in progress.
+  const handleLoadInteractiveSource = async () => {
+    const clean = singleAddress.trim();
+    if (!isValidEvmAddress(clean)) {
+      setInteractiveSource((s) =>
+        applyInteractiveLoadError(
+          s,
+          "Invalid EVM address format (expected 0x + 40 hex characters)",
+        ),
+      );
+      return;
+    }
+    setInteractiveSource((s) => beginInteractiveLoad(s));
+    try {
+      const res = await analyzeAddress(clean, singleAddressChain, undefined, {
+        resnetRunner: runResnetBrowser,
+      });
+      setInteractiveSource((s) => settleInteractiveLoad(s, clean, res));
+    } catch (err) {
+      setInteractiveSource((s) =>
+        applyInteractiveLoadError(s, err instanceof Error ? err.message : String(err)),
+      );
     }
   };
 
@@ -1348,7 +1416,8 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
       if (content) {
         const cleanName = file.name.replace(/\.[^/.]+$/, "");
         setSelectedSampleId("custom");
-        setContractBody(content);
+        setContractBodyRaw(content);
+        setBodyLoadedForAddress(null);
         setContractLabel(cleanName);
         handleRunAnalysis(content, cleanName);
       }
@@ -1458,6 +1527,30 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     return report?.inventory.disassembly ?? "";
   }, [contractBody, report]);
 
+  // Entering the Interactive tab: offer the source the workbench holds
+  // for its selected address. The pairing check (bodyLoadedForAddress)
+  // is what makes the held body trustworthy; applyWorkbenchPrefill then
+  // fills only a pristine box, so a mode switch can never silently
+  // replace sandbox work (see lib/audit/interactive-source.ts).
+  useEffect(() => {
+    if (workbenchMode !== "interactive") return;
+    const address = singleAddress.trim();
+    const held =
+      bodyLoadedForAddress !== null &&
+      address !== "" &&
+      bodyLoadedForAddress.toLowerCase() === address.toLowerCase();
+    setInteractiveSource((s) =>
+      applyWorkbenchPrefill(s, {
+        address,
+        heldBody: held ? contractBody : null,
+        heldBodyIsBytecode: held ? isBytecode : false,
+      }),
+    );
+    // Fires on entering interactive mode; the workbench values are read
+    // from the render that flipped the mode.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workbenchMode]);
+
   return {
     fileInputRef,
     handleFileUpload,
@@ -1485,6 +1578,9 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     handleFetchSingleAddress,
     isFetchingAddress,
     addressFetchError,
+    interactiveSource,
+    handleInteractiveSourceChange,
+    handleLoadInteractiveSource,
     proxyInfo,
     handleSelectSample,
     selectedSampleId,
