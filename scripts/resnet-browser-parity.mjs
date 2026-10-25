@@ -118,15 +118,35 @@ try {
         assert.ok((await comparison.innerText()).includes("Prefix model retained"));
         assert.ok((await comparison.innerText()).includes("not enabled in this browser"));
         assert.equal(await comparison.locator("tbody tr").count(), 4);
-        assert.equal(
-          await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth),
-          false,
-          "insight cards must not overflow the page",
-        );
         await page.screenshot({
           fullPage: true,
           path: `/workspace/screenshots/image-ml/${mode}-resnet-${name}.png`,
         });
+        const layout = await page.evaluate(() => ({
+          viewport: innerWidth,
+          documentWidth: document.documentElement.scrollWidth,
+          offenders: [...document.querySelectorAll("body *")]
+            .filter((element) => {
+              const rect = element.getBoundingClientRect();
+              return rect.width > 0 && (rect.right > innerWidth + 1 || rect.left < -1);
+            })
+            .slice(0, 30)
+            .map((element) => ({
+              tag: element.tagName,
+              className: String(element.className),
+              width: element.getBoundingClientRect().width,
+              left: element.getBoundingClientRect().left,
+              right: element.getBoundingClientRect().right,
+              text: element.textContent?.slice(0, 80),
+            })),
+        }));
+        if (layout.documentWidth > layout.viewport)
+          console.log("Overflow diagnostic", JSON.stringify(layout));
+        assert.equal(
+          layout.documentWidth > layout.viewport,
+          false,
+          "insight cards must not overflow the page",
+        );
       }
     }
     await input.fill("0x" + "ff".repeat(16385));
