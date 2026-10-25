@@ -17,7 +17,15 @@
  * Control API (loopback only, same pattern as termux-backend/server.mjs):
  *   GET  /status   — state, totals, current address, last flush/error
  *   POST /start    — { addressesFile, chainId?, aiSecondPass?, delayMs?,
- *                     deepAgent?, deepAgentMaxItems?, deepAgentMinSeverity? }
+ *                     deepAgent?, deepAgentMaxItems?, deepAgentMinSeverity?,
+ *                     autoPoc?, autoPocCap? }
+ *                     autoPoc (default ON) runs the adjudication chain —
+ *                     LLM-gen -> Foundry run -> Supabase save — for every
+ *                     PoC-eligible high/critical finding right after its
+ *                     entry is persisted. autoPocCap caps chain attempts
+ *                     per run (default 25, 0 = unlimited). A circuit
+ *                     breaker stops auto-PoC for the run after 3
+ *                     consecutive backend-infra failures.
  *                     deepAgent runs the Deep Agent loop (propose ->
  *                     fork-PoC -> reward -> deeper) for flagged addresses
  *                     only: >= 1 finding at deepAgentMinSeverity
@@ -152,6 +160,18 @@ const {
 // the model files are unavailable the runner resolves null and entries
 // are stored exactly as before (see src/lib/audit/resnet-result.ts).
 const { runResnetNode } = await import("../src/lib/image-ml/resnet-node.server.ts");
+// Auto-PoC (pipeline-worker/auto-poc.ts) — the adjudication chain run
+// automatically for eligible high/critical findings after an entry is
+// persisted: LLM-gen -> Foundry backend -> verdict saved to Supabase.
+// Loaded after .env like everything else (its persist deps read
+// DATABASE_URL / OPENROUTER_API_KEY at call time).
+const {
+  runAutoPocForEntry,
+  selectAutoPocFindings,
+  autoPocCapReached,
+  newAutoPocRunState,
+  WORKER_AUTO_POC_DEFAULT_CAP,
+} = await import("./auto-poc.ts");
 
 // ------------------------------------------------------------------ config --
 const PORT = Number.parseInt(process.env.PORT ?? "8788", 10) || 8788;
@@ -201,6 +221,14 @@ type Status = {
   deepAgentRuns: number;
   deepAgentConfirmed: number;
   deepAgentBackendDown: boolean;
+  autoPoc: boolean;
+  autoPocCap: number;
+  autoPocAttempted: number;
+  autoPocPassed: number;
+  autoPocFailed: number;
+  autoPocErrors: number;
+  autoPocSkipped: number;
+  autoPocBackendDown: boolean;
 };
 
 let status: Status = {
@@ -227,6 +255,14 @@ let status: Status = {
   deepAgentRuns: 0,
   deepAgentConfirmed: 0,
   deepAgentBackendDown: false,
+  autoPoc: true,
+  autoPocCap: WORKER_AUTO_POC_DEFAULT_CAP,
+  autoPocAttempted: 0,
+  autoPocPassed: 0,
+  autoPocFailed: 0,
+  autoPocErrors: 0,
+  autoPocSkipped: 0,
+  autoPocBackendDown: false,
 };
 
 let runCtx: { items: BatchItem[]; index: number } | null = null;
@@ -237,6 +273,9 @@ let runPromise: Promise<void> | null = null;
 // flush in batches), so the loop tracks what it has already done.
 // Cleared on every /start; survives pause/resume with runCtx.
 const runSeen = new Set<string>();
+// Auto-PoC per-run state (tally + cap/breaker bookkeeping). Owned here
+// because the /status counters read it; reset on every /start.
+let autoPocState = newAutoPocRunState();
 let pauseRequested = false;
 let stopRequested = false;
 const pending: ComprehensiveRecordInput[] = [];
@@ -404,7 +443,7 @@ async function runLoop(): Promise<void> {
       let result: Awaited<ReturnType<typeof analyzeAddress>>;
       try {
         result = await withRetry(
-          () => analyzeAddress(item.address, item.chainId, item.label, { fourbyte, resnetRunner: runResnetNode, etherscanKey: process.env.ETHERSCAN_API_KEY }),
+          () => analyzeAddress(item.address, item.chainId, item.label, { fourbyte, resnetRunner: runResnetNode }),
           {
             retries: 2,
             baseDelayMs: 2000,
@@ -521,6 +560,47 @@ async function runLoop(): Promise<void> {
       pending.push(record);
       pendingBytes += recordBytes;
       if (pendingSince === null) pendingSince = Date.now();
+
+      // Auto-PoC: this entry's initial scores include a high/critical
+      // finding, so run the adjudication chain (LLM-gen -> Foundry ->
+      // save) for each eligible one now instead of waiting for a human
+      // on the PoC Audits page. The chain's save UPDATES the finding
+      // rows, so the record must be persisted first: flush (a flush
+      // failure parks the run with the item un-advanced, exactly like
+      // any other flush failure). Never fails the item — the module
+      // catches its own errors and the static record already landed.
+      // A paused/stopped run waits for the in-flight chain, same as
+      // the Deep Agent loop above.
+      if (
+        status.autoPoc &&
+        !autoPocState.breakerTripped &&
+        selectAutoPocFindings(result.report, result.rawBody).length > 0
+      ) {
+        if (!autoPocCapReached(autoPocState, status.autoPocCap)) await flush();
+        const ap = await runAutoPocForEntry(
+          autoPocState,
+          {
+            scanId,
+            address: item.address,
+            chainId: item.chainId,
+            report: result.report,
+            body: result.rawBody,
+          },
+          {
+            backendUrl:
+              process.env.FOUNDRY_BACKEND_URL?.trim() || WORKER_DEEP_AGENT_DEFAULT_BACKEND_URL,
+            cap: status.autoPocCap,
+            enabled: status.autoPoc,
+          },
+        );
+        status.autoPocAttempted = autoPocState.tally.attempted;
+        status.autoPocPassed = autoPocState.tally.passed;
+        status.autoPocFailed = autoPocState.tally.failed;
+        status.autoPocErrors = autoPocState.tally.errors;
+        status.autoPocSkipped = autoPocState.tally.skipped;
+        status.autoPocBackendDown = autoPocState.breakerTripped;
+        console.log(`[worker] auto-poc ${item.address}: ${ap.note}`);
+      }
 
       item.status = "completed";
       runSeen.add(itemKey);
@@ -672,6 +752,18 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     typeof body.delayMs === "number" && Number.isFinite(body.delayMs) && body.delayMs >= 0
       ? Math.floor(body.delayMs)
       : 600;
+  // Auto-PoC: ON unless explicitly disabled (autoPoc: false). No
+  // OpenRouter key requirement at start — without a key the chain's
+  // generation/repair attempts return nothing and outcomes save
+  // honestly (template/snippet PoCs still run); aiSecondPass and
+  // deepAgent keep their hard requirement above.
+  const autoPoc = body.autoPoc !== false;
+  // Attempt cap per run (chain attempts, not findings scanned).
+  // 0 = unlimited (not recommended on a 43k run).
+  const autoPocCap =
+    typeof body.autoPocCap === "number" && Number.isFinite(body.autoPocCap) && body.autoPocCap >= 0
+      ? Math.floor(body.autoPocCap)
+      : WORKER_AUTO_POC_DEFAULT_CAP;
 
   let text: string;
   try {
@@ -748,9 +840,18 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     deepAgentRuns: 0,
     deepAgentConfirmed: 0,
     deepAgentBackendDown: false,
+    autoPoc,
+    autoPocCap,
+    autoPocAttempted: 0,
+    autoPocPassed: 0,
+    autoPocFailed: 0,
+    autoPocErrors: 0,
+    autoPocSkipped: 0,
+    autoPocBackendDown: false,
   };
   runCtx = { items, index: 0 };
   runSeen.clear();
+  autoPocState = newAutoPocRunState();
   pauseRequested = false;
   stopRequested = false;
   runPromise = runLoop().catch((err) => {
@@ -758,9 +859,9 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   });
   writeStatusFile();
   console.log(
-    `[worker] started: ${items.length} addresses (${skipped} current, skipped; ${stale} stale, re-analyzing), refresh=${refresh}, chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems})`,
+    `[worker] started: ${items.length} addresses (${skipped} current, skipped; ${stale} stale, re-analyzing), refresh=${refresh}, chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems}), autoPoc=${autoPoc} (cap=${autoPocCap === 0 ? "unlimited" : autoPocCap})`,
   );
-  sendJson(res, 200, { ok: true, started: true, total: items.length, skipped, stale, refresh, deepAgent, deepAgentMaxItems, deepAgentMinSeverity });
+  sendJson(res, 200, { ok: true, started: true, total: items.length, skipped, stale, refresh, deepAgent, deepAgentMaxItems, deepAgentMinSeverity, autoPoc, autoPocCap });
 }
 
 // Which database is the worker actually talking to? The dashboard-shows-0

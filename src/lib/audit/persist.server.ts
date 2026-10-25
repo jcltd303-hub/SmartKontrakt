@@ -1,4 +1,3 @@
-import { auditEvidence } from "./audit-evidence.ts";
 import { writeAuditBatch } from "./bulk-persist.server";
 import { getSql, getDbConnectionState, type DbConnectionState } from "@/lib/db";
 import type { Sql } from "../sql-client.ts";
@@ -587,7 +586,7 @@ export async function secondPass(report: Report, body: string): Promise<{ text: 
             },
             {
               role: "user",
-              content: `KIND: ${report.inputKind}\nSUMMARY: ${report.summary}\nNOTES:\n${notes}\n\nSTATIC FINDINGS:\n${listed || "(none)"}\n\nINPUT:\n${excerpt}\n${auditEvidence(report.inventory, report.resnet)}`,
+              content: `KIND: ${report.inputKind}\nSUMMARY: ${report.summary}\nNOTES:\n${notes}\n\nSTATIC FINDINGS:\n${listed || "(none)"}\n\nINPUT:\n${excerpt}`,
             },
           ],
         }),
@@ -874,6 +873,25 @@ export async function saveFindingPocResult(data: {
   } catch (runErr) {
     console.warn("[kiln] finding_poc_runs insert failed (non-fatal):", runErr);
   }
+}
+
+/**
+ * Persist an AI review onto an ALREADY-SAVED scan. The app flow never
+ * needs this — its chain generates the review before the scan is
+ * re-saved whole (saveComprehensiveScanFn carries aiReview in the
+ * record). The pipeline worker's auto-PoC runs the same chain AFTER
+ * the bulk save landed, so the review it generates needs a targeted
+ * write: the same ai_review_json column the bulk writer fills, and
+ * nothing else — a full re-save would rewrite the dossier (and its
+ * finding rows' PoC columns) for a prose attachment.
+ */
+export async function saveScanAiReview(scanId: string, review: AiSecurityReview): Promise<void> {
+  const sql = await getSql();
+  await sql`
+    update contract_scans
+    set ai_review_json = ${JSON.stringify(review)}
+    where id = ${scanId}
+  `;
 }
 
 /**

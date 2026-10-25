@@ -66,7 +66,9 @@ fails an item.
      hand. An already-encoded URI (what the Supabase dashboard gives you) is
      left untouched, so nothing is ever double-encoded.
    - `OPENROUTER_API_KEY` — only needed if you start a run with
-     `aiSecondPass: true` or `deepAgent: true`.
+     `aiSecondPass: true` or `deepAgent: true`. Auto-PoC (below) also
+     uses it for PoC generation/repair when present, but runs without
+     it — template/snippet PoCs still execute.
    - `FOUNDRY_BACKEND_URL` — optional, default `http://127.0.0.1:8787`.
      Only used when `deepAgent: true` (PoC runs). The Foundry backend
      must be running (`bash scripts/termux-start-all.sh` boots it).
@@ -128,6 +130,35 @@ curl -s -X POST http://127.0.0.1:8788/start \
   agent loop — to finish first.
 - `/status` reports `deepAgentRuns` (addresses that ran the agent) and
   `deepAgentConfirmed` (fork-confirmed findings total).
+
+## Auto-PoC (automatic PoC for high/critical findings)
+
+On by default (`autoPoc: false` in the `/start` body turns it off).
+When an entry's saved report contains a high or critical finding, the
+worker runs the adjudication chain for each eligible finding right
+after the entry is persisted — the same gen → run → save machinery
+as the PoC Audits page's Adjudicate button, no human tap:
+
+- **Gate:** severity `high` or `critical`, PoC-eligible under the
+  feed's rules (presence-only bytecode findings are excluded unless
+  corroborated), and no verdict already stored on the finding.
+  Bytecode-only entries qualify too.
+- **Per finding:** PoC prepared from the finding (snippet or fallback
+  template), LLM generation/repair via OpenRouter when the draft has
+  no executable test or fails to compile, one Foundry backend run,
+  verdict saved onto the finding row (plus the run-history row).
+  Without an `OPENROUTER_API_KEY`, generation/repair return nothing
+  and outcomes still save honestly — template/snippet PoCs run.
+- **Budget:** `autoPocCap` caps chain attempts per run (default 25,
+  `0` = unlimited). Each attempt is one backend run at most (plus one
+  compile-repair re-run), sequential — the backend runs one PoC at a
+  time.
+- **Backend down:** 3 consecutive infra failures (backend unreachable
+  / RPC-fork failure) trip a circuit breaker for the rest of the run
+  (status shows `autoPocBackendDown: true`); the static pipeline
+  keeps going. Restart the backend and start a new run to re-enable.
+- `/status` reports the tally: `autoPocAttempted`, `autoPocPassed`,
+  `autoPocFailed`, `autoPocErrors`, `autoPocSkipped`.
 
 ## Resume and freshness
 
