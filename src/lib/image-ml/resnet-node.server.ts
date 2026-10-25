@@ -9,15 +9,17 @@
  * so the two runtimes cannot drift: same manifest, same shard integrity
  * checks, same 16,384-byte L2-normalized input, same thresholds.
  *
- * Server-only by construction (node:fs + a wasm binary read from the
- * onnxruntime-web package) — hence the .server.ts suffix. Client code
- * must never import it; browser flows inject run-resnet-browser.ts
- * through the same ResnetRunner seam instead (analyzeAddress opts).
+ * Server-only by construction (node:fs + a wasm binary read lazily from
+ * the optional onnxruntime-web package) — hence the .server.ts suffix.
+ * Client code must never import it; browser flows inject
+ * run-resnet-browser.ts through the same ResnetRunner seam instead
+ * (analyzeAddress opts).
  *
- * Fail-soft contract: ANY problem — model files missing, integrity
- * mismatch, runtime failure, malformed bytecode — resolves to null
- * ("not run"), never a throw into the audit path. A missing model must
- * degrade the archive to pre-ResNet behaviour, not break the pipeline.
+ * Fail-soft contract: ANY problem — the optional ONNX runtime package
+ * missing, model files missing, integrity mismatch, runtime failure,
+ * malformed bytecode — resolves to null ("not run"), never a throw into
+ * the audit path. A missing model or runtime must degrade the archive
+ * to pre-ResNet behaviour, not break the pipeline.
  *
  * The inference session is created once per process (~1s, ~15 MB of
  * shards) and runs are serialized through a queue: the wasm runtime is
@@ -29,16 +31,45 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import * as ort from "onnxruntime-web/wasm";
 import { prepareSequence, sha256, validateManifest, type Manifest } from "./resnet.ts";
 import type { ResnetResult } from "../audit/resnet-result.ts";
 
 const MANIFEST_FILE = "resnet1d-v1.json";
 
+type OnnxRuntime = typeof import("onnxruntime-web/wasm");
+
 type SessionCtx = {
   manifest: Manifest;
-  session: ort.InferenceSession;
+  ort: OnnxRuntime;
+  session: Awaited<ReturnType<OnnxRuntime["InferenceSession"]["create"]>>;
 };
+
+let onnxRuntimePromise: Promise<OnnxRuntime | null> | null = null;
+let onnxRuntimeUnavailableLogged = false;
+
+/**
+ * Load the optional ONNX runtime only when a screening session is first
+ * constructed. This module is imported by long-lived server/worker
+ * processes, so a top-level import would make an optional ML dependency
+ * a hard startup dependency — exactly the failure this guards against.
+ * A failed load is cached for the process and reported once; every
+ * screening call then behaves like a model/no-code miss (null).
+ */
+function loadOnnxRuntime(): Promise<OnnxRuntime | null> {
+  if (!onnxRuntimePromise) {
+    onnxRuntimePromise = import("onnxruntime-web/wasm").catch((err: unknown) => {
+      if (!onnxRuntimeUnavailableLogged) {
+        onnxRuntimeUnavailableLogged = true;
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[resnet] ResNet screening unavailable: ONNX runtime could not be loaded (${reason}). Audits will continue with static analysis only.`,
+        );
+      }
+      return null;
+    });
+  }
+  return onnxRuntimePromise;
+}
 
 /**
  * Where the model files live, in resolution order:
@@ -103,6 +134,8 @@ function getSession(modelDir?: string): Promise<SessionCtx | null> {
   if (!pending) {
     pending = (async () => {
       try {
+        const ort = await loadOnnxRuntime();
+        if (!ort) return null;
         const dir = await resolveResnetModelDir(modelDir);
         if (!dir) return null;
         const manifest = validateManifest(
@@ -136,7 +169,7 @@ function getSession(modelDir?: string): Promise<SessionCtx | null> {
         const session = await ort.InferenceSession.create(bytes, {
           executionProviders: ["wasm"],
         });
-        return { manifest, session };
+        return { manifest, ort, session };
       } catch {
         return null;
       }
@@ -165,7 +198,7 @@ export async function runResnetNode(
       const ctx = await getSession(opts?.modelDir);
       if (!ctx) return null;
       const out = await ctx.session.run({
-        bytecode: new ort.Tensor("float32", sequence, [1, 1, ctx.manifest.sequenceLength]),
+        bytecode: new ctx.ort.Tensor("float32", sequence, [1, 1, ctx.manifest.sequenceLength]),
       });
       const scores = Array.from(out.probabilities.data as Float32Array);
       if (scores.length !== ctx.manifest.classes.length) return null;

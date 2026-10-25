@@ -69,6 +69,16 @@ test("a null runner result leaves the report exactly as static analysis made it"
   assert.deepEqual(report.inventory.notes, notesBefore);
 });
 
+test("an unavailable runner leaves the serialized report byte-identical", async () => {
+  const report = analyzeInput(VAULT_SOURCE, "Vault");
+  const before = JSON.stringify(report);
+  const attached = await attachResnetToReport(report, SOME_BYTECODE, async () => null);
+  assert.equal(attached, false);
+  assert.equal(report.resnet, undefined);
+  assert.equal(report.riskScore, riskScore(report.findings));
+  assert.equal(JSON.stringify(report), before);
+});
+
 test("a throwing runner is swallowed — the audit never fails on the model", async () => {
   const report = analyzeInput(VAULT_SOURCE, "Vault");
   const attached = await attachResnetToReport(report, SOME_BYTECODE, async () => {
