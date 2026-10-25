@@ -2,6 +2,7 @@ import { writeAuditBatch } from "./bulk-persist.server";
 import { getSql, getDbConnectionState, type DbConnectionState } from "@/lib/db";
 import type { Sql } from "../sql-client.ts";
 import {
+  countsFromSeverityList,
   queryDatabaseSize,
   queryScanSummaries,
   queryScansStats,
@@ -429,8 +430,17 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
     };
   }
 
+  // Counts fix (2026-10-25): the dossier header counts derive from the
+  // findings rows just loaded — the same read-time source of truth as
+  // the list badges and the stat cards — so a direct findings edit (the
+  // rectification SQL) shows here too. A scan with no findings rows
+  // keeps its stored columns (pre-findings-table saves; see
+  // scan-archive.server.ts, DerivedSeverityCounts).
+  const derivedCounts =
+    findingRows.length > 0 ? countsFromSeverityList(findingRows.map((f) => f.severity)) : undefined;
+
   return {
-    ...summaryFromRow(row),
+    ...summaryFromRow(row, derivedCounts),
     body: payloads[0]?.body ?? "",
     report,
     proxyInfo,
