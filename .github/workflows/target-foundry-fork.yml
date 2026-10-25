@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+      - name: Install forge-std test dependency
+        run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git foundry/lib/forge-std
       - name: Verify binaries
         run: |
           forge --version
@@ -42,3 +44,9 @@ jobs:
           set -euo pipefail
           cd foundry
           POC_TARGET="$POC_TARGET" POC_FORK_BLOCK="$FORK_BLOCK" POC_RPC_URL="$ETH_RPC_URL" forge test --match-test test_forkSanity --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
+      - name: Run target-specific authorization tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd foundry
+          POC_TARGET="$POC_TARGET" POC_FORK_BLOCK="$FORK_BLOCK" POC_RPC_URL="$ETH_RPC_URL" forge test --match-contract TargetAccessForkTest --fork-url "$ETH_RPC_URL" --fork-block-number "$FORK_BLOCK" -vvv
