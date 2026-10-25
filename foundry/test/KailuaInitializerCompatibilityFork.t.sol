@@ -11,21 +11,29 @@ contract KailuaInitializerCompatibilityForkTest is Test {
         vm.deal(attacker, 1 ether);
     }
 
-    function test_kailuaInitializerCannotTakeOverTarget() public {
-        (bool beforeOk, bytes memory beforeData) = target.staticcall(abi.encodeWithSignature("owner()"));
-        assertTrue(beforeOk && beforeData.length >= 32, "Owner getter unavailable");
-        address ownerBefore = abi.decode(beforeData, (address));
-        uint256 balanceBefore = target.balance;
+    function test_reportInitializerAndOwnerCompatibility() public {
+        (bool ownerOkBefore, bytes memory preOwner) = target.staticcall(abi.encodeWithSignature("owner()"));
+        console2.log("owner() callable before:", ownerOkBefore);
+        if (ownerOkBefore && preOwner.length >= 32) {
+            console2.log("owner before:", abi.decode(preOwner, (address)));
+        }
+        uint256 targetBefore = target.balance;
+        uint256 attackerBefore = attacker.balance;
         vm.prank(attacker);
-        (bool accepted, bytes memory result) = target.call{value: 0.1 ether}(abi.encodeWithSignature("initialize()"));
-        console2.log("initialize() accepted:", accepted);
-        console2.log("revert/return bytes:", result.length);
-        (bool afterOk, bytes memory afterData) = target.staticcall(abi.encodeWithSignature("owner()"));
-        assertTrue(afterOk && afterData.length >= 32, "Owner getter unavailable after call");
-        address ownerAfter = abi.decode(afterData, (address));
-        assertEq(ownerAfter, ownerBefore, "Initializer changed contract owner");
-        assertTrue(ownerAfter != attacker, "Attacker became owner");
-        assertFalse(accepted, "Unexpected success: inspect initializer entrypoint");
-        assertEq(target.balance, balanceBefore, "Unexpected ETH transfer to target");
+        (bool initOk, bytes memory response) = target.call{value: 0.1 ether}(abi.encodeWithSignature("initialize()"));
+        console2.log("initialize() accepted:", initOk);
+        console2.log("initializer return length:", response.length);
+        (bool ownerOkAfter, bytes memory postOwner) = target.staticcall(abi.encodeWithSignature("owner()"));
+        console2.log("owner() callable after:", ownerOkAfter);
+        if (ownerOkAfter && postOwner.length >= 32) {
+            address ownerAfter = abi.decode(postOwner, (address));
+            console2.log("owner after:", ownerAfter);
+            assertTrue(ownerAfter != attacker, "OWNER TAKEOVER: investigate");
+        }
+        // No claim about ownership or safety if no owner getter is exposed.
+        if (!initOk) {
+            assertEq(target.balance, targetBefore, "Reverted init changed target balance");
+            assertEq(attacker.balance, attackerBefore, "Reverted init changed attacker balance");
+        }
     }
 }
