@@ -37,7 +37,7 @@ jobs:
           CODE=$(cast code "$POC_TARGET" --block "$BLOCK" --rpc-url "$ETH_RPC_URL")
           test "$CODE" != "0x"
           echo "Target has deployed bytecode (length ${#CODE})"
-          cast call "$POC_TARGET" 'supportsInterface(bytes4)(bool)' 0x01ffc9a7 --block "$BLOCK" --rpc-url "$ETH_RPC_URL"
+          echo "ERC165 not assumed for Kailua target"
       - name: Identify target contract interface
         shell: bash
         run: |
