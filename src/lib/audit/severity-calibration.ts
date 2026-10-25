@@ -62,6 +62,38 @@ export function calibrateFindings(findings: Finding[]): Finding[] {
 export const INITIALIZER_GATE_NOTE_UNCONFIRMED =
   "\n\n[Initializer gate: critical requires live evidence — an initialized-state read showing uninitialized, or a simulated initializer call from a fresh address that succeeds and moves privileged state. Source pattern alone caps this at high: live initialized state not confirmed. Address audits run the live probe automatically.]";
 
+/**
+ * Gate 4 notes (Fix 38 — the gate generalized to delegatecall,
+ * reentrancy and selfdestruct after fork-proof sweep #2, 2026-10-25:
+ * 37/37 stored criticals in those classes were false positives —
+ * guards the detector did not credit, internal helpers flagged as
+ * entry points, failure-rollback writes read as CEI violations, and
+ * payout mechanics that cannot carry a reentry). The Fix 38 gates in
+ * detect.ts credit provenance (a flag must be reachable through a
+ * public entry, with the claimed control TRUE of that chain) and
+ * guards (modifiers — including custom ones — mutexes, fixed-caller
+ * gates). When a guard is only PROBABLE — a modifier whose body the
+ * detector cannot resolve, or one it cannot prove is or is not a
+ * caller check — the finding caps at high with the note below: never
+ * silently muted, never credited as proven either.
+ */
+export function unverifiedModifierNote(modifierNames: string[]): string {
+  const names = modifierNames.length ? modifierNames.join(", ") : "an unresolvable modifier";
+  return `\n\n[Fix 38 guard gate: critical → high — the flagged path carries modifier ${names}, which could not be resolved to a body provably free of a caller check. An unverified modifier is treated as a possible access control: the claim that an arbitrary caller can trigger this is not earned until the modifier is read.]`;
+}
+
+export const DELEGATECALL_INITIALIZER_ENTRY_NOTE =
+  "\n\n[Fix 38 provenance gate: critical → high — the only public path to this delegatecall is the contract's initializer entry point, so whether it can still be reached is exactly the live initialized-state question the initializer gate answers on the address path (Fix 37). Source alone does not earn the critical here.]";
+
+export const DELEGATECALL_FIXED_TARGET_NOTE =
+  "\n\n[Fix 38 provenance gate: reclassified — the delegatecall target is stored state at every public entry that reaches this site; the caller supplies calldata, never the code address. The residual risk is governance trust in whoever can change the stored address. On the 2026-10-25 fork sweep this exact shape (a public entry delegating to a stored implementation) never confirmed as exploitable.]";
+
+/** Gate 4 cap: critical → high with an explicit gate note appended. */
+export function withGateCap(finding: Finding, note: string): Finding {
+  if (finding.severity !== "critical") return finding;
+  return { ...finding, severity: "high", summary: finding.summary + note };
+}
+
 /** Gate 2: a finding on an access-controlled function is capped at high. */
 export function withAccessControlCap(finding: Finding, authed: boolean): Finding {
   if (!authed) return finding;

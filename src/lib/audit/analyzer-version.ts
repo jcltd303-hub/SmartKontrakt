@@ -68,9 +68,26 @@ import {
  *                15 stored criticals of this type were false
  *                positives. Same inputs now produce different
  *                records, so the archive refreshes.
+ * 2026-10-25.3 — Gate generalization (Fix 38): the Fix 37 discipline
+ *                extended to delegatecall, reentrancy and
+ *                selfdestruct after fork-proof sweep #2 showed 37/37
+ *                stored criticals in those classes were false
+ *                positives. Delegatecall sites are judged through
+ *                their public entry chain (proven-unreachable sites
+ *                drop, fixed/stored targets reclassify low, guards
+ *                and unverifiable modifiers on the entries cap);
+ *                reentrancy reads the mechanics (failure-rollback
+ *                writes are CEI-clean, low gas caps close the window,
+ *                hand-rolled mutexes count as guards, fixed-router
+ *                payout legs are low) and attributes helper findings
+ *                to their public entries; selfdestruct credits deep
+ *                custom-modifier checks (onlymanyowners) and
+ *                requires external reachability. Source-only: no
+ *                finding is newly corroborated. Same inputs now
+ *                produce different records, so the archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-25.2";
+export const ANALYZER_BASELINE = "2026-10-25.3";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

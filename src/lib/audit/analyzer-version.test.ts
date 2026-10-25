@@ -62,7 +62,10 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // which left this test red on main until it was re-pinned here.
   // It moved again to 2026-10-25.2 with the initializer gate
   // (Fix 37): unprotected-initializer provenance + the critical cap.
-  assert.equal(ANALYZER_BASELINE, "2026-10-25.2");
+  // And to 2026-10-25.3 with the gate generalization (Fix 38):
+  // delegatecall / reentrancy / selfdestruct provenance + guard
+  // credit — the sweep #2 treatment.
+  assert.equal(ANALYZER_BASELINE, "2026-10-25.3");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });

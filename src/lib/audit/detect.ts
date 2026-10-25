@@ -1,6 +1,13 @@
 import type { AstNode, Finding, Severity } from "./types.ts";
 import type { ContractModel, FnModel, ModModel, SourceModel, StateVar } from "./model.ts";
-import { INITIALIZER_GATE_NOTE_UNCONFIRMED, withAccessControlCap } from "./severity-calibration.ts";
+import {
+  DELEGATECALL_FIXED_TARGET_NOTE,
+  DELEGATECALL_INITIALIZER_ENTRY_NOTE,
+  INITIALIZER_GATE_NOTE_UNCONFIRMED,
+  unverifiedModifierNote,
+  withAccessControlCap,
+  withGateCap,
+} from "./severity-calibration.ts";
 
 type ExtKind =
   | "call"
@@ -33,6 +40,19 @@ type ExtCall = {
    * external effects — it has no statement-level recipient/amount, so
    * it is excluded from sendDetails (Fix 17). */
   synthetic?: boolean;
+  /** Fix 38: the literal `gas:` cap on this call, when the source
+   * states one as a number literal. A value-bearing reentrant callback
+   * needs 9000 gas (the value-transfer surcharge) + 700 (the CALL)
+   * before any callee code runs, so a cap at or below 10_000 cannot
+   * carry a value-moving reentry — the stipend lesson, generalized.
+   * Non-literal caps earn no credit (fail closed: unknown). */
+  gasCap?: number | null;
+  /** Fix 38: the call's base is a state variable or const/immutable of
+   * this contract that the flagged function never assigns — the call
+   * hands control to a FIXED stored contract (a router, a token), so
+   * the payee's code never runs inside this call and the target is not
+   * caller-chosen. */
+  targetIsFixedContract?: boolean;
 };
 
 type Flow = {
@@ -441,6 +461,554 @@ function isPerItemAuthed(src: string): boolean {
 
 function hasGuard(fn: FnModel): boolean {
   return fn.modifiers.some((m) => /nonreentrant|noreentrant|reentrancyguard/i.test(m));
+}
+
+// ---------------------------------------------------------------------------
+// Fix 38 — the gate, generalized to delegatecall / reentrancy /
+// selfdestruct. Fork-proof sweep #2 (2026-10-25,
+// critical-sweep/RESULTS.md) executed every stored critical in those
+// three classes against a mainnet fork: 37/37 were false positives.
+// The classes of error were structural, and they are the same ones
+// Fix 37 fixed for initializers:
+//
+//  PROVENANCE — internal helpers and library functions were flagged
+//  as if they were entry points (OZ Address.functionDelegateCall
+//  internals, EIP-173's internal _setImplementation, dividend
+//  trackers' _withdrawDividendOfUser). A flag must be reachable
+//  through a PUBLIC entry, and the claim it makes ("caller-supplied
+//  target", "anyone can reenter") must be TRUE of that chain: the
+//  delegatecall target is traced through the entry's call sites —
+//  caller-fed, or fixed/stored state? A helper with no public path
+//  at all produces no finding.
+//
+//  GUARD CREDIT — guards the detector could not see were treated as
+//  absent: custom modifiers (onlymanyowners IS Wallet.sol's access
+//  check; onlyBeacon gates the Cub fix appliers), fixed-caller gates
+//  (`if (msg.sender != GATEWAY) revert`), AccessControl/governor
+//  checks, and a hand-rolled mutex (KatWalkerz' `withdrawing` flag
+//  neutralizes a real CEI violation). Proven guards cap per the
+//  standing rules; a modifier that cannot be resolved or proven is
+//  POSSIBLE evidence — the finding caps at high with a note naming
+//  it, never silently dropped, never credited as proven.
+//
+//  WRITE ORDER, READ PROPERLY — the dividend family's flagged
+//  "post-call write" is a FAILURE-ROLLBACK decrement inside
+//  if(!success): the credit is written BEFORE the call and restored
+//  only when the payment fails. CEI holds. The reentrancy ladder
+//  below reads the branch structure instead of pattern-matching
+//  "write after call". Payout mechanics that cannot carry a reentry
+//  (stipends, explicit low gas caps, a fixed-router swap leg where
+//  the payee's code never runs) are named rungs, not criticals.
+//
+// Everything uncertain fails CLOSED toward capped+noted — the same
+// discipline as the initializer gate — and this batch is source-only:
+// no live probe, so no finding here is ever marked corroborated by
+// Fix 38. (A live leg does not compose the way the initializer probe
+// does: reentrancy verdicts need funded positions a bare eth_call
+// cannot hold, and a probe revert would mean "no position", not
+// "guarded" — misleading evidence, worse than none.)
+// ---------------------------------------------------------------------------
+
+/** Externally callable = an attacker can invoke it directly. Default
+ * visibility (pre-0.5, or the model's "default") is public in effect. */
+function isExternallyCallable(fn: FnModel): boolean {
+  return !fn.isConstructor && fn.visibility !== "internal" && fn.visibility !== "private";
+}
+
+/** A contract with derived contracts in this compilation may be
+ * reachable through entries the detector cannot see — provenance
+ * verdicts for its functions are then uncertain and must fail closed. */
+function contractHasDerived(contract: ContractModel, model: SourceModel): boolean {
+  return model.contracts.some((c) => c !== contract && c.bases.includes(contract.name));
+}
+
+type CalleeInfo = { writes: Set<string>; external: boolean; callees: Set<string>; externalKinds: Set<string> };
+
+/** Public entry points reaching each function of a contract, by
+ * inverting the direct-callee map. A function is its own entry when
+ * externally callable; fallback/receive count as entries of
+ * themselves only (nothing calls them internally). */
+function computeEntries(contract: ContractModel, direct: Map<string, CalleeInfo>): Map<string, FnModel[]> {
+  const byNameLocal = new Map(contract.functions.map((f) => [f.name, f]));
+  const callers = new Map<string, string[]>();
+  for (const [name, info] of direct) {
+    for (const callee of info.callees) {
+      const list = callers.get(callee) ?? [];
+      list.push(name);
+      callers.set(callee, list);
+    }
+  }
+  const entries = new Map<string, FnModel[]>();
+  for (const f of contract.functions) {
+    const found = new Map<string, FnModel>();
+    if (isExternallyCallable(f)) found.set(f.name, f);
+    const queue = [f.name];
+    const visited = new Set<string>([f.name]);
+    while (queue.length) {
+      const cur = queue.shift() as string;
+      for (const caller of callers.get(cur) ?? []) {
+        if (visited.has(caller)) continue;
+        visited.add(caller);
+        const callerFn = byNameLocal.get(caller);
+        if (!callerFn) continue;
+        if (isExternallyCallable(callerFn)) found.set(caller, callerFn);
+        queue.push(caller);
+      }
+    }
+    entries.set(f.name, [...found.values()]);
+  }
+  return entries;
+}
+
+/** Entries for a function of a LIBRARY contract: the public entries of
+ * the non-library contracts whose functions call it — Fix 24's
+ * textual call-site scan, returning the callers' own entry sets. */
+function librarySiteEntries(
+  libContract: ContractModel,
+  fn: FnModel,
+  model: SourceModel,
+): { entries: { fn: FnModel; contract: ContractModel }[]; anyCallSite: boolean } {
+  const out: { fn: FnModel; contract: ContractModel }[] = [];
+  const seenKeys = new Set<string>();
+  let anyCallSite = false;
+  const qualified = new RegExp(`\\b${libContract.name}\\s*\\.\\s*${fn.name}\\s*\\(`);
+  const memberForm = new RegExp(`\\.\\s*${fn.name}\\s*\\(`);
+  for (const c of model.contracts) {
+    if (c === libContract || c.kind === "library") continue;
+    const stateNamesC = new Set(c.stateVars.map((v) => v.name));
+    const byNameC = new Map(c.functions.map((f) => [f.name, f]));
+    const directC = new Map<string, CalleeInfo>();
+    for (const f of c.functions) directC.set(f.name, profile(f, stateNamesC, byNameC));
+    const entriesC = computeEntries(c, directC);
+    for (const callerFn of c.functions) {
+      if (!qualified.test(callerFn.source) && !memberForm.test(callerFn.source)) continue;
+      anyCallSite = true;
+      const es = entriesC.get(callerFn.name) ?? [];
+      for (const e of es) {
+        const key = `${c.name}.${e.name}`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        out.push({ fn: e, contract: c });
+      }
+    }
+  }
+  return { entries: out, anyCallSite };
+}
+
+function findFnInCompilation(name: string, contract: ContractModel, model: SourceModel): FnModel | undefined {
+  const scopes = [contract, ...model.contracts.filter((o) => contract.bases.includes(o.name))];
+  for (const c of scopes) {
+    const f = c.functions.find((x) => x.name === name);
+    if (f) return f;
+  }
+  return undefined;
+}
+
+type ModifierEvidence = "auth" | "possible" | "none";
+
+/** What a modifier proves about caller gating:
+ *  - "auth": its body (or a helper it delegates to, one level deep)
+ *    checks msg.sender in a comparison / require / owner-or-role call.
+ *    Wallet.sol's onlymanyowners → confirmAndCheck is the canonical
+ *    shape: the check is real, it just lives one call away.
+ *  - "possible": the modifier is not defined in this compilation
+ *    (imported — it may gate the caller and cannot be cleared), or it
+ *    touches msg.sender / calls an unresolvable helper without a
+ *    provable check. Possible evidence caps; it never clears.
+ *  - "none": defined, and provably free of any caller logic (a pure
+ *    state/timing gate like whenNotPaused). Earns no credit and
+ *    blocks none either. */
+function modifierSenderEvidence(modName: string, contract: ContractModel, model: SourceModel): ModifierEvidence {
+  if (modifierGuardsSender(modName, contract, model)) return "auth";
+  const name = modName.toLowerCase();
+  const defs: { source: string }[] = [];
+  for (const c of [contract, ...model.contracts.filter((o) => contract.bases.includes(o.name))]) {
+    for (const m of c.modifiers) if (m.name.toLowerCase() === name) defs.push(m);
+  }
+  if (defs.length === 0) return "possible";
+  let possible = false;
+  const SENDER_CHECK =
+    /msg\.sender\s*(?:==|!=)|(?:==|!=)\s*msg\.sender|\[\s*(?:uint|int|address)\s*\(\s*msg\.sender|(?:isOwner|isAdmin|isOperator|hasRole|canCall|_checkOwner|_requireOwner)\s*\([^)]*msg\.sender|require\s*\([^)]*msg\.sender|_msgSender\s*\(\s*\)\s*(?:==|!=)/;
+  for (const def of defs) {
+    const body = def.source;
+    if (/(msg\.sender|_msgSender\s*\()/.test(body)) possible = true;
+    for (const callMatch of body.matchAll(/\b([A-Za-z_]\w*)\s*\(/g)) {
+      const helperName = callMatch[1] as string;
+      if (helperName.toLowerCase() === name) continue;
+      if (/^(require|if|for|while|return|assert|revert|emit)$/.test(helperName)) continue;
+      const helper = findFnInCompilation(helperName, contract, model);
+      if (!helper) {
+        // The modifier delegates to something invisible (an imported
+        // base's internal check, e.g. _checkRole): possible guard.
+        possible = true;
+        continue;
+      }
+      if (SENDER_CHECK.test(helper.source)) return "auth";
+      if (/(msg\.sender|_msgSender\s*\()/.test(helper.source)) possible = true;
+    }
+  }
+  return possible ? "possible" : "none";
+}
+
+/** A fixed-caller gate written as an early revert:
+ * `if (msg.sender != GATEWAY) revert …` where the compared value is a
+ * single stored identity (identifier or member access — never a
+ * mapping lookup, which would be a per-user check of a different
+ * kind). isAuthed's require-based patterns miss this form; the
+ * sweep's gateway `invoke` is exactly this shape. */
+function hasFixedCallerGate(fn: FnModel): boolean {
+  return /if\s*\(\s*msg\.sender\s*!=\s*[A-Za-z_][\w.]*\s*\)\s*\{?\s*(revert|throw|return)\b/.test(fn.source);
+}
+
+type AuthEvidence = { authed: boolean; possibleMods: string[] };
+
+/** Caller-gate evidence for one function: proven auth (isAuthed, a
+ * fixed-caller gate, or a modifier with proven sender checks), plus
+ * the names of any modifiers that are only POSSIBLE guards. */
+function authEvidenceOf(fn: FnModel, contract: ContractModel, model: SourceModel): AuthEvidence {
+  if (isAuthed(fn, contract, model) || hasFixedCallerGate(fn)) return { authed: true, possibleMods: [] };
+  const possibleMods: string[] = [];
+  for (const m of fn.modifiers) {
+    const ev = modifierSenderEvidence(m, contract, model);
+    if (ev === "auth") return { authed: true, possibleMods: [] };
+    if (ev === "possible") possibleMods.push(m);
+  }
+  return { authed: false, possibleMods };
+}
+
+function isInitializerEntry(fn: FnModel): boolean {
+  return (
+    /^(initialize|initialise|init)$/i.test(fn.name) ||
+    fn.modifiers.some((m) => /initiali[sz]er|reinitiali[sz]er/i.test(m))
+  );
+}
+
+/** Argument lists of every textual call site of `calleeName` inside
+ * a function's source (the Fix 28 pattern). The callee's own
+ * declaration inside its own source is skipped. */
+function callSiteArgs(fn: FnModel, calleeName: string): string[][] {
+  const out: string[][] = [];
+  const src = fn.source;
+  const rx = new RegExp(`\\b${calleeName}\\s*\\(`, "g");
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(src))) {
+    if (/(^|\s)function\s+$/.test(src.slice(Math.max(0, m.index - 16), m.index))) continue;
+    const open = src.indexOf("(", m.index);
+    const close = parenClose(src, open);
+    if (close < 0) continue;
+    out.push(splitTopLevel(src.slice(open + 1, close)).map((s) => s.trim()));
+  }
+  return out;
+}
+
+type TargetClass = "caller" | "fixed";
+
+/** Classify one call-site argument expression feeding a delegatecall
+ * target parameter: "fixed" only when every path to it is stored
+ * state, a constant, or a literal; anything caller-influenced or
+ * unresolvable is "caller" (fail closed). */
+function classifyTargetArg(
+  expr: string,
+  callerFn: FnModel,
+  contract: ContractModel,
+  byName: Map<string, FnModel>,
+  direct: Map<string, CalleeInfo>,
+  depth: number,
+  seen: Set<string>,
+): TargetClass {
+  const text = expr.trim();
+  if (!text || depth > 6) return "caller";
+  if (/^0x[0-9a-fA-F]{40}$/.test(text) || /^address\s*\(\s*0\s*\)$/.test(text)) return "fixed";
+  const rootMatch = text.match(/^[A-Za-z_]\w*/);
+  const root = rootMatch ? rootMatch[0] : null;
+  if (!root) return "caller";
+  if (root === "msg" || root === "tx") return "caller";
+  const stateVar = contract.stateVars.find((v) => v.name === root);
+  if (stateVar) {
+    // Stored target — unless THIS caller first overwrites it from a
+    // caller-fed value (then the stored read is caller-chosen after
+    // all: `impl = newImpl; delegateTo(impl)`).
+    const assign = callerFn.source.match(new RegExp(`\\b${root}\\s*=[^=]([^;]*)`));
+    if (assign) {
+      const rhs = (assign[1] as string) ?? "";
+      if (/msg\.sender/.test(rhs) || callerFn.params.some((p) => p.name && new RegExp(`\\b${p.name}\\b`).test(rhs))) {
+        return "caller";
+      }
+    }
+    return "fixed";
+  }
+  const param = callerFn.params.find((p) => p.name === root);
+  if (param) {
+    if (text !== root) return "caller"; // the param inside an expression: caller-influenced
+    if (isExternallyCallable(callerFn)) return "caller";
+    return classifyTargetParam(callerFn, root, contract, byName, direct, depth + 1, seen);
+  }
+  if (callerFn.params.some((p) => p.name && new RegExp(`\\b${p.name}\\b`).test(text))) return "caller";
+  // A local variable: classify what it was assigned.
+  const local = callerFn.source.match(new RegExp(`\\b${root}\\s*=\\s*([^;]+);`));
+  if (local) return classifyTargetArg(local[1] as string, callerFn, contract, byName, direct, depth + 1, seen);
+  return "caller";
+}
+
+/** Classify a parameter of an internal function by tracing every
+ * in-contract call site that feeds it. */
+function classifyTargetParam(
+  fn: FnModel,
+  paramName: string,
+  contract: ContractModel,
+  byName: Map<string, FnModel>,
+  direct: Map<string, CalleeInfo>,
+  depth: number,
+  seen: Set<string>,
+): TargetClass {
+  const key = `${fn.name}:${paramName}`;
+  if (seen.has(key) || depth > 6) return "caller";
+  seen.add(key);
+  const idx = fn.params.findIndex((p) => p.name === paramName);
+  if (idx < 0) return "caller";
+  let sawFeed = false;
+  for (const [callerName, info] of direct) {
+    if (!info.callees.has(fn.name)) continue;
+    const callerFn = byName.get(callerName);
+    if (!callerFn) continue;
+    for (const site of callSiteArgs(callerFn, fn.name)) {
+      const arg = (site[idx] ?? "").trim();
+      if (!arg) continue;
+      sawFeed = true;
+      if (classifyTargetArg(arg, callerFn, contract, byName, direct, depth, seen) === "caller") return "caller";
+    }
+  }
+  return sawFeed ? "fixed" : "caller";
+}
+
+/** Generic AST walk (the profile() idiom): invokes cb on every node. */
+function walkAst(node: unknown, cb: (n: AstNode) => void): void {
+  if (!node || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    for (const v of node) walkAst(v, cb);
+    return;
+  }
+  const n = node as AstNode;
+  if (typeof n.type === "string") cb(n);
+  for (const key of Object.keys(n)) {
+    if (key === "loc" || key === "range") continue;
+    walkAst((n as unknown as Record<string, unknown>)[key], cb);
+  }
+}
+
+function subtreeContainsNode(root: AstNode, target: AstNode): boolean {
+  let found = false;
+  walkAst(root, (n) => {
+    if (n === target) found = true;
+  });
+  return found;
+}
+
+/** Hand-rolled reentrancy mutex: a bool state var CHECKED at entry
+ * (require(!flag), if (flag) revert…), SET before the external call
+ * and CLEARED after it. KatWalkerz' `withdrawing` is the shape: the
+ * CEI violation is real, the mutex makes it unexploitable. Returns
+ * the flag's name when the full pattern holds around `callLine`. */
+function mutexAroundCall(
+  fn: FnModel,
+  contract: ContractModel,
+  parsed: string,
+  delta: number,
+  callLine: number,
+): string | null {
+  if (!fn.body) return null;
+  const bools = new Set(contract.stateVars.filter((v) => v.typeName === "bool").map((v) => v.name));
+  if (!bools.size) return null;
+  const checkLine = new Map<string, number>();
+  const setTrueLine = new Map<string, number>();
+  const setFalseLine = new Map<string, number>();
+  walkAst(fn.body, (n) => {
+    if (n.type === "BinaryOperation" && n.operator === "=") {
+      const root = rootIdent(n.left as AstNode);
+      if (root && bools.has(root)) {
+        const rhs = sliceOf(parsed, n.right as AstNode).trim();
+        const line = lineOf(n, delta, fn.line);
+        if (rhs === "true" && !setTrueLine.has(root)) setTrueLine.set(root, line);
+        if (rhs === "false" && !setFalseLine.has(root)) setFalseLine.set(root, line);
+      }
+    }
+    let cond: AstNode | undefined;
+    if (n.type === "IfStatement") cond = n.condition as AstNode;
+    if (n.type === "FunctionCall") {
+      const callee = unwrapCallee(n.expression as AstNode);
+      if (callee.member === "require" || callee.member === "assert") {
+        cond = (n.arguments as AstNode[] | undefined)?.[0];
+      }
+    }
+    if (cond) {
+      const text = sliceOf(parsed, cond).trim();
+      for (const b of bools) {
+        if (new RegExp(`!\\s*${b}\\b|\\b${b}\\s*==\\s*false|\\b${b}\\s*!=\\s*true|^${b}$`).test(text)) {
+          const line = lineOf(n, delta, fn.line);
+          if (!checkLine.has(b) || line < (checkLine.get(b) as number)) checkLine.set(b, line);
+        }
+      }
+    }
+  });
+  for (const b of bools) {
+    const c = checkLine.get(b);
+    const t = setTrueLine.get(b);
+    const f = setFalseLine.get(b);
+    if (c !== undefined && t !== undefined && f !== undefined && c <= t && t < callLine && f > callLine) return b;
+  }
+  return null;
+}
+
+type OutcomeWrite = { decrement: boolean; failureOnly: boolean };
+
+/** Branch-aware read of the writes that follow the seen call: for
+ * each written state var, whether the write is a DECREMENT and
+ * whether it runs ONLY on the call's failure arm. This is the
+ * analysis the dividend family demands: the entitlement is written
+ * BEFORE the call, the call is made, and on failure the write is
+ * rolled back (`if (!success) { withdrawn[user] = withdrawn[user]
+ * .sub(amount); }`) — CEI holds, and a line-order pattern match
+ * cannot see it. Returns null when the seen call cannot be located
+ * in this function's own body (a synthetic/internal-callee call has
+ * no outcome variable here — fail closed, no rollback credit). */
+function analyzeCallOutcome(
+  fn: FnModel,
+  parsed: string,
+  delta: number,
+  seenLine: number,
+): { postWrites: Map<string, OutcomeWrite[]> } | null {
+  if (!fn.body) return null;
+  let callNode: AstNode | null = null;
+  walkAst(fn.body, (n) => {
+    if (callNode || n.type !== "FunctionCall") return;
+    const callee = unwrapCallee(n.expression as AstNode);
+    if ((callee.member === "call" || callee.member === "send") && lineOf(n, delta, fn.line) === seenLine) {
+      callNode = n;
+    }
+  });
+  if (!callNode) return null;
+  const seen = callNode as AstNode;
+  const successVars = new Set<string>();
+  walkAst(fn.body, (n) => {
+    if (n.type === "VariableDeclarationStatement") {
+      const init = n.initialValue as AstNode | undefined;
+      if (init && subtreeContainsNode(init, seen)) {
+        const decls = (n.variables as AstNode[] | undefined) ?? (n.declarations as AstNode[] | undefined) ?? [];
+        for (const d of decls) {
+          if (d && typeof d.name === "string") successVars.add(d.name);
+        }
+      }
+    }
+    if (n.type === "BinaryOperation" && n.operator === "=" && subtreeContainsNode(n.right as AstNode, seen)) {
+      walkAst(n.left, (x) => {
+        if ((x.type === "VariableDeclaration" || x.type === "Identifier") && typeof x.name === "string") {
+          successVars.add(x.name as string);
+        }
+      });
+    }
+  });
+  const negatedCall = (cond: AstNode): boolean =>
+    cond.type === "UnaryOperation" && cond.operator === "!" && subtreeContainsNode(cond, seen);
+  const isFailureTest = (cond: AstNode | undefined): boolean => {
+    if (!cond) return false;
+    if (successVars.size === 0) return subtreeContainsNode(cond, seen) && negatedCall(cond);
+    const text = sliceOf(parsed, cond);
+    for (const v of successVars) {
+      if (new RegExp(`!\\s*${v}\\b`).test(text)) return true;
+      if (new RegExp(`\\b${v}\\s*==\\s*false\\b`).test(text)) return true;
+      if (new RegExp(`\\bfalse\\s*==\\s*${v}\\b`).test(text)) return true;
+      if (new RegExp(`\\b${v}\\s*!=\\s*true\\b`).test(text)) return true;
+    }
+    return false;
+  };
+  const isSuccessTest = (cond: AstNode | undefined): boolean => {
+    if (!cond) return false;
+    if (successVars.size === 0) return subtreeContainsNode(cond, seen) && !negatedCall(cond);
+    const text = sliceOf(parsed, cond);
+    for (const v of successVars) {
+      if (new RegExp(`\\b${v}\\s*==\\s*true\\b`).test(text)) return true;
+      if (new RegExp(`\\b${v}\\s*!=\\s*false\\b`).test(text)) return true;
+      if (new RegExp(`^\\s*${v}\\s*$`).test(text)) return true;
+    }
+    return false;
+  };
+  const postWrites = new Map<string, OutcomeWrite[]>();
+  const record = (root: string, w: OutcomeWrite) => {
+    const list = postWrites.get(root) ?? [];
+    list.push(w);
+    postWrites.set(root, list);
+  };
+  const visitStmts = (node: unknown, failureOnly: boolean): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const v of node) visitStmts(v, failureOnly);
+      return;
+    }
+    const n = node as AstNode;
+    if (n.type === "IfStatement") {
+      const cond = n.condition as AstNode;
+      visitStmts(n.trueBody, failureOnly || isFailureTest(cond));
+      if (n.falseBody) visitStmts(n.falseBody, failureOnly || isSuccessTest(cond));
+      return;
+    }
+    if (n.type === "BinaryOperation" && typeof n.operator === "string" && ASSIGN.has(n.operator)) {
+      const root = rootIdent(n.left as AstNode);
+      if (root && lineOf(n, delta, fn.line) > seenLine) {
+        const rhs = sliceOf(parsed, n.right as AstNode);
+        const decrement =
+          n.operator === "-=" ||
+          (n.operator === "=" &&
+            (new RegExp(`\\.\\s*sub\\s*\\(`).test(rhs) && rhs.includes(root) ||
+              new RegExp(`^\\s*${root}\\s*(\\[[^\\]]*\\])?\\s*-`).test(rhs)));
+        record(root, { decrement, failureOnly });
+      }
+      return;
+    }
+    if (n.type === "UnaryOperation" && (n.operator === "++" || n.operator === "--")) {
+      const root = rootIdent(n.subExpression as AstNode);
+      if (root && lineOf(n, delta, fn.line) > seenLine) {
+        record(root, { decrement: n.operator === "--", failureOnly });
+      }
+      return;
+    }
+    for (const key of Object.keys(n)) {
+      if (key === "loc" || key === "range") continue;
+      visitStmts((n as unknown as Record<string, unknown>)[key], failureOnly);
+    }
+  };
+  visitStmts(fn.body, false);
+  return { postWrites };
+}
+
+/** The dividend verdict: some credit var was settled BEFORE the call
+ * and every post-call write to a credit var is a failure-arm
+ * decrement (a rollback of that settlement). Returns the settled
+ * var's name, or null when any post-call credit write is a genuine
+ * post-payment state change (the window is real) or the outcome
+ * cannot be read (fail closed). */
+function rollbackSettledVar(
+  fn: FnModel,
+  parsed: string,
+  delta: number,
+  seenLine: number,
+  preCallWrites: Set<string>,
+  postCallWrites: Set<string>,
+  creditVars: Set<string>,
+): string | null {
+  const outcome = analyzeCallOutcome(fn, parsed, delta, seenLine);
+  if (!outcome) return null;
+  for (const v of postCallWrites) {
+    if (!creditVars.has(v)) continue;
+    const writes = outcome.postWrites.get(v) ?? [];
+    if (writes.length === 0) return null; // flow saw a write the AST pass missed — fail closed
+    if (!writes.every((w) => w.decrement && w.failureOnly)) return null;
+  }
+  for (const v of preCallWrites) {
+    if (!creditVars.has(v)) continue;
+    const writes = outcome.postWrites.get(v) ?? [];
+    if (writes.length > 0 && writes.every((w) => w.decrement && w.failureOnly)) return v;
+  }
+  return null;
 }
 
 /**
@@ -988,27 +1556,9 @@ function isSameMappingClearingSelfPayout(fn: FnModel, sendTargets: string[]): bo
   return false;
 }
 
-/**
- * Fix 24: true when a library function is called from a non-library
- * contract function in this compilation — a qualified call
- * (Address.functionDelegateCall(...)) or a using-for member call
- * (.functionDelegateCall(...)). A library-internal delegatecall
- * utility with NO such call site is dead code for the contracts in
- * this file, not a reachable finding. Name-based for the member form
- * (fail closed: a same-named unrelated function still counts as a
- * call site); the qualified form is exact.
- */
-function isLibraryDelegatecallCalledFromContract(libraryName: string, fnName: string, model: SourceModel): boolean {
-  const qualified = rx(`\\b${escapeRegExp(libraryName)}\\s*\\.\\s*${escapeRegExp(fnName)}\\s*\\(`);
-  const member = rx(`\\.\\s*${escapeRegExp(fnName)}\\s*\\(`);
-  for (const c of model.contracts) {
-    if (c.kind === "library") continue;
-    for (const f of c.functions) {
-      if (qualified.test(f.source) || member.test(f.source)) return true;
-    }
-  }
-  return false;
-}
+// Fix 24's library call-site scan lives on in Fix 38's
+// librarySiteEntries (same qualified/member patterns), which returns
+// the calling contracts' public entries instead of a boolean.
 
 function scanContract(
   contract: ContractModel,
@@ -1105,6 +1655,13 @@ function scanContract(
     }
   }
 
+  // Fix 38: public-entry provenance per function, computed once per
+  // contract from the (fixpoint-completed) callee map, plus whether
+  // reachability is uncertain because derived contracts exist in the
+  // file (their entries are invisible from the base's own scan).
+  const entriesByFn = computeEntries(contract, direct);
+  const hasDerivedContracts = contractHasDerived(contract, model);
+
   let anyPayable = false;
   let anyValueSend = false;
   // Fix 12: read-only reentrancy needs the writer's own window — its
@@ -1129,7 +1686,6 @@ function scanContract(
     // then assigns router/pair/exemptFee — flagged as reentrancy, but
     // there is no window. Same reason as the read-only skip below.
     if (flow.callThenWrite && flow.seen && !fn.isConstructor) {
-      const guarded = hasGuard(fn);
       // Evidence checks before calling it reentrancy:
       // - transfer/send forward only 2300 gas: a reentrant call cannot fit
       //   in that stipend, so there is no reentrancy window at all. The
@@ -1146,45 +1702,123 @@ function scanContract(
       const creditSettledPreCall =
         [...flow.preCallWrites].some((w) => creditVars.has(w)) &&
         ![...flow.postCallWrites].some((w) => creditVars.has(w));
-      const severity: Severity = stipendCall
+
+      // Fix 38 rungs — read the mechanics the 2026-10-25 fork sweep
+      // proved decisive, before the severity ladder runs:
+      // - an explicit low gas cap is the stipend lesson generalized:
+      //   a value-bearing reentry needs 9,700 gas (CALL + value
+      //   surcharge) before any callee code executes, so a cap at or
+      //   below 10,000 cannot carry one (the dividend trackers' gas:
+      //   3000 and gas: 0 payouts were flagged critical);
+      // - a hand-rolled mutex (checked at entry, set before the call,
+      //   cleared after) is a guard even without the modifier name;
+      // - a post-call credit write that only runs on the failure arm
+      //   is a ROLLBACK of a pre-call settlement (CEI holds), read
+      //   from the branch structure — not a stale-state window;
+      // - a call on a fixed stored contract (a router swap leg) hands
+      //   control to that callee, never to the payee.
+      const gasCap = flow.seen.gasCap ?? null;
+      const gasCappedCall = !stipendCall && gasCap !== null && gasCap <= 10_000;
+      const mutexVar = mutexAroundCall(fn, contract, parsed, delta, flow.seen.line);
+      const rollbackVar = creditSettledPreCall
+        ? null
+        : rollbackSettledVar(fn, parsed, delta, flow.seen.line, flow.preCallWrites, flow.postCallWrites, creditVars);
+      const fixedCalleeCall = flow.seen.kind === "member" && flow.seen.targetIsFixedContract === true;
+
+      // Fix 38 attribution: an internal/private helper is judged
+      // through its public entries — the finding names the entry, a
+      // helper with NO proven public path produces no finding, and
+      // the guard/auth verdicts are the entries' (weakest entry
+      // governs). Entry guards credited here are modifier guards;
+      // an entry's own hand-rolled mutex is credited only when the
+      // flagged function IS the entry (the mutexVar rung above).
+      const helperSite = !isExternallyCallable(fn);
+      const fnEntries = entriesByFn.get(fn.name) ?? [];
+      let provenanceDead = false;
+      let displayName = fn.name;
+      let entriesAllGuarded = false;
+      let entriesAllAuthed = false;
+      let possibleCapMods: string[] = [];
+      if (helperSite) {
+        if (fnEntries.length === 0) {
+          provenanceDead = !hasDerivedContracts && contract.functions.some((f) => isExternallyCallable(f));
+        } else {
+          const evs = fnEntries.map((e) => ({ e, ev: authEvidenceOf(e, contract, model) }));
+          entriesAllGuarded = evs.every((x) => hasGuard(x.e));
+          entriesAllAuthed = evs.every((x) => x.ev.authed);
+          const hasOpenEntry = evs.some((x) => !x.ev.authed && !hasGuard(x.e) && x.ev.possibleMods.length === 0);
+          if (!hasOpenEntry) possibleCapMods = [...new Set(evs.flatMap((x) => x.ev.possibleMods))];
+          const chosen = evs.find((x) => !x.ev.authed && !hasGuard(x.e)) ?? evs[0];
+          if (chosen) displayName = chosen.e.name;
+        }
+      } else {
+        const selfEv = authEvidenceOf(fn, contract, model);
+        if (!selfEv.authed) possibleCapMods = selfEv.possibleMods;
+        entriesAllAuthed = selfEv.authed;
+      }
+      const guarded = hasGuard(fn) || mutexVar !== null || entriesAllGuarded;
+      const effectiveAuthed = authed || entriesAllAuthed;
+
+      const severity: Severity = stipendCall || gasCappedCall
         ? "info"
-        : guarded
+        : guarded || creditSettledPreCall || rollbackVar !== null || fixedCalleeCall
           ? "low"
-          : creditSettledPreCall
-            ? "low"
-            : flow.seen.sendsValue || flow.seen.kind === "call" || flow.seen.kind === "delegatecall"
-              ? "critical"
-              : flow.seen.kind === "member" || flow.seen.kind === "erc20"
-                ? "medium"
-                : "high";
+          : flow.seen.sendsValue || flow.seen.kind === "call" || flow.seen.kind === "delegatecall"
+            ? "critical"
+            : flow.seen.kind === "member" || flow.seen.kind === "erc20"
+              ? "medium"
+              : "high";
       const title = stipendCall
-        ? `State written after a 2300-gas transfer in ${fn.name} — no reentrancy window`
-        : guarded
-          ? `State is written after an external call in ${fn.name}, but a reentrancy guard is present`
-          : creditSettledPreCall
-            ? `Reentrancy: ${fn.name} updates non-credit state after an external call`
-            : `Reentrancy: ${fn.name} updates state after an external call`;
+        ? `State written after a 2300-gas transfer in ${displayName} — no reentrancy window`
+        : gasCappedCall
+          ? `State written after a ${gasCap}-gas capped call in ${displayName} — no reentrancy window`
+          : rollbackVar !== null
+            ? `Reentrancy: ${displayName} restores a pre-call credit only when the payout fails`
+            : guarded
+              ? `State is written after an external call in ${displayName}, but a reentrancy guard is present`
+              : creditSettledPreCall
+                ? `Reentrancy: ${displayName} updates non-credit state after an external call`
+                : fixedCalleeCall
+                  ? `Reentrancy: ${displayName} writes state after a call to a fixed stored contract`
+                  : `Reentrancy: ${displayName} updates state after an external call`;
       const summary = stipendCall
-        ? `${fn.name} calls ${flow.seen.kind} at line ${flow.seen.line}, which forwards only 2300 gas — a reentrant call cannot fit in that stipend, so there is no window for an attacker to re-enter before the storage update. The post-call write is ordering hygiene, not an exploit.`
-        : guarded
-          ? `${fn.name} still does the external call before the storage update. The guard should hold, but the ordering is the bug the guard is papering over.`
-          : creditSettledPreCall
-            ? `${fn.name} hands control to another contract at line ${flow.seen.line}, then writes storage — but the caller's per-user credit was already debited before the call, so a reentrant call hits the balance check against the reduced balance and cannot double-spend. Only non-credit (aggregate) state updates after the call.`
-            : `${fn.name} hands control to another contract at line ${flow.seen.line}, then writes storage. The callee can re-enter and observe the stale values.`;
-      push(withAccessControlCap(make({
-        severity,
-        swc: "SWC-107",
-        title,
-        confidence: guarded ? "medium" : "high",
-        detector: "reentrancy",
-        summary,
-        walkthrough: reentrancyWalk(contract.name, fn, flow.seen),
-        exploitSolidity: reentrancyExploit(contract.name, fn.name),
-        remediationSolidity: reentrancyFix(fn.name),
-        locationFn: fn.name,
-        locationLine: flow.seen.line,
-        snippet: snippet(parsed, flow.seen.line + delta, delta),
-      }), authed));
+        ? `${displayName} calls ${flow.seen.kind} at line ${flow.seen.line}, which forwards only 2300 gas — a reentrant call cannot fit in that stipend, so there is no window for an attacker to re-enter before the storage update. The post-call write is ordering hygiene, not an exploit.`
+        : gasCappedCall
+          ? `${displayName} caps the external call at line ${flow.seen.line} to ${gasCap} gas. A reentrant value call needs 9,700 gas (the CALL opcode plus the value-transfer surcharge) before any callee code runs, so no value-moving reentry fits inside the cap. The post-call write is ordering hygiene, not an exploit.`
+          : rollbackVar !== null
+            ? `${displayName} writes the caller's credit (${rollbackVar}) BEFORE the external call at line ${flow.seen.line}; the only post-call write to it sits in the failure branch of the call-outcome check and decrements it back. That is a rollback of an already-settled ledger — effects precede the call, so a reentrant call observes the settled value. The fork sweep confirmed this dividend pattern end-to-end: CEI holds, and the flagged write runs only when the payment fails.`
+            : guarded
+              ? mutexVar !== null
+                ? `${displayName} still does the external call before the storage update, but the hand-rolled \`${mutexVar}\` mutex is checked at entry, set before the call and cleared after it — a reentrant call hits the flag and reverts. The ordering is still the bug the flag is papering over.`
+                : entriesAllGuarded && helperSite
+                  ? `${displayName} reaches the call-then-write helper ${fn.name} only through entry points that carry a reentrancy guard, so the window the ordering would open is closed at every public path. The ordering inside ${fn.name} is still the bug the guards are papering over.`
+                  : `${displayName} still does the external call before the storage update. The guard should hold, but the ordering is the bug the guard is papering over.`
+              : creditSettledPreCall
+                ? `${displayName} hands control to another contract at line ${flow.seen.line}, then writes storage — but the caller's per-user credit was already debited before the call, so a reentrant call hits the balance check against the reduced balance and cannot double-spend. Only non-credit (aggregate) state updates after the call.`
+                : fixedCalleeCall
+                  ? `${displayName} calls ${flow.seen.target} at line ${flow.seen.line} — a stored contract address this function never assigns — then writes storage. The flagged call hands control to that fixed callee (a router executing a swap, in the sweep's shape), not to the payee: the payee's code never runs during this call and the caller cannot choose the target. Any reentry would have to come from the fixed callee itself, which is an integration-trust question, not a caller exploit.`
+                  : `${displayName} hands control to another contract at line ${flow.seen.line}, then writes storage. The callee can re-enter and observe the stale values.`;
+      if (!provenanceDead) {
+        let finding = make({
+          severity,
+          swc: "SWC-107",
+          title,
+          confidence: guarded ? "medium" : "high",
+          detector: "reentrancy",
+          summary,
+          walkthrough: reentrancyWalk(contract.name, fn, flow.seen),
+          exploitSolidity: reentrancyExploit(contract.name, displayName),
+          remediationSolidity: reentrancyFix(displayName),
+          locationFn: displayName,
+          locationLine: flow.seen.line,
+          snippet: snippet(parsed, flow.seen.line + delta, delta),
+        });
+        finding = withAccessControlCap(finding, effectiveAuthed);
+        if (!effectiveAuthed && possibleCapMods.length > 0) {
+          finding = withGateCap(finding, unverifiedModifierNote(possibleCapMods));
+        }
+        push(finding);
+      }
       // Read-only reentrancy only cares about vars that are actually stale
       // mid-callback: written AFTER the call. A var written only before the
       // call cannot be observed stale. And a 2300-gas transfer/send creates
@@ -1217,7 +1851,11 @@ function scanContract(
       }));
     }
 
-    scanSimple(fn, contract, model, parsed, delta, authed, push);
+    scanSimple(fn, contract, model, parsed, delta, authed, push, {
+      entries: entriesByFn.get(fn.name) ?? [],
+      provenanceUncertain: hasDerivedContracts,
+      contractHasEntries: contract.functions.some((f) => isExternallyCallable(f)),
+    });
   }
 
   // Fix 12: read-only reentrancy fires ONLY on a demonstrated
@@ -1501,77 +2139,148 @@ require(ok, "transfer failed");`,
         snippet: snippet(parsed, call.line + delta, delta),
       }));
     }
-    // Fix 24: a library-internal delegatecall utility with no reachable
-    // call site in a non-library contract is not a finding — the OZ
-    // Address functionDelegateCall shape (BallerBananas, saudibird,
-    // Rugs: the library utility is dead code for the contracts in the
-    // file). The finding still fires when a non-library function calls
-    // the utility, or when the delegatecall is in a non-library
-    // contract (existing rules below). Scope note: an internal
-    // delegatecall in a NON-library contract with no caller is still
-    // flagged — dead-code analysis for ordinary contracts is out of
-    // scope for this batch; the library-utility case is the one with
-    // three confirmed FPs.
-    if ((call.kind === "delegatecall" || call.kind === "callcode") && !(contract.kind === "library" && !isLibraryDelegatecallCalledFromContract(contract.name, fn.name, model))) {
-      // StarkWare upgradeTo: the target is NOT freely chosen — it must
-      // be a governance-pre-registered, time-locked implementation.
-      // An access-controlled function whose delegatecall target is
-      // constrained by stored-state validation is a governance-trust
-      // note (info), not a critical exploit: the caller cannot redirect
-      // execution to an arbitrary contract.
-      if (authed && call.targetIsParam && call.target && delegateTargetIsConstrained(fn.source, call.target)) {
-        push(make({
-          severity: "info",
-          swc: "SWC-112",
-          title: `${fn.name} delegatecalls a governance-allowlisted implementation`,
-          confidence: "high",
-          detector: "delegatecall",
-          summary: "The delegatecall target must pass stored-state validation (pre-registered / allowlisted, possibly time-locked) and the function is access-controlled, so the caller cannot redirect execution to an arbitrary contract. The residual risk is governance trust: whoever controls the allowlist controls the implementation.",
-          walkthrough: delegateWalk(fn.name, call),
-          exploitSolidity: "",
-          remediationSolidity: `Keep the allowlist + timelock, and keep the function access-controlled.`,
-          locationFn: fn.name,
-          locationLine: call.line,
-          snippet: snippet(parsed, call.line + delta, delta),
-        }));
-      } else if (authed && PROXY_UPGRADE_FNS.has(fn.name) && isProxyShape(contract)) {
-        // Fix 36: the standard proxy upgrade surface. upgradeTo /
-        // upgradeToAndCall / _setImplementation on a proxy-shaped
-        // contract delegatecall the new implementation BY DESIGN —
-        // that is the proxy pattern, not an anomaly. With access
-        // control on the entry point, no arbitrary caller can redirect
-        // execution; the poll found 44+ of these at critical/high with
-        // 0 reproduced. An upgrade function with NO access-control
-        // evidence falls through to the generic branch below and keeps
-        // its critical — that shape is genuinely open.
-        push(make({
-          severity: "info",
-          swc: "SWC-112",
-          title: `${fn.name} is the standard proxy upgrade path (access-controlled)`,
-          confidence: "high",
-          detector: "delegatecall",
-          summary: `${contract.name} is a proxy-shaped contract and ${fn.name} is its upgrade entry point: delegatecalling the new implementation is the mechanism, and the function is access-controlled, so no arbitrary caller can redirect execution to an arbitrary contract. The residual risk is governance trust in whoever holds the upgrade key — audit that key's custody, not this function's shape.`,
-          walkthrough: delegateWalk(fn.name, call),
-          exploitSolidity: "",
-          remediationSolidity: `Keep the upgrade entry access-controlled (onlyOwner / onlyAdmin / a ProxyAdmin), and prefer a timelock on upgrades.`,
-          locationFn: fn.name,
-          locationLine: call.line,
-          snippet: snippet(parsed, call.line + delta, delta),
-        }));
+    // Fix 38 provenance + guard gate for delegatecall/callcode
+    // (generalizes Fix 24). The site is judged through its PUBLIC
+    // ENTRY CHAIN, not on its own text:
+    //  - no public path at all (proven: the contract HAS externally
+    //    callable functions, none reach this site; or a library
+    //    utility no non-library contract calls — the original Fix 24
+    //    case) → no finding. Unreachability must be PROVEN, never
+    //    assumed: a contract with derived contracts in the file, or a
+    //    snippet with no public functions at all, fails closed and
+    //    keeps the old site-level behavior.
+    //  - the target argument is traced through the entry chain:
+    //    FIXED (stored state / const / literal at every call site)
+    //    falsifies the "caller-supplied" claim → reclassified low
+    //    with the gate note. CALLER-SUPPLIED proceeds to the guard
+    //    gate over the ENTRIES: all entries proven authed → the
+    //    standing access cap; no entry proven open but some entry
+    //    carrying an unverifiable modifier → capped high with the
+    //    note naming it; any entry proven open → the finding stands.
+    //  - every entry an initializer → the reachability question IS
+    //    the initializer question (Fix 37): capped high with the
+    //    deferral note.
+    if (call.kind === "delegatecall" || call.kind === "callcode") {
+      let gateEntries: { fn: FnModel; contract: ContractModel }[] = [];
+      let libraryDead = false;
+      if (contract.kind === "library") {
+        const lib = librarySiteEntries(contract, fn, model);
+        gateEntries = lib.entries;
+        libraryDead = !lib.anyCallSite;
+      } else if (!isExternallyCallable(fn)) {
+        gateEntries = (computeEntries(contract, direct).get(fn.name) ?? []).map((e) => ({ fn: e, contract }));
       } else {
-        const severity: Severity = call.targetIsParam ? "critical" : call.targetIsConst ? "medium" : "high";
-      push(withAccessControlCap(make({
-        severity,
-        swc: "SWC-112",
-        title: call.targetIsParam
-          ? `${fn.name} delegatecalls a caller-supplied address`
-          : `${fn.name} delegatecalls ${call.target || "another contract"}`,
-        confidence: "high",
-        detector: "delegatecall",
-        summary: "Delegatecall runs the target's code against this contract's storage. A writable target can overwrite owner, balances, or any other slot.",
-        walkthrough: delegateWalk(fn.name, call),
-        exploitSolidity: delegateExploit(contract.name),
-        remediationSolidity: `// EIP-1967 Storage Slot Isolation + Strict Implementation Whitelist
+        gateEntries = [{ fn, contract }];
+      }
+      const provenanceDead =
+        !isExternallyCallable(fn) &&
+        gateEntries.length === 0 &&
+        !contractHasDerived(contract, model) &&
+        (libraryDead || contract.functions.some((f) => isExternallyCallable(f)));
+      if (!provenanceDead) {
+        const entryEvidence = gateEntries.map((e) => ({ entry: e, ev: authEvidenceOf(e.fn, e.contract, model) }));
+        const allEntriesAuthed = gateEntries.length > 0 && entryEvidence.every((x) => x.ev.authed);
+        const possibleMods = [...new Set(entryEvidence.flatMap((x) => x.ev.possibleMods))];
+        const anyOpenEntry = entryEvidence.some((x) => !x.ev.authed && x.ev.possibleMods.length === 0);
+        const gateAuthed = authed || allEntriesAuthed;
+        const initializerOnly = gateEntries.length > 0 && gateEntries.every((e) => isInitializerEntry(e.fn));
+        const weakestEntry = entryEvidence.find((x) => !x.ev.authed) ?? entryEvidence[0];
+        const attributed = !isExternallyCallable(fn) && weakestEntry !== undefined && weakestEntry.entry.fn !== fn;
+        const displayFn = attributed ? (weakestEntry as { entry: { fn: FnModel } }).entry.fn : fn;
+        // Target provenance through the chain (helper sites only;
+        // an entry site's own targetIsParam/targetIsConst already
+        // describe it, and library sites resolve cross-contract).
+        let targetClass: TargetClass | null = null;
+        if (!isExternallyCallable(fn) && contract.kind !== "library" && call.targetIsParam) {
+          const tRoot = (call.target.match(/^[A-Za-z_]\w*/) ?? [null])[0];
+          if (tRoot && fn.params.some((p) => p.name === tRoot)) {
+            targetClass = classifyTargetParam(fn, tRoot, contract, byName, direct, 0, new Set());
+          }
+        }
+        if (gateAuthed && call.targetIsParam && call.target && delegateTargetIsConstrained(fn.source, call.target)) {
+          // StarkWare upgradeTo: the target is NOT freely chosen — it
+          // must be a governance-pre-registered, time-locked
+          // implementation. A governance-trust note (info), not a
+          // critical exploit.
+          push(make({
+            severity: "info",
+            swc: "SWC-112",
+            title: `${fn.name} delegatecalls a governance-allowlisted implementation`,
+            confidence: "high",
+            detector: "delegatecall",
+            summary: "The delegatecall target must pass stored-state validation (pre-registered / allowlisted, possibly time-locked) and the function is access-controlled, so the caller cannot redirect execution to an arbitrary contract. The residual risk is governance trust: whoever controls the allowlist controls the implementation.",
+            walkthrough: delegateWalk(fn.name, call),
+            exploitSolidity: "",
+            remediationSolidity: `Keep the allowlist + timelock, and keep the function access-controlled.`,
+            locationFn: fn.name,
+            locationLine: call.line,
+            snippet: snippet(parsed, call.line + delta, delta),
+          }));
+        } else if (
+          gateAuthed &&
+          (PROXY_UPGRADE_FNS.has(fn.name) || gateEntries.some((e) => PROXY_UPGRADE_FNS.has(e.fn.name))) &&
+          isProxyShape(contract)
+        ) {
+          // Fix 36, entry-aware under Fix 38: the standard proxy
+          // upgrade surface. upgradeTo / upgradeToAndCall /
+          // _setImplementation on a proxy-shaped contract delegatecall
+          // the new implementation BY DESIGN. Fix 38 resolves the
+          // entries, so the internal _setImplementation site behind
+          // onlyOwner upgradeTo entries lands here too — on the sweep
+          // all four EIP-173 claims were this shape, guards executed
+          // and held. An upgrade path with NO access-control evidence
+          // on any entry falls through and keeps its critical.
+          push(make({
+            severity: "info",
+            swc: "SWC-112",
+            title: `${fn.name} is the standard proxy upgrade path (access-controlled)`,
+            confidence: "high",
+            detector: "delegatecall",
+            summary: `${contract.name} is a proxy-shaped contract and ${fn.name} is its upgrade entry point: delegatecalling the new implementation is the mechanism, and the function is access-controlled, so no arbitrary caller can redirect execution to an arbitrary contract. The residual risk is governance trust in whoever holds the upgrade key — audit that key's custody, not this function's shape.`,
+            walkthrough: delegateWalk(fn.name, call),
+            exploitSolidity: "",
+            remediationSolidity: `Keep the upgrade entry access-controlled (onlyOwner / onlyAdmin / a ProxyAdmin), and prefer a timelock on upgrades.`,
+            locationFn: fn.name,
+            locationLine: call.line,
+            snippet: snippet(parsed, call.line + delta, delta),
+          }));
+        } else if (targetClass === "fixed") {
+          // The "caller-supplied address" claim is FALSE of the
+          // chain: at every public entry the target is stored state.
+          // Reclassified low with the gate note — a governance-trust
+          // lead about the stored address, not an exploit claim.
+          push(make({
+            severity: "low",
+            swc: "SWC-112",
+            title: `${fn.name} delegatecalls a stored address (not caller-supplied)`,
+            confidence: "high",
+            detector: "delegatecall",
+            summary:
+              `The delegatecall target at this site is stored contract state at every public entry that reaches it — the caller supplies calldata, never the code address.` +
+              DELEGATECALL_FIXED_TARGET_NOTE,
+            walkthrough: delegateWalk(fn.name, call),
+            exploitSolidity: "",
+            remediationSolidity: `Keep the stored implementation address behind the same access control as an upgrade, and prefer an allowlist + timelock on changes to it.`,
+            locationFn: fn.name,
+            locationLine: call.line,
+            snippet: snippet(parsed, call.line + delta, delta),
+          }));
+        } else {
+          const severity: Severity = call.targetIsParam ? "critical" : call.targetIsConst ? "medium" : "high";
+          let finding = make({
+            severity,
+            swc: "SWC-112",
+            title: call.targetIsParam
+              ? attributed
+                ? `${displayFn.name} delegatecalls a caller-supplied address (via ${fn.name})`
+                : `${fn.name} delegatecalls a caller-supplied address`
+              : `${fn.name} delegatecalls ${call.target || "another contract"}`,
+            confidence: "high",
+            detector: "delegatecall",
+            summary: "Delegatecall runs the target's code against this contract's storage. A writable target can overwrite owner, balances, or any other slot.",
+            walkthrough: delegateWalk(attributed ? displayFn.name : fn.name, call),
+            exploitSolidity: delegateExploit(contract.name),
+            remediationSolidity: `// EIP-1967 Storage Slot Isolation + Strict Implementation Whitelist
 bytes32 private constant _IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 mapping(address => bool) public allowedImplementations;
 
@@ -1583,10 +2292,19 @@ function upgradeToAndCall(address newImpl, bytes calldata data) external onlyOwn
     (bool ok, ) = newImpl.delegatecall(data);
     require(ok, "Delegatecall failed");
 }`,
-        locationFn: fn.name,
-        locationLine: call.line,
-        snippet: snippet(parsed, call.line + delta, delta),
-      }), authed));
+            locationFn: attributed ? displayFn.name : fn.name,
+            locationLine: call.line,
+            snippet: snippet(parsed, call.line + delta, delta),
+          });
+          if (gateAuthed) {
+            finding = withAccessControlCap(finding, true);
+          } else if (initializerOnly) {
+            finding = withGateCap(finding, DELEGATECALL_INITIALIZER_ENTRY_NOTE);
+          } else if (!anyOpenEntry && possibleMods.length > 0) {
+            finding = withGateCap(finding, unverifiedModifierNote(possibleMods));
+          }
+          push(finding);
+        }
       }
     }
     // Fix 16: erc20-unchecked fires ONLY for EXTERNAL token calls.
@@ -1851,6 +2569,29 @@ require(ok, "pay");`,
               const vi = names.indexOf("value");
               if (vi >= 0) amount = sliceOf(parsed, namedArgs[vi]);
             }
+            // Fix 38: the literal gas cap, when the source states one
+            // as a number literal (gas: 3000). A computed or named cap
+            // earns no credit — its value is unknown at analysis time.
+            let gasCap: number | null = null;
+            if (callee.named) {
+              const named = callee.named as AstNode;
+              const names = (named.names as string[] | undefined) ?? [];
+              const namedArgs = (named.arguments as AstNode[] | undefined) ?? [];
+              const gi = names.indexOf("gas");
+              const argNode = gi >= 0 ? namedArgs[gi] : undefined;
+              if (argNode && argNode.type === "NumberLiteral") {
+                const v = Number(String((argNode as AstNode).number ?? ""));
+                if (Number.isFinite(v)) gasCap = v;
+              }
+            }
+            // Fix 38: a call on a stored contract this function never
+            // assigns reaches a FIXED callee (a router, a token), not
+            // a caller-chosen one.
+            const targetIsFixedContract = Boolean(
+              baseName &&
+              (stateNames.has(baseName) || consts.has(baseName)) &&
+              !new RegExp(`\\b${baseName}\\s*[-+*/%]?=[^=]`).test(fn.source),
+            );
             noteCall({
               kind,
               line: lineOf(node, delta, fn.line),
@@ -1864,6 +2605,8 @@ require(ok, "pay");`,
               recipient,
               ownToken,
               amount,
+              gasCap,
+              targetIsFixedContract,
             });
             // Token drain: an unauthenticated function moves an
             // arbitrary amount of the contract's tokens to a FIXED
@@ -2462,6 +3205,18 @@ function hashOnlyAsIdentifier(src: string): boolean {
   return true;
 }
 
+type ReachInfo = {
+  /** Public entry points that reach this function (itself included
+   * when externally callable) — Fix 38 provenance for scanSimple. */
+  entries: FnModel[];
+  /** Reachability is uncertain (derived contracts exist in the
+   * file): empty entries then prove nothing and must fail closed. */
+  provenanceUncertain: boolean;
+  /** The contract declares at least one externally callable fn, so
+   * an empty entry set is positive evidence of unreachability. */
+  contractHasEntries: boolean;
+};
+
 function scanSimple(
   fn: FnModel,
   contract: ContractModel,
@@ -2470,6 +3225,7 @@ function scanSimple(
   delta: number,
   authed: boolean,
   push: (f: Finding) => void,
+  reach?: ReachInfo,
 ) {
   const src = fn.source;
   if (/tx\.origin/.test(src)) {
@@ -2572,31 +3328,69 @@ function scanSimple(
       sdArg = src.slice(sdCall.index + sdCall[0].length, i - 1).trim();
     }
     const sdControlled = sdArg ? isCallerControlled(sdArg, fn, contract) : true;
-    // Fix 21: an access-controlled selfdestruct is MEDIUM, not high —
-    // the owner key can destroy the contract, but only the gated key
-    // can do it, so it is a governance-trust note, not an open kill
-    // switch. Uncontrolled selfdestruct to a caller-chosen address
-    // keeps the critical rule; a fixed beneficiary stays low.
-    push(make({
-      severity: sdControlled ? (authed ? "medium" : "critical") : "low",
-      swc: "SWC-106",
-      title: sdControlled
-        ? (authed ? `${fn.name} can selfdestruct` : `${fn.name} selfdestructs without an access check`)
-        : `${fn.name} can selfdestruct to a fixed address`,
-      confidence: "high",
-      detector: "selfdestruct",
-      summary: sdControlled
-        ? (authed
-          ? "A privileged caller can destroy the contract and send away the balance. On chains that still honor deletion outside the creating transaction this is final; either way the balance moves."
-          : "selfdestruct is reachable without an owner check. The balance can be forced to an attacker-chosen address.")
-        : "selfdestruct is reachable without an owner check, but the beneficiary is fixed (a constant or storage the caller cannot redirect), so the caller gains nothing. Anyone can still destroy the contract — griefing, not theft.",
-      walkthrough: "1. selfdestruct sends the full balance to its argument and, where deletion still applies, removes the code.\n2. A public function with no msg.sender check is an open kill switch.\n3. Combined with CREATE2, the address can be redeployed with different code.",
-      exploitSolidity: sdControlled && !authed ? `interface IVictim { function ${fn.name}(address payable to) external; }` : "",
-      remediationSolidity: `function close(address payable to) external onlyOwner {\n    // Prefer a normal withdraw. selfdestruct is not an upgrade strategy after EIP-6780.\n    selfdestruct(to);\n}`,
-      locationFn: fn.name,
-      locationLine: fn.line,
-      snippet: snippet(parsed, fn.line + delta, delta),
-    }));
+    // Fix 38 gate (selfdestruct): guard credit and reachability,
+    // generalized from the sweep — all 7 stored criticals were
+    // classic multiowned Wallet.sol, where kill() carries
+    // `onlymanyowners(sha3(msg.data))`: the modifier IS the access
+    // check, delegated to confirmAndCheck, and isAuthed's shallow
+    // patterns never credited it.
+    //  - deep modifier evidence (authEvidenceOf: isAuthed, a
+    //    fixed-caller gate, or a modifier whose body — or a helper it
+    //    calls — checks msg.sender) counts as access control → the
+    //    Fix 21 medium treatment;
+    //  - a modifier that is only a POSSIBLE guard (unresolvable, or
+    //    not provably caller-free) caps the critical at high with a
+    //    note naming it — never ignored, never credited as proven;
+    //  - an internal/private site must be externally reachable
+    //    through a public entry: proven-unreachable (entries empty,
+    //    provenance certain, the contract has real entries) → no
+    //    finding; entries all proven authed → the medium treatment.
+    const selfEv = authEvidenceOf(fn, contract, model);
+    let sdAuthed = authed || selfEv.authed;
+    let sdPossibleMods = sdAuthed ? [] : selfEv.possibleMods;
+    let sdReachable = true;
+    if (!isExternallyCallable(fn) && reach) {
+      if (reach.entries.length === 0) {
+        sdReachable = reach.provenanceUncertain || !reach.contractHasEntries;
+      } else {
+        const entryEvs = reach.entries.map((e) => authEvidenceOf(e, contract, model));
+        if (entryEvs.every((x) => x.authed)) sdAuthed = true;
+        if (!sdAuthed) {
+          sdPossibleMods = [...new Set([...sdPossibleMods, ...entryEvs.flatMap((x) => x.possibleMods)])];
+        }
+      }
+    }
+    if (sdReachable) {
+      // Fix 21: an access-controlled selfdestruct is MEDIUM, not high —
+      // the owner key can destroy the contract, but only the gated key
+      // can do it, so it is a governance-trust note, not an open kill
+      // switch. Uncontrolled selfdestruct to a caller-chosen address
+      // keeps the critical rule; a fixed beneficiary stays low.
+      let finding = make({
+        severity: sdControlled ? (sdAuthed ? "medium" : "critical") : "low",
+        swc: "SWC-106",
+        title: sdControlled
+          ? (sdAuthed ? `${fn.name} can selfdestruct` : `${fn.name} selfdestructs without an access check`)
+          : `${fn.name} can selfdestruct to a fixed address`,
+        confidence: "high",
+        detector: "selfdestruct",
+        summary: sdControlled
+          ? (sdAuthed
+            ? "A privileged caller can destroy the contract and send away the balance. On chains that still honor deletion outside the creating transaction this is final; either way the balance moves."
+            : "selfdestruct is reachable without an owner check. The balance can be forced to an attacker-chosen address.")
+          : "selfdestruct is reachable without an owner check, but the beneficiary is fixed (a constant or storage the caller cannot redirect), so the caller gains nothing. Anyone can still destroy the contract — griefing, not theft.",
+        walkthrough: "1. selfdestruct sends the full balance to its argument and, where deletion still applies, removes the code.\n2. A public function with no msg.sender check is an open kill switch.\n3. Combined with CREATE2, the address can be redeployed with different code.",
+        exploitSolidity: sdControlled && !sdAuthed ? `interface IVictim { function ${fn.name}(address payable to) external; }` : "",
+        remediationSolidity: `function close(address payable to) external onlyOwner {\n    // Prefer a normal withdraw. selfdestruct is not an upgrade strategy after EIP-6780.\n    selfdestruct(to);\n}`,
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      });
+      if (!sdAuthed && sdPossibleMods.length > 0) {
+        finding = withGateCap(finding, unverifiedModifierNote(sdPossibleMods));
+      }
+      push(finding);
+    }
   }
 
   const initName = /^init(ialize)?$/.test(fn.name);
