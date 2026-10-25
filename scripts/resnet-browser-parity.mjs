@@ -130,7 +130,17 @@ try {
               const rect = element.getBoundingClientRect();
               return rect.width > 0 && (rect.right > innerWidth + 1 || rect.left < -1);
             })
-            .slice(0, 30)
+            .filter((element) => {
+              let right = element.getBoundingClientRect().right;
+              for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+                if (
+                  ["auto", "scroll", "hidden", "clip"].includes(getComputedStyle(parent).overflowX)
+                )
+                  right = Math.min(right, parent.getBoundingClientRect().right);
+              }
+              return right > innerWidth + 1;
+            })
+            .slice(-25)
             .map((element) => ({
               tag: element.tagName,
               className: String(element.className),
