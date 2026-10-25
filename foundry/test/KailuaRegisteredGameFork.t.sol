@@ -126,6 +126,30 @@ contract KailuaRegisteredGameForkTest is Test {
         assertEq(_readAddressArg(treasury, "proposerOf(address)", lastProposal), registeredProposer, "Last proposal registration inconsistent");
     }
 
+    function test_realProposerCannotWithdrawBondWhileLatestGameIsUnresolved() public {
+        // Replays the registered proposer's identity ONLY inside the in-memory mainnet fork.
+        // No signing keys, broadcast, or mainnet transactions are used.
+        address latest = _readAddressArg(treasury, "lastProposal(address)", registeredProposer);
+        uint256 latestStatus = _readUint(latest, "status()");
+        assertEq(latestStatus, 0, "Latest proposer game is not in progress; re-evaluate claim rules");
+        uint256 credit = _readUintArg(treasury, "paidBonds(address)", registeredProposer);
+        assertGt(credit, 0, "No live outstanding bond credit to verify");
+        uint256 treasuryBefore = treasury.balance;
+        uint256 proposerBefore = registeredProposer.balance;
+        console2.log("Live recorded proposer credit:", credit);
+        console2.log("Live latest game:", latest);
+        console2.log("Live latest game status:", latestStatus);
+        vm.prank(registeredProposer);
+        (bool success, bytes memory err) = treasury.call(abi.encodeWithSignature("claimProposerBond()"));
+        console2.log("Premature bond withdrawal accepted:", success);
+        if (!success) console2.logBytes4(_selector(err));
+        assertFalse(success, "UNRESOLVED GAME: proposer prematurely withdrew bond");
+        assertEq(_selector(err), bytes4(keccak256("GameNotResolved()")), "Expected unresolved-game bond guard");
+        assertEq(_readUintArg(treasury, "paidBonds(address)", registeredProposer), credit, "Bond credit unexpectedly changed");
+        assertEq(treasury.balance, treasuryBefore, "Unresolved proposer claim reduced treasury balance");
+        assertEq(registeredProposer.balance, proposerBefore, "Unresolved proposer received ETH");
+    }
+
     function test_cannotAppendForgedChildToRealParent() public {
         uint256 countBefore = _readUint(parent, "childCount()");
         vm.prank(actor);
