@@ -75,6 +75,7 @@ contract KailuaInitializerCompatibilityForkTest is Test {
     function test_confirmRoninKailuaIdentity() public view {
         assertEq(_readAddress("KAILUA_TREASURY()"), target, "Not self-referential Kailua treasury");
         assertEq(_readUint("GAME_TYPE()"), 1337, "Unexpected Kailua game type");
+        assertEq(_readAddress("gameCreator()"), address(0), "Implementation unexpectedly has CWIA clone creator");
         // Ownable/proxy methods were part of a supplied hypothetical PoC, not this ABI.
         (bool ownerOk,) = target.staticcall(abi.encodeWithSignature("owner()"));
         assertFalse(ownerOk, "Unexpected Ownable interface; revisit hypothesis");
@@ -100,6 +101,16 @@ contract KailuaInitializerCompatibilityForkTest is Test {
         _reportError(result);
         // Unexpected success is NOT automatically an exploit, but must be investigated.
         assertFalse(succeeded, "Unexpected initializer success; review protocol semantics");
+        assertEq(_selector(result), BLACKLISTED, "Unexpected initializer revert selector");
+        assertEq(result.length, 68, "Unexpected Blacklisted encoding");
+        address recordedSource;
+        address requiredTreasury;
+        assembly {
+            recordedSource := mload(add(result, 36))
+            requiredTreasury := mload(add(result, 68))
+        }
+        assertEq(recordedSource, address(0), "Expected missing clone creator");
+        assertEq(requiredTreasury, target, "Expected guard to require treasury creator");
         assertEq(_readUint("createdAt()"), createdAtBefore, "Initializer mutated createdAt");
         assertEq(_readUint("gameIndex()"), gameIndexBefore, "Initializer mutated gameIndex");
         assertEq(_readUint("childCount()"), childCountBefore, "Initializer mutated childCount");
@@ -117,6 +128,7 @@ contract KailuaInitializerCompatibilityForkTest is Test {
         console2.log("setParticipationBond succeeded:", success);
         if (!success) _reportError(err);
         assertFalse(success, "Unprivileged actor changed participation bond");
+        assertEq(_selector(err), bytes4(keccak256("NotFactoryOwner()")), "Expected factory owner authorization error");
         assertEq(_readUint("participationBond()"), bondBefore, "Bond changed");
     }
 
@@ -129,6 +141,7 @@ contract KailuaInitializerCompatibilityForkTest is Test {
         console2.log("assignVanguard succeeded:", success);
         if (!success) _reportError(err);
         assertFalse(success, "Unprivileged actor set vanguard");
+        assertEq(_selector(err), bytes4(keccak256("NotFactoryOwner()")), "Expected factory owner authorization error");
         assertEq(_readAddress("vanguard()"), current, "Vanguard changed");
     }
 }
