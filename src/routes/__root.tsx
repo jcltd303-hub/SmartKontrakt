@@ -4,7 +4,13 @@ import { installAdminTokenFetch } from "@/lib/admin-token";
 import appCss from "../styles.css?url";
 
 // Attach the optional admin token to same-origin requests (client only).
-if (typeof window !== "undefined") installAdminTokenFetch();
+if (typeof window !== "undefined") {
+  try {
+    installAdminTokenFetch();
+  } catch {
+    // Ignore if environment forbids fetch wrapping
+  }
+}
 
 const APP_NAME = "Kiln";
 

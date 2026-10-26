@@ -40,36 +40,73 @@ export function setAdminToken(token: string): void {
  * wrapped.
  */
 export function installAdminTokenFetch(): void {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined" || typeof window.fetch !== "function") return;
   const w = window as FetchPatched;
   if (w.__kilnAdminTokenInstalled) return;
-  w.__kilnAdminTokenInstalled = true;
 
-  const original = window.fetch.bind(window);
-  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-    try {
-      const token = getAdminToken();
-      if (token) {
-        const url =
-          typeof input === "string"
-            ? input
-            : input instanceof URL
-              ? input.href
-              : input.url;
-        const sameOrigin = new URL(url, window.location.origin).origin === window.location.origin;
-        if (sameOrigin) {
-          const baseHeaders =
-            init?.headers ?? (input instanceof Request ? input.headers : undefined);
-          const headers = new Headers(baseHeaders);
-          if (!headers.has(HEADER)) {
-            headers.set(HEADER, token);
-            return original(input, { ...init, headers });
+  try {
+    const original = window.fetch.bind(window);
+    const patchedFetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      try {
+        const token = getAdminToken();
+        if (token) {
+          const url =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.href
+                : input.url;
+          const sameOrigin = new URL(url, window.location.origin).origin === window.location.origin;
+          if (sameOrigin) {
+            const baseHeaders =
+              init?.headers ?? (input instanceof Request ? input.headers : undefined);
+            const headers = new Headers(baseHeaders);
+            if (!headers.has(HEADER)) {
+              headers.set(HEADER, token);
+              return original(input, { ...init, headers });
+            }
           }
         }
+      } catch {
+        // fall through to the untouched call
       }
+      return original(input, init);
+    };
+
+    let installed = false;
+    try {
+      Object.defineProperty(window, "fetch", {
+        value: patchedFetch,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+      installed = true;
     } catch {
-      // fall through to the untouched call
+      try {
+        window.fetch = patchedFetch;
+        installed = true;
+      } catch {
+        try {
+          if (typeof Window !== "undefined" && Window.prototype) {
+            Object.defineProperty(Window.prototype, "fetch", {
+              value: patchedFetch,
+              writable: true,
+              configurable: true,
+              enumerable: true,
+            });
+            installed = true;
+          }
+        } catch {
+          // fetch cannot be monkey-patched in this environment
+        }
+      }
     }
-    return original(input, init);
-  };
+
+    if (installed) {
+      w.__kilnAdminTokenInstalled = true;
+    }
+  } catch {
+    // Graceful degradation: never throw or break root mounting
+  }
 }
