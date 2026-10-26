@@ -1,15 +1,20 @@
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Download } from "lucide-react";
 import type { WorkbenchController } from "./use-workbench-controller";
 
 type ReportTabProps = Pick<
   WorkbenchController,
-  "activeTab" | "copyToClipboard" | "generateMarkdownReport" | "copiedKey"
+  | "activeTab"
+  | "copyToClipboard"
+  | "generateMarkdownReport"
+  | "handleDownloadMarkdownReport"
+  | "copiedKey"
 >;
 
 export function ReportTab({
   activeTab,
   copyToClipboard,
   generateMarkdownReport,
+  handleDownloadMarkdownReport,
   copiedKey,
 }: ReportTabProps) {
   return (
@@ -23,17 +28,27 @@ export function ReportTab({
                 Formal security finding documentation & summary
               </p>
             </div>
-            <button
-              onClick={() => copyToClipboard(generateMarkdownReport(), "md-full")}
-              className="px-3 py-1.5 rounded bg-[#e8a54b] text-[#12110e] font-bold text-xs flex items-center gap-1.5 shadow"
-            >
-              {copiedKey === "md-full" ? (
-                <Check className="w-3.5 h-3.5" />
-              ) : (
-                <Copy className="w-3.5 h-3.5" />
-              )}
-              <span>Copy Report</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleDownloadMarkdownReport}
+                className="px-3 py-1.5 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#f4efe6] font-bold text-xs flex items-center gap-1.5 shadow transition-colors"
+                title="Download Markdown Report (.md)"
+              >
+                <Download className="w-3.5 h-3.5 text-[#e8a54b]" />
+                <span>Download .md</span>
+              </button>
+              <button
+                onClick={() => copyToClipboard(generateMarkdownReport(), "md-full")}
+                className="px-3 py-1.5 rounded bg-[#e8a54b] text-[#12110e] font-bold text-xs flex items-center gap-1.5 shadow hover:bg-[#f3b562] transition-colors"
+              >
+                {copiedKey === "md-full" ? (
+                  <Check className="w-3.5 h-3.5" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+                <span>Copy Report</span>
+              </button>
+            </div>
           </div>
 
           <div className="bg-[#12110e] p-4 rounded-lg border border-[#3a3428] max-h-[500px] overflow-y-auto leading-relaxed text-[#f4efe6]">

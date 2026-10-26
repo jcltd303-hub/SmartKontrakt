@@ -51,7 +51,7 @@
  *      PoC-eligible finding)
  *   4  generation fell back to the template — type UNTESTED
  */
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import {
   cpSync,
   existsSync,

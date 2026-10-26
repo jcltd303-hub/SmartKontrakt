@@ -1,6 +1,6 @@
 import type { PocResult } from "./types";
 import { sha3_256 } from "js-sha3";
-import { countExecutableTestFunctions } from "./poc-outcome.ts";
+import { countExecutableTestFunctions, hasInconclusiveEvidence } from "./poc-outcome.ts";
 import { wrapPocSnippet } from "./poc-wrap.ts";
 import { nativeSymbol } from "./balance.ts";
 import { fetchAddressValue, isZeroValue } from "./value.ts";
@@ -180,11 +180,15 @@ async function requestPocOnBackend(
         error: "Backend ran forge but executed 0 tests (no matching test contract or test functions).",
       };
     }
+    const passed = data.passed && !hasInconclusiveEvidence(data.logs);
     return {
-      status: data.passed ? "passed" : "failed",
+      status: passed ? "passed" : "failed",
       logs: data.logs || "(no output)",
       durationMs: data.durationMs ?? Date.now() - started,
       runAt: runAt(),
+      ...(data.passed && hasInconclusiveEvidence(data.logs)
+        ? { error: "PoC execution was inconclusive or attack contract interaction failed on the fork." }
+        : {}),
     };
   } catch (err) {
     const timedOut = err instanceof Error && err.name === "AbortError";
@@ -458,6 +462,11 @@ export async function runSmartPoc(
     // the error bucket.
     result.status = "no_tests";
     result.error = "No executed Foundry tests were evidenced in the backend output.";
+  }
+  if (result.status === "passed" && hasInconclusiveEvidence(result.logs)) {
+    result.status = "failed";
+    result.error =
+      "Exploit execution completed without reverting, but attack logs reported the test was inconclusive or failed to reproduce on fork.";
   }
   result.evidence = { engine: "foundry", startedAt, finishedAt: result.runAt,
     target: input.address, chainId: String(input.chainId ?? 1), sourceHash,

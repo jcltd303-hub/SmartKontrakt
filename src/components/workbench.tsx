@@ -14,6 +14,7 @@ import {
   Check,
   Clock,
   Copy,
+  Download,
   FileText,
   GitBranch,
   Info,
@@ -90,6 +91,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     handleRunManualProbe,
     scanHistory,
     generateMarkdownReport,
+    handleDownloadMarkdownReport,
     setSeverityFilter,
     severityFilter,
     findingSearch,
@@ -424,23 +426,33 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
 
                 {/* Quick Export Button */}
                 {report && (
-                  <button
-                    onClick={() => copyToClipboard(generateMarkdownReport(), "md-report")}
-                    className="text-xs px-2.5 py-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#a39886] hover:text-[#f4efe6] font-mono flex items-center gap-1 transition-colors"
-                    title="Copy Full Markdown Report"
-                  >
-                    {copiedKey === "md-report" ? (
-                      <>
-                        <Check className="w-3 h-3 text-emerald-400" />
-                        <span>Copied!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3 h-3 text-[#e8a54b]" />
-                        <span>Copy MD</span>
-                      </>
-                    )}
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => copyToClipboard(generateMarkdownReport(), "md-report")}
+                      className="text-xs px-2.5 py-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#a39886] hover:text-[#f4efe6] font-mono flex items-center gap-1 transition-colors"
+                      title="Copy Full Markdown Report"
+                    >
+                      {copiedKey === "md-report" ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          <span>Copied!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3 text-[#e8a54b]" />
+                          <span>Copy MD</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={handleDownloadMarkdownReport}
+                      className="text-xs px-2.5 py-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#a39886] hover:text-[#f4efe6] font-mono flex items-center gap-1 transition-colors"
+                      title="Download Markdown Report (.md)"
+                    >
+                      <Download className="w-3 h-3 text-[#e8a54b]" />
+                      <span>Download .md</span>
+                    </button>
+                  </div>
                 )}
               </div>
 
@@ -526,6 +538,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 activeTab={activeTab}
                 copyToClipboard={copyToClipboard}
                 generateMarkdownReport={generateMarkdownReport}
+                handleDownloadMarkdownReport={handleDownloadMarkdownReport}
                 copiedKey={copiedKey}
               />
 

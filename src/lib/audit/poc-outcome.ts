@@ -100,11 +100,28 @@ export function hasUnadaptedEvidence(output: string | null | undefined): boolean
 }
 
 /**
+ * Inconclusive / un-reproduced signals in Foundry output.
+ * Some PoC tests log that the interaction failed, re-entry was impossible,
+ * or the scenario was inconclusive, but Forge reports [PASS] because
+ * no revert/assertion failed inside the test function.
+ * These hollow passes must be classified as failed (exploit not reproduced).
+ */
+export const INCONCLUSIVE_POC_RE =
+  /\b(inconclusive|did not reproduce|attack contract interaction failed|exploit did not reproduce)\b/i;
+
+export function hasInconclusiveEvidence(output: string | null | undefined): boolean {
+  if (!output) return false;
+  return INCONCLUSIVE_POC_RE.test(output);
+}
+
+/**
  * Map a FRESH run result to the status it is saved under. The run's own
  * status field is authoritative here — a value-guard skip arrives as
  * status "skipped", never embedded in an "error" — except for the
  * hollow-verdict guard: a "passed"/"failed" whose output evidences
- * zero executed tests is not a verdict and becomes "no_tests".
+ * zero executed tests is not a verdict and becomes "no_tests", and a
+ * "passed" whose logs show the attack was inconclusive or failed to
+ * interact becomes "failed".
  */
 export function savedStatusFromRun(run: { status: string; logs?: string | null }): SavedPocStatus {
   const logs = run.logs ?? "";
@@ -120,7 +137,9 @@ export function savedStatusFromRun(run: { status: string; logs?: string | null }
     return "unadapted";
   }
   if (run.status === "passed" || run.status === "failed") {
-    return hasZeroTestEvidence(logs) ? "no_tests" : run.status;
+    if (hasZeroTestEvidence(logs)) return "no_tests";
+    if (run.status === "passed" && hasInconclusiveEvidence(logs)) return "failed";
+    return run.status;
   }
   // "error", "backend_unreachable", and anything unrecognized save as
   // "error" — unless the output proves the harness ran zero tests, in
@@ -133,8 +152,9 @@ export function savedStatusFromRun(run: { status: string; logs?: string | null }
  * The status a STORED row effectively carries, for counters, filters
  * and reused-run verdicts. Rows saved under the old vocabulary report
  * tests=0 runs and value-guard skips as "error"; when the stored output
- * carries the evidence, the row reclassifies on read. Anything else
- * passes through unchanged.
+ * carries the evidence, the row reclassifies on read. A "passed" row
+ * whose output notes an inconclusive run reclassifies to "failed". Anything
+ * else passes through unchanged.
  */
 export function effectivePocStatus(
   status: string | null | undefined,
@@ -146,6 +166,9 @@ export function effectivePocStatus(
   // TODO-abort message reclassifies them on read.
   if ((status === "error" || status === "failed") && hasUnadaptedEvidence(output)) {
     return "unadapted";
+  }
+  if (status === "passed" && hasInconclusiveEvidence(output)) {
+    return "failed";
   }
   if (status === "error") {
     if (hasZeroTestEvidence(output)) return "no_tests";

@@ -1443,46 +1443,111 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
   // Format full markdown report
   const generateMarkdownReport = (): string => {
     if (!report) return "";
+    const contractAddress = bodyLoadedForAddress || singleAddress || null;
     const lines: string[] = [
       `# Kiln Security Audit Report: ${report.label}`,
-      `Generated: ${new Date().toUTCString()}`,
-      `Input Type: ${report.inputKind.toUpperCase()}`,
-      `Overall Risk Score: ${report.riskScore}/100`,
       "",
-      `## Executive Summary`,
+      `| Metric | Value |`,
+      `| :--- | :--- |`,
+      `| **Audit Timestamp** | ${new Date().toUTCString()} |`,
+      `| **Target Contract** | ${report.label} |`,
+      ...(contractAddress ? [`| **Target Address** | \`${contractAddress}\` |`] : []),
+      `| **Target Chain** | ${singleAddressChain || "ethereum"} |`,
+      `| **Input Type** | ${report.inputKind.toUpperCase()} |`,
+      `| **Overall Risk Score** | **${report.riskScore}/100** (${risk.label}) |`,
+      "",
+      `## 1. Executive Summary`,
+      "",
       report.summary,
       "",
-      `## Vulnerability Overview`,
-      `- Critical: ${report.findings.filter((f) => f.severity === "critical").length}`,
-      `- High: ${report.findings.filter((f) => f.severity === "high").length}`,
-      `- Medium: ${report.findings.filter((f) => f.severity === "medium").length}`,
-      `- Low: ${report.findings.filter((f) => f.severity === "low").length}`,
-      `- Informational: ${report.findings.filter((f) => f.severity === "info").length}`,
-      "",
-      `## Findings Breakdown`,
     ];
 
+    if (aiReview) {
+      lines.push("### AI Executive Review");
+      lines.push(`- **Overall Verdict**: **${aiReview.overallVerdict.toUpperCase()}**`);
+      if (aiReview.summary) {
+        lines.push("");
+        lines.push(aiReview.summary);
+      }
+      lines.push("");
+    }
+
+    lines.push("## 2. Vulnerability Overview");
+    lines.push("");
+    lines.push(`| Severity | Findings Count |`);
+    lines.push(`| :--- | :--- |`);
+    lines.push(`| 🔴 Critical | ${report.findings.filter((f) => f.severity === "critical").length} |`);
+    lines.push(`| 🟠 High | ${report.findings.filter((f) => f.severity === "high").length} |`);
+    lines.push(`| 🟡 Medium | ${report.findings.filter((f) => f.severity === "medium").length} |`);
+    lines.push(`| 🔵 Low | ${report.findings.filter((f) => f.severity === "low").length} |`);
+    lines.push(`| ⚪ Informational | ${report.findings.filter((f) => f.severity === "info").length} |`);
+    lines.push("");
+
+    lines.push("## 3. Findings Breakdown & Proofs of Concept");
+    lines.push("");
+
     report.findings.forEach((f, idx) => {
-      lines.push(`### [${f.severity.toUpperCase()}] ${idx + 1}. ${f.title}`);
+      const severityEmoji =
+        f.severity === "critical"
+          ? "🔴"
+          : f.severity === "high"
+            ? "🟠"
+            : f.severity === "medium"
+              ? "🟡"
+              : f.severity === "low"
+                ? "🔵"
+                : "⚪";
+      lines.push(`### ${idx + 1}. [${f.severity.toUpperCase()}] ${f.title}`);
+      lines.push("");
+      lines.push(`- **Severity**: ${severityEmoji} ${f.severity.toUpperCase()}`);
       lines.push(`- **Detector**: \`${f.detector}\``);
-      if (f.swc) lines.push(`- **Classification**: SWC-${f.swc}`);
+      if (f.swc) lines.push(`- **SWC Classification**: [SWC-${f.swc}](https://swcregistry.io/docs/SWC-${f.swc})`);
       lines.push(`- **Confidence**: ${f.confidence}`);
-      if (f.locationFn)
+      if (f.locationFn) {
         lines.push(
           `- **Location**: \`${f.locationFn}\`${f.locationLine ? ` (Line ${f.locationLine})` : ""}`,
         );
+      }
+      if (f.corroborated) {
+        lines.push(`- **Corroboration**: ${typeof f.corroborated === "string" ? f.corroborated : "Confirmed"}`);
+      }
+      const disposition = findingDispositions[f.id];
+      if (disposition) {
+        lines.push(`- **Triage Disposition**: \`${disposition.state.toUpperCase()}\`${disposition.note ? ` — ${disposition.note}` : ""}`);
+      }
       lines.push("");
-      lines.push(`#### Description & Summary`);
+      lines.push(`#### Description`);
       lines.push(f.summary);
       lines.push("");
       lines.push(`#### Technical Walkthrough`);
       lines.push(f.walkthrough);
       lines.push("");
-      if (f.exploitSolidity) {
+      if (f.snippet) {
+        lines.push(`#### Vulnerable Code Snippet`);
+        lines.push("```solidity");
+        lines.push(f.snippet);
+        lines.push("```");
+        lines.push("");
+      }
+      const pocCode = f.exploitSolidity || f.pocCode;
+      if (pocCode) {
         lines.push(`#### Proof of Concept (Exploit Scenario)`);
         lines.push("```solidity");
-        lines.push(f.exploitSolidity);
+        lines.push(pocCode);
         lines.push("```");
+        lines.push("");
+      }
+      if (f.pocStatus || f.pocOutput) {
+        lines.push(`#### SmartPoC Execution Evidence`);
+        lines.push(`- **Status**: \`${(f.pocStatus || "unknown").toUpperCase()}\``);
+        if (f.pocRunAt) lines.push(`- **Executed At**: ${f.pocRunAt}`);
+        if (f.pocDurationMs) lines.push(`- **Duration**: ${f.pocDurationMs}ms`);
+        if (f.pocOutput) {
+          lines.push("");
+          lines.push("```text");
+          lines.push(f.pocOutput);
+          lines.push("```");
+        }
         lines.push("");
       }
       if (f.remediationSolidity) {
@@ -1492,11 +1557,42 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
         lines.push("```");
         lines.push("");
       }
+      lines.push("---");
+      lines.push("");
     });
 
+    if (aiReview?.foundryTestCode) {
+      lines.push("## 4. Foundry Fork Test Suite");
+      lines.push("");
+      lines.push("```solidity");
+      lines.push(aiReview.foundryTestCode);
+      lines.push("```");
+      lines.push("");
+    }
+
+    if (probes.length > 0) {
+      lines.push("## 5. Active Call Probes");
+      lines.push("");
+      probes.forEach((p) => {
+        lines.push(`- **Selector**: \`${p.selector}\` | **Signature**: \`${p.signature || "unknown"}\` | **State**: \`${p.resultState}\``);
+        if (p.returnValue) lines.push(`  - Return Value: \`${p.returnValue}\``);
+        if (p.revertReason) lines.push(`  - Revert Reason: \`${p.revertReason}\``);
+      });
+      lines.push("");
+    }
+
     lines.push("---");
-    lines.push("Static analysis report generated with Kiln. Code generation alone is not exploit reproduction.");
+    lines.push("*Security Audit Report generated by Kiln. Automated scan results and AI analyses should be verified with comprehensive dynamic testing and formal verification.*");
     return lines.join("\n");
+  };
+
+  const handleDownloadMarkdownReport = () => {
+    const content = generateMarkdownReport();
+    if (!content) return;
+    const safeName = (report?.label || "audit-report")
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .toLowerCase();
+    downloadFile(`${safeName}-security-report.md`, content);
   };
 
   // Risk Score color helper
@@ -1601,6 +1697,7 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     handleRunManualProbe,
     scanHistory,
     generateMarkdownReport,
+    handleDownloadMarkdownReport,
     setSeverityFilter,
     severityFilter,
     findingSearch,

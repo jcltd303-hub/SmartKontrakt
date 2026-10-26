@@ -18,8 +18,12 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "./migration-plan.mjs";
+import { encodePostgresCredentials, looksLikePlaceholder } from "../src/lib/pg-url.mjs";
 
 let databaseUrl = process.env.DATABASE_URL?.trim();
+if (databaseUrl && looksLikePlaceholder(databaseUrl)) {
+  databaseUrl = undefined;
+}
 
 // If DATABASE_URL is not a postgres URI (e.g. starts with http/https from a Supabase REST endpoint):
 if (databaseUrl && !databaseUrl.startsWith("postgresql://") && !databaseUrl.startsWith("postgres://")) {
@@ -55,6 +59,20 @@ if (!databaseUrl || (!databaseUrl.startsWith("postgresql://") && !databaseUrl.st
       }
     } catch {
       // ignore
+    }
+  }
+}
+
+if (databaseUrl && (databaseUrl.startsWith("postgresql://") || databaseUrl.startsWith("postgres://"))) {
+  if (looksLikePlaceholder(databaseUrl)) {
+    databaseUrl = undefined;
+  } else {
+    try {
+      const encoded = encodePostgresCredentials(databaseUrl);
+      new URL(encoded);
+      databaseUrl = encoded;
+    } catch {
+      databaseUrl = undefined;
     }
   }
 }

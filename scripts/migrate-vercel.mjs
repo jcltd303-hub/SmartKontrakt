@@ -30,18 +30,20 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "./migration-plan.mjs";
-import { encodePostgresCredentials } from "../src/lib/pg-url.mjs";
+import { encodePostgresCredentials, looksLikePlaceholder } from "../src/lib/pg-url.mjs";
 
 function cleanPostgresUrl(value) {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
+  if (looksLikePlaceholder(trimmed)) return undefined;
   if (trimmed.startsWith("postgresql://") || trimmed.startsWith("postgres://")) {
-    // Credentials must be percent-encoded or the URL silently mis-parses (a raw
-    // `@` in the password turns the host into the password's tail). This is the
-    // same normaliser the app, the worker and the browser use — see
-    // src/lib/pg-url.mjs — so `npm run db:migrate` cannot fail on a password
-    // that the rest of the stack handles.
-    return encodePostgresCredentials(trimmed);
+    const encoded = encodePostgresCredentials(trimmed);
+    try {
+      new URL(encoded);
+      return encoded;
+    } catch {
+      return undefined;
+    }
   }
   return undefined;
 }

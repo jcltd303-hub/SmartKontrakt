@@ -6,6 +6,7 @@ import {
   effectivePocStatus,
   ensureExecutablePocTests,
   findingPocProvenance,
+  hasInconclusiveEvidence,
   hasSkipSentinel,
   hasZeroTestEvidence,
   pocOriginOfExecutedCode,
@@ -120,6 +121,25 @@ describe("savedStatusFromRun — fresh run results", () => {
     assert.equal(savedStatusFromRun({ status: "error", logs: "Compiler run failed: ParserError" }), "error");
     assert.equal(savedStatusFromRun({ status: "backend_unreachable", logs: "Backend not reachable" }), "error");
     assert.equal(savedStatusFromRun({ status: "error", logs: "All RPC providers failed" }), "error");
+  });
+
+  it("identifies inconclusive / failed-interaction runs as failed, not passed", () => {
+    const log = `Ran 2 tests for test/PoC.t.sol:PoC
+[PASS] test_forkSanity() (gas: 5086)
+[PASS] test_readOnlyReentrancy_staleWithdrawInfo() (gas: 1260356)
+Logs:
+  pool initialized: true
+  Attack contract interaction failed
+  final pending for attacker contract: 0
+  stale captured: 0
+  settled captured: 0
+  Test completed. Read-only reentrancy on withdrawInfo: inconclusive (no external call in _unstake path to enable re-entry).
+
+Suite result: ok. 2 passed; 0 failed; 0 skipped; finished in 2.53s`;
+
+    assert.ok(hasInconclusiveEvidence(log));
+    assert.equal(savedStatusFromRun({ status: "passed", logs: log }), "failed");
+    assert.equal(effectivePocStatus("passed", log), "failed");
   });
 });
 
