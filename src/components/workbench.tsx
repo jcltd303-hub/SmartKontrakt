@@ -13,6 +13,7 @@ import {
   Bug,
   Check,
   Clock,
+  Code2,
   Copy,
   Download,
   FileText,
@@ -36,6 +37,7 @@ import { ReportTab } from "./workbench/report-tab";
 import { SurfaceTab } from "./workbench/surface-tab";
 import { useWorkbenchController } from "./workbench/use-workbench-controller";
 import { WalkthroughTab } from "./workbench/walkthrough-tab";
+import { SolidityGeneratorTab } from "./workbench/solidity-generator-tab";
 
 interface WorkbenchProps {
   initialScans?: ScanSummary[];
@@ -373,6 +375,18 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                   </button>
 
                   <button
+                    onClick={() => setActiveTab("solidity-generator")}
+                    className={`px-3 py-2 text-xs font-mono font-medium rounded-t-lg transition-colors flex items-center gap-1.5 ${
+                      activeTab === "solidity-generator"
+                        ? "bg-[#1c1a16] text-[#e8a54b] border-t-2 border-[#e8a54b] font-semibold"
+                        : "text-[#a39886] hover:text-[#f4efe6]"
+                    }`}
+                  >
+                    <Code2 className="w-3.5 h-3.5 text-[#e8a54b]" />
+                    <span>Foundry → Plain Solidity</span>
+                  </button>
+
+                  <button
                     onClick={() => {
                       setActiveTab("probe");
                       if (probes.length === 0 && singleAddress) handleRunManualProbe();
@@ -523,6 +537,8 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 deepAgentStatus={deepAgentStatus}
                 deepAgentError={deepAgentError}
                 deepAgentRounds={deepAgentRounds}
+                contractBody={contractBody}
+                setContractBody={setContractBody}
               />
 
               {/* ================= Tab: On-Chain State Probes ================= */}
@@ -556,6 +572,17 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
               />
 
               <WalkthroughTab activeTab={activeTab} report={report} contractBody={contractBody} />
+
+              {/* ================= Tab: Foundry to Plain Solidity Generator ================= */}
+              <SolidityGeneratorTab
+                activeTab={activeTab}
+                report={report}
+                contractBody={contractBody}
+                setContractBody={setContractBody}
+                singleAddress={singleAddress}
+                singleAddressChain={singleAddressChain}
+                aiReview={aiReview}
+              />
             </section>
           </div>
         )}

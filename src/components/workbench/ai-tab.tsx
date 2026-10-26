@@ -2,6 +2,7 @@ import { PocEvidenceBadge } from "@/components/poc-evidence-badge";
 import { classifyPocEvidence } from "@/lib/audit/poc-evidence";
 import { FoundryExport } from "@/components/foundry-export";
 import { FoundryLocalRun } from "@/components/foundry-local-run";
+import { FoundryToSolidityConverter } from "@/components/foundry-to-solidity-converter";
 import {
   Check,
   Copy,
@@ -33,6 +34,8 @@ type AiTabProps = Pick<
   | "deepAgentStatus"
   | "deepAgentError"
   | "deepAgentRounds"
+  | "contractBody"
+  | "setContractBody"
 >;
 
 export function AiTab({
@@ -53,6 +56,8 @@ export function AiTab({
   deepAgentStatus,
   deepAgentError,
   deepAgentRounds,
+  contractBody,
+  setContractBody,
 }: AiTabProps) {
   return (
     <>
@@ -168,6 +173,15 @@ export function AiTab({
                 )}
               </div>
 
+              {/* Separate Section: Foundry to Plain Solidity Exploit Converter */}
+              <FoundryToSolidityConverter
+                defaultFoundryCode={aiReview.foundryTestCode}
+                contractName={report?.label ?? "TargetContract"}
+                contractBody={contractBody}
+                targetAddress={singleAddress}
+                onLoadIntoEditor={setContractBody}
+              />
+
               {/* Threat Model Narrative */}
               <div>
                 <div className="flex items-center justify-between pb-1.5">
@@ -192,18 +206,31 @@ export function AiTab({
               </div>
             </div>
           ) : (
-            <div className="text-center py-10 flex flex-col items-center gap-3">
-              <Sparkles className="w-8 h-8 text-[#e8a54b]" />
-              <p className="text-xs font-mono text-[#a39886] max-w-md">
-                Click below to generate a deep AI Threat Model and an executable Foundry test suite
-                (`test/Exploit.t.sol`).
-              </p>
-              <button
-                onClick={handleTriggerAiReview}
-                className="px-4 py-2 rounded bg-[#e8a54b] text-[#12110e] font-bold font-mono text-xs shadow hover:brightness-110"
-              >
-                Generate AI Threat Model
-              </button>
+            <div className="flex flex-col gap-6">
+              <div className="text-center py-8 flex flex-col items-center gap-3">
+                <Sparkles className="w-8 h-8 text-[#e8a54b]" />
+                <p className="text-xs font-mono text-[#a39886] max-w-md">
+                  Click below to generate a deep AI Threat Model and an executable Foundry test suite
+                  (`test/Exploit.t.sol`).
+                </p>
+                <button
+                  onClick={handleTriggerAiReview}
+                  className="px-4 py-2 rounded bg-[#e8a54b] text-[#12110e] font-bold font-mono text-xs shadow hover:brightness-110 cursor-pointer"
+                >
+                  Generate AI Threat Model
+                </button>
+              </div>
+
+              {/* Standalone Foundry to Plain Solidity Converter accessible before AI review */}
+              <div className="border-t border-[#3a3428] pt-4">
+                <FoundryToSolidityConverter
+                  defaultFoundryCode=""
+                  contractName={report?.label ?? "TargetContract"}
+                  contractBody={contractBody}
+                  targetAddress={singleAddress}
+                  onLoadIntoEditor={setContractBody}
+                />
+              </div>
             </div>
           )}
 

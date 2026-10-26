@@ -111,7 +111,15 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     analyzeInput(defaultSample.body, defaultSample.label),
   );
   const [activeTab, setActiveTab] = useState<
-    "findings" | "surface" | "bytecode" | "ai" | "probe" | "report" | "history" | "walkthrough"
+    | "findings"
+    | "surface"
+    | "bytecode"
+    | "ai"
+    | "probe"
+    | "report"
+    | "history"
+    | "walkthrough"
+    | "solidity-generator"
   >("findings");
   const [bytecodeSubView, setBytecodeSubView] = useState<"stream" | "cfg">("stream");
 
