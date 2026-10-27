@@ -174,6 +174,26 @@ test("without an injected runner the audit is the pre-ResNet one (no screening, 
 
 const PARSE_A = "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa";
 
+test("parseAddressList: a BigQuery export labels by address, not by creation_time", () => {
+  // address,creation_time,balance,is_erc20,is_erc721 — the shape BigQuery's CSV
+  // export gives. Column 2 is a timestamp, not a label; without this the whole
+  // 100k-row run reads "2019-04-01T12:00:00Z" in the workbench list.
+  const csv = [
+    "address,creation_time,balance,is_erc20,is_erc721",
+    "0x000000000000541e251335090ac5b47176af4f7e,2019-04-01T12:00:00Z,9910056765047094661,false,false",
+    "0x3d9256ad37128e9f47b34a82e06e981719477c18,2021-05-04 08:31:22 UTC,0,true,false",
+    "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed,2021-05-04,0,true,false",
+    "0x6b175474e89094c44da98b954eedeac495271d0f,Uniswap V2: Router,0,false,false",
+  ].join("\n");
+  const items = parseAddressList(csv, "ethereum");
+  assert.equal(items.length, 4, "the header row is skipped, every data row parses");
+  assert.equal(items[0]!.label, "Contract 0x0000...4f7e");
+  assert.equal(items[1]!.label, "Contract 0x3d92...7c18");
+  assert.equal(items[2]!.label, "Contract 0x5aae...eaed", "a bare date is not a label either");
+  assert.equal(items[3]!.label, "Uniswap V2: Router", "a real name column is kept");
+  for (const item of items) assert.equal(item.chainId, "ethereum", "no chain column: the default applies");
+});
+
 test("parseAddressList: the same address on two chains is two entries, not a duplicate", () => {
   // Regression: dedupe keyed on the address alone silently dropped the
   // second chain's entry, so that chain's scan never ran and its saved

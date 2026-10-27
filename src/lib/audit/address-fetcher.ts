@@ -307,6 +307,13 @@ export function extractFirstColAddress(line: string): { address: string; label?:
   if (/^\d+(\.\d+)?$/.test(label)) {
     label = "";
   }
+  // A BigQuery export puts `creation_time` in column 2, which is not a label: it
+  // made every scan in a 100k-row run read `2019-04-01T12:00:00Z` in the
+  // workbench list. Same treatment as a numeric column — drop it and let the
+  // default `Contract 0xabcd…1234` format apply.
+  if (/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?(\.\d+)?\s*(Z|UTC|[+-]\d{2}:?\d{2})?$/i.test(label)) {
+    label = "";
+  }
 
   // Optional Chain ID hint from column 3
   let chainIdHint: string | undefined;
