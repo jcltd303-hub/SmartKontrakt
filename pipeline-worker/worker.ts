@@ -401,7 +401,7 @@ async function runLoop(): Promise<void> {
   // seen-set still applies. Logged for the same reason as above.
   // Every (chain, address) the queue already holds, so a proxy implementation
   // discovered mid-run is not queued twice and a clone is not re-queued.
-  const queuedKeys = new Set(items.map((i) => dedupeKey(i.chainId, i.address)));
+  const queuedKeys = new Set(ctx.items.map((i) => dedupeKey(i.chainId, i.address)));
   let dedupeSql: Awaited<ReturnType<typeof getSql>> | null = null;
   try {
     dedupeSql = await getSql();
