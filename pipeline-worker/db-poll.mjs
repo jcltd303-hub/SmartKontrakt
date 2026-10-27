@@ -31,7 +31,16 @@ function envValue(key) {
   return undefined;
 }
 
-const client = new pg.Client({ connectionString: envValue("DATABASE_URL") });
+// Supabase requires TLS and node-postgres defaults to ssl:false, and it does not
+// read `sslmode` from the URL either — so this must be set explicitly or the
+// server answers ESSLREQUIRED. Same options as src/lib/db.ts (which is why the
+// worker connects and this did not); rejectUnauthorized:false because Supabase's
+// pooler presents a certificate chain the bundled CA store does not verify.
+const url = (envValue("DATABASE_URL") ?? "").replace(/([?&])sslmode=[^&]*(&|$)/, "$1").replace(/[?&]$/, "");
+const client = new pg.Client({
+  connectionString: url,
+  ssl: { rejectUnauthorized: false },
+});
 await client.connect();
 try {
   const { rows: colRows } = await client.query(
