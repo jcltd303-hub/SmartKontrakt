@@ -47,6 +47,52 @@ If you do have an endpoint that will serve `getLogs`:
 SOURCE=rpc RPC_URL="$YOUR_RPC" FROM_BLOCK=<deployment block> ./poc/run-refund-option.sh 0x…
 ```
 
+A credential goes in the environment, never in a file or a commit. Providers differ
+on how they want it — put it in `RPC_URL` if it goes in the path, or in
+`RPC_HEADERS` if it goes in a header:
+
+```bash
+RPC_HEADERS="Authorization: Bearer $TOKEN" SOURCE=rpc RPC_URL=… ./poc/run-refund-option.sh 0x…
+```
+
+### Blockscout PRO key (the `proapi_…` prefix)
+
+Blockscout's **PRO API requires a key on every tier including free**; only the
+per-instance route (`eth.blockscout.com/api?module=…`) is keyless, and that is the
+one being changed by v12. PRO exposes a JSON-RPC endpoint with archive depth, which
+is the better path — no window chunking, and `eth_getTransactionByHash` supplies the
+calldata:
+
+```bash
+export BS_TOKEN=proapi_…          # never in a file, never in a commit
+SOURCE=rpc \
+RPC_URL=https://api.blockscout.com/1/json-rpc \
+RPC_HEADERS="Authorization: Bearer $BS_TOKEN" \
+FROM_BLOCK=10455555 \
+./poc/run-refund-option.sh 0x6eb0e558140025cb740f99979613a0876685f0be
+```
+
+Free tier: 100K credits/day at 5 RPS, and `addresses/:hash/logs` costs 30 credits, so
+a run is a few hundred credits. `apikey=<token>` as a query parameter works too, if
+you prefer it to the header.
+
+### Probe an endpoint before trusting it
+
+```bash
+node poc/probe-rpc.mjs 0x6eb0e558140025cb740f99979613a0876685f0be --deploy 10455555
+```
+
+A plain `eth_blockNumber` answers happily on endpoints that refuse `eth_getLogs`
+outright, which is how an endpoint gets graded healthy and then returns an empty
+result that reads as "no bets". The probe runs the **real filter** — your address and
+the `Commit` topic — at the head, at the deployment block, and over a 2,000-block
+window, and prints what each one actually said. It never echoes the credential.
+
+Known limits, measured 2026-10-24: publicnode refuses a start more than ~10,000
+blocks behind the head (`-32602`, "Archive requests require a personal token")
+whatever the window width — a depth rule, not a width one. `rpc.mevblocker.io`
+served a 26,262,495-block window on a narrow filter in 305 ms, keyless.
+
 Needs `node >= 18`; `js-sha3` is already a repo dependency (`npm ci`). Read-only:
 nothing is signed or sent. Output JSON lands in `poc/out/`.
 

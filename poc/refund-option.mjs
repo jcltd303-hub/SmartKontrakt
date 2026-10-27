@@ -251,6 +251,27 @@ const blockscoutSource = {
   },
 };
 
+/**
+ * Extra headers for the RPC endpoint, from RPC_HEADERS="Authorization: Bearer xxx".
+ *
+ * PublicNode's archive refusal is a DEPTH rule (-32602 / 403, "Archive requests
+ * require a personal token"): it rejects a start more than ~10,000 blocks behind the
+ * head regardless of window width. How Allnodes wants the token presented (header vs
+ * URL path) is not documented, so both are supported and neither is assumed: put it
+ * in RPC_URL if the provider takes it in the path, or in RPC_HEADERS if it wants a
+ * header. Nothing is hardcoded.
+ */
+function rpcHeaders() {
+  const out = { "content-type": "application/json" };
+  const raw = process.env.RPC_HEADERS;
+  if (!raw) return out;
+  for (const part of raw.split(",")) {
+    const i = part.indexOf(":");
+    if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+  }
+  return out;
+}
+
 let rpcId = 0;
 function rpc(method, params) {
   const url = new URL(args.rpc);
@@ -264,7 +285,7 @@ function rpc(method, params) {
         path: url.pathname + url.search,
         method: "POST",
         timeout: 30_000,
-        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
+        headers: { ...rpcHeaders(), "content-length": Buffer.byteLength(body) },
       },
       (res) => {
         let text = "";
