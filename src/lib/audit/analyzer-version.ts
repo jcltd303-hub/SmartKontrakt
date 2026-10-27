@@ -137,9 +137,18 @@ import {
  *                lives in a sub-contract and is SEMANTICS_UNVERIFIED until
  *                read). Same inputs now produce different records, so the
  *                archive refreshes.
+ * 2026-10-27.4 — Six-year incident sweep (2021-2026). Five detectors for
+ *                classes the 2026 wave did not cover: arbitrary-dispatch-call
+ *                (Poly Network 2021), bridge-message-auth (Nomad 2022, BNB
+ *                2022, KelpDAO 2026), governance-live-voting-power (Beanstalk
+ *                2022), ecrecover-zero (the 2021-2022 signature class) and
+ *                oracle-staleness (the 2021-2024 price plumbing). Dispatch is
+ *                followed through one internal helper, which is the shape Poly
+ *                actually used. Same inputs now produce different records, so
+ *                the archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-27.3";
+export const ANALYZER_BASELINE = "2026-10-27.4";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

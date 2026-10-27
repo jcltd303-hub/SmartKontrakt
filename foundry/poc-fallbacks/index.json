@@ -851,6 +851,76 @@
         "sources": [],
         "note": "Modelled from the BlockChainCasino finding in the 2026 games set \u2014 the only genuinely profitable case among eight weak-randomness games, and one that no entropy rule can see: commit/reveal is bound correctly, but refundBet() returns the full stake after BET_EXPIRATION_BLOCKS while nothing forces settlement."
       }
+    },
+    {
+      "detectors": [
+        "arbitrary-dispatch-call"
+      ],
+      "file": "54-arbitrary-dispatch-call.t.sol",
+      "scenario": "Arbitrary dispatch: a caller-supplied target and calldata executed in the contract's authority",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "Modelled from the published post-mortem of Poly Network (August 2021, $611M) \u2014 the manager forwarded a user-supplied target and _method; Beanstalk's proposal executor is the same door.; no SmartBugs Curated contract covers this class."
+      }
+    },
+    {
+      "detectors": [
+        "bridge-message-auth"
+      ],
+      "file": "55-bridge-message-auth.t.sol",
+      "scenario": "Unverified inbound cross-chain message releases value (or a proof root left at zero)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "Modelled from the published post-mortem of Nomad (August 2022, $190M \u2014 committed root initialised to 0x00), Qubit (2022, $80M), KelpDAO (2026, forged packet releasing reserves).; no SmartBugs Curated contract covers this class."
+      }
+    },
+    {
+      "detectors": [
+        "governance-live-voting-power"
+      ],
+      "file": "56-governance-live-voting-power.t.sol",
+      "scenario": "Governance executes on live voting weight, so borrowed capital rents a majority",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "Modelled from the published post-mortem of Beanstalk Farms (April 2022, ~$182M); Fortress Protocol and Elephant Money within six weeks.; no SmartBugs Curated contract covers this class."
+      }
+    },
+    {
+      "detectors": [
+        "ecrecover-zero"
+      ],
+      "file": "57-ecrecover-zero.t.sol",
+      "scenario": "ecrecover returns address(0) and the code never rejects it",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "Modelled from the published post-mortem of The 2021-2022 signature class; Qubit Finance's unverified deposit path among them.; no SmartBugs Curated contract covers this class."
+      }
+    },
+    {
+      "detectors": [
+        "oracle-staleness"
+      ],
+      "file": "58-oracle-staleness.t.sol",
+      "scenario": "Stale or never-updated oracle answer still prices collateral",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "Modelled from the published post-mortem of The price plumbing behind the 2021-2024 oracle losses (Mango, BonqDAO, Venus).; no SmartBugs Curated contract covers this class."
+      }
     }
   ],
   "notPocable": [

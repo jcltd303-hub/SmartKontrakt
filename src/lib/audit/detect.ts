@@ -1863,6 +1863,291 @@ function scanIncidentClasses(
   }
 }
 
+// ---------------------------------------------------------------------------
+// 2021-2025 incident classes (2026-10-27, the six-year sweep).
+//
+// The 2026 wave was one year of one shape. The six years before it were not:
+// bridges (Poly, Nomad, Wormhole, BNB, Orbit, KelpDAO), governance (Beanstalk,
+// Fortress, Elephant, Audius), signature checks (Qubit, MISO), and oracle
+// plumbing (Mango, BonqDAO, Venus) each produced eight-figure losses from
+// classes the detector set had no rule for. Five rules, one per mechanism,
+// each with the incident that motivates it:
+//
+//   arbitrary-dispatch-call        Poly Network 2021 ($611M) — the manager
+//                                  executed a caller-supplied method on a
+//                                  caller-supplied contract; Beanstalk's
+//                                  _execute delegatecall is the same door.
+//   bridge-message-auth            Nomad 2022 ($190M, zero root accepted),
+//                                  Qubit 2022 ($80M, unverified deposit),
+//                                  KelpDAO 2026 (a forged packet released
+//                                  reserves).
+//   governance-live-voting-power   Beanstalk 2022 ($182M) — voting power read
+//                                  from the live Silo balance, so a flash loan
+//                                  rented a supermajority in one transaction.
+//   ecrecover-zero                 the 2021-2022 signature class: ecrecover
+//                                  returns address(0) on failure, and code
+//                                  that never checks it accepts an unset
+//                                  signer.
+//   oracle-staleness               the price-plumbing half of the oracle
+//                                  losses: latestRoundData consumed without
+//                                  updatedAt/answeredInRound, so a stale or
+//                                  never-updated feed prices collateral.
+//
+// Deliberately NOT rules, because no source rule can see them: key compromise
+// (Ronin, Harmony, Orbit, Multichain, Bybit), frontend supply chain (BadgerDAO,
+// Radiant, Li.Fi), social engineering (Drift, Radiant), the Vyper compiler bug
+// (Curve 2023 — the SOURCE was correct), and Solana/Rust program bugs
+// (Wormhole, Mango, Cashio). docs/incidents-2021-2026.md records those with the
+// reason, so the corpus does not pretend to cover them.
+// ---------------------------------------------------------------------------
+
+/** Verification vocabulary an inbound cross-chain handler must show. */
+const BRIDGE_VERIFICATION =
+  /srcChainId|_srcChainId|sourceChainId|srcAddress|_srcAddress|\bpeer\b|trustedRemote|verify|verif\w*|_proof|merkle|\broot\b|endpoint|guardian|validator|signature|\bnonce\b/i;
+
+/** Effect an inbound handler has when it accepts a message. */
+const BRIDGE_EFFECT = /_mint\s*\(|\.mint\s*\(|unlock|release\s*\(|\.safeTransfer\w*\s*\(|\.transfer\s*\(/;
+
+/** Names an inbound cross-chain handler uses. */
+const BRIDGE_HANDLER = /^(?:process|receive|execute|handle|onMessage|lzReceive|consume|claim|crossChain|finalize|complete)/i;
+
+/** Governance functions that execute a decision. */
+const GOV_EXECUTE = /(?:execute|commit|queue|proposeAndExecute|emergencyCommit|runProposal|apply)/i;
+/** Live (non-checkpointed) voting-weight reads. */
+const LIVE_WEIGHT = /\b(?:balanceOf|totalSupply|getVotes|getCurrentVotes|stakedBalance|depositedBalance)\s*\(/;
+/** Snapshot / checkpoint evidence that makes the read safe. */
+const SNAPSHOT_EVIDENCE = /getPriorVotes|checkpoints?|_snapshot|snapshotBlock|ERC20Votes|Checkpoints|getPastVotes|TimelockController|minDelay/i;
+
+/**
+ * 2021-2025 classes, per function.
+ */
+function scanHistoricalFn(
+  fn: FnModel,
+  contract: ContractModel,
+  parsed: string,
+  delta: number,
+  authed: boolean,
+  push: (f: Finding) => void,
+) {
+  const src = fn.source;
+  if (!src) return;
+  const clean = stripCommentsAndStrings(src);
+  const external = isExternallyCallable(fn);
+  const paramNames = fn.params.map((p) => p.name).filter(Boolean);
+
+  // --- arbitrary-dispatch-call (Poly Network 2021, Beanstalk 2022) --------
+  const takesAddress = fn.params.some((p) => /^address/.test(p.typeName) && p.name);
+  const takesBytes = fn.params.some((p) => /^bytes/.test(p.typeName) && p.name);
+  const dispatches = paramNames.some((n) => {
+    const esc = escapeRegExp(n);
+    return new RegExp(`\\b${esc}\\s*\\.\\s*(?:call|delegatecall)\\s*[({]`).test(clean);
+  });
+  // A constrained target is not arbitrary: an allowlist, a fixed comparison,
+  // or a target drawn from storage the caller cannot set.
+  const constrained =
+    /\b(?:allowed|allowlist|whitelist|trusted|approved|routers?|targets?)\w*\s*\[/i.test(clean) ||
+    new RegExp(`require\\s*\\(\\s*(${paramNames.map((n) => escapeRegExp(n)).join("|") || "\\b"})\\s*==`).test(clean);
+  if (external && takesAddress && takesBytes && dispatches && !constrained) {
+    const delegates = paramNames.some((n) => new RegExp(`\\b${escapeRegExp(n)}\\s*\\.\\s*delegatecall`).test(clean));
+    push(make({
+      severity: delegates ? "critical" : "high",
+      swc: "SWC-105",
+      title: `${fn.name} executes a caller-supplied call target and calldata`,
+      confidence: "high",
+      detector: "arbitrary-dispatch-call",
+      summary: `The function takes a target address and a calldata blob from its caller and executes them${delegates ? " with delegatecall, in this contract's own storage" : ""}. Whoever controls the arguments controls what this contract does — and anything that trusts this contract by address inherits that control. This is the Poly Network shape (August 2021, $611M): the cross-chain manager executed a user-supplied _method on a user-supplied contract, the attacker brute-forced a 4-byte selector to reach the keeper-update function, and the bridge's own authority did the rest. Beanstalk's proposal executor is the same door from the governance side.`,
+      walkthrough: `1. ${fn.name} is externally callable and forwards a caller-supplied target and payload.\n2. The caller therefore chooses both the code that runs and the context it runs in.\n3. Any privileged function this contract can reach becomes reachable by the caller — including governance state (Poly) or an arbitrary delegatecall (Beanstalk).\n4. Allowlist the target and the selector, or remove the free-form dispatch entirely: a bridge should forward mint/unlock on a fixed contract, not arbitrary calls.`,
+      exploitSolidity: `// The attacker supplies BOTH the target and the selector.\nbytes memory payload = abi.encodeWithSelector(PRIVILEGED_SELECTOR, attackerKey);\nIVictim(target).${fn.name}(address(privilegedContract), payload);`,
+      remediationSolidity: `mapping(address => bool) public allowedTarget;\nfunction ${fn.name}(address target, bytes calldata data) external {\n    require(allowedTarget[target], "target not allowed");\n    (bool ok,) = target.call(data);\n    require(ok, "dispatch failed");\n}`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
+  // --- bridge-message-auth: an inbound handler with no verification -------
+  // The handler mints or releases, and shows NONE of the source-chain /
+  // peer / proof vocabulary. Nomad's zero root and Qubit's unverified
+  // deposit are the two 2022 cases; the zero-root half is checked at
+  // contract level below, because the flaw there was the ROOT's value, not
+  // the absence of a verify call.
+  if (
+    external &&
+    BRIDGE_HANDLER.test(fn.name) &&
+    BRIDGE_EFFECT.test(clean) &&
+    !BRIDGE_VERIFICATION.test(clean) &&
+    !authed
+  ) {
+    push(make({
+      severity: "critical",
+      swc: "SWC-105",
+      title: `${fn.name} mints or releases on an unverified cross-chain message`,
+      confidence: "high",
+      detector: "bridge-message-auth",
+      summary: `An inbound cross-chain handler releases value (mint or unlock) and shows no verification of WHERE the message came from: no source-chain id, no peer/trusted-remote check, no proof, no guardian signature. A message is only as trustworthy as its provenance check, and this one has none, so any caller can invoke the release path directly. This is the class that produced Qubit Finance (2022, $80M — a deposit message accepted without validation) and the KelpDAO release (2026, a forged packet that released 116,500 rsETH): the bridge did what it was configured to do.`,
+      walkthrough: `1. ${fn.name} is the inbound path: a message arrives and value leaves.\n2. Nothing in the function establishes which chain, which sender, or which proof authorised it.\n3. Any address can call it, or can craft a message through whatever endpoint forwards to it.\n4. Verify provenance before the effect: source chain id, the trusted remote/peer, and a proof or validator signature — in that order, and revert on any mismatch.`,
+      exploitSolidity: `// Call the release path directly: no message, no proof, no source chain.\nIVictim(target).${fn.name}(attacker, type(uint256).max, "");`,
+      remediationSolidity: `function ${fn.name}(uint16 srcChainId, bytes calldata srcAddress, bytes calldata payload) external {\n    require(msg.sender == endpoint, "not endpoint");\n    require(srcChainId == trustedChain && keccak256(srcAddress) == trustedPeer, "untrusted source");\n    _release(payload);\n}`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
+  // --- ecrecover-zero (2021-2022 signature class) ------------------------
+  if (/\becrecover\s*\(/.test(clean)) {
+    const checksZero = /!=\s*address\s*\(\s*0\s*\)|!=\s*address\s*\(\s*0x0+\s*\)|==\s*address\s*\(\s*0\s*\)/.test(clean);
+    if (!checksZero) {
+      const gatesValue = /\.\s*(?:transfer|safeTransfer|safeTransferFrom|mint|_mint)\w*\s*\(/.test(clean);
+      push(make({
+        severity: gatesValue ? "critical" : "high",
+        swc: "SWC-122",
+        title: `${fn.name} never checks that ecrecover returned a signer`,
+        confidence: "high",
+        detector: "ecrecover-zero",
+        summary: "ecrecover returns address(0) when the signature is malformed — it does not revert. Code that compares the recovered address against a stored signer without first rejecting address(0) accepts a signature nobody produced, and if the stored signer is itself unset or zero the check passes outright. This is the signature class behind the 2021-2022 losses (Qubit Finance's unverified deposit path among them).",
+        walkthrough: "1. ecrecover(sig) on a malformed signature returns address(0) instead of reverting.\n2. The comparison against the expected signer runs on that zero address.\n3. If the stored signer is zero or unset — a fresh contract, an uninitialised field — the check passes and the caller is treated as authorised.\n4. Reject address(0) explicitly, or use ECDSA.recover, which reverts.",
+        exploitSolidity: `// v/r/s chosen so ecrecover returns address(0); if signer is unset, this passes.\nIVictim(target).${fn.name}(msg.sender, amount, uint8(0), bytes32(0), bytes32(0));`,
+        remediationSolidity: `address signer = ecrecover(digest, v, r, s);\nrequire(signer != address(0), "invalid signature");\nrequire(signer == trustedSigner, "wrong signer");`,
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+
+  // --- oracle-staleness --------------------------------------------------
+  const roundData = /\blatestRoundData\s*\(/.test(clean);
+  const legacyAnswer = /\blatestAnswer\s*\(/.test(clean);
+  if (roundData || legacyAnswer) {
+    const checksStaleness =
+      /updatedAt/.test(clean) ||
+      /answeredInRound/.test(clean) ||
+      /(?:block\.timestamp|now)\s*-\s*\w*\s*(?:updated|time|ts)/i.test(clean);
+    if (!checksStaleness) {
+      push(make({
+        severity: "medium",
+        swc: null,
+        title: `${fn.name} prices off a feed without a staleness check`,
+        confidence: "medium",
+        detector: "oracle-staleness",
+        summary: legacyAnswer
+          ? "latestAnswer() is the deprecated accessor: it returns a bare int with no round metadata at all, so the caller cannot tell whether the answer is from this block, this week, or a feed that stopped updating. Price-plumbing failures of this kind sit behind the oracle losses of 2021-2024 (Mango, BonqDAO, Venus), where collateral was valued off a number nobody checked the freshness of."
+          : "latestRoundData() is consumed without checking updatedAt or answeredInRound, so a stale, zero, or never-updated round is treated as a live price. A feed that stops updating — a deprecated aggregator, a paused oracle, an L2 sequencer outage — keeps returning the last value, and collateral is valued against it. This is the price-plumbing half of the oracle losses of 2021-2024.",
+        walkthrough: "1. The feed's answer is read and used as a price.\n2. Nothing establishes when that answer was produced.\n3. A stale or halted feed keeps returning its last value, so the protocol prices against a number that no longer reflects the market.\n4. Check updatedAt against a heartbeat and answeredInRound against roundId, revert when the answer is stale, and check the L2 sequencer uptime feed before trusting any price on a rollup.",
+        exploitSolidity: "",
+        remediationSolidity: `(uint80 roundId, int256 answer,, uint256 updatedAt, uint80 answeredInRound) = feed.latestRoundData();\nrequire(answer > 0, "bad answer");\nrequire(updatedAt > 0 && block.timestamp - updatedAt <= HEARTBEAT, "stale price");\nrequire(answeredInRound >= roundId, "incomplete round");`,
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+}
+
+/**
+ * 2021-2025 classes that need the whole contract.
+ */
+function scanHistoricalContract(
+  contract: ContractModel,
+  model: SourceModel,
+  parsed: string,
+  delta: number,
+  push: (f: Finding) => void,
+) {
+  // --- arbitrary-dispatch-call, through an internal helper ---------------
+  // The real Poly Network shape: the external entry validated the proof and
+  // then handed a caller-supplied target to an internal `_executeCrossChainTx`
+  // that did the call. The inline rule in scanHistoricalFn cannot see that
+  // hop, so the helper is followed here: an internal function that dispatches
+  // on its own parameter, reached by an external function that itself takes an
+  // address (so the target is caller-fed).
+  const externals = contract.functions.filter((f) => f.body !== null && isExternallyCallable(f));
+  for (const helper of contract.functions) {
+    if (helper.body === null || isExternallyCallable(helper)) continue;
+    const helperBody = stripCommentsAndStrings(helper.source);
+    const dispatchesOnParam = helper.params.some((p) => {
+      if (!p.name) return false;
+      return new RegExp(`\\b${escapeRegExp(p.name)}\\s*\\.\\s*(?:call|delegatecall)\\s*[({]`).test(helperBody);
+    });
+    if (!dispatchesOnParam) continue;
+    const caller = externals.find(
+      (f) =>
+        f.params.some((p) => /^address/.test(p.typeName)) &&
+        new RegExp(`\\b${escapeRegExp(helper.name)}\\s*\\(`).test(f.source) &&
+        !isAuthed(f, contract, model),
+    );
+    if (!caller) continue;
+    const delegates = /\.\s*delegatecall\s*[({]/.test(helperBody);
+    push(make({
+      severity: delegates ? "critical" : "high",
+      swc: "SWC-105",
+      title: `${caller.name} forwards a caller-supplied target to ${helper.name}, which executes it`,
+      confidence: "high",
+      detector: "arbitrary-dispatch-call",
+      summary: `The external entry ${caller.name} passes a caller-supplied address into ${helper.name}, which calls it${delegates ? " with delegatecall" : ""}. The dispatch hop hides the pattern from a single-function scan, but the authority does not change: whoever supplies the target and payload chooses what this contract does. This is the Poly Network shape (August 2021, $611M) exactly — verifyHeaderAndExecuteTx handed a user-supplied target and method to _executeCrossChainTx, the attacker brute-forced a 4-byte selector, and the manager's own owner authority over the data contract did the rest.`,
+      walkthrough: `1. ${caller.name} accepts a target address from its caller.\n2. It forwards that target to ${helper.name}, which performs the call.\n3. The caller therefore picks both the callee and the calldata — including selectors the protocol never meant to expose.\n4. Allowlist the target (and the selector) before the dispatch, and keep privileged state behind a separate, timelocked authority.`,
+      exploitSolidity: `// Target and selector both attacker-chosen.\nbytes memory payload = abi.encodeWithSelector(PRIVILEGED_SELECTOR, attackerKey);\nIManager(target).${caller.name}(address(privilegedDataContract), "f1121318093", payload);`,
+      remediationSolidity: `function ${caller.name}(address target, bytes calldata data) external {\n    require(allowedTargets[target], "target not allowed");\n    _dispatch(target, data);\n}`,
+      locationFn: caller.name,
+      locationLine: caller.line,
+      snippet: snippet(parsed, caller.line + delta, delta),
+    }));
+    break;
+  }
+
+  // --- governance-live-voting-power (Beanstalk 2022) ---------------------
+  const executeFns = contract.functions.filter(
+    (f) => f.body !== null && isExternallyCallable(f) && GOV_EXECUTE.test(f.name) && !isAuthed(f, contract, model),
+  );
+  const liveReader = executeFns.find((f) => LIVE_WEIGHT.test(stripCommentsAndStrings(f.source)));
+  const snapshotted = contract.functions.some((f) => SNAPSHOT_EVIDENCE.test(f.source)) ||
+    contract.bases.some((b) => /ERC20Votes|Governor|Timelock/i.test(b));
+  if (liveReader && !snapshotted) {
+    push(make({
+      severity: "high",
+      swc: null,
+      title: `${contract.name} executes a proposal on live voting power`,
+      confidence: "medium",
+      detector: "governance-live-voting-power",
+      summary: `The execution path reads voting weight from a live balance (${LIVE_WEIGHT.exec(stripCommentsAndStrings(liveReader.source))?.[0] ?? "balanceOf"}) and the contract shows no snapshot or checkpoint. Weight acquired in the same transaction therefore counts, so a flash loan can rent a supermajority and execute in one block — the Beanstalk Farms attack (April 2022, ~$182M), and the Fortress Protocol and Elephant Money cases from the same six weeks. The fix is not a threshold: it is measuring weight at a block that precedes the proposal.`,
+      walkthrough: `1. ${liveReader.name} decides whether a proposal executes by reading current voting weight.\n2. Voting weight is a live balance, so capital deposited moments ago counts the same as capital held for months.\n3. A flash loan supplies that capital, the proposal passes, and the loan is repaid in the same transaction.\n4. Snapshot the weight at (or before) the proposal block — getPriorVotes / ERC20Votes checkpoints — and put a real delay between a passing vote and execution.`,
+      exploitSolidity: `// One transaction: borrow, deposit for weight, execute, repay.\nflashLoan(1_000_000_000e18);\nvault.deposit(borrowed); // weight is live, so it counts now\ngovernance.${liveReader.name}(maliciousProposalId);\nrepay();`,
+      remediationSolidity: `// Weight fixed before the proposal existed; execution delayed after it passes.\nfunction votesAt(uint256 proposalId, address who) public view returns (uint256) {\n    return token.getPastVotes(who, proposals[proposalId].snapshotBlock);\n}\nrequire(block.timestamp >= proposals[id].eta, "timelock");`,
+      locationFn: liveReader.name,
+      locationLine: liveReader.line,
+      snippet: snippet(parsed, liveReader.line + delta, delta),
+    }));
+  }
+
+  // --- bridge-message-auth: the zero-root half (Nomad 2022) -------------
+  // Nomad's handler DID verify a merkle proof — against a root that was
+  // initialised to zero, which made every proof valid. The rule is the
+  // root's value, not the presence of the check, so it is a contract-level
+  // question: a proof root read from state, with no non-zero requirement.
+  const verifies = contract.functions.some((f) => /\bverify\s*\(|MerkleProof|_proof/i.test(f.source));
+  const rootVar = contract.stateVars.find((v) => /root/i.test(v.name));
+  const requiresNonZeroRoot = contract.functions.some((f) =>
+    new RegExp(`require\\s*\\(\\s*${rootVar ? escapeRegExp(rootVar.name) : "\\w*[Rr]oot"}\\s*!=\\s*(?:bytes32\\s*\\(\\s*0\\s*\\)|0x0*|0)\\s*[,)]`).test(f.source),
+  );
+  if (verifies && rootVar && !requiresNonZeroRoot) {
+    push(make({
+      severity: "critical",
+      swc: null,
+      title: `${contract.name} verifies proofs against a root it never proves is set`,
+      confidence: "medium",
+      detector: "bridge-message-auth",
+      summary: `The contract verifies merkle proofs against ${rootVar.name}, and nothing requires that root to be non-zero. A root left at its zero default makes every proof valid — which is exactly the Nomad Bridge drain (August 2022, ~$190M): an upgrade initialised the committed root to 0x00, the verification accepted any message, and because the call was public the drain became a crowd event within hours.`,
+      walkthrough: `1. ${rootVar.name} is the trust anchor for every inbound message.\n2. If it is zero — a fresh deployment, a re-initialised upgrade, a cleared value — the proof check degenerates and accepts arbitrary messages.\n3. Any caller can then process a message that was never sent.\n4. Require the root to be non-zero before verifying, and set it only through an authenticated path.`,
+      exploitSolidity: `// With committedRoot == 0, any leaf proves against it.\nIBridge(target).process(forgedMessage, emptyProof);`,
+      remediationSolidity: `require(${rootVar.name} != bytes32(0), "root unset");\nrequire(MerkleProof.verify(proof, ${rootVar.name}, leaf), "bad proof");`,
+      locationFn: null,
+      locationLine: rootVar.line,
+      snippet: snippet(parsed, rootVar.line + delta, delta),
+    }));
+  }
+}
+
 function scanContract(
   contract: ContractModel,
   model: SourceModel,
@@ -2162,6 +2447,8 @@ function scanContract(
     // 2026 incident classes: caller-identity rules, kept out of scanSimple's
     // value-flow body so they read as one family.
     scanIncidentClasses(fn, contract, parsed, delta, authed, push);
+    // 2021-2025 classes: dispatch, bridge handlers, ecrecover, oracle feeds.
+    scanHistoricalFn(fn, contract, parsed, delta, authed, push);
   }
 
   // Fix 12: read-only reentrancy fires ONLY on a demonstrated
@@ -2326,6 +2613,8 @@ modifier nonReentrant() {
   // need the whole contract, not one function.
   scanSettlementOptionality(contract, model, parsed, delta, push);
   scanRegistryDispatch(contract, parsed, delta, push);
+  // 2021-2025 classes: bridges, governance, signatures, oracle plumbing.
+  scanHistoricalContract(contract, model, parsed, delta, push);
 }
 
 // ---------------------------------------------------------------------------

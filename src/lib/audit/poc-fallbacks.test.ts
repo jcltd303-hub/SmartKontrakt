@@ -438,6 +438,12 @@ const EXPECTED_TOP_PICK: Record<string, string | null> = {
   // requirement (read the sub-contract), so it is not-PoC-able by design.
   "settlement-optionality": "53-settlement-optionality.t.sol",
   "registry-dispatched-logic": null,
+  // 2021-2025 incident classes (2026-10-27, the six-year sweep).
+  "arbitrary-dispatch-call": "54-arbitrary-dispatch-call.t.sol",
+  "bridge-message-auth": "55-bridge-message-auth.t.sol",
+  "governance-live-voting-power": "56-governance-live-voting-power.t.sol",
+  "ecrecover-zero": "57-ecrecover-zero.t.sol",
+  "oracle-staleness": "58-oracle-staleness.t.sol",
   "hardcoded-gas": "31-gas-assumptions.t.sol",
   "locked-ether": "29-locked-ether.t.sol",
   "missing-event": null,

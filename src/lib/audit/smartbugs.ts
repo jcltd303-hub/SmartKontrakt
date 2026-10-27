@@ -196,6 +196,16 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   // msg-value-loop and shadowing, whose own index labels also say "other".
   "settlement-optionality": "other",
   "registry-dispatched-logic": "other",
+  // 2021-2025 incident classes (2026-10-27, the six-year sweep). The four
+  // caller-identity mechanisms are access-control failures in the SmartBugs
+  // sense (the entry point exists and never establishes who may use it);
+  // oracle staleness is price plumbing, which the dataset has no category
+  // for, so it joins "other".
+  "arbitrary-dispatch-call": "access_control",
+  "bridge-message-auth": "access_control",
+  "governance-live-voting-power": "access_control",
+  "ecrecover-zero": "access_control",
+  "oracle-staleness": "other",
   "bytecode-create2": "other",
   "bytecode-metadata": "other",
   "missing-event": "other",
