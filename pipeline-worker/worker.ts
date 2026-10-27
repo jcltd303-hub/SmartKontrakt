@@ -141,6 +141,7 @@ const { withRetry } = await import("../src/lib/audit/rate-limit.ts");
 const { secondPass } = await import("../src/lib/audit/persist.server.ts");
 const { newLlmHealth, recordLlm, llmVerdict } = await import("./llm-health.ts");
 const { implementationItems, dedupeKey } = await import("./proxy-follow.ts");
+const { applyShard, parseShard } = await import("./shard.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
 const { getSql, getDbConnectionState } = await import("../src/lib/db.ts");
@@ -207,6 +208,8 @@ type Status = {
   stale: number;
   /** Freshness policy for this run: stale (default) | all | none. */
   refresh: string;
+  /** "2/4" when this process owns one shard of the list, null otherwise. */
+  shard: string | null;
   current: string | null;
   startedAt: string | null;
   lastFlushAt: string | null;
@@ -244,6 +247,7 @@ let status: Status = {
   skippedDupes: 0,
   stale: 0,
   refresh: "stale",
+  shard: null,
   current: null,
   startedAt: null,
   lastFlushAt: null,
@@ -820,7 +824,17 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     sendJson(res, 400, { error: `cannot read addresses file: ${addressesFile}` });
     return;
   }
-  const items = parseAddressList(text, chainId);
+  // Sharding: N processes, one flag each, disjoint by hash of address. Parsed
+  // before the skip check so each shard only skips what it would have analysed.
+  let shard: { index: number; of: number } | null = null;
+  try {
+    shard = parseShard(body.shard);
+  } catch (err) {
+    sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    return;
+  }
+  const allItems = parseAddressList(text, chainId);
+  const items = applyShard(allItems, shard);
   if (items.length === 0) {
     sendJson(res, 400, { error: "no valid addresses in file" });
     return;
@@ -909,7 +923,7 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   });
   writeStatusFile();
   console.log(
-    `[worker] started: ${items.length} addresses — ${skipped} current (skipped), ${stale} stale (${refresh === "none" ? "skipped" : "re-analysing"}), ${items.length - skipped - stale} new (to analyse); refresh=${refresh}, chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems}), autoPoc=${autoPoc} (no attempt cap)`,
+    `[worker] started: ${items.length} addresses — ${skipped} current (skipped), ${stale} stale (${refresh === "none" ? "skipped" : "re-analysing"}), ${items.length - skipped - stale} new (to analyse); refresh=${refresh}${shard ? `, shard=${shard.index}/${shard.of} of ${allItems.length}` : ""}, chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems}), autoPoc=${autoPoc} (no attempt cap)`,
   );
   sendJson(res, 200, {
     ok: true,
@@ -921,6 +935,7 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     toAnalyse: items.length - skipped - (refresh === "none" ? stale : 0),
     newAddresses: items.length - skipped - stale,
     refresh,
+    shard: shard ? `${shard.index}/${shard.of}` : null,
     deepAgent,
     deepAgentMaxItems,
     deepAgentMinSeverity,

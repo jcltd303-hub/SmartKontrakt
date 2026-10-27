@@ -141,6 +141,28 @@ curl -s -X POST http://127.0.0.1:8788/start \
 The full per-address pipeline — stage order, what each stage may write, the
 failure behaviour of each, and the knobs — is in **`docs/pipeline.md`**.
 
+## Running the list in parallel (shards)
+
+The worker processes one address at a time — measured at ~7-20 s each, so 100k
+addresses is 8-23 days of wall clock from a single process. The work is I/O-bound
+and the archive keys are `(chain, address)`, so the cheapest speedup is more
+processes over disjoint slices:
+
+```bash
+# four terminals, or four hosts, same DATABASE_URL and the same file
+curl -s -X POST localhost:8788/start -H 'content-type: application/json' \
+  -d '{"addressesFile":"new.csv","chainId":"ethereum","refresh":"none","shard":"1/4"}'
+# ... shard "2/4", "3/4", "4/4" on the other workers (different ports)
+```
+
+The partition is a hash of the address, not a position in the file, so it is
+deterministic: a shard restarted tomorrow owns the same addresses it had today and
+`refresh: "none"` skips exactly what it already saved. Shards are disjoint and
+balanced within 5% (pinned in `shard.test.ts`), and a malformed value like `"5/4"`
+is rejected at `/start` rather than silently analysing the whole list four times.
+
+Each worker needs its own port (`PORT=8789 bash pipeline-worker/start.sh`).
+
 ## Endpoints
 
 `GET /` (or `/health`) returns the route index, and an unknown path returns
