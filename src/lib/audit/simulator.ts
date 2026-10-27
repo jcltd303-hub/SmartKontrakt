@@ -1,5 +1,6 @@
-import { SUPPORTED_CHAINS } from "./address-fetcher.ts";
+import { SUPPORTED_CHAINS, getRpcsForChain } from "./address-fetcher.ts";
 import { rpcLimiter, withRetry } from "./rate-limit.ts";
+import { rpcPool } from "./rpc-endpoints.ts";
 import type { Report } from "./types.ts";
 
 export type CallProbeResult = {
@@ -133,6 +134,81 @@ async function ethCall(
   return { success: false, error: "RPC nodes unreachable or timed out" };
 }
 
+/**
+ * Many eth_calls in ONE HTTP request (JSON-RPC batch).
+ *
+ * The seven interface probes are independent calls to the same endpoint, and each
+ * was a separate POST: measured, that is 7 of the ~12 round trips an address costs,
+ * the single largest group. JSON-RPC batching makes it one. Providers charge the
+ * batch's calls as calls — the win here is round trips, not credits.
+ *
+ * Returns null when the endpoint will not batch (some reject an array body), so the
+ * caller can fall back to individual calls rather than losing the probes.
+ */
+export async function executeEthCallBatch(
+  address: string,
+  calls: { id: number; calldata: string }[],
+  chainId = "ethereum",
+): Promise<Map<number, EthCallResult> | null> {
+  if (calls.length === 0) return new Map();
+  if (calls.length === 1) {
+    const only = calls[0]!;
+    return new Map([[only.id, await executeEthCall(address, only.calldata, chainId)]]);
+  }
+  for (const rpcUrl of getRpcsForChain(chainId)) {
+    try {
+      const res = await withRetry(async () => {
+        await rpcLimiter.acquire();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 6000);
+        try {
+          return await fetch(rpcUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(
+              calls.map((c) => ({
+                jsonrpc: "2.0",
+                method: "eth_call",
+                params: [{ to: address, data: c.calldata }, "latest"],
+                id: c.id,
+              })),
+            ),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+      }, { retries: 1, baseDelayMs: 1500 });
+      if (!res.ok) {
+        rpcPool.note(rpcUrl, { ok: false, status: res.status });
+        continue;
+      }
+      const body = (await res.json()) as unknown;
+      rpcPool.note(rpcUrl, { ok: true });
+      if (!Array.isArray(body)) return null; // this endpoint does not batch
+      const out = new Map<number, EthCallResult>();
+      for (const entry of body as { id?: unknown; result?: unknown; error?: { message?: string; data?: unknown } }[]) {
+        if (typeof entry?.id !== "number") continue;
+        if (entry.error) {
+          out.set(entry.id, {
+            success: false,
+            error: entry.error.message || "EVM reverted execution",
+            errorData: typeof entry.error.data === "string" ? entry.error.data : undefined,
+          });
+        } else if (typeof entry.result === "string") {
+          out.set(entry.id, { success: true, result: entry.result });
+        }
+      }
+      // Every id answered: a partial batch is a broken batch.
+      if (out.size !== calls.length) return null;
+      return out;
+    } catch {
+      // try the next endpoint
+    }
+  }
+  return null;
+}
+
 export async function executeEthCall(
   address: string,
   calldata: string,
@@ -207,9 +283,16 @@ export async function executeStorageRead(
  * Run automatic probe queries on common ERC-20 / Vault / Owner interfaces
  */
 export async function probeContractInterfaces(address: string, chainId = "ethereum"): Promise<CallProbeResult[]> {
+  // One batch, not seven round trips. A partial or refused batch falls back to
+  // individual calls, so an endpoint that will not batch still gets probed.
+  const batch = await executeEthCallBatch(
+    address,
+    COMMON_PROBES.map((probe, i) => ({ id: i + 1, calldata: probe.selector })),
+    chainId,
+  );
   const probes = await Promise.all(
-    COMMON_PROBES.map(async (probe) => {
-      const call = await executeEthCall(address, probe.selector, chainId);
+    COMMON_PROBES.map(async (probe, i) => {
+      const call = batch?.get(i + 1) ?? (await executeEthCall(address, probe.selector, chainId));
       if (!call.success || !call.result || call.result === "0x") {
         return {
           selector: probe.selector,
