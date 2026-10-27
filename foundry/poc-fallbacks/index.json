@@ -921,6 +921,62 @@
         "sources": [],
         "note": "Modelled from the published post-mortem of The price plumbing behind the 2021-2024 oracle losses (Mango, BonqDAO, Venus).; no SmartBugs Curated contract covers this class."
       }
+    },
+    {
+      "detectors": [
+        "share-accounting-double-debit"
+      ],
+      "file": "59-share-accounting-double-debit.t.sol",
+      "scenario": "Share accounting double-debit: two entry points debit the same position's shares, neither clears it",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "Modelled from the published post-mortem of UNCX Vesting V2 (October 2026, ~$88k) and Hedgey Finance ($45M); no SmartBugs Curated contract covers this class."
+      }
+    },
+    {
+      "detectors": [
+        "shared-unlock-delta-netting"
+      ],
+      "file": "60-shared-unlock-delta-netting.t.sol",
+      "scenario": "Delta netting inside a shared unlock: an unsettled debt nets against the callback's own credit",
+      "smartbugs": "unchecked_low_level_calls",
+      "provenance": {
+        "kind": "modelled",
+        "category": "unchecked_low_level_calls",
+        "sources": [],
+        "note": "Modelled from the published post-mortem of GoldPesa (October 2026, $115k USDC); no SmartBugs Curated contract covers this class."
+      }
+    },
+    {
+      "detectors": [
+        "idle-gap-interest-accrual"
+      ],
+      "file": "61-idle-gap-interest-accrual.t.sol",
+      "scenario": "Idle-gap interest: the whole inactive gap is charged again on every call in the block",
+      "smartbugs": "arithmetic",
+      "provenance": {
+        "kind": "modelled",
+        "category": "arithmetic",
+        "sources": [],
+        "note": "Modelled from the published post-mortem of BiFi (October 2026, ~165,574 USDT); no SmartBugs Curated contract covers this class."
+      }
+    },
+    {
+      "detectors": [
+        "signature-field-omission"
+      ],
+      "file": "62-signature-field-omission.t.sol",
+      "scenario": "Signature field omission: the digest does not cover a parameter that steers value",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "Modelled from the published post-mortem of GiddyDeFi (April 2026, $1.3M); no SmartBugs Curated contract covers this class."
+      }
     }
   ],
   "notPocable": [

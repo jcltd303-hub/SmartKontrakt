@@ -194,6 +194,14 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "public-key-account-trust": "access_control",
   "self-attested-auth": "access_control",
   "unauthenticated-batch-call": "unchecked_low_level_calls",
+  // Deferred classes, implemented 2026-10-27. The first and last are
+  // accounting/authorisation defects (access_control in the DASP sense: the
+  // contract fails to enforce who may do what to whose funds); the middle two
+  // are value-flow and arithmetic-in-time.
+  "share-accounting-double-debit": "access_control",
+  "shared-unlock-delta-netting": "unchecked_low_level_calls",
+  "idle-gap-interest-accrual": "arithmetic",
+  "signature-field-omission": "access_control",
   // D2 / D3 (2026-10-27, the games work). Neither is an access-control or
   // arithmetic failure: settlement optionality is an economic logic flaw
   // (the loss is free), and registry-dispatched logic is an analysis

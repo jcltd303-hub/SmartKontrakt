@@ -178,9 +178,20 @@ import {
  *                a rule at last (approve race, answer-in-the-mempool) and is
  *                no longer a phantom detector. Same inputs now produce
  *                different records, so the archive refreshes.
+ * 2026-10-27.8 — The four DEFERRED classes, implemented. Each is keyed to an
+ *                invariant a correct implementation must satisfy rather than to
+ *                a shape: share-accounting-double-debit (a share field debited
+ *                from a total by two paths and never cleared), shared-unlock-
+ *                delta-netting (a callback that takes and settles with no
+ *                settled-delta check), idle-gap-interest-accrual (elapsed-blocks
+ *                interest whose checkpoint is not advanced on every path) and
+ *                signature-field-omission (a digest that omits a parameter
+ *                steering value). Also: an ECDSA claim is no longer reported as
+ *                an unverified bridge handler. Same inputs now produce
+ *                different records, so the archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-27.7";
+export const ANALYZER_BASELINE = "2026-10-27.8";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

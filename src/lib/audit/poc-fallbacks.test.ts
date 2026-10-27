@@ -433,6 +433,11 @@ const EXPECTED_TOP_PICK: Record<string, string | null> = {
   "public-key-account-trust": "50-public-key-account-trust.t.sol",
   "unauthenticated-batch-call": "51-unauthenticated-batch-call.t.sol",
   "self-attested-auth": "52-self-attested-auth.t.sol",
+  // Deferred classes, implemented 2026-10-27.
+  "share-accounting-double-debit": "59-share-accounting-double-debit.t.sol",
+  "shared-unlock-delta-netting": "60-shared-unlock-delta-netting.t.sol",
+  "idle-gap-interest-accrual": "61-idle-gap-interest-accrual.t.sol",
+  "signature-field-omission": "62-signature-field-omission.t.sol",
   // D2 / D3 (2026-10-27, the games work): settlement optionality is the free
   // option and gets a harness; registry-dispatched logic is an analysis
   // requirement (read the sub-contract), so it is not-PoC-able by design.

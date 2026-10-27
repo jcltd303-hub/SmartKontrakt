@@ -91,6 +91,11 @@ export const HARNESS_ONLY_DETECTORS = [
 export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   // caller-identity
   "arbitrary-dispatch-call": "caller-identity",
+  // Deferred classes implemented 2026-10-27: a signature that authorises more
+  // than its digest covers, and a share field debited by more than one path.
+  // Both are "who may do what to whose funds", which is this family.
+  "share-accounting-double-debit": "caller-identity",
+  "signature-field-omission": "caller-identity",
   "assembly-param-sstore": "caller-identity",
   "assembly-sstore": "caller-identity",
   "bridge-message-auth": "caller-identity",
@@ -132,6 +137,10 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   "weak-randomness": "randomness",
   // value-and-settlement
   "eth-gas-stipend": "value-and-settlement",
+  // Deferred classes implemented 2026-10-27: value leaving an unlock unpaid,
+  // and interest charged for blocks that already passed.
+  "idle-gap-interest-accrual": "value-and-settlement",
+  "shared-unlock-delta-netting": "value-and-settlement",
   "gas-estimator-dos": "value-and-settlement",
   "hardcoded-gas": "value-and-settlement",
   "locked-ether": "value-and-settlement",

@@ -2058,8 +2058,13 @@ function scanIncidentClasses(
 // ---------------------------------------------------------------------------
 
 /** Verification vocabulary an inbound cross-chain handler must show. */
+// An ECDSA check counts as verification (2026-10-27): a `claim(to, amount, v, r, s)`
+// that recovers a signer is verifying the message, even though it is not
+// verifying a SOURCE CHAIN. Before this, such a claim was reported as an
+// unverified bridge handler — a false positive the new
+// signature-field-omission rule then covers for the real defect.
 const BRIDGE_VERIFICATION =
-  /srcChainId|_srcChainId|sourceChainId|srcAddress|_srcAddress|\bpeer\b|trustedRemote|verify|verif\w*|_proof|merkle|\broot\b|endpoint|guardian|validator|signature|\bnonce\b/i;
+  /srcChainId|_srcChainId|sourceChainId|srcAddress|_srcAddress|\bpeer\b|trustedRemote|verify|verif\w*|_proof|merkle|\broot\b|endpoint|guardian|validator|signature|ecrecover|\brecover\s*\(|\bnonce\b/i;
 
 /** Effect an inbound handler has when it accepts a message. */
 const BRIDGE_EFFECT = /_mint\s*\(|\.mint\s*\(|unlock|release\s*\(|\.safeTransfer\w*\s*\(|\.transfer\s*\(/;
@@ -2773,6 +2778,11 @@ modifier nonReentrant() {
   // need the whole contract, not one function.
   scanSettlementOptionality(contract, model, parsed, delta, push);
   scanRegistryDispatch(contract, parsed, delta, push);
+  // The four deferred classes: cross-function invariants rather than shapes.
+  scanShareDoubleDebit(contract, parsed, delta, push);
+  scanSharedUnlockNetting(contract, parsed, delta, push);
+  scanIdleGapInterest(contract, parsed, delta, push);
+  scanSignatureFieldOmission(contract, parsed, delta, push);
   // 2021-2025 classes: bridges, governance, signatures, oracle plumbing.
   scanHistoricalContract(contract, model, parsed, delta, push);
 }
@@ -2917,6 +2927,277 @@ function scanRegistryDispatch(
       locationLine: fn.line,
       snippet: snippet(parsed, fn.line + delta, delta),
     }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The deferred classes (2026-10-27, second pass).
+//
+// docs/recent-exploits-2026.md listed four mechanisms as deliberately NOT
+// implemented, because a naive pattern match on each fires on correct code.
+// That reasoning was right about the naive version and wrong about the
+// alternative: each class has an INVARIANT a correct implementation must
+// satisfy, and the rule can check the invariant instead of the shape.
+//
+//   share-accounting-double-debit   UNCX Vesting V2 (~$88k), Hedgey ($45M):
+//     a per-position share field is debited from a global total by more than
+//     one function and never cleared — so the same shares are removed twice.
+//     INVARIANT: a field used to debit a total must be zeroed when debited.
+//
+//   shared-unlock-delta-netting     GoldPesa ($115k): a hook rebalances inside
+//     a caller's open unlock, so an unsettled mint debt nets against the hook's
+//     own burn credit. INVARIANT: a callback that both takes and settles must
+//     verify the outstanding delta is settled first.
+//
+//   idle-gap-interest-accrual       BiFi (~$165k USDT): the whole inactive gap
+//     is charged on every action in a block because the checkpoint is not
+//     advanced unconditionally. INVARIANT: an accrual that multiplies elapsed
+//     blocks must advance its checkpoint on the same path.
+//
+//   signature-field-omission        GiddyDeFi ($1.3M): the digest does not cover
+//     every parameter, so the uncovered ones can be changed by a replayer.
+//     INVARIANT: every parameter that authorises the action is inside the
+//     signed digest.
+// ---------------------------------------------------------------------------
+
+/** Share-ish field names that a global total is debited from. */
+const SHARE_FIELD = /(?:shares|share|amount|deposit|locked|balance)\b/i;
+/** Global totals a position's shares are removed from. */
+const SHARE_TOTAL = /(?:total|supply|pooled|poolShares|globalShares|aggregate)\w*/i;
+
+/**
+ * 1. share-accounting-double-debit.
+ *
+ * Collect every `total -= <expr>` / `total = total - <expr>` where `total`
+ * looks like a global and `<expr>` reads a per-position field. Group by that
+ * field: if two DIFFERENT functions debit the same field from a total, and no
+ * function in the contract ever assigns the field to zero, the same shares can
+ * be removed twice — which is the UNCX `release()`/`cancel()` shape and the
+ * Hedgey claim/refund shape.
+ *
+ * The zero-assignment half is what keeps it off correct code: a vault that
+ * clears the position when it debits passes, because it does.
+ */
+function scanShareDoubleDebit(
+  contract: ContractModel,
+  parsed: string,
+  delta: number,
+  push: (f: Finding) => void,
+) {
+  const debitSites = new Map<string, { fn: string; line: number }[]>();
+  const totalNames = new Set<string>();
+  for (const fn of contract.functions) {
+    if (fn.body === null) continue;
+    const body = stripCommentsAndStrings(fn.source);
+    for (const m of body.matchAll(/\b([A-Za-z_$][\w$]*)\s*-\=\s*([^;]+)/g)) {
+      const total = m[1]!;
+      if (!SHARE_TOTAL.test(total)) continue;
+      const rhs = m[2]!;
+      // the field being removed: positions[id].shares / deposits[id].amount
+      const field = [...rhs.matchAll(/\.\s*([A-Za-z_$][\w$]*)/g)]
+        .map((x) => x[1]!)
+        .find((name) => SHARE_FIELD.test(name));
+      if (!field) continue;
+      totalNames.add(total);
+      const list = debitSites.get(field) ?? [];
+      if (!list.some((e) => e.fn === fn.name)) list.push({ fn: fn.name, line: fn.line });
+      debitSites.set(field, list);
+    }
+  }
+  for (const [field, sites] of debitSites) {
+    if (sites.length < 2) continue;
+    const cleared = contract.functions.some((f) =>
+      new RegExp(`\\.\\s*${escapeRegExp(field)}\\s*=\\s*(?:0|false)\\b`).test(f.source),
+    );
+    if (cleared) continue;
+    const fns = sites.map((e) => e.fn);
+    const first = sites[0]!;
+    push(make({
+      severity: "high",
+      swc: null,
+      title: `${contract.name} debits ${field} from a share total in ${fns.join(" and ")} without clearing it`,
+      confidence: "medium",
+      detector: "share-accounting-double-debit",
+      summary: `Two different entry points remove the same per-position ${field} from a global total (${[...totalNames].join(", ")}), and nothing in the contract zeroes ${field} when it is debited. The second path therefore removes shares that are already gone, so the total under-counts the real deposits and a small position can withdraw tokens that belong to other depositors. This is the UNCX Vesting V2 shape (~$88k: release() debited the global share count but left the position's shares in place, then cancel() debited them again) and the Hedgey Finance shape ($45M, claim/refund).`,
+      walkthrough: `1. ${first.fn} pays a slice of the pool and debits ${field} from the global total.\\n2. The position's ${field} is left as it was, so the accounting now says the pool holds more shares than it does.\\n3. ${fns.filter((f) => f !== first.fn).join(", ") || "another path"} debits the same field again for the same position.\\n4. The denominator is now too small, so a later withdrawal over-pays — with other depositors' tokens.\\n5. Clear the position's shares in the same function that debits them, and make the two paths mutually exclusive.`,
+      exploitSolidity: `// Release and cancel the same position: the shares are debited twice.\\nIVictim(target).${first.fn}(positionId);\\nIVictim(target).${fns.find((f) => f !== first.fn) ?? "cancel"}(positionId);\\nIVictim(target).withdraw(positionId);`,
+      remediationSolidity: `function ${first.fn}(uint256 id) external {\\n    uint256 s = positions[id].${field};\\n    require(s > 0, "nothing to release");\\n    positions[id].${field} = 0; // clear BEFORE debiting the total\\n    totalShares -= s;\\n    _pay(id, s);\\n}`,
+      locationFn: first.fn,
+      locationLine: first.line,
+      snippet: snippet(parsed, first.line + delta, delta),
+    }));
+    return; // one finding per contract: the shape is a single accounting defect
+  }
+}
+
+/**
+ * 2. shared-unlock-delta-netting.
+ *
+ * A callback that both TAKES value and SETTLES/credits inside the same lock —
+ * with no check that an outstanding delta is settled — lets an attacker park an
+ * unsettled debt in the caller's own unlock and net it against the callback's
+ * credit. The gate is the settlement check: a hook that verifies its deltas
+ * first is exactly the correct implementation.
+ */
+function scanSharedUnlockNetting(
+  contract: ContractModel,
+  parsed: string,
+  delta: number,
+  push: (f: Finding) => void,
+) {
+  const CALLBACK = /^(?:lockAcquired|unlockCallback|beforeSwap|afterSwap|beforeAddLiquidity|afterAddLiquidity|beforeRemoveLiquidity|afterRemoveLiquidity|beforeDonate|afterDonate)$/;
+  for (const fn of contract.functions) {
+    if (fn.body === null || !isExternallyCallable(fn) || !CALLBACK.test(fn.name)) continue;
+    const body = stripCommentsAndStrings(fn.source);
+    const takes = /\.\s*(?:take|takePair|burn|mint)\s*\(/.test(body);
+    const settles = /\.\s*(?:settle|settleFor|sync)\s*\(/.test(body);
+    if (!takes || !settles) continue;
+    // The check that closes it: the callback proves its own deltas are settled
+    // (or that the caller's are) before it moves value.
+    const checksDeltas =
+      /require\s*\([^;]*(?:delta|settled|owed|debt|outstanding)/i.test(body) ||
+      /if\s*\([^)]*(?:delta|settled|owed|debt)[^)]*\)\s*(?:revert|require)/i.test(body);
+    if (checksDeltas) continue;
+    push(make({
+      severity: "high",
+      swc: null,
+      title: `${fn.name} takes and settles inside a shared unlock without checking outstanding deltas`,
+      confidence: "medium",
+      detector: "shared-unlock-delta-netting",
+      summary: `The callback both credits itself (burn/mint/take) and settles inside whatever unlock context the caller opened, and it never verifies that the outstanding delta is settled first. A caller can therefore park an unsettled debt in the same unlock and let it net against this callback's credit — value leaves without ever being paid for. This is the GoldPesa shape (October 2026, $115k USDC): an unsettled mint debt netted against the hook's own burn credit and 114,999 USDC walked out of the pool.`,
+      walkthrough: `1. The caller opens an unlock and leaves a debt unsettled.\\n2. It then triggers ${fn.name}, which burns or takes value inside the SAME unlock.\\n3. The PoolManager nets the callback's credit against the caller's debt.\\n4. The caller exits having paid nothing, and the credit is gone.\\n5. Require the delta to be settled (or assert the locker's debt is zero) before taking value inside a callback.`,
+      exploitSolidity: `// Leave a debt open, then let the callback's credit settle it.\\npoolManager.unlock(abi.encode(CALL_HOOK));\\n// inside the unlock: mint debt parked, hook burns, deltas net to zero\\n`,
+      remediationSolidity: `function ${fn.name}(bytes calldata data) external returns (bytes memory) {\\n    require(poolManager.isLockedBy(address(this)) || msg.sender == address(poolManager), "not locker");\\n    _requireSettled(); // assert outstanding deltas are zero before moving value\\n    _take(...);\\n}`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+    return;
+  }
+}
+
+/**
+ * 3. idle-gap-interest-accrual.
+ *
+ * Interest computed as `elapsed × rate` is only safe when the checkpoint it
+ * measures from is advanced on the SAME path. If the checkpoint is written
+ * conditionally (or not at all) in the accruing function, every call in a block
+ * re-charges the whole gap — and a caller can set the rate first with a
+ * flash-funded deposit.
+ */
+function scanIdleGapInterest(
+  contract: ContractModel,
+  parsed: string,
+  delta: number,
+  push: (f: Finding) => void,
+) {
+  for (const fn of contract.functions) {
+    if (fn.body === null || !isExternallyCallable(fn)) continue;
+    const body = stripCommentsAndStrings(fn.source);
+    // elapsed = block.number - lastX  (or the reverse), multiplied by a rate
+    // `elapsed = block.number - lastX` then `interest += elapsed * rate` is the
+    // usual shape, so the multiplication is on the LOCAL, not on the checkpoint.
+    const elapsed = /(?:(\b[A-Za-z_$][\w$]*)\s*=\s*)?(?:block\.number|block\.timestamp)\s*-\s*([A-Za-z_$][\w$.]*)/.exec(body);
+    if (!elapsed) continue;
+    const local = elapsed[1] ?? "";
+    const checkpoint = (elapsed[2] ?? "").split(".").pop() ?? "";
+    if (!checkpoint) continue;
+    const terms = [checkpoint, local].filter(Boolean).map(escapeRegExp);
+    const multiplied = terms.some(
+      (t) => new RegExp(`\\([^)]*\\b${t}\\b[^)]*\\)\\s*\\*`).test(body) || new RegExp(`\\*\\s*\\([^)]*\\b${t}\\b[^)]*\\)`).test(body) || new RegExp(`\\b${t}\\b\\s*\\*`).test(body) || new RegExp(`\\*\\s*\\b${t}\\b`).test(body),
+    );
+    if (!multiplied) continue;
+    // Advanced unconditionally? A bare assignment at statement level closes it.
+    // `lastBlock = ...` at statement level, or `this.lastBlock = ...`. The
+    // qualifier is optional: requiring a prefix identifier meant a bare
+    // `lastBlock = block.number;` never counted as advancing the checkpoint,
+    // so the control (correct code) fired alongside the bug.
+    const advanced = new RegExp(
+      `(?:^|[;{}])\\s*(?:[A-Za-z_$][\\w$.]*\\.)?${escapeRegExp(checkpoint)}\\s*=\\s*`,
+      "m",
+    ).test(body);
+    const advancedConditionally = new RegExp(
+      `if\\s*\\([^)]*\\)\\s*\\{[^}]*${escapeRegExp(checkpoint)}\\s*=`,
+      "s",
+    ).test(body);
+    if (advanced && !advancedConditionally) continue;
+    push(make({
+      severity: "high",
+      swc: null,
+      title: `${fn.name} charges an idle gap it does not always advance past`,
+      confidence: "medium",
+      detector: "idle-gap-interest-accrual",
+      summary: `Interest is computed from the elapsed blocks since ${checkpoint}, and ${checkpoint} is not advanced on every path through ${fn.name}. Once the market has been idle, the whole gap is charged again on each call in the same block — and the rate it is charged at is itself caller-settable, so a flash-funded deposit raises utilization, the accrual pays out the entire historical gap, and the loan is repaid. This is the BiFi shape (October 2026, ~165,574 USDT): the USDT market had been idle for 264,059 blocks and the full ~36-day gap was charged on every later action in the block.`,
+      walkthrough: `1. The market sits idle, so the elapsed-block term grows without bound.\\n2. ${fn.name} computes interest as elapsed × rate.\\n3. ${checkpoint} is only advanced on some paths, so a second call in the same block charges the same gap again.\\n4. The caller sets the rate first (a deposit that spikes utilization) and collects the inflated interest.\\n5. Advance the checkpoint on every accrual path, and cap the elapsed term at a maximum.`,
+      exploitSolidity: `// Flash-fund a deposit to spike the rate, then accrue twice in one block.\\nIVictim(target).deposit(40_500_000e6);\\nIVictim(target).accrue();\\nIVictim(target).accrue(); // the same gap is charged again\\nIVictim(target).withdrawAll();`,
+      remediationSolidity: `function accrue() external {\\n    uint256 elapsed = block.number - ${checkpoint};\\n    if (elapsed > MAX_ELAPSED) elapsed = MAX_ELAPSED;\\n    ${checkpoint} = block.number; // ALWAYS, on every path\\n    interestIndex += elapsed * rate();\\n}`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+    return;
+  }
+}
+
+/**
+ * 4. signature-field-omission.
+ *
+ * A signature authorises exactly what its digest covers. When a function takes
+ * a signature AND other parameters that steer value, every one of those
+ * parameters has to be inside the digest — otherwise a replayer keeps the
+ * signature and changes the parameters. The digest span is read with the same
+ * paren-depth helper the randomness rules use, so nested `abi.encode` calls are
+ * measured correctly.
+ */
+function scanSignatureFieldOmission(
+  contract: ContractModel,
+  parsed: string,
+  delta: number,
+  push: (f: Finding) => void,
+) {
+  for (const fn of contract.functions) {
+    if (fn.body === null || !isExternallyCallable(fn)) continue;
+    const body = stripCommentsAndStrings(fn.source);
+    const signs = /(?:ecrecover|ECDSA\.recover|\.recover\s*\()/.test(body);
+    if (!signs) continue;
+    const digest = /(?:keccak256|sha3)\s*\(/.exec(body);
+    if (!digest) continue;
+    const span = hashArgsSpan(body, digest.index, digest[0].length);
+    if (!span) continue;
+    // Parameters that steer value but are not inside the signed digest.
+    const steers = /\b(?:amount|value|to|recipient|spender|deadline|nonce|tokenId|id)\b/i;
+    const sigParams = /^(?:v|r|s|signature|sig)$/i;
+    const omitted = fn.params
+      .map((p) => p.name)
+      .filter((name) => name && !sigParams.test(name) && steers.test(name))
+      .filter((name) => !new RegExp(`\\b${escapeRegExp(name)}\\b`).test(span));
+    if (omitted.length === 0) continue;
+    // ...and the omitted parameter must actually be used to move something.
+    const moves = omitted.some((name) => {
+      const n = escapeRegExp(name);
+      const move = "(?:transfer|mint|burn|call\\s*\\{|_pay)";
+      // `payable(to).transfer(amount)` puts the amount AFTER the move.
+      return (
+        new RegExp(`\\b${n}\\b[^;]*${move}`).test(body) ||
+        new RegExp(`${move}[^;]*\\b${n}\\b`).test(body)
+      );
+    });
+    if (!moves) continue;
+    push(make({
+      severity: "high",
+      swc: "SWC-121",
+      title: `${fn.name} signs a digest that omits ${omitted.join(", ")}`,
+      confidence: "medium",
+      detector: "signature-field-omission",
+      summary: `The signature check covers a digest that does not include ${omitted.join(", ")}, and ${omitted.length === 1 ? "that parameter steers" : "those parameters steer"} value in the same function. A replayer keeps a valid signature and changes the uncovered parameter — the signature still verifies, the action is different. This is the GiddyDeFi shape (April 2026, $1.3M): a legitimate transaction was replayed with parameters the signature did not cover.`,
+      walkthrough: `1. The digest is built from a subset of the parameters.\\n2. ${omitted.join(", ")} ${omitted.length === 1 ? "is" : "are"} used after the check to move value, but ${omitted.length === 1 ? "is" : "are"} not inside the digest.\\n3. A replayer takes a valid signature from the mempool and changes only the uncovered field.\\n4. The check passes and the altered action executes.\\n5. Include every parameter that affects the outcome in the digest — and the chain id, the verifying contract, and a nonce.`,
+      exploitSolidity: `// Same signature, different amount: the digest never covered it.\\nIVictim(target).${fn.name}(signer, 1, attacker, v, r, s); // amount not in digest\\nIVictim(target).${fn.name}(signer, type(uint256).max, attacker, v, r, s);`,
+      remediationSolidity: `bytes32 digest = keccak256(abi.encode(PURPOSE, address(this), block.chainid, nonce, to, amount));\\naddress signer = ECDSA.recover(digest, signature);\\nrequire(signer == trusted && signer != address(0), "bad signature");`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+    return;
   }
 }
 
