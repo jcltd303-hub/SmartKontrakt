@@ -425,6 +425,14 @@ const EXPECTED_TOP_PICK: Record<string, string | null> = {
   "fee-on-transfer": "15-fee-on-transfer.t.sol",
   "floating-pragma": null,
   "gas-estimator-dos": "39-dos.t.sol",
+  // 2026 incident classes (2026-10-27): one harness per class, each modelled
+  // on the published post-mortem rather than a SmartBugs port.
+  "hook-callback-auth": "47-hook-callback-auth.t.sol",
+  "calldata-offset-auth": "48-calldata-offset-auth.t.sol",
+  "eoa-only-guard": "49-eoa-only-guard.t.sol",
+  "public-key-account-trust": "50-public-key-account-trust.t.sol",
+  "unauthenticated-batch-call": "51-unauthenticated-batch-call.t.sol",
+  "self-attested-auth": "52-self-attested-auth.t.sol",
   "hardcoded-gas": "31-gas-assumptions.t.sol",
   "locked-ether": "29-locked-ether.t.sol",
   "missing-event": null,

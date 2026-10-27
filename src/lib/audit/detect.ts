@@ -1332,6 +1332,38 @@ export function detectSource(model: SourceModel, displaySource: string, onlyCont
     }));
   }
 
+  // public-key-account-trust (2026-10-27, AlpsCon AI Trade Hub, Oct 2026):
+  // a hardcoded address whose private key is published in every tutorial.
+  // The AlpsCon reward gate trusted the canonical Hardhat account
+  // 0xf39Fd6e5… as a verified depositor; the attacker signed an EIP-7702
+  // authorization with that known key and passed every gate. An address
+  // literal with a public key is not a trust anchor, it is an open door —
+  // so any occurrence is reported, wherever it sits (a constant, a
+  // constructor assignment, a whitelist mapping seed, a role grant).
+  {
+    const lowered = parsed.toLowerCase();
+    for (const acct of PUBLIC_KEY_ACCOUNTS) {
+      const idx = lowered.indexOf(acct.address);
+      if (idx < 0) continue;
+      const line = Math.max(1, parsed.slice(0, idx).split("\n").length - delta);
+      push(make({
+        severity: "critical",
+        swc: "SWC-105",
+        title: `The source trusts ${acct.note}, whose private key is public`,
+        confidence: "high",
+        detector: "public-key-account-trust",
+        summary: `The address ${acct.address} is ${acct.note} — a well-known development account whose private key is published in the tooling's own documentation. Anything it is trusted for (a whitelist entry, an owner, a role, a fee recipient) is controlled by anyone who reads the docs, and an EIP-7702 delegation lets that key run arbitrary code as the account. This is the AlpsCon AI Trade Hub exploit (October 2026): the reward gate kept the canonical Hardhat account on its onlyVerified whitelist, and the attacker used the known key to pass every gate.`,
+        walkthrough: `1. ${acct.address} is ${acct.note}; its private key is in the framework's README.\n2. Whatever privilege the source grants it — whitelist, owner, minter, verifier — is available to any reader.\n3. With EIP-7702 the holder can also delegate the account to code and act through it, so the account behaves like an attacker contract.\n4. Remove the entry, or rotate it to a key this deployment actually controls, before the contract is live.`,
+        exploitSolidity: `// The published key signs anything this address is trusted for.\n// With EIP-7702 it can also delegate to attacker code:\n// type-4 tx: authorization = { chainId, address: ATTACKER_CODE, nonce }, signed by the known key.`,
+        remediationSolidity: `// Never ship a development account as a trust anchor.\naddress public constant VERIFIED_DEPOSITOR = 0x…; // a key this deployment controls\nrequire(onlyVerified[msg.sender], "not verified");`,
+        locationFn: null,
+        locationLine: line,
+        snippet: snippet(parsed, line + delta, delta),
+      }));
+      break;
+    }
+  }
+
   if (model.floatingPragma && model.pragma) {
     push(make({
       severity: "low",
@@ -1622,6 +1654,211 @@ function isSameMappingClearingSelfPayout(fn: FnModel, sendTargets: string[]): bo
 // Fix 24's library call-site scan lives on in Fix 38's
 // librarySiteEntries (same qualified/member patterns), which returns
 // the calling contracts' public entries instead of a boolean.
+
+// ---------------------------------------------------------------------------
+// 2026 incident classes (2026-10-27).
+//
+// Six detectors derived from published post-mortems of the 2026 exploit
+// wave — each one a class the detector set had no rule for. The point of
+// grounding them in incidents rather than inventing shapes is that the
+// fixture for every rule is the real mechanism, and the Foundry harness
+// (47-52) is the exploit path, so a rule that fires cannot be dismissed as
+// theoretical.
+//
+//   hook-callback-auth        Cork Protocol ($12M, May 2025 post-mortem
+//                             Feb 2026), KolanHook, GoldPesa, VTSwapHook,
+//                             SpiralHookV2 — a v4 hook callback with no
+//                             PoolManager caller check.
+//   calldata-offset-auth      UniswapV4Router04 (Mar 2026) — a fixed-offset
+//                             calldataload used as an authorization check,
+//                             bypassed by a non-canonical ABI offset.
+//   eoa-only-guard            POT token (BSC), Gana Payment ($3.1M), QNT
+//                             pool — tx.origin == msg.sender used as a real
+//                             guard, which EIP-7702 delegation defeats.
+//   public-key-account-trust  AlpsCon AI Trade Hub (Oct 2026) — a whitelist
+//                             holding the Hardhat default account, whose
+//                             private key is public.
+//   unauthenticated-batch-call QNT batch contract, Squid multicall — an
+//                             open batch(address[],bytes[]) executor.
+//   self-attested-auth        FlashLoopAdapter (Oct 2026, ~$305k) — a module
+//                             that authenticates its caller by asking the
+//                             caller whether it is authorised.
+// ---------------------------------------------------------------------------
+
+/** Uniswap-v4 hook callbacks: invoked by the PoolManager, never by a user,
+ *  so every one of them must reject a caller that is not the PoolManager. */
+const HOOK_CALLBACKS = new Set([
+  "beforeInitialize",
+  "afterInitialize",
+  "beforeAddLiquidity",
+  "afterAddLiquidity",
+  "beforeRemoveLiquidity",
+  "afterRemoveLiquidity",
+  "beforeSwap",
+  "afterSwap",
+  "beforeDonate",
+  "afterDonate",
+  "lockAcquired",
+]);
+
+/** The caller check a hook callback needs: a comparison against the stored
+ *  PoolManager, the BaseHook modifiers, or the revert-only variant. */
+const POOL_MANAGER_GATE =
+  /msg\.sender\s*(?:==|!=)\s*(?:address\s*\(\s*)?(?:[\w.]*poolmanager|[\w.]*manager)\b|poolManagerOnly|onlyPoolManager|PoolManagerOnly|NotPoolManager|selfOnly/i;
+
+/** PoolManager accounting a hook performs while it holds the lock. A direct
+ *  caller that reaches these moves funds out of the pool. */
+const HOOK_ACCOUNTING = /\.\s*(?:take|settle|settleFor|burn|mint|swap|donate|transfer|sync)\s*\(/;
+
+/** Accounts whose private keys are published in every tutorial: a whitelist,
+ *  owner slot, or role grant naming one of them is a public-key account. */
+const PUBLIC_KEY_ACCOUNTS: { address: string; note: string }[] = [
+  { address: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266", note: "Hardhat/Anvil account #0" },
+  { address: "0x70997970c51812dc3a010c7d01b50e0d17dc79c8", note: "Hardhat/Anvil account #1" },
+  { address: "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc", note: "Hardhat/Anvil account #2" },
+  { address: "0x90f8bf6a479f320ead074411a4b0e7944ea8c9c1", note: "Ganache account #0" },
+  { address: "0xffcf8fdee72ac11b5c542428b35eef5769c409f0", note: "Ganache account #1" },
+];
+
+/**
+ * The 2026 incident classes, scanned per function. Split out of scanSimple
+ * because these are caller-identity rules, not value-flow rules: each one
+ * asks who is allowed to invoke the entry point, which is the question
+ * every one of these incidents turned on.
+ */
+function scanIncidentClasses(
+  fn: FnModel,
+  contract: ContractModel,
+  parsed: string,
+  delta: number,
+  authed: boolean,
+  push: (f: Finding) => void,
+) {
+  const src = fn.source;
+  if (!src) return;
+  const clean = stripCommentsAndStrings(src);
+  if (!isExternallyCallable(fn)) return;
+
+  // 1. hook-callback-auth (Cork, KolanHook, GoldPesa, VTSwapHook)
+  if (HOOK_CALLBACKS.has(fn.name) && !authed && !POOL_MANAGER_GATE.test(clean)) {
+    const movesFunds = HOOK_ACCOUNTING.test(clean);
+    push(make({
+      severity: movesFunds ? "critical" : "high",
+      swc: null,
+      title: `${fn.name} is a hook callback anyone can call`,
+      confidence: "high",
+      detector: "hook-callback-auth",
+      summary: movesFunds
+        ? `A Uniswap-v4 hook callback is invoked by the PoolManager, so msg.sender is the PoolManager and the hook's own state is only meaningful inside a real swap. ${fn.name} never checks that, and it settles, burns, or transfers inside — a direct call with crafted parameters drives the accounting path without a swap behind it. This is the Cork Protocol shape ($12M, beforeSwap with no msg.sender check) and the GoldPesa shape (an unsettled delta netted against the hook's own burn credit).`
+        : `A Uniswap-v4 hook callback is invoked by the PoolManager, so msg.sender is the PoolManager and the callback's parameters are trusted only inside a real pool action. ${fn.name} never checks the caller, so anyone can invoke it with fabricated parameters and rewrite the hook's recorded state.`,
+      walkthrough: `1. The PoolManager calls ${fn.name} during a swap or liquidity action; that is the only context in which its parameters are real.\n2. The function is external and checks no caller, so an attacker calls it directly with their own key, sender, and hookData.\n3. Any branch the callback takes on those parameters (settlement, a burn, a stored price) now runs outside a swap, against state the attacker chose.\n4. Add the BaseHook poolManagerOnly modifier, or require(msg.sender == address(poolManager)) as the first line.`,
+      exploitSolidity: `interface IHook {\n    function ${fn.name}(address sender, bytes calldata key, bytes calldata params, bytes calldata hookData) external;\n}\n// Call the callback directly: no PoolManager, no swap, attacker-chosen params.\nIHook(target).${fn.name}(address(this), forgedKey, forgedParams, forgedData);`,
+      remediationSolidity: `// Inherit BaseHook and gate every callback.\nfunction ${fn.name}(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)\n    external\n    onlyPoolManager // require(msg.sender == address(poolManager))\n    returns (bytes4, BeforeSwapDelta, uint24)\n{ /* ... */ }`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
+  // 2. calldata-offset-auth (UniswapV4Router04, Mar 2026)
+  //    A fixed absolute calldata offset only lines up with the field it is
+  //    meant to read when the ABI encoding is canonical. A dynamic `bytes`
+  //    parameter may legally start at any offset, so the attacker shifts it
+  //    and puts their own address where the check reads.
+  const fixedLoad = clean.match(/\bcalldataload\s*\(\s*(0x[0-9a-fA-F]+|\d+)\s*\)/);
+  const comparesCaller = /\bcaller\s*\(\s*\)/.test(clean) && /\b(?:eq|iszero)\s*\(|==|!=/.test(clean);
+  const hasDynamicBytes = fn.params.some((p) => /^bytes/.test(p.typeName));
+  if (fixedLoad && comparesCaller && hasDynamicBytes) {
+    push(make({
+      severity: HOOK_ACCOUNTING.test(clean) || /\.\s*(?:transferFrom|transfer)\s*\(/.test(clean) ? "high" : "medium",
+      swc: null,
+      title: `${fn.name} authorizes on a fixed calldata offset`,
+      confidence: "high",
+      detector: "calldata-offset-auth",
+      summary: `The authorization check reads ${fixedLoad[0]} — an absolute position in the calldata — and compares it with the caller. That position only holds the field the check means to read when the ABI encoding is canonical. A dynamic parameter can start at any valid offset, so an attacker can shift the payload, place their own address at the checked position, and put the victim's address in the field the logic actually uses. This is the UniswapV4Router04 swap() bypass (March 2026): the router read the payer at a fixed offset, the attacker moved the bytes offset, and the router spent a victim's approval.`,
+      walkthrough: `1. The function takes a dynamic \`bytes\` parameter and decodes a struct from it.\n2. Its authorization check reads a fixed calldata position with calldataload instead of decoding the struct field.\n3. The attacker sets the dynamic offset to a non-canonical value, puts their own address at the fixed position, and the victim's address in the real struct field.\n4. The check passes, the logic spends the victim's funds. Decode the field (abi.decode on the parameter) and compare that, or check msg.sender against the decoded payer.`,
+      exploitSolidity: `// bytes offset 0xc0 instead of 0x40; attacker's address at the checked slot.\n(bool ok, ) = target.call(abi.encodeWithSelector(0xaf2b4aba, forgedData, block.timestamp));`,
+      remediationSolidity: `// Decode the parameter and compare the decoded field, never a fixed offset.\nBaseData memory d = abi.decode(data, (BaseData));\nrequire(d.payer == msg.sender, Unauthorized());`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
+  // 3. eoa-only-guard (POT token, Gana Payment, QNT pool)
+  //    tx.origin == msg.sender was a load-bearing guard here — a flash-loan
+  //    or caller-class check — and EIP-7702 makes it forgeable: a delegated
+  //    EOA runs contract code while msg.sender == tx.origin still holds.
+  const eoaGate = /(?:tx\.origin\s*==\s*msg\.sender|msg\.sender\s*==\s*tx\.origin)/.test(clean);
+  // Suffixed names count: swapExactTokensForTokens, stakeFor, depositTo, and
+  // the rest of the router vocabulary. A bare \`swap\`-only match missed the
+  // POT fixture's own router call.
+  const loadBearing =
+    /\.\s*(?:transfer|safeTransfer|swap|stake|unstake|mint|borrow|repay|deposit|withdraw|flashLoan|flash)\w*\s*\(/.test(clean) ||
+    /\.call\s*\{/.test(clean);
+  if (eoaGate && loadBearing) {
+    push(make({
+      severity: "high",
+      swc: "SWC-115",
+      title: `${fn.name} guards value flow with tx.origin == msg.sender`,
+      confidence: "high",
+      detector: "eoa-only-guard",
+      summary: "This function uses tx.origin == msg.sender as a guard around a value-moving path. That check used to mean \"a plain wallet called me\". Since EIP-7702 (Pectra) an EOA can delegate to contract code, so a delegated account runs an attacker's logic while msg.sender == tx.origin still holds — the guard no longer distinguishes an EOA from a contract, and the flash-loan or caller-class protection built on it is gone. This is the POT token exploit on BSC (~$85k, a flash-loan price manipulation behind the EOA-only check), Gana Payment ($3.1M), and the QNT pool drain.",
+      walkthrough: "1. The guard requires msg.sender == tx.origin, i.e. the caller must be a plain account.\n2. A type-4 EIP-7702 transaction delegates the attacker's EOA to a contract, which then runs arbitrary logic while msg.sender == tx.origin holds for the outer call.\n3. Whatever the guard was protecting (a flash-loan restriction, a per-user limit, an operator check) is now reachable from contract logic.\n4. Guard on what you actually mean: a reentrancy mutex, an explicit allowlist, or a check that the caller's code is empty at the moment of the call — and treat none of them as an EOA proof.",
+      exploitSolidity: `// EIP-7702: delegate the attacker EOA to code, then call through it.\n// msg.sender == tx.origin is still true, but the caller runs contract logic.\naddress(delegatedEoa).call(abi.encodeWithSignature("attack()"));`,
+      remediationSolidity: `// Do not use tx.origin as an EOA proof. Guard the mechanism itself:\nmodifier nonReentrant() { require(locked == 0, "reentrant"); locked = 1; _; locked = 0; }\n// Or an explicit allowlist of operators, checked by role.`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
+  // 5. unauthenticated-batch-call (QNT batch contract, Squid multicall)
+  const targetParams = fn.params.filter((p) => /^address\s*\[\s*\]/.test(p.typeName)).map((p) => p.name).filter(Boolean);
+  const bytesParams = fn.params.filter((p) => /^bytes\s*\[\s*\]/.test(p.typeName)).map((p) => p.name).filter(Boolean);
+  const loop = /for\s*\(|while\s*\(/.test(clean);
+  const callsTarget = targetParams.some((n) =>
+    new RegExp(`\\b${escapeRegExp(n)}\\s*(?:\\[[^\\]]*\\])?\\s*\\.\\s*(?:call|delegatecall)\\s*[({]`).test(clean),
+  );
+  if (!authed && targetParams.length > 0 && bytesParams.length > 0 && loop && callsTarget) {
+    const delegates = new RegExp(`\\b${escapeRegExp(targetParams[0]!)}\\s*(?:\\[[^\\]]*\\])?\\s*\\.\\s*delegatecall`).test(clean);
+    push(make({
+      severity: delegates ? "critical" : "high",
+      swc: "SWC-105",
+      title: `${fn.name} executes arbitrary calls with no access check`,
+      confidence: "high",
+      detector: "unauthenticated-batch-call",
+      summary: `An unauthenticated function takes a list of targets and a matching list of calldata and executes them from this contract's context. Anyone can make the contract call anything, including functions that trust it: the QNT pool drain (April 2026) went through a public batch(address[],bytes[]) with no access control, which routed a call through a delegated admin EOA that the pool trusted by address. A batch executor is only safe when the caller is authenticated or the targets are fixed.`,
+      walkthrough: `1. ${fn.name} loops over caller-supplied targets and calls each with caller-supplied calldata.\n2. Nothing checks who is calling, so any address can borrow the contract's identity and its approvals.\n3. Any contract that trusts this address (an admin EOA, a vault, a keeper) can now be driven by the attacker.\n4. Authenticate the executor, or restrict it to a fixed router, and never let it reach privileged functions.`,
+      exploitSolidity: `address[] memory targets = new address[](1);\nbytes[] memory data = new bytes[](1);\ntargets[0] = address(victimPool);\ndata[0] = abi.encodeWithSignature("forwardTransaction(address,bytes)", attacker, payload);\nIExecutor(target).${fn.name}(targets, data);`,
+      remediationSolidity: `function ${fn.name}(address[] calldata targets, bytes[] calldata data) external onlyOwner {\n    // or: require(msg.sender == address(this));\n    for (uint256 i; i < targets.length; ++i) {\n        (bool ok, ) = targets[i].call(data[i]);\n        require(ok, "batch failed");\n    }\n}`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
+  // 6. self-attested-auth (FlashLoopAdapter, Oct 2026)
+  //    The guard asks the CALLER whether the caller is allowed: the answer is
+  //    supplied by the untrusted party, so any contract can say yes.
+  const selfAttest = /(?:require|if)\s*\([^;]{0,300}?\b[A-Za-z_$][\w$]*\s*\(\s*msg\.sender\s*\)\s*\.\s*\w+\s*\(/.test(clean);
+  if (!authed && selfAttest) {
+    push(make({
+      severity: "high",
+      swc: "SWC-105",
+      title: `${fn.name} asks the caller to attest its own authorization`,
+      confidence: "high",
+      detector: "self-attested-auth",
+      summary: `The access check calls a function ON msg.sender to decide whether msg.sender is allowed. The untrusted caller supplies the answer, so a contract that simply returns true passes the check and drives this function. This is the FlashLoopAdapter shape (October 2026, ~$305k): a Safe module asked the calling Safe whether the module was enabled, so a fake Safe could walk real Safes into draining themselves.`,
+      walkthrough: `1. The guard is a call to the caller: IGuard(msg.sender).isEnabled(address(this)) or similar.\n2. An attacker deploys a contract that answers yes and calls this function through it.\n3. Every privileged action behind the guard is now available to the attacker, and any party that trusted this contract is exposed.\n4. Invert the check: verify the caller against a registry THIS contract controls, or require the caller to be a specific stored address.`,
+      exploitSolidity: `contract FakeGuard {\n    function isEnabled(address) external pure returns (bool) { return true; }\n    function attack(address adapter) external {\n        IAdapter(adapter).pull(address(this));\n    }\n}`,
+      remediationSolidity: `// The attestation must come from this contract's own registry, not the caller.\nmapping(address => bool) public authorised;\nrequire(authorised[msg.sender], "not authorised");`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+}
 
 function scanContract(
   contract: ContractModel,
@@ -1919,6 +2156,9 @@ function scanContract(
       provenanceUncertain: hasDerivedContracts,
       contractHasEntries: contract.functions.some((f) => isExternallyCallable(f)),
     });
+    // 2026 incident classes: caller-identity rules, kept out of scanSimple's
+    // value-flow body so they read as one family.
+    scanIncidentClasses(fn, contract, parsed, delta, authed, push);
   }
 
   // Fix 12: read-only reentrancy fires ONLY on a demonstrated

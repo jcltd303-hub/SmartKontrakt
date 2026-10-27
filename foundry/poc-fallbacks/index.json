@@ -1,1 +1,868 @@
-{"description":"Fallback Foundry PoCs: one drop-in test per scenario. Copy the file to foundry/test/Exploit.t.sol, adapt the TODO-marked constants/interfaces to the target's real ABI, run via scripts/run-fork-poc.sh. Passing exploit test = reproduced on fork state. Failing = did NOT reproduce (real signal). Fork-only: no real transactions, no private keys, no --broadcast.","fallbacks":[{"detectors":["reentrancy"],"file":"01-reentrancy-classic.t.sol","scenario":"Classic ETH reentrancy drain","smartbugs":"reentrancy","provenance":{"kind":"dataset","category":"reentrancy","sources":["reentrancy/reentrancy_dao.sol","reentrancy/simple_dao.sol"]}},{"detectors":["reentrancy"],"file":"02-reentrancy-cross-function.t.sol","scenario":"Cross-function reentrancy (shared balance, second function)","smartbugs":"reentrancy","provenance":{"kind":"dataset","category":"reentrancy","sources":["reentrancy/reentrancy_cross_function.sol"]}},{"detectors":["reentrancy"],"file":"03-reentrancy-erc777.t.sol","scenario":"ERC777 tokensReceived hook reentrancy","smartbugs":"reentrancy","provenance":{"kind":"dataset","category":"reentrancy","sources":["reentrancy/etherstore.sol"]},"todo":["TOKEN"]},{"detectors":["reentrancy"],"file":"04-reentrancy-erc721.t.sol","scenario":"ERC721 onERC721Received reentrancy","smartbugs":"reentrancy","provenance":{"kind":"dataset","category":"reentrancy","sources":["reentrancy/reentrancy_bonus.sol"]},"todo":["PRICE"]},{"detectors":["read-only-reentrancy"],"file":"05-reentrancy-read-only.t.sol","scenario":"Read-only reentrancy (stale view mid-callback)","smartbugs":"reentrancy","provenance":{"kind":"dataset","category":"reentrancy","sources":["reentrancy/modifier_reentrancy.sol"]}},{"detectors":["unprotected-ether"],"file":"06-open-drain.t.sol","scenario":"Open drain (unprotected ether send)","smartbugs":"access_control","provenance":{"kind":"dataset","category":"access_control","sources":["access_control/mapping_write.sol"]}},{"detectors":["unprotected-admin"],"file":"07-unprotected-admin.t.sol","scenario":"Unprotected privileged function (mint / setOwner / pause)","smartbugs":"access_control","provenance":{"kind":"dataset","category":"access_control","sources":["access_control/multiowned_vulnerable.sol"]}},{"detectors":["default-visibility"],"file":"07b-unprotected-visibility.t.sol","scenario":"Default public visibility (sensitive function exposed)","smartbugs":"access_control","provenance":{"kind":"dataset","category":"access_control","sources":["access_control/incorrect_constructor_name1.sol"]}},{"detectors":["unprotected-initializer"],"file":"08-unprotected-initializer.t.sol","scenario":"Unprotected initializer (proxy takeover)","smartbugs":"access_control","provenance":{"kind":"dataset","category":"access_control","sources":["access_control/proxy.sol"]}},{"detectors":["tx-origin","bytecode-origin"],"file":"09-tx-origin-phishing.t.sol","scenario":"tx.origin auth bypass via phishing contract","smartbugs":"access_control","provenance":{"kind":"dataset","category":"access_control","sources":["access_control/phishable.sol"]},"todo":["OWNER"]},{"detectors":["delegatecall","bytecode-delegatecall","bytecode-callcode"],"file":"10-delegatecall-takeover.t.sol","scenario":"Delegatecall to attacker-controlled logic (slot-0 overwrite)","smartbugs":"access_control","provenance":{"kind":"dataset","category":"access_control","sources":["access_control/parity_wallet_bug_1.sol"]}},{"detectors":["unprotected-initializer","bytecode-proxy"],"file":"11-proxy-uninitialized-implementation.t.sol","scenario":"Uninitialized implementation behind a proxy (direct initialize)","smartbugs":"access_control","provenance":{"kind":"dataset","category":"access_control","sources":["access_control/parity_wallet_bug_2.sol"]}},{"detectors":["selfdestruct","bytecode-selfdestruct"],"file":"12-selfdestruct.t.sol","scenario":"Selfdestruct destroy-sweep + forced ETH","smartbugs":"unchecked_low_level_calls","provenance":{"kind":"dataset","category":"unchecked_low_level_calls","sources":["unchecked_low_level_calls/mishandled.sol"]}},{"detectors":["unchecked-call","bytecode-unchecked-call"],"file":"13-unchecked-call.t.sol","scenario":"Unchecked low-level call return","smartbugs":"unchecked_low_level_calls","provenance":{"kind":"dataset","category":"unchecked_low_level_calls","sources":["unchecked_low_level_calls/unchecked_return_value.sol"]}},{"detectors":["erc20-unchecked"],"file":"14-erc20-unchecked-bool.t.sol","scenario":"Unchecked ERC-20 bool (false return, no revert)","smartbugs":"unchecked_low_level_calls","provenance":{"kind":"dataset","category":"unchecked_low_level_calls","sources":["unchecked_low_level_calls/unchecked_return_value.sol"]}},{"detectors":["fee-on-transfer"],"file":"15-fee-on-transfer.t.sol","scenario":"Fee-on-transfer accounting mismatch","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."}},{"detectors":["oracle-spot","balance-as-price"],"file":"16-oracle-manipulation.t.sol","scenario":"Oracle manipulation: spot price via swap + balance-as-price via donation","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."},"todo":["ROUTER","TOKEN_IN","TOKEN_OUT","WHALE"]},{"detectors":["slippage"],"file":"17-slippage-sandwich.t.sol","scenario":"Sandwich attack on zero-slippage swap","smartbugs":"front_running","provenance":{"kind":"dataset","category":"front_running","sources":["front_running/ERC20.sol"]},"todo":["ROUTER","TOKEN_IN","TOKEN_OUT","VICTIM","WHALE"]},{"detectors":["signature-replay"],"file":"18-signature-replay.t.sol","scenario":"Signature replay (no nonce / deadline / chain binding)","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."},"todo":["MESSAGE_HASH"]},{"detectors":["signature-malleability"],"file":"19-signature-malleability.t.sol","scenario":"Signature malleability (low-s not enforced)","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."},"todo":["MESSAGE_HASH"]},{"detectors":["timestamp","bytecode-timestamp"],"file":"45-timestamp-dependence.t.sol","scenario":"Timestamp dependence (miner-controllable block.timestamp gate)","smartbugs":"time_manipulation","provenance":{"kind":"dataset","category":"time_manipulation","sources":["time_manipulation/timed_crowdsale.sol"]}},{"detectors":["strict-balance"],"file":"21-strict-balance-dos.t.sol","scenario":"Strict balance equality DoS via forced ETH","smartbugs":"denial_of_service","provenance":{"kind":"dataset","category":"denial_of_service","sources":["denial_of_service/dos_simple.sol"]}},{"detectors":["msg-value-loop"],"file":"22-msg-value-loop.t.sol","scenario":"msg.value used inside a loop (per-iteration payout)","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."},"todo":["PRICE"]},{"detectors":["unchecked-block"],"file":"23-unchecked-arithmetic-wrap.t.sol","scenario":"Unchecked arithmetic wraps instead of reverting","smartbugs":"arithmetic","provenance":{"kind":"dataset","category":"arithmetic","sources":["arithmetic/integer_overflow_add.sol","arithmetic/overflow_simple_add.sol"]}},{"detectors":["div-before-mul"],"file":"24-div-before-mul.t.sol","scenario":"Division before multiplication (precision loss to zero)","smartbugs":"arithmetic","provenance":{"kind":"dataset","category":"arithmetic","sources":["arithmetic/integer_overflow_mul.sol"]}},{"detectors":["encode-packed"],"file":"25-encode-packed-collision.t.sol","scenario":"abi.encodePacked hash collision (dynamic args)","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."}},{"detectors":["assembly-sstore","assembly-param-sstore"],"file":"26-assembly-arbitrary-sstore.t.sol","scenario":"Assembly SSTORE to a caller-chosen slot","smartbugs":"access_control","provenance":{"kind":"dataset","category":"access_control","sources":["access_control/arbitrary_location_write_simple.sol"]}},{"detectors":["extcodesize"],"file":"27-extcodesize-bypass.t.sol","scenario":"extcodesize identity bypass via constructor call","smartbugs":"access_control","provenance":{"kind":"dataset","category":"access_control","sources":["access_control/FibonacciBalance.sol"]}},{"detectors":["locked-ether"],"file":"29-locked-ether.t.sol","scenario":"Locked ether (can receive, cannot send)","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."}},{"detectors":["centralization","locked-ether"],"file":"28-centralization-owner-rug.t.sol","scenario":"Centralization: owner can drain / mint / pause (capability proof via prank)","smartbugs":"access_control","provenance":{"kind":"dataset","category":"access_control","sources":["access_control/multiowned_vulnerable.sol"]}},{"detectors":["zero-address"],"file":"30-zero-address-brick.t.sol","scenario":"Zero-address write bricks the contract","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."}},{"detectors":["eth-gas-stipend","hardcoded-gas"],"file":"31-gas-assumptions.t.sol","scenario":"Gas assumptions: 2300 stipend failure + hardcoded gas failure","smartbugs":"denial_of_service","provenance":{"kind":"dataset","category":"denial_of_service","sources":["denial_of_service/send_loop.sol"]}},{"detectors":["storage-gap","unprotected-admin","delegatecall"],"file":"32-storage-collision-upgrade.t.sol","scenario":"Storage collision via unguarded upgrade","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."}},{"detectors":["shadowing"],"file":"33-shadowing-mismatch.t.sol","scenario":"Variable shadowing (write lands in the shadow)","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."}},{"detectors":["private-secret"],"file":"34-private-secret-onchain.t.sol","scenario":"Private secret readable from storage","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."}},{"detectors":[],"file":"35-flash-loan-generic.t.sol","scenario":"Generic flash loan (borrow / use / repay round-trip)","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."},"todo":["POOL","ASSET"]},{"detectors":["unprotected-ether"],"file":"36-merkle-double-claim.t.sol","scenario":"Merkle claim double-claim (same proof twice)","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."},"todo":["proof","AMOUNT"]},{"detectors":[],"file":"37-approval-abuse.t.sol","scenario":"Approval abuse: infinite approval drain + approve race","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."},"todo":["TOKEN","VICTIM","SPENDER"]},{"detectors":["centralization"],"file":"38-governance-flash-vote.t.sol","scenario":"Governance flash-loan vote","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."},"todo":["WHALE"]},{"detectors":["unchecked-call","gas-estimator-dos"],"file":"39-dos.t.sol","scenario":"DoS: revert-in-loop bricks distribution + unbounded loop gas growth","smartbugs":"denial_of_service","provenance":{"kind":"dataset","category":"denial_of_service","sources":["denial_of_service/list_dos.sol"]}},{"detectors":["balance-as-price","div-before-mul"],"file":"40-erc4626-inflation.t.sol","scenario":"ERC4626 inflation / first-depositor attack","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."},"todo":["WHALE"]},{"detectors":["bytecode-create2","selfdestruct"],"file":"41-create2-metamorphic.t.sol","scenario":"CREATE2 metamorphic redeploy (same address, new code)","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."}},{"detectors":["short-address"],"file":"42-short-address-attack.t.sol","scenario":"Short address attack via parameter padding","smartbugs":"short_addresses","provenance":{"kind":"dataset","category":"short_addresses","sources":["short_addresses/short_address_example.sol"]}},{"detectors":["front-running"],"file":"43-front-running.t.sol","scenario":"Front-running (transaction ordering vulnerability)","smartbugs":"front_running","provenance":{"kind":"dataset","category":"front_running","sources":["front_running/eth_tx_order_dependence_minimal.sol"]}},{"detectors":["external-contract-referencing"],"file":"44-external-contract-ref.t.sol","scenario":"Dangerous external contract reference/hijacking","smartbugs":"other","provenance":{"kind":"modelled","category":"other","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."}},{"detectors":["weak-randomness","timestamp","bytecode-timestamp"],"file":"20-chain-randomness-timestamp.t.sol","scenario":"Chain randomness prediction + timestamp gate bypass","smartbugs":"bad_randomness","provenance":{"kind":"dataset","category":"bad_randomness","sources":["bad_randomness/guess_the_random_number.sol","bad_randomness/lottery.sol"]}},{"detectors":["token-drain"],"file":"46-token-rescue.t.sol","scenario":"Token rescue drain (unprotected ERC-20 rescue / sweep)","smartbugs":"access_control","provenance":{"kind":"modelled","category":"access_control","sources":[],"note":"No SmartBugs Curated contract covers this class (the dataset has no unprotected token-rescue case). Modelled from the category's mechanics plus a fork-verified field case; no dataset port exists."}}],"notPocable":[{"detectors":["missing-event","floating-pragma","old-compiler","rtl-override"],"reason":"No on-chain exploit: code-quality / hygiene findings with no state or funds at stake."},{"detectors":["bytecode-metadata","bytecode-reentrancy-shape"],"reason":"Bytecode-shape signals, not standalone exploits \u2014 use the source-level fallback for the matching scenario."},{"detectors":["parse","report-cap"],"reason":"Analyzer meta-findings (input could not be parsed / report was capped), not vulnerabilities in the target \u2014 no harness applies."}],"version":1}
+{
+  "description": "Fallback Foundry PoCs: one drop-in test per scenario. Copy the file to foundry/test/Exploit.t.sol, adapt the TODO-marked constants/interfaces to the target's real ABI, run via scripts/run-fork-poc.sh. Passing exploit test = reproduced on fork state. Failing = did NOT reproduce (real signal). Fork-only: no real transactions, no private keys, no --broadcast.",
+  "fallbacks": [
+    {
+      "detectors": [
+        "reentrancy"
+      ],
+      "file": "01-reentrancy-classic.t.sol",
+      "scenario": "Classic ETH reentrancy drain",
+      "smartbugs": "reentrancy",
+      "provenance": {
+        "kind": "dataset",
+        "category": "reentrancy",
+        "sources": [
+          "reentrancy/reentrancy_dao.sol",
+          "reentrancy/simple_dao.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "reentrancy"
+      ],
+      "file": "02-reentrancy-cross-function.t.sol",
+      "scenario": "Cross-function reentrancy (shared balance, second function)",
+      "smartbugs": "reentrancy",
+      "provenance": {
+        "kind": "dataset",
+        "category": "reentrancy",
+        "sources": [
+          "reentrancy/reentrancy_cross_function.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "reentrancy"
+      ],
+      "file": "03-reentrancy-erc777.t.sol",
+      "scenario": "ERC777 tokensReceived hook reentrancy",
+      "smartbugs": "reentrancy",
+      "provenance": {
+        "kind": "dataset",
+        "category": "reentrancy",
+        "sources": [
+          "reentrancy/etherstore.sol"
+        ]
+      },
+      "todo": [
+        "TOKEN"
+      ]
+    },
+    {
+      "detectors": [
+        "reentrancy"
+      ],
+      "file": "04-reentrancy-erc721.t.sol",
+      "scenario": "ERC721 onERC721Received reentrancy",
+      "smartbugs": "reentrancy",
+      "provenance": {
+        "kind": "dataset",
+        "category": "reentrancy",
+        "sources": [
+          "reentrancy/reentrancy_bonus.sol"
+        ]
+      },
+      "todo": [
+        "PRICE"
+      ]
+    },
+    {
+      "detectors": [
+        "read-only-reentrancy"
+      ],
+      "file": "05-reentrancy-read-only.t.sol",
+      "scenario": "Read-only reentrancy (stale view mid-callback)",
+      "smartbugs": "reentrancy",
+      "provenance": {
+        "kind": "dataset",
+        "category": "reentrancy",
+        "sources": [
+          "reentrancy/modifier_reentrancy.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "unprotected-ether"
+      ],
+      "file": "06-open-drain.t.sol",
+      "scenario": "Open drain (unprotected ether send)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "dataset",
+        "category": "access_control",
+        "sources": [
+          "access_control/mapping_write.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "unprotected-admin"
+      ],
+      "file": "07-unprotected-admin.t.sol",
+      "scenario": "Unprotected privileged function (mint / setOwner / pause)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "dataset",
+        "category": "access_control",
+        "sources": [
+          "access_control/multiowned_vulnerable.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "default-visibility"
+      ],
+      "file": "07b-unprotected-visibility.t.sol",
+      "scenario": "Default public visibility (sensitive function exposed)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "dataset",
+        "category": "access_control",
+        "sources": [
+          "access_control/incorrect_constructor_name1.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "unprotected-initializer"
+      ],
+      "file": "08-unprotected-initializer.t.sol",
+      "scenario": "Unprotected initializer (proxy takeover)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "dataset",
+        "category": "access_control",
+        "sources": [
+          "access_control/proxy.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "tx-origin",
+        "bytecode-origin"
+      ],
+      "file": "09-tx-origin-phishing.t.sol",
+      "scenario": "tx.origin auth bypass via phishing contract",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "dataset",
+        "category": "access_control",
+        "sources": [
+          "access_control/phishable.sol"
+        ]
+      },
+      "todo": [
+        "OWNER"
+      ]
+    },
+    {
+      "detectors": [
+        "delegatecall",
+        "bytecode-delegatecall",
+        "bytecode-callcode"
+      ],
+      "file": "10-delegatecall-takeover.t.sol",
+      "scenario": "Delegatecall to attacker-controlled logic (slot-0 overwrite)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "dataset",
+        "category": "access_control",
+        "sources": [
+          "access_control/parity_wallet_bug_1.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "unprotected-initializer",
+        "bytecode-proxy"
+      ],
+      "file": "11-proxy-uninitialized-implementation.t.sol",
+      "scenario": "Uninitialized implementation behind a proxy (direct initialize)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "dataset",
+        "category": "access_control",
+        "sources": [
+          "access_control/parity_wallet_bug_2.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "selfdestruct",
+        "bytecode-selfdestruct"
+      ],
+      "file": "12-selfdestruct.t.sol",
+      "scenario": "Selfdestruct destroy-sweep + forced ETH",
+      "smartbugs": "unchecked_low_level_calls",
+      "provenance": {
+        "kind": "dataset",
+        "category": "unchecked_low_level_calls",
+        "sources": [
+          "unchecked_low_level_calls/mishandled.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "unchecked-call",
+        "bytecode-unchecked-call"
+      ],
+      "file": "13-unchecked-call.t.sol",
+      "scenario": "Unchecked low-level call return",
+      "smartbugs": "unchecked_low_level_calls",
+      "provenance": {
+        "kind": "dataset",
+        "category": "unchecked_low_level_calls",
+        "sources": [
+          "unchecked_low_level_calls/unchecked_return_value.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "erc20-unchecked"
+      ],
+      "file": "14-erc20-unchecked-bool.t.sol",
+      "scenario": "Unchecked ERC-20 bool (false return, no revert)",
+      "smartbugs": "unchecked_low_level_calls",
+      "provenance": {
+        "kind": "dataset",
+        "category": "unchecked_low_level_calls",
+        "sources": [
+          "unchecked_low_level_calls/unchecked_return_value.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "fee-on-transfer"
+      ],
+      "file": "15-fee-on-transfer.t.sol",
+      "scenario": "Fee-on-transfer accounting mismatch",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      }
+    },
+    {
+      "detectors": [
+        "oracle-spot",
+        "balance-as-price"
+      ],
+      "file": "16-oracle-manipulation.t.sol",
+      "scenario": "Oracle manipulation: spot price via swap + balance-as-price via donation",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      },
+      "todo": [
+        "ROUTER",
+        "TOKEN_IN",
+        "TOKEN_OUT",
+        "WHALE"
+      ]
+    },
+    {
+      "detectors": [
+        "slippage"
+      ],
+      "file": "17-slippage-sandwich.t.sol",
+      "scenario": "Sandwich attack on zero-slippage swap",
+      "smartbugs": "front_running",
+      "provenance": {
+        "kind": "dataset",
+        "category": "front_running",
+        "sources": [
+          "front_running/ERC20.sol"
+        ]
+      },
+      "todo": [
+        "ROUTER",
+        "TOKEN_IN",
+        "TOKEN_OUT",
+        "VICTIM",
+        "WHALE"
+      ]
+    },
+    {
+      "detectors": [
+        "signature-replay"
+      ],
+      "file": "18-signature-replay.t.sol",
+      "scenario": "Signature replay (no nonce / deadline / chain binding)",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      },
+      "todo": [
+        "MESSAGE_HASH"
+      ]
+    },
+    {
+      "detectors": [
+        "signature-malleability"
+      ],
+      "file": "19-signature-malleability.t.sol",
+      "scenario": "Signature malleability (low-s not enforced)",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      },
+      "todo": [
+        "MESSAGE_HASH"
+      ]
+    },
+    {
+      "detectors": [
+        "timestamp",
+        "bytecode-timestamp"
+      ],
+      "file": "45-timestamp-dependence.t.sol",
+      "scenario": "Timestamp dependence (miner-controllable block.timestamp gate)",
+      "smartbugs": "time_manipulation",
+      "provenance": {
+        "kind": "dataset",
+        "category": "time_manipulation",
+        "sources": [
+          "time_manipulation/timed_crowdsale.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "strict-balance"
+      ],
+      "file": "21-strict-balance-dos.t.sol",
+      "scenario": "Strict balance equality DoS via forced ETH",
+      "smartbugs": "denial_of_service",
+      "provenance": {
+        "kind": "dataset",
+        "category": "denial_of_service",
+        "sources": [
+          "denial_of_service/dos_simple.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "msg-value-loop"
+      ],
+      "file": "22-msg-value-loop.t.sol",
+      "scenario": "msg.value used inside a loop (per-iteration payout)",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      },
+      "todo": [
+        "PRICE"
+      ]
+    },
+    {
+      "detectors": [
+        "unchecked-block"
+      ],
+      "file": "23-unchecked-arithmetic-wrap.t.sol",
+      "scenario": "Unchecked arithmetic wraps instead of reverting",
+      "smartbugs": "arithmetic",
+      "provenance": {
+        "kind": "dataset",
+        "category": "arithmetic",
+        "sources": [
+          "arithmetic/integer_overflow_add.sol",
+          "arithmetic/overflow_simple_add.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "div-before-mul"
+      ],
+      "file": "24-div-before-mul.t.sol",
+      "scenario": "Division before multiplication (precision loss to zero)",
+      "smartbugs": "arithmetic",
+      "provenance": {
+        "kind": "dataset",
+        "category": "arithmetic",
+        "sources": [
+          "arithmetic/integer_overflow_mul.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "encode-packed"
+      ],
+      "file": "25-encode-packed-collision.t.sol",
+      "scenario": "abi.encodePacked hash collision (dynamic args)",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      }
+    },
+    {
+      "detectors": [
+        "assembly-sstore",
+        "assembly-param-sstore"
+      ],
+      "file": "26-assembly-arbitrary-sstore.t.sol",
+      "scenario": "Assembly SSTORE to a caller-chosen slot",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "dataset",
+        "category": "access_control",
+        "sources": [
+          "access_control/arbitrary_location_write_simple.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "extcodesize"
+      ],
+      "file": "27-extcodesize-bypass.t.sol",
+      "scenario": "extcodesize identity bypass via constructor call",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "dataset",
+        "category": "access_control",
+        "sources": [
+          "access_control/FibonacciBalance.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "locked-ether"
+      ],
+      "file": "29-locked-ether.t.sol",
+      "scenario": "Locked ether (can receive, cannot send)",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      }
+    },
+    {
+      "detectors": [
+        "centralization",
+        "locked-ether"
+      ],
+      "file": "28-centralization-owner-rug.t.sol",
+      "scenario": "Centralization: owner can drain / mint / pause (capability proof via prank)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "dataset",
+        "category": "access_control",
+        "sources": [
+          "access_control/multiowned_vulnerable.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "zero-address"
+      ],
+      "file": "30-zero-address-brick.t.sol",
+      "scenario": "Zero-address write bricks the contract",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      }
+    },
+    {
+      "detectors": [
+        "eth-gas-stipend",
+        "hardcoded-gas"
+      ],
+      "file": "31-gas-assumptions.t.sol",
+      "scenario": "Gas assumptions: 2300 stipend failure + hardcoded gas failure",
+      "smartbugs": "denial_of_service",
+      "provenance": {
+        "kind": "dataset",
+        "category": "denial_of_service",
+        "sources": [
+          "denial_of_service/send_loop.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "storage-gap",
+        "unprotected-admin",
+        "delegatecall"
+      ],
+      "file": "32-storage-collision-upgrade.t.sol",
+      "scenario": "Storage collision via unguarded upgrade",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      }
+    },
+    {
+      "detectors": [
+        "shadowing"
+      ],
+      "file": "33-shadowing-mismatch.t.sol",
+      "scenario": "Variable shadowing (write lands in the shadow)",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      }
+    },
+    {
+      "detectors": [
+        "private-secret"
+      ],
+      "file": "34-private-secret-onchain.t.sol",
+      "scenario": "Private secret readable from storage",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      }
+    },
+    {
+      "detectors": [],
+      "file": "35-flash-loan-generic.t.sol",
+      "scenario": "Generic flash loan (borrow / use / repay round-trip)",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      },
+      "todo": [
+        "POOL",
+        "ASSET"
+      ]
+    },
+    {
+      "detectors": [
+        "unprotected-ether"
+      ],
+      "file": "36-merkle-double-claim.t.sol",
+      "scenario": "Merkle claim double-claim (same proof twice)",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      },
+      "todo": [
+        "proof",
+        "AMOUNT"
+      ]
+    },
+    {
+      "detectors": [],
+      "file": "37-approval-abuse.t.sol",
+      "scenario": "Approval abuse: infinite approval drain + approve race",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      },
+      "todo": [
+        "TOKEN",
+        "VICTIM",
+        "SPENDER"
+      ]
+    },
+    {
+      "detectors": [
+        "centralization"
+      ],
+      "file": "38-governance-flash-vote.t.sol",
+      "scenario": "Governance flash-loan vote",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      },
+      "todo": [
+        "WHALE"
+      ]
+    },
+    {
+      "detectors": [
+        "unchecked-call",
+        "gas-estimator-dos"
+      ],
+      "file": "39-dos.t.sol",
+      "scenario": "DoS: revert-in-loop bricks distribution + unbounded loop gas growth",
+      "smartbugs": "denial_of_service",
+      "provenance": {
+        "kind": "dataset",
+        "category": "denial_of_service",
+        "sources": [
+          "denial_of_service/list_dos.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "balance-as-price",
+        "div-before-mul"
+      ],
+      "file": "40-erc4626-inflation.t.sol",
+      "scenario": "ERC4626 inflation / first-depositor attack",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      },
+      "todo": [
+        "WHALE"
+      ]
+    },
+    {
+      "detectors": [
+        "bytecode-create2",
+        "selfdestruct"
+      ],
+      "file": "41-create2-metamorphic.t.sol",
+      "scenario": "CREATE2 metamorphic redeploy (same address, new code)",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      }
+    },
+    {
+      "detectors": [
+        "short-address"
+      ],
+      "file": "42-short-address-attack.t.sol",
+      "scenario": "Short address attack via parameter padding",
+      "smartbugs": "short_addresses",
+      "provenance": {
+        "kind": "dataset",
+        "category": "short_addresses",
+        "sources": [
+          "short_addresses/short_address_example.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "front-running"
+      ],
+      "file": "43-front-running.t.sol",
+      "scenario": "Front-running (transaction ordering vulnerability)",
+      "smartbugs": "front_running",
+      "provenance": {
+        "kind": "dataset",
+        "category": "front_running",
+        "sources": [
+          "front_running/eth_tx_order_dependence_minimal.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "external-contract-referencing"
+      ],
+      "file": "44-external-contract-ref.t.sol",
+      "scenario": "Dangerous external contract reference/hijacking",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no ERC-20-fee / oracle / signature / ERC-4626 case). Modelled from the category's mechanics plus field practice; no dataset port exists."
+      }
+    },
+    {
+      "detectors": [
+        "weak-randomness",
+        "timestamp",
+        "bytecode-timestamp"
+      ],
+      "file": "20-chain-randomness-timestamp.t.sol",
+      "scenario": "Chain randomness prediction + timestamp gate bypass",
+      "smartbugs": "bad_randomness",
+      "provenance": {
+        "kind": "dataset",
+        "category": "bad_randomness",
+        "sources": [
+          "bad_randomness/guess_the_random_number.sol",
+          "bad_randomness/lottery.sol"
+        ]
+      }
+    },
+    {
+      "detectors": [
+        "token-drain"
+      ],
+      "file": "46-token-rescue.t.sol",
+      "scenario": "Token rescue drain (unprotected ERC-20 rescue / sweep)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers this class (the dataset has no unprotected token-rescue case). Modelled from the category's mechanics plus a fork-verified field case; no dataset port exists."
+      }
+    },
+    {
+      "detectors": [
+        "hook-callback-auth"
+      ],
+      "file": "47-hook-callback-auth.t.sol",
+      "scenario": "Unauthenticated Uniswap v4 hook callback (direct call with forged parameters)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "No SmartBugs Curated contract covers Uniswap v4 hook callbacks (the dataset predates v4). Modelled from the published post-mortems of Cork Protocol (~$12M, beforeSwap with no msg.sender check), KolanHook, GoldPesa and VTSwapHook."
+      }
+    },
+    {
+      "detectors": [
+        "calldata-offset-auth"
+      ],
+      "file": "48-calldata-offset-auth.t.sol",
+      "scenario": "Authorization on a fixed calldata offset (non-canonical ABI offset bypass)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "Modelled from the UniswapV4Router04 exploit (March 2026): swap(bytes,uint256) checked calldataload(164) against caller(), bypassed by shifting the dynamic bytes offset so the router spent a victim's approval."
+      }
+    },
+    {
+      "detectors": [
+        "eoa-only-guard"
+      ],
+      "file": "49-eoa-only-guard.t.sol",
+      "scenario": "EOA-only guard (tx.origin == msg.sender) defeated by an EIP-7702 delegation",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "Modelled from the POT token exploit on BSC (~$85k; the EOA-only check WAS the flash-loan protection), Gana Payment ($3.1M) and the QNT pool drain. Delegation is simulated as the chain represents it: 0xef0100 || implementation in the account's code."
+      }
+    },
+    {
+      "detectors": [
+        "public-key-account-trust"
+      ],
+      "file": "50-public-key-account-trust.t.sol",
+      "scenario": "Privilege granted to a development account whose private key is published",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "Modelled from the AlpsCon AI Trade Hub exploit (October 2026, ~152.8k USDC): the reward gate whitelisted the canonical Hardhat account 0xf39Fd6e5..., whose key is published, and the attacker passed every gate with it via EIP-7702."
+      }
+    },
+    {
+      "detectors": [
+        "unauthenticated-batch-call"
+      ],
+      "file": "51-unauthenticated-batch-call.t.sol",
+      "scenario": "Unauthenticated batch executor reaching a privileged call",
+      "smartbugs": "unchecked_low_level_calls",
+      "provenance": {
+        "kind": "modelled",
+        "category": "unchecked_low_level_calls",
+        "sources": [],
+        "note": "Modelled from the QNT pool drain (April 2026): a legacy batch(address[],bytes[]) with no access control routed a call through a delegated admin EOA that the pool trusted by address. Also covers the Squid multicall allowance drain."
+      }
+    },
+    {
+      "detectors": [
+        "self-attested-auth"
+      ],
+      "file": "52-self-attested-auth.t.sol",
+      "scenario": "Self-attested authorization (the caller is asked whether it is authorised)",
+      "smartbugs": "access_control",
+      "provenance": {
+        "kind": "modelled",
+        "category": "access_control",
+        "sources": [],
+        "note": "Modelled from the FlashLoopAdapter exploit (October 2026, ~$305k): a Safe module authenticated its caller by asking that caller whether the module was enabled, then made an unconstrained call to a caller-supplied router."
+      }
+    }
+  ],
+  "notPocable": [
+    {
+      "detectors": [
+        "missing-event",
+        "floating-pragma",
+        "old-compiler",
+        "rtl-override"
+      ],
+      "reason": "No on-chain exploit: code-quality / hygiene findings with no state or funds at stake."
+    },
+    {
+      "detectors": [
+        "bytecode-metadata",
+        "bytecode-reentrancy-shape"
+      ],
+      "reason": "Bytecode-shape signals, not standalone exploits \u2014 use the source-level fallback for the matching scenario."
+    },
+    {
+      "detectors": [
+        "parse",
+        "report-cap"
+      ],
+      "reason": "Analyzer meta-findings (input could not be parsed / report was capped), not vulnerabilities in the target \u2014 no harness applies."
+    }
+  ],
+  "version": 1
+}

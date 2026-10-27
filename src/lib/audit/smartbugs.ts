@@ -177,6 +177,17 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   // emitted detector instead of silently defaulting in prompts.
   parse: "other",
   "report-cap": "other",
+  // 2026 incident classes (2026-10-27). All five caller-identity rules are
+  // access-control failures in the SmartBugs sense ("failure to use function
+  // modifiers"): the entry point exists, it just never checks who is calling.
+  // The batch executor is the one whose mechanism is a low-level call, so it
+  // joins unchecked_low_level_calls alongside unchecked-call.
+  "hook-callback-auth": "access_control",
+  "calldata-offset-auth": "access_control",
+  "eoa-only-guard": "access_control",
+  "public-key-account-trust": "access_control",
+  "self-attested-auth": "access_control",
+  "unauthenticated-batch-call": "unchecked_low_level_calls",
   "bytecode-create2": "other",
   "bytecode-metadata": "other",
   "missing-event": "other",

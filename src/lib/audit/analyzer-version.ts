@@ -119,9 +119,16 @@ import {
  *                resolves carries a reachability class (Phase 4). Same
  *                inputs now produce different records, so the archive
  *                refreshes.
+ * 2026-10-27.2 — 2026 incident classes: six detectors derived from
+ *                published post-mortems (hook-callback-auth,
+ *                calldata-offset-auth, eoa-only-guard,
+ *                public-key-account-trust, unauthenticated-batch-call,
+ *                self-attested-auth), each with a modelled Foundry
+ *                harness (47-52). New findings on inputs that
+ *                previously produced none, so the archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-27.1";
+export const ANALYZER_BASELINE = "2026-10-27.2";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {
