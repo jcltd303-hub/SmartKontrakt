@@ -176,6 +176,23 @@ const {
 } = await import("./auto-poc.ts");
 
 // ------------------------------------------------------------------ config --
+/**
+ * Behaviours this build has, reported by /status.
+ *
+ * Every one of these changed observable behaviour, and each time the first
+ * question was "is the running process actually this code?" — answered by
+ * inferring from row counts. A missing entry here means the process predates it:
+ * restart before concluding anything from the numbers.
+ */
+const FEATURES = [
+  "fourbyte-negative-cache", // bd8ea97: misses are cached, timeout 2s
+  "proxy-follow", // a2768a0: implementations are queued
+  "shard", // 34ded8e: shard=N/M
+  "sourcify-v2", // 9dbca33: v2 endpoint (v1 was turned off 2026-07-07)
+  "llm-health", // d0b5b6b: /health/llm
+  "no-autopoc-cap", // af94627
+] as const;
+
 const PORT = Number.parseInt(process.env.PORT ?? "8788", 10) || 8788;
 const HOST = "127.0.0.1";
 const FLUSH_MAX_RECORDS = 50; // writeAuditBatch cap
@@ -999,7 +1016,16 @@ async function handleStatus(req: http.IncomingMessage, res: http.ServerResponse)
     // 0 here would repeat the Records masquerade in the monitor.
     dbError = dbStateError;
   }
-  sendJson(res, 200, { ...status, pending: pending.length, db: describeDatabase(), dbScans, dbError, dbState, dbStateError });
+  sendJson(res, 200, {
+    ...status,
+    pending: pending.length,
+    db: describeDatabase(),
+    dbScans,
+    dbError,
+    dbState,
+    dbStateError,
+    features: FEATURES,
+  });
 }
 
 const server = http.createServer((req, res) => {

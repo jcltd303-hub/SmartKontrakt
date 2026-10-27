@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 
 import {
   bar, humanCount, humanDuration, renderFrame, renderLlm, renderMenu, renderProgress,
-  renderQueue, renderStats, spinnerFrame, truncate, visibleLength,
+  renderHeader, renderQueue, renderStats, spinnerFrame, truncate, visibleLength,
 } from "../../../cli/render.mjs";
 
 const run = promisify(execFile);
@@ -117,6 +117,15 @@ test("a full frame carries every panel", () => {
     assert.ok(frame.includes(needle), `frame is missing ${needle}`);
   }
   assert.match(frame, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/, "the spinner animates while running");
+});
+
+test("a build without the negative cache is flagged as stale", () => {
+  const fresh = renderHeader({ status: { state: "running", features: ["fourbyte-negative-cache", "shard"] } }, 0);
+  assert.ok(!fresh.includes("STALE"), "a current build is not flagged");
+  const stale = renderHeader({ status: { state: "running", features: ["shard"] } }, 0);
+  assert.match(stale, /STALE BUILD/);
+  const ancient = renderHeader({ status: { state: "running" } }, 0);
+  assert.match(ancient, /STALE BUILD/, "no feature list at all is also stale");
 });
 
 test("the spinner advances and wraps", () => {

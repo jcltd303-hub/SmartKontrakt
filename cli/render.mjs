@@ -77,7 +77,15 @@ export function renderHeader(state, tick) {
   const spin = st.state === "running" ? `${spinnerFrame(tick)} ` : "";
   const shard = st.shard ? ` shard ${st.shard}` : "";
   const chain = st.chainId ? ` ${st.chainId}` : "";
-  return `${bold("SmartKontrakt")} ${dim("audit")}  ${paint(spin + (st.state ?? "unknown"))}${dim(chain + shard)}`;
+  // A build without the negative cache is paying full 4byte timeouts on every
+  // miss, which looks like "the fix did not work" when it is a stale process.
+  // A build that reports no feature list at all is also old. Only judge when a
+  // status actually arrived — an unreachable worker already says so.
+  const stale =
+    st.state !== undefined &&
+    (!Array.isArray(st.features) || !st.features.includes("fourbyte-negative-cache"));
+  const warn = stale ? red("  STALE BUILD — restart the worker") : "";
+  return `${bold("SmartKontrakt")} ${dim("audit")}  ${paint(spin + (st.state ?? "unknown"))}${dim(chain + shard)}${warn}`;
 }
 
 /** Progress: the numbers that decide whether the run is worth waiting for. */
