@@ -178,6 +178,14 @@ triage can still sort them:
 | `settlement-optionality` | a settle-named function **and** a refund | a refund-with-timeout **and any** unguarded payout path | games settle through entries that are not named `settle`; the option exists regardless of the name |
 | `registry-dispatched-logic` | a registry slot indexed by a parameter | a slot indexed by `msg.sender`, a stored id, or a loop variable | the id often arrives from storage or from the caller's identity |
 
+The overflow valve is `src/lib/audit/triage.ts` (2026-10-27): low-confidence
+findings go to `read-next`, not into the same list as the criticals, and the
+certificate's findings table now uses `sortFindingsForTriage` so a reachable
+finding leads its severity band. `triageQueue` / `readQueue` / `triageCounts`
+band every finding as `read-now`, `read-next`, `needs-live-state` or
+`background`, with the reason attached — so loosening the rules did not simply
+make the report longer.
+
 Measured cost: **SmartBugs unchanged** (1014 findings, 7.091 per contract, no
 per-category movement) — the loosened paths need modern constructs the 2018
 corpus does not have. The 2026-era corpus gained the real KolanHook case and

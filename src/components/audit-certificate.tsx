@@ -1,6 +1,9 @@
 import { Flame, Award, Printer, X, CheckCircle2 } from "lucide-react";
 import type { Report } from "@/lib/audit/types";
 import { riskBand, RISK_LABEL } from "@/lib/audit/risk";
+// Report order is severity then reachability, so a reachable finding leads its
+// band; sortFindingsForTriage puts REACHABLE first outright for this table.
+import { sortFindingsForTriage } from "@/lib/audit/detect";
 
 interface AuditCertificateProps {
   report: Report;
@@ -143,7 +146,7 @@ export function AuditCertificate({ report, contractBody, onClose }: AuditCertifi
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#3a3428] print:divide-black text-[#f4efe6] print:text-black">
-                    {report.findings.slice(0, 6).map((f) => (
+                    {sortFindingsForTriage(report.findings).slice(0, 6).map((f) => (
                       <tr key={f.id} className="hover:bg-[#1c1a16]/40">
                         <td className="p-2 uppercase font-bold text-red-400 print:text-red-700">{f.severity}</td>
                         <td className="p-2 font-bold">{f.title}</td>
