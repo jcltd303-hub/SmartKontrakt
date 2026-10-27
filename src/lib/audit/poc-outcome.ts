@@ -311,19 +311,26 @@ export function countExecutableTestFunctions(source: string): number {
   let m: RegExpExecArray | null;
   while ((m = declRe.exec(code)) !== null) {
     if (m[1].length <= 4) continue; // the bare name "test" itself is not a test
-    // Skip the parameter list (balanced parens).
+    // Walk the parameter list (balanced parens) and keep its text: forge only
+    // discovers PARAMETERLESS test functions, so `function test_go(address t)`
+    // is counted by a naive regex, never executed, and produces the hollow
+    // tests=0 run this gate exists to prevent.
     let depth = 0;
     let j = declRe.lastIndex - 1; // at the "("
+    const paramsStart = declRe.lastIndex;
+    let paramsEnd = declRe.lastIndex;
     for (; j < code.length; j++) {
       if (code[j] === "(") depth++;
       else if (code[j] === ")") {
         depth--;
         if (depth === 0) {
+          paramsEnd = j;
           j++;
           break;
         }
       }
     }
+    if (code.slice(paramsStart, paramsEnd).trim() !== "") continue; // takes arguments: forge skips it
     // The signature tail up to the body "{" or the terminating ";".
     let tail = "";
     for (; j < code.length && code[j] !== "{" && code[j] !== ";"; j++) {

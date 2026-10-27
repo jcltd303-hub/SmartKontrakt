@@ -383,7 +383,10 @@ export function wrapPocSnippetWithReason(snippet: string): WrapResult {
   // Test and defines a test_ function). Return it unchanged — this
   // runs FIRST, so a Test already named PoC is never renamed.
   const isTest = /\bcontract\s+\w+\s+is\s+[^{]*\bTest\b/.test(stripped);
-  const hasTestFn = /function\s+test_\w*\s*\(/.test(stripped);
+  // Parameterless only: forge does not discover `function test_x(address)`, so
+  // passing such a snippet through as "already runnable" guaranteed a hollow
+  // tests=0 run. Keep this in step with countExecutableTestFunctions.
+  const hasTestFn = /function\s+test[A-Za-z0-9_]*\s*\(\s*\)/.test(stripped);
   if (isTest && hasTestFn) {
     return {
       wrapped: { testFile: snippet, attackContract: "<existing>", entry: "<existing>", note: null },
