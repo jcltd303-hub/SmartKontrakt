@@ -1,4 +1,5 @@
 import { SUPPORTED_CHAINS } from "./address-fetcher.ts";
+import { rpcPool } from "./rpc-endpoints.ts";
 import { rpcLimiter, withRetry } from "./rate-limit.ts";
 
 export type ProxyAnalysis = {
@@ -56,7 +57,11 @@ async function getStorageAtRpc(address: string, slot: string, rpcUrls: string[])
           clearTimeout(timer);
         }
       }, { retries: 1, baseDelayMs: 1500 });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        rpcPool.note(rpcUrl, { ok: false, status: res.status });
+        continue;
+      }
+      rpcPool.note(rpcUrl, { ok: true });
 
       const data = (await res.json()) as { result?: string };
       if (data.result && typeof data.result === "string") {

@@ -3,6 +3,7 @@ import type { Report } from "./types.ts";
 import { analyzeInput } from "./engine.ts";
 import { analyzeBytecode } from "./bytecode.ts";
 import { rpcLimiter, sourcifyLimiter, blockscoutLimiter, withRetry } from "./rate-limit.ts";
+import { rpcPool } from "./rpc-endpoints.ts";
 import { fetchAddressValue } from "./value.ts";
 import { gatherAbi } from "./abi.ts";
 import { gatherLiveState } from "./live-state.ts";
@@ -125,12 +126,17 @@ export function canonicalChainId(raw?: string | null): string {
 }
 
 export function getRpcsForChain(chainIdOrName?: string): string[] {
-  if (!chainIdOrName) return SUPPORTED_CHAINS[0].rpcUrls;
-  const needle = chainIdOrName.toLowerCase().trim();
-  const match = SUPPORTED_CHAINS.find(
-    (c) => c.id.toLowerCase() === needle || c.name.toLowerCase().includes(needle) || String(c.chainId) === needle
-  );
-  return match ? match.rpcUrls : SUPPORTED_CHAINS[0].rpcUrls;
+  const needle = (chainIdOrName ?? "").toLowerCase().trim();
+  const match = needle
+    ? SUPPORTED_CHAINS.find(
+        (c) => c.id.toLowerCase() === needle || c.name.toLowerCase().includes(needle) || String(c.chainId) === needle,
+      )
+    : SUPPORTED_CHAINS[0];
+  const builtIn = match ? match.rpcUrls : SUPPORTED_CHAINS[0].rpcUrls;
+  // RPC_URLS endpoints come first, round-robin, with cooldowns applied; the
+  // built-in public list stays as the fallback so an unconfigured install behaves
+  // exactly as it did before.
+  return rpcPool.order(match ? match.id : null, builtIn);
 }
 
 export type BatchItemStatus = "pending" | "fetching" | "analyzing" | "completed" | "failed" | "skipped";
@@ -690,8 +696,12 @@ async function fetchBytecodeRpc(address: string, rpcUrls: string[]): Promise<str
         }
       }, { retries: 1, baseDelayMs: 1500 });
 
-      if (!res.ok) continue;
+      if (!res.ok) {
+        rpcPool.note(rpcUrl, { ok: false, status: res.status });
+        continue;
+      }
       const json = (await res.json()) as { result?: string; error?: unknown };
+      rpcPool.note(rpcUrl, { ok: true });
       const code = json.result;
 
       if (typeof code === "string") sawResult = true;

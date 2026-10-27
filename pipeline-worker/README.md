@@ -141,6 +141,27 @@ curl -s -X POST http://127.0.0.1:8788/start \
 The full per-address pipeline — stage order, what each stage may write, the
 failure behaviour of each, and the knobs — is in **`docs/pipeline.md`**.
 
+## RPC endpoints (providers, round-robin, quota)
+
+The analysis path takes a pluggable endpoint list. Comma-separated; an entry may be
+scoped to one chain, and unscoped entries serve all of them:
+
+```bash
+RPC_URLS="https://eth-mainnet.g.alchemy.com/v2/KEY,ethereum:https://mainnet.infura.io/v3/KEY,https://rpc.ankr.com/eth"
+RPC_MIN_INTERVAL_MS=50     # default 200 = 5 req/s; a keyed provider takes far more
+```
+
+Calls rotate round-robin across the configured endpoints, so several providers'
+quotas are shared rather than spent in order. A `402`/`403`/`429` puts an endpoint
+in a 60-second cooldown (a `5xx` or a network error, 15 seconds) and the next call
+starts elsewhere; a success clears it. Cooldowns are per process, which is why
+sharding multiplies throughput instead of just splitting the list. With no
+`RPC_URLS` set, the built-in public endpoints are used exactly as before.
+
+The analysis path makes ~3 RPC calls per address plus view probes, so at
+`RPC_MIN_INTERVAL_MS=50` one process can sustain ~20 req/s ≈ 2–4 addresses/second
+from RPC pacing alone.
+
 ## Running the list in parallel (shards)
 
 The worker processes one address at a time — measured at ~7-20 s each, so 100k

@@ -10,6 +10,7 @@
  * headless worker.
  */
 import { rpcLimiter } from "./rate-limit.ts";
+import { rpcPool } from "./rpc-endpoints.ts";
 
 export type NativeBalance = {
   /** Balance in wei. */
@@ -128,7 +129,11 @@ export async function fetchNativeBalance(
       } finally {
         clearTimeout(timer);
       }
-      if (!res.ok) continue;
+      if (!res.ok) {
+        rpcPool.note(rpcUrl, { ok: false, status: res.status });
+        continue;
+      }
+      rpcPool.note(rpcUrl, { ok: true });
       const json = (await res.json()) as { result?: unknown };
       const wei = weiFromHex(json.result);
       if (wei !== null) {

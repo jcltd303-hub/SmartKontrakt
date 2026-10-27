@@ -31,7 +31,15 @@ export class RateLimiter {
 }
 
 /** Conservative defaults. The 429 backoff in withRetry is the adaptive mechanism — these just keep us polite. */
-export const rpcLimiter = new RateLimiter(200); // 5 JSON-RPC req/sec
+// 5 req/s by default — the safe rate for unauthenticated public endpoints. A
+// keyed provider (Infura/Alchemy/QuickNode) takes far more, so this is tunable:
+// RPC_MIN_INTERVAL_MS=50 is 20 req/s, and sharding multiplies it per process.
+export const rpcLimiter = new RateLimiter(
+  (() => {
+    const raw = Number.parseInt(process.env.RPC_MIN_INTERVAL_MS ?? "", 10);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 200;
+  })(),
+);
 export const sourcifyLimiter = new RateLimiter(500); // 2 Sourcify req/sec
 // Blockscout is the C1 second registry (2026-10-27 detection upgrade). Its
 // public instances are generous but shared; 2/sec matches Sourcify's pace so
