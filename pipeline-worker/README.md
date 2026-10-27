@@ -170,6 +170,24 @@ Watching a run:
 watch -n 30 'curl -s localhost:8788/health/llm | jq -c "{s:.verdict.state,r:.verdict.reason,calls,ok,empty,error}"'
 ```
 
+Or let the script do the judging, with an exit code a monitor can read:
+
+```bash
+node scripts/llm-healthcheck.mjs            # exit 0 smooth/off, 1 degraded, 2 dead/unreachable
+node scripts/llm-healthcheck.mjs --db       # also the last 24h of ai_status from the DB
+node scripts/llm-healthcheck.mjs --url http://host:8788
+```
+
+`--db` is the retrospective check: the worker records `ai_status` per scan, so a
+night whose narratives were all fallback text shows up as a distribution, which
+is how you find out the second pass was off for a run you have already finished.
+
+The script uses `node:http`, not `fetch`, deliberately: on Node 20 the global
+fetch lazily instantiates undici's WASM llhttp parser, and where WASM allocation
+is unavailable (constrained containers, some CI runners) every request fails with
+`WebAssembly.instantiate(): Out of memory` — an error that reads like a network
+fault and sends you debugging the wrong thing. `node:http` needs no WASM.
+
 A run whose narratives are all fallback text with `error: 0` and `empty: 0` means
 `aiSecondPass` was never turned on — check `aiSecondPass` in `/status` before
 suspecting the model.
