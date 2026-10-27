@@ -100,6 +100,14 @@ Both share the OpenRouter key and the Foundry backend with auto-PoC, which is wh
 running all three on a 90k-address list starves the backend and trips the agent's
 `backend_unreachable` guard. Static + PoC is the shape that survives at that size.
 
+## Known gaps
+
+`docs/pipeline-audit.md` reviews this pipeline for completeness and effectiveness
+and lists what it does not do well. The headline: **a proxy's implementation is
+never fetched or analysed** — `detectProxyArchitecture` returns the implementation
+addresses, they are persisted to `proxy_info_json`, and nothing reads their source,
+so a large share of a modern address set is analysed at the delegatecall shell.
+
 ## What the output is for
 
 The findings are the input to a queue, not a verdict. Reachability classes
