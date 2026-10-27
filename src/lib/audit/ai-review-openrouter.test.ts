@@ -7,6 +7,7 @@ import {
   extractReviewTestCode,
   generateAiSecurityReview,
   parseNarrativeReply,
+  ECONOMIC_SUMMARY_ABSENT,
   parseTestCodeReply,
   ReviewCodeError,
   ReviewReplyError,
@@ -507,9 +508,11 @@ test("parseNarrativeReply: a complete object passes; a missing field throws the 
   assert.equal(ok.threatModelReport, "tm");
   assert.equal(ok.economicRiskSummary, "eco");
   // economicRiskSummary is defaulted, not required.
+  // The default used to read "Completed OpenRouter threat review." — a claim
+  // the reply never made. A missing economic summary now says so.
   assert.equal(
     parseNarrativeReply(JSON.stringify({ threatModelReport: "tm" }), "stop").economicRiskSummary,
-    "Completed OpenRouter threat review.",
+    ECONOMIC_SUMMARY_ABSENT,
   );
   assert.throws(
     () => parseNarrativeReply(JSON.stringify({ economicRiskSummary: "eco" }), "stop"),

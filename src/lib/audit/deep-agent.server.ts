@@ -1,6 +1,7 @@
 import type { Finding } from "./types.ts";
 import { openRouterLimiter, withRetry } from "./rate-limit.ts";
 import {
+  TEST_CODE_MAX_CHARS,
   extractJsonContent,
   postChatWithModelFallback,
   resolveOpenRouterConfig,
@@ -64,6 +65,68 @@ const SEVERITIES = new Set(["critical", "high", "medium", "low", "info"]);
 /**
  * Build the prompt for one Deep Agent round. Exported for testing.
  */
+/**
+ * Parse the proposal reply into hypotheses (2026-10-27).
+ *
+ * Extracted from runDeepAgentRound so the OUTPUT CONTRACT is testable without
+ * a network round, and hardened in two places the inline version got wrong:
+ *
+ *  - `(parsed.hypotheses ?? [])` crashed with a TypeError when a model replied
+ *    `{"hypotheses": "none"}` — a string has no `.filter`. A schema miss must
+ *    read as "no hypotheses this round", not as a dead search.
+ *  - `foundryTestCode` had no length bound, so a runaway reply was handed to
+ *    the compiler and spent a backend run to discover it was truncated.
+ *
+ * A hypothesis still has to carry a real PoC (`contract PoC` in the code) to be
+ * actionable — that rule is unchanged.
+ */
+export function parseProposalReply(parsed: unknown): {
+  hypotheses: DeepAgentHypothesis[];
+  stopReason: string | null;
+} {
+  const record =
+    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  const rawList = record && Array.isArray(record.hypotheses) ? record.hypotheses : [];
+
+  const hypotheses: DeepAgentHypothesis[] = rawList
+    .filter((h): h is Record<string, unknown> => typeof h === "object" && h !== null)
+    .filter(
+      (h) =>
+        typeof h.title === "string" &&
+        h.title.trim().length > 0 &&
+        typeof h.foundryTestCode === "string" &&
+        h.foundryTestCode.includes("contract PoC") &&
+        // Over-long code cannot compile; dropping it here names the reason
+        // instead of spending a backend run on a truncated file.
+        h.foundryTestCode.length <= TEST_CODE_MAX_CHARS,
+    )
+    .slice(0, DEEP_AGENT_MAX_HYPOTHESES_PER_ROUND)
+    .map((h) => ({
+      title: (h.title as string).trim(),
+      detector:
+        typeof h.detector === "string" && h.detector.trim().length > 0
+          ? h.detector.trim()
+          : "deep-agent",
+      severity: SEVERITIES.has(h.severity as string)
+        ? (h.severity as DeepAgentHypothesis["severity"])
+        : "medium",
+      hypothesis: typeof h.hypothesis === "string" ? h.hypothesis : "",
+      foundryTestCode: h.foundryTestCode as string,
+    }));
+
+  const rawStop = record?.stopReason;
+  const stopReason =
+    typeof rawStop === "string" && rawStop.trim().length > 0
+      ? rawStop.trim()
+      : hypotheses.length === 0
+        ? "no_new_hypotheses"
+        : null;
+
+  return { hypotheses, stopReason };
+}
+
 export function buildDeepAgentPrompt(
   contractName: string,
   body: string,
@@ -307,41 +370,12 @@ export async function runDeepAgentRound(
     parsed = extractJsonContent(await callProposal(true)) as Proposal;
   }
 
-  // Validate: a hypothesis without a real PoC is not actionable.
-  const hypotheses: DeepAgentHypothesis[] = (parsed.hypotheses ?? [])
-    .filter(
-      (h): h is Record<string, unknown> =>
-        typeof h === "object" && h !== null,
-    )
-    .filter(
-      (h) =>
-        typeof h.title === "string" &&
-        h.title.trim().length > 0 &&
-        typeof h.foundryTestCode === "string" &&
-        h.foundryTestCode.includes("contract PoC"),
-    )
-    .slice(0, DEEP_AGENT_MAX_HYPOTHESES_PER_ROUND)
-    .map((h) => ({
-      title: (h.title as string).trim(),
-      detector:
-        typeof h.detector === "string" && h.detector.trim().length > 0
-          ? h.detector.trim()
-          : "deep-agent",
-      severity: SEVERITIES.has(h.severity as string)
-        ? (h.severity as DeepAgentHypothesis["severity"])
-        : "medium",
-      hypothesis: typeof h.hypothesis === "string" ? h.hypothesis : "",
-      foundryTestCode: h.foundryTestCode as string,
-    }));
+  // Validate through the pure parser so the output contract is testable.
+  const { hypotheses, stopReason } = parseProposalReply(parsed);
 
   return {
     hypotheses,
-    stopReason:
-      typeof parsed.stopReason === "string" && parsed.stopReason.trim().length > 0
-        ? parsed.stopReason.trim()
-        : hypotheses.length === 0
-          ? "no_new_hypotheses"
-          : null,
+    stopReason,
     llmMs: Date.now() - started,
   };
 }

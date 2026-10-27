@@ -622,6 +622,10 @@ export const NARRATIVE_REQUIRED_FIELDS = ["threatModelReport"] as const;
 export class ReviewReplyError extends Error {
   readonly missingFields: readonly string[];
   readonly receivedKeys: readonly string[];
+  /** "threatModelReport=object, economicRiskSummary=string" — the types the
+   *  reply actually carried, so a schema miss reads as a schema miss and not
+   *  as an empty answer. Optional: older call sites construct without it. */
+  readonly receivedTypes?: string;
   /** finish_reason === "length": the provider cut the reply at max_tokens. */
   readonly truncated: boolean;
   /** The max_tokens budget the failed reply was produced under. */
@@ -631,6 +635,7 @@ export class ReviewReplyError extends Error {
     detail: string;
     missingFields: readonly string[];
     receivedKeys: readonly string[];
+    receivedTypes?: string;
     truncated: boolean;
     maxTokens?: number;
   }) {
@@ -638,6 +643,7 @@ export class ReviewReplyError extends Error {
     this.name = "ReviewReplyError";
     this.missingFields = args.missingFields;
     this.receivedKeys = args.receivedKeys;
+    this.receivedTypes = args.receivedTypes;
     this.truncated = args.truncated;
     this.maxTokens = args.maxTokens ?? NARRATIVE_MAX_TOKENS;
   }
@@ -709,6 +715,83 @@ function truncationNote(truncated: boolean, maxTokens: number): string {
 }
 
 /**
+ * Output bounds. The model's prose is stored, rendered, and — worse —
+ * interpolated into the NEXT call's prompt (buildAiReviewPrompt takes
+ * threatModelReport as context for the code call). Unbounded model output is
+ * therefore unbounded prompt growth, which is the exact failure the split into
+ * two calls was built to fix (2026-10-25: the combined reply truncated at
+ * max_tokens with the test code unborn). Prose is truncated with a visible
+ * marker; CODE is never truncated, because half a Solidity file is not a
+ * smaller Solidity file — it is a file that will not compile.
+ */
+export const NARRATIVE_MAX_CHARS = 24_000;
+export const ECONOMIC_MAX_CHARS = 4_000;
+export const TEST_CODE_MAX_CHARS = 40_000;
+
+/** The sentence shown when the model supplied no economic summary, so the
+ *  field never claims a review that did not happen. */
+export const ECONOMIC_SUMMARY_ABSENT =
+  "The model did not provide an economic risk summary for this contract.";
+
+/** A human-readable description of what a JSON value actually is, for the
+ *  diagnosis line. "object" alone does not tell a reviewer whether the model
+ *  nested the report or returned a list of paragraphs. */
+export function modelValueKind(value: unknown): string {
+  if (value === undefined) return "missing";
+  if (value === null) return "null";
+  if (Array.isArray(value)) {
+    const kinds = [...new Set(value.map((v) => typeof v))];
+    return `array of ${kinds.join("/") || "nothing"} (length ${value.length})`;
+  }
+  return typeof value;
+}
+
+/**
+ * Coerce a model-supplied prose field to text, or null when it holds no text.
+ *
+ * The `as string` cast this replaces was a lie the compiler could not catch:
+ * a reply of `{"threatModelReport": {"executive": "..."}}` passed the truthiness
+ * gate, stayed an OBJECT, and then became `[object Object]` in the stored
+ * narrative, in the UI, and in the next call's prompt. Models return objects
+ * and arrays for prose often enough that the honest options are "recover the
+ * text" or "reject with a diagnosis" — never "cast and hope".
+ *
+ *   string        → trimmed as-is
+ *   array         → its string/number items joined with newlines (a model
+ *                   returning a list of paragraphs means them in order)
+ *   object        → its JSON text, so the content survives even when the shape
+ *                   is wrong
+ *   number/bool   → null (not prose; a corrective retry is the right answer)
+ *   null/missing  → null
+ *
+ * Over-length text is cut at `maxChars` with an explicit marker appended, so a
+ * truncated narrative says so rather than silently ending mid-sentence.
+ */
+export function coerceModelText(value: unknown, maxChars: number): string | null {
+  let text: string | null = null;
+  if (typeof value === "string") {
+    text = value.trim();
+  } else if (Array.isArray(value)) {
+    const parts = value
+      .filter((v) => typeof v === "string" || typeof v === "number")
+      .map((v) => String(v).trim())
+      .filter(Boolean);
+    text = parts.length > 0 ? parts.join("\n") : null;
+  } else if (typeof value === "object" && value !== null) {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = null;
+    }
+  }
+  if (!text) return null;
+  if (text.length > maxChars) {
+    return `${text.slice(0, maxChars)}\n\n[... truncated at ${maxChars} characters by the analyzer: the model returned ${text.length} characters ...]`;
+  }
+  return text;
+}
+
+/**
  * Parse + validate one NARRATIVE reply (call A). Validation
  * strictness matches the original combined check for the fields
  * this call owns (threatModelReport truthy; economicRiskSummary
@@ -747,10 +830,17 @@ export function parseNarrativeReply(
       ? (parsed as Record<string, unknown>)
       : null;
   const receivedKeys = record ? Object.keys(record) : [];
-  const missing = NARRATIVE_REQUIRED_FIELDS.filter((f) => !record?.[f]);
-  if (!record || missing.length > 0) {
+  const receivedTypes = record
+    ? receivedKeys.map((k) => `${k}=${modelValueKind(record[k])}`).join(", ")
+    : "";
+  // A field is present only when it COERCES to text. Truthiness was the old
+  // gate, and an object is truthy — which is how `[object Object]` reached the
+  // stored narrative and the next prompt.
+  const narrative = record ? coerceModelText(record.threatModelReport, NARRATIVE_MAX_CHARS) : null;
+  const missing = narrative ? [] : [...NARRATIVE_REQUIRED_FIELDS];
+  if (!record || !narrative) {
     const shape = record
-      ? `reply keys: ${receivedKeys.join(", ") || "none"}`
+      ? `reply keys: ${receivedKeys.join(", ") || "none"}${receivedTypes ? `; types: ${receivedTypes}` : ""}`
       : `reply was a JSON ${Array.isArray(parsed) ? "array" : typeof parsed}, not an object`;
     throw new ReviewReplyError({
       detail:
@@ -758,13 +848,14 @@ export function parseNarrativeReply(
         truncationNote(truncated, NARRATIVE_MAX_TOKENS),
       missingFields: missing.length > 0 ? missing : [...NARRATIVE_REQUIRED_FIELDS],
       receivedKeys,
+      receivedTypes,
       truncated,
     });
   }
+  const economic = record ? coerceModelText(record.economicRiskSummary, ECONOMIC_MAX_CHARS) : null;
   return {
-    threatModelReport: record.threatModelReport as string,
-    economicRiskSummary:
-      (record.economicRiskSummary as string) || "Completed OpenRouter threat review.",
+    threatModelReport: narrative,
+    economicRiskSummary: economic ?? ECONOMIC_SUMMARY_ABSENT,
   };
 }
 
@@ -809,11 +900,25 @@ export function parseTestCodeReply(content: string, finishReason: string | undef
   if (!code) {
     problems.push("the reply contained no code");
   } else {
+    // Code is REJECTED over the bound, never truncated: half a Solidity file
+    // does not compile, and a compile failure spends a backend run to learn
+    // something the reply length already said.
+    if (code.length > TEST_CODE_MAX_CHARS) {
+      problems.push(
+        `the extracted code is ${code.length} characters, over the ${TEST_CODE_MAX_CHARS}-character limit`,
+      );
+    }
     if (!/contract\s+\w+\s+is\s+Test\b/.test(code)) {
       problems.push("the extracted code declares no Test contract");
     }
     if (countExecutableTestFunctions(code) === 0) {
       problems.push("the extracted code contains no executable test function");
+    }
+    // A file with no pragma is not a file forge will compile, and every
+    // harness in this repo carries one. Catching it here turns a wasted
+    // backend run into a corrective retry.
+    if (!/^\s*(?:\/\/[^\n]*\n\s*)*pragma\s+solidity\b/m.test(code)) {
+      problems.push("the extracted code has no pragma solidity directive");
     }
   }
   if (problems.length > 0) {

@@ -155,9 +155,19 @@ import {
  *                privileged gate (it is the caller, so it is a precondition).
  *                Same inputs now produce different records, so the archive
  *                refreshes.
+ * 2026-10-27.6 — LLM output contract. The narrative fields are coerced to
+ *                text instead of cast (an object reply used to become
+ *                "[object Object]" in the stored narrative and in the next
+ *                call's prompt), prose is bounded and marked when truncated,
+ *                a missing economic summary says so instead of claiming the
+ *                review "completed", test code over the bound or without a
+ *                pragma is rejected before a backend run, and the Deep Agent
+ *                proposal parser no longer crashes when `hypotheses` is not
+ *                an array. Saved AI narratives differ for the same input, so
+ *                the archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-27.5";
+export const ANALYZER_BASELINE = "2026-10-27.6";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

@@ -81,7 +81,9 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // dispatch, bridge auth, governance weight, ecrecover zero, oracle staleness.
   // And to 2026-10-27.5 with the detection-quality pass: families,
   // evidence-derived confidence, economic-claim markers, triage order.
-  assert.equal(ANALYZER_BASELINE, "2026-10-27.5");
+  // And to 2026-10-27.6 with the LLM output contract: coerced text,
+  // bounded prose, an honest missing-summary line, a code gate.
+  assert.equal(ANALYZER_BASELINE, "2026-10-27.6");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });
