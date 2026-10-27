@@ -23,14 +23,45 @@ import { createRequire } from "node:module";
 
 const DEFAULTS = { url: "http://127.0.0.1:8788", timeoutMs: 8000 };
 
-export function judge(health) {
+/**
+ * @param health the /health/llm counters
+ * @param ctx    optional /status fields — `calls === 0` is ambiguous without them:
+ *               it means "not enabled", "not started yet" or "enabled but broken",
+ *               and only the run state can tell you which.
+ */
+export function judge(health, ctx = {}) {
   const attempted = (health.ok ?? 0) + (health.empty ?? 0) + (health.error ?? 0);
   const failures = (health.empty ?? 0) + (health.error ?? 0);
   if (attempted === 0) {
     if ((health.unavailable ?? 0) > 0) {
       return { state: "off", code: 0, reason: "no OPENROUTER_API_KEY — static-only run, narratives are fallback text" };
     }
-    return { state: "smooth", code: 0, reason: "no LLM calls yet" };
+    const completed = typeof ctx.completed === "number" ? ctx.completed : null;
+    const secondPass = typeof ctx.aiSecondPass === "boolean" ? ctx.aiSecondPass : null;
+    // Enabled, items finished, and still not one call: the call path is broken.
+    if (secondPass === true && (completed ?? 0) > 0) {
+      return {
+        state: "degraded",
+        code: 1,
+        reason: `aiSecondPass is ON and ${completed} item(s) completed, but no LLM call was ever made — the second-pass call site is not being reached`,
+      };
+    }
+    // Not enabled. This is the common case and it is NOT "smooth": nothing ran.
+    if (secondPass === false && (completed ?? 0) > 0) {
+      return {
+        state: "off",
+        code: 0,
+        reason: `aiSecondPass is false — ${completed} item(s) completed with no LLM pass; send {"aiSecondPass": true} to /start to enable it`,
+      };
+    }
+    if (completed === 0 || completed === null) {
+      return {
+        state: "waiting",
+        code: 0,
+        reason: `no LLM calls yet — the run has not completed an item${ctx.state ? ` (state=${ctx.state})` : ""}`,
+      };
+    }
+    return { state: "waiting", code: 0, reason: "no LLM calls yet" };
   }
   if ((health.consecutiveFailures ?? 0) >= 3) {
     return {
@@ -84,12 +115,28 @@ function httpGetJson(endpoint, timeoutMs) {
 }
 
 export async function checkLlmHealth({ url = DEFAULTS.url, timeoutMs = DEFAULTS.timeoutMs, fetchImpl } = {}) {
-  const endpoint = `${url.replace(/\/+$/, "")}/health/llm`;
+  const base = url.replace(/\/+$/, "");
+  const endpoint = `${base}/health/llm`;
   try {
     const body = fetchImpl ? await fetchImpl(endpoint) : await httpGetJson(endpoint, timeoutMs);
     const health = body.llm ?? body;               // /health/llm flattens, /status nests
-    const verdict = body.verdict?.state ? { ...judge(health), state: body.verdict.state, reason: body.verdict.reason } : judge(health);
-    return { reachable: true, health, verdict, model: body.model, keyPresent: body.keyPresent };
+    // Run context. Best-effort: an older worker has no /status in this shape, and
+    // the health endpoint alone is still a valid answer.
+    let ctx = {};
+    try {
+      const status = fetchImpl ? await fetchImpl(`${base}/status`) : await httpGetJson(`${base}/status`, timeoutMs);
+      ctx = { aiSecondPass: status.aiSecondPass, completed: status.completed, state: status.state, total: status.total };
+    } catch {
+      /* context is optional */
+    }
+    const computed = judge(health, ctx);
+    // A worker-reported verdict wins only when the counters back it up; a stale
+    // "smooth" from a build that predates the run-context check must not hide an
+    // un-run second pass.
+    const verdict = body.verdict?.state && computed.state === "smooth"
+      ? { ...computed, state: body.verdict.state, reason: body.verdict.reason }
+      : computed;
+    return { reachable: true, health, verdict, ctx, model: body.model, keyPresent: body.keyPresent };
   } catch (err) {
     if (err && typeof err.statusCode === "number") {
       return { reachable: false, verdict: { state: "unreachable", code: 2, reason: `${endpoint} returned HTTP ${err.statusCode}` } };
@@ -109,7 +156,13 @@ export async function checkLlmHealth({ url = DEFAULTS.url, timeoutMs = DEFAULTS.
 /** Recent ai_status distribution from the DB. Optional; needs DATABASE_URL + pg. */
 export async function checkDb({ hours = 24 } = {}) {
   const url = process.env.DATABASE_URL?.trim();
-  if (!url) return { ok: false, reason: "DATABASE_URL is not set" };
+  if (!url) {
+    return {
+      ok: false,
+      reason:
+        "DATABASE_URL is not set in this shell — it lives in pipeline-worker/.env, so run with: node --env-file=pipeline-worker/.env scripts/llm-healthcheck.mjs --db",
+    };
+  }
   let pg;
   try {
     const require = createRequire(import.meta.url);
@@ -157,8 +210,16 @@ async function main() {
     const h = live.health;
     console.log(`  calls=${h.calls ?? 0} ok=${h.ok ?? 0} empty=${h.empty ?? 0} error=${h.error ?? 0} unavailable=${h.unavailable ?? 0}`);
     console.log(`  streak=${h.consecutiveFailures ?? 0} lastOkAt=${h.lastOkAt ?? "never"} key=${live.keyPresent ? "present" : "MISSING"}`);
+    const c = live.ctx ?? {};
+    if (c.state !== undefined) {
+      console.log(`  run: state=${c.state} completed=${c.completed ?? "?"}/${c.total ?? "?"} aiSecondPass=${c.aiSecondPass === undefined ? "?" : c.aiSecondPass}`);
+    }
     if (h.lastError) console.log(`  lastError: ${h.lastError}`);
-    if (live.verdict.state === "off") console.log("  -> set OPENROUTER_API_KEY in pipeline-worker/.env to turn the second pass on");
+    if (c.aiSecondPass === false) {
+      console.log('  -> the second pass is OFF: POST /start with {"aiSecondPass": true} (a key alone does not enable it)');
+    } else if (live.verdict.state === "off") {
+      console.log("  -> set OPENROUTER_API_KEY in pipeline-worker/.env to turn the second pass on");
+    }
     if (live.verdict.state === "degraded" || live.verdict.state === "dead") {
       console.log("  -> check OPENROUTER_MODEL and the account quota; `empty` rows mean a reply the output contract rejected");
     }

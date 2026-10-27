@@ -12,8 +12,17 @@ import { checkLlmHealth, judge } from "../../../scripts/llm-healthcheck.mjs";
  * path — request, JSON, verdict, exit code — is exercised rather than a stub.
  */
 
-async function withServer(payload: unknown, status: number, fn: (url: string) => Promise<void>) {
+async function withServer(
+  payload: unknown,
+  status: number,
+  fn: (url: string) => Promise<void>,
+  runStatus: unknown = null,
+) {
   const server = http.createServer((req, res) => {
+    if (req.url === "/status" && runStatus) {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(runStatus));
+      return;
+    }
     if (req.url !== "/health/llm") {
       res.writeHead(404).end();
       return;
@@ -84,12 +93,62 @@ test("a closed port is unreachable with a fixable message", async () => {
   assert.match(r.verdict.reason, /is the worker running/);
 });
 
+test("no calls with the second pass OFF is 'off', not 'smooth'", async () => {
+  // The case that produced a false all-clear in practice: a key is present, the
+  // run has finished items, and nothing ever called the model.
+  const { verdict: _v, ...counters } = HEALTHY;
+  const idle = { ...counters, calls: 0, ok: 0 };
+  await withServer(idle, 200, async (url) => {
+    const r = await checkLlmHealth({ url });
+    assert.equal(r.verdict.state, "off");
+    assert.equal(r.verdict.code, 0);
+    assert.match(r.verdict.reason, /aiSecondPass is false/);
+    assert.match(r.verdict.reason, /aiSecondPass": true/);
+  }, { state: "running", completed: 12, total: 100, aiSecondPass: false });
+});
+
+test("no calls with the second pass ON and items done is a broken call path", async () => {
+  const { verdict: _v, ...counters } = HEALTHY;
+  await withServer({ ...counters, calls: 0, ok: 0 }, 200, async (url) => {
+    const r = await checkLlmHealth({ url });
+    assert.equal(r.verdict.state, "degraded");
+    assert.equal(r.verdict.code, 1);
+    assert.match(r.verdict.reason, /never made|not being reached/);
+  }, { state: "running", completed: 5, total: 100, aiSecondPass: true });
+});
+
+test("no calls before any item completes is 'waiting', not healthy", async () => {
+  const { verdict: _v, ...counters } = HEALTHY;
+  await withServer({ ...counters, calls: 0, ok: 0 }, 200, async (url) => {
+    const r = await checkLlmHealth({ url });
+    assert.equal(r.verdict.state, "waiting");
+    assert.equal(r.verdict.code, 0);
+    assert.match(r.verdict.reason, /not completed an item/);
+  }, { state: "idle", completed: 0, total: 0, aiSecondPass: true });
+});
+
+test("a stale worker verdict cannot override a computed non-smooth one", async () => {
+  // An older build reports verdict: smooth for a run whose second pass is off.
+  const { verdict: _v, ...counters } = HEALTHY;
+  await withServer(
+    { ...counters, calls: 0, ok: 0, verdict: { state: "smooth", reason: "no LLM calls yet" } },
+    200,
+    async (url) => {
+      const r = await checkLlmHealth({ url });
+      assert.equal(r.verdict.state, "off", "the computed verdict must win here");
+    },
+    { state: "running", completed: 3, total: 10, aiSecondPass: false },
+  );
+});
+
 test("the judge mirrors the worker's thresholds", () => {
   assert.equal(judge({ ok: 10, empty: 0, error: 0 }).state, "smooth");
   assert.equal(judge({ ok: 4, empty: 1, error: 1 }).state, "degraded"); // 2/6 = 33%
   assert.equal(judge({ ok: 9, empty: 1, error: 0 }).state, "smooth");   // 10% is tolerated
   assert.equal(judge({ ok: 0, empty: 0, error: 0, unavailable: 3 }).state, "off");
-  assert.equal(judge({ ok: 0, empty: 0, error: 0 }).state, "smooth");
+  assert.equal(judge({ ok: 0, empty: 0, error: 0 }).state, "waiting");
+  assert.equal(judge({ ok: 0, empty: 0, error: 0 }, { aiSecondPass: false, completed: 4 }).state, "off");
+  assert.equal(judge({ ok: 0, empty: 0, error: 0 }, { aiSecondPass: true, completed: 4 }).state, "degraded");
 });
 
 test("/status nests the health under `llm`; both shapes are read", async () => {

@@ -173,10 +173,25 @@ Four outcomes, and the distinction between the middle two is the point:
 | `error` | the call was attempted and threw | failure |
 | `unavailable` | no `OPENROUTER_API_KEY` | not a failure: `off`, static-only run |
 
-Verdicts: `smooth` (≤20% failures), `degraded` (>20%), `dead` (3 consecutive
-failures — the same count the PoC breaker uses), `off` (no key). The worker also
-prints one `[worker] LLM degraded|dead: …` line at the moment the state changes,
-so the log and the endpoint agree.
+Verdicts: `smooth` (≤20% failures), `degraded` (>20% failures, **or the second
+pass is on and never called**), `dead` (3 consecutive failures — the same count the
+PoC breaker uses), `off` (no key, **or `aiSecondPass` false**), `waiting` (no calls
+because no item has completed yet).
+
+`calls=0` is ambiguous on its own, so the script reads `/status` too:
+
+| Counters | Run state | Verdict |
+| --- | --- | --- |
+| `calls=0`, key present | `aiSecondPass: false`, items completed | **`off`** — nothing ran; a key alone does not enable the pass |
+| `calls=0`, key present | `aiSecondPass: true`, items completed | **`degraded`** — enabled and never called: the call site is unreachable |
+| `calls=0` | nothing completed yet | `waiting` |
+
+That distinction exists because the first version of this script printed
+`SMOOTH — no LLM calls yet` for a run with a key present and zero calls, which is
+the opposite of what a reader takes from the word "smooth".
+
+The worker also prints one `[worker] LLM degraded|dead: …` line at the moment the
+state changes, so the log and the endpoint agree.
 
 Watching a run:
 
@@ -188,7 +203,7 @@ Or let the script do the judging, with an exit code a monitor can read:
 
 ```bash
 node scripts/llm-healthcheck.mjs            # exit 0 smooth/off, 1 degraded, 2 dead/unreachable
-node scripts/llm-healthcheck.mjs --db       # also the last 24h of ai_status from the DB
+node --env-file=pipeline-worker/.env scripts/llm-healthcheck.mjs --db   # + last 24h of ai_status
 node scripts/llm-healthcheck.mjs --url http://host:8788
 ```
 
