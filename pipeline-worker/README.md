@@ -126,6 +126,13 @@ curl -s -X POST http://127.0.0.1:8788/start \
   spending LLM calls for the rest of the run (status shows
   `deepAgentBackendDown: true`) and the static pipeline keeps going.
   Restart the backend and start a new run to re-enable it.
+- **`refresh` decides how much of the archive a run re-does.** `stale` (default)
+  skips rows the current analyzer wrote and re-analyses rows an older one wrote;
+  `all` re-does everything; `none` treats any saved row as done, so only
+  genuinely new addresses are analysed. The startup banner reports all three
+  counts — `skipped`, `stale`, `new` — because the number that matters for
+  planning is `new` plus whatever `stale` you are willing to pay for, not the
+  file length.
 - **Pause/stop** waits for the current item — including an in-flight
   agent loop — to finish first.
 - `/status` reports `deepAgentRuns` (addresses that ran the agent) and

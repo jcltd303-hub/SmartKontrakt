@@ -811,7 +811,10 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   // instead of skipping it — which is the whole point of the stamp.
   //   refresh=stale (default) — skip current, re-analyze stale
   //   refresh=all             — re-analyze everything in the file
-  //   refresh=none            — legacy behaviour: any saved row counts as done
+  //   refresh=none            — any saved row counts as done (current AND stale
+  //                             skipped): use when you want the NEW addresses in
+  //                             a file and are not ready to pay for a re-analysis
+  //                             of rows an older analyzer already wrote
   let skipped = 0;
   let stale = 0;
   try {
@@ -882,9 +885,23 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   });
   writeStatusFile();
   console.log(
-    `[worker] started: ${items.length} addresses (${skipped} current, skipped; ${stale} stale, re-analyzing), refresh=${refresh}, chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems}), autoPoc=${autoPoc} (no attempt cap)`,
+    `[worker] started: ${items.length} addresses — ${skipped} current (skipped), ${stale} stale (${refresh === "none" ? "skipped" : "re-analysing"}), ${items.length - skipped - stale} new (to analyse); refresh=${refresh}, chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems}), autoPoc=${autoPoc} (no attempt cap)`,
   );
-  sendJson(res, 200, { ok: true, started: true, total: items.length, skipped, stale, refresh, deepAgent, deepAgentMaxItems, deepAgentMinSeverity, autoPoc });
+  sendJson(res, 200, {
+    ok: true,
+    started: true,
+    total: items.length,
+    skipped,
+    stale,
+    // What the run will actually analyse: everything not skipped and not stale.
+    toAnalyse: items.length - skipped - (refresh === "none" ? stale : 0),
+    newAddresses: items.length - skipped - stale,
+    refresh,
+    deepAgent,
+    deepAgentMaxItems,
+    deepAgentMinSeverity,
+    autoPoc,
+  });
 }
 
 // Which database is the worker actually talking to? The dashboard-shows-0
