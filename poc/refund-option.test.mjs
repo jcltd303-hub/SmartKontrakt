@@ -50,15 +50,32 @@ function gameLogData(reveal, totalWin, totalJackpot) {
 }
 
 /** A fake Blockscout: v1 logs + v2 transaction raw_input. */
-function serveBlockscout({ commits = [], games = [], inputs = {}, head = 1000, maxWindow = Infinity }) {
+function serveBlockscout({ commits = [], games = [], inputs = {}, head = 1000, maxWindow = Infinity, shapes = { blockNumber: true, stats: true, blocks: true }, deployBlock = null }) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     const send = (obj) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(obj));
     };
+    // head, three shapes
+    if (url.pathname === "/api" && url.searchParams.get("action") === "eth_block_number") {
+      if (!shapes.blockNumber) return send({ message: "NOTOK", result: null });
+      return send({ jsonrpc: "2.0", result: "0x" + head.toString(16), id: 1 });
+    }
+    if (url.pathname === "/api/v2/stats") {
+      if (!shapes.stats) { res.writeHead(500).end("{}"); return; }
+      return send({ total_blocks: String(head) });
+    }
     if (url.pathname === "/api/v2/main-page/blocks") {
+      if (!shapes.blocks) { res.writeHead(500).end("{}"); return; }
       return send({ items: [{ height: head }] });
+    }
+    // deployment block
+    if (url.pathname.startsWith("/api/v2/addresses/")) {
+      return send({ creation_transaction_hash: "0xcreate" });
+    }
+    if (url.pathname === "/api" && url.searchParams.get("action") === "gettxinfo") {
+      return send({ message: "OK", result: { blockNumber: String(deployBlock ?? 0) } });
     }
     if (url.pathname === "/api" && url.searchParams.get("action") === "getLogs") {
       const topic0 = url.searchParams.get("topic0");
@@ -238,6 +255,43 @@ test("an explorer that never answers fails with the range it tried", async () =>
     assert.ok(err, "must fail rather than report zero bets");
     assert.match(String(err.stderr ?? ""), /blockscout logs \d+\.\.\d+/);
     assert.match(String(err.stderr ?? ""), /deployment block/);
+  } finally {
+    server.close();
+  }
+});
+
+test("the head falls back across shapes instead of giving up", async () => {
+  // The live failure was "could not read the chain head": the first shape I used
+  // did not answer. All three are now tried in order.
+  const ADDRESS = "0x6eb0e558140025cb740f99979613a0876685f0be";
+  for (const shapes of [
+    { blockNumber: true, stats: true, blocks: true },
+    { blockNumber: false, stats: true, blocks: true }, // v1 block number missing
+    { blockNumber: false, stats: false, blocks: true }, // only the blocks page
+  ]) {
+    const server = await serveBlockscout({ head: 5000, shapes });
+    const port = server.address().port;
+    try {
+      const { stdout } = await run(process.execPath, [
+        "poc/refund-option.mjs", "--address", ADDRESS, "--source", "blockscout", "--from", "0",
+      ], { env: { ...process.env, BLOCKSCOUT_URL: `http://127.0.0.1:${port}` } });
+      assert.match(stdout, /block range\s+0 \.\. 5000/, `head resolved with ${JSON.stringify(shapes)}`);
+    } finally {
+      server.close();
+    }
+  }
+});
+
+test("the range defaults to the deployment block, not genesis", async () => {
+  const ADDRESS = "0x6eb0e558140025cb740f99979613a0876685f0be";
+  const server = await serveBlockscout({ head: 12000, deployBlock: 10455555 - 10455555 + 9000 });
+  const port = server.address().port;
+  try {
+    const { stdout } = await run(process.execPath, [
+      "poc/refund-option.mjs", "--address", ADDRESS, "--source", "blockscout",
+    ], { env: { ...process.env, BLOCKSCOUT_URL: `http://127.0.0.1:${port}` } });
+    assert.match(stdout, /from\s+9000 \(deployment block\)/);
+    assert.match(stdout, /block range\s+9000 \.\. 12000/);
   } finally {
     server.close();
   }

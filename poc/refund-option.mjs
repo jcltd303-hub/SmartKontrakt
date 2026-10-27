@@ -107,7 +107,7 @@ const blockscoutSource = {
    * whenever the explorer refuses, and merge the results.
    */
   async getLogs({ address, from, to, topic0 }) {
-    const head = to === "latest" ? Number(await this.head()) : Number(to);
+    const head = typeof to === "string" ? Number(await this.head()) : Number(to);
     const start = Number(from);
     if (start > head) return [];
 
@@ -171,12 +171,41 @@ const blockscoutSource = {
     return out;
   },
 
+  /**
+   * The chain head. Three shapes, in order of how directly they answer the
+   * question — each verified against the live API rather than assumed:
+   *   ?module=block&action=eth_block_number -> {"result":"0x1911c61"}
+   *   /api/v2/stats                         -> {"total_blocks":"26287040"}
+   *   /api/v2/main-page/blocks              -> {"items":[{"height":…}]}
+   */
   async head() {
-    const body = await getJson(`${BLOCKSCOUT}/api/v2/main-page/blocks`);
-    const first = Array.isArray(body?.items) ? body.items[0] : null;
-    const n = first?.height;
-    if (typeof n === "number") return n;
-    // Fall back to the address's own counter if the blocks page changes shape.
+    const asNumber = (v) => {
+      if (typeof v === "number") return v;
+      if (typeof v === "string") return v.startsWith("0x") ? parseInt(v, 16) : Number(v);
+      return null;
+    };
+    const attempts = [
+      async () => {
+        const b = await getJson(`${BLOCKSCOUT}/api?module=block&action=eth_block_number`);
+        return asNumber(b?.result);
+      },
+      async () => {
+        const b = await getJson(`${BLOCKSCOUT}/api/v2/stats`);
+        return asNumber(b?.total_blocks);
+      },
+      async () => {
+        const b = await getJson(`${BLOCKSCOUT}/api/v2/main-page/blocks`);
+        return asNumber(b?.items?.[0]?.height);
+      },
+    ];
+    for (const attempt of attempts) {
+      try {
+        const n = await attempt();
+        if (Number.isFinite(n) && n > 0) return n;
+      } catch {
+        // try the next shape
+      }
+    }
     throw new Error("could not read the chain head from blockscout; pass --to <block>");
   },
 
@@ -185,17 +214,37 @@ const blockscoutSource = {
     return typeof body.raw_input === "string" ? body.raw_input : null;
   },
 
-  /** The block a contract was created in — the honest default for --from. */
+  /**
+   * The block a contract was created in — the honest default for --from.
+   * /api/v2/addresses/{addr} gives creation_transaction_hash, then
+   * ?module=transaction&action=gettxinfo gives result.blockNumber as a decimal
+   * string. Both verified live (0x6eb0…5f0be -> block 10,455,555).
+   */
   async getDeploymentBlock(address) {
+    const asNumber = (v) => {
+      if (typeof v === "number") return v;
+      if (typeof v === "string") return v.startsWith("0x") ? parseInt(v, 16) : Number(v);
+      return null;
+    };
+    let hash = null;
     try {
       const info = await getJson(`${BLOCKSCOUT}/api/v2/addresses/${address}`);
-      const hash = info?.creation_transaction_hash;
-      if (!hash) return null;
-      const tx = await getJson(`${BLOCKSCOUT}/api/v2/transactions/${hash}`);
-      const n = tx?.block_number ?? tx?.block;
-      if (typeof n === "number") return n;
-      if (typeof n === "string") return n.startsWith("0x") ? parseInt(n, 16) : Number(n);
+      hash = info?.creation_transaction_hash ?? null;
+    } catch {
       return null;
+    }
+    if (!hash) return null;
+    try {
+      const tx = await getJson(`${BLOCKSCOUT}/api?module=transaction&action=gettxinfo&txhash=${hash}`);
+      const n = asNumber(tx?.result?.blockNumber);
+      if (Number.isFinite(n) && n > 0) return n;
+    } catch {
+      // fall through to the v2 shape
+    }
+    try {
+      const tx = await getJson(`${BLOCKSCOUT}/api/v2/transactions/${hash}`);
+      const n = asNumber(tx?.block_number ?? tx?.block);
+      return Number.isFinite(n) && n > 0 ? n : null;
     } catch {
       return null;
     }
@@ -263,6 +312,9 @@ const rpcSource = {
     const tx = await rpc("eth_getTransactionByHash", [hash]);
     return tx?.input ?? null;
   },
+  async head() {
+    return Number(await rpc("eth_blockNumber", []));
+  },
 };
 
 // ------------------------------------------------------------------ abi -----
@@ -326,7 +378,9 @@ const PLACE_BET_SELECTOR =
 async function main() {
   const address = args.address;
   const source = args.source === "rpc" ? rpcSource : blockscoutSource;
-  const toBlock = args.to === "latest" ? "latest" : Number(args.to);
+  // Resolve the head once: getLogs needs a number to walk to, and the banner is
+  // useless if it says "latest" while the walk used something else.
+  const toBlock = args.to === "latest" ? await source.head() : Number(args.to);
 
   if (source === rpcSource) {
     const code = await rpc("eth_getCode", [address, "latest"]);

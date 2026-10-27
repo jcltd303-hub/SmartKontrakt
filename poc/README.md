@@ -28,6 +28,12 @@ Public JSON-RPC endpoints now refuse `eth_getLogs` over old ranges without a pai
 token ("Archive requests require a personal token"), which is why the default is not
 RPC.
 
+The chain head is read from `?module=block&action=eth_block_number`, falling back to
+`/api/v2/stats` (`total_blocks`) and then `/api/v2/main-page/blocks` — all three
+shapes verified against the live API. The deployment block comes from
+`/api/v2/addresses/{addr}` → `creation_transaction_hash` → `gettxinfo` →
+`result.blockNumber`.
+
 The explorer refuses a single query spanning millions of blocks ("Something went
 wrong."), so the range is walked in windows — starting at 2,000,000 blocks and
 shrinking by 4× whenever the explorer refuses, down to a 1,000-block floor, with a
@@ -76,5 +82,5 @@ archive logs must fail loudly rather than report zero bets, and an address with 
 code must be rejected.
 
 ```bash
-node --test poc/refund-option.test.mjs     # 4 tests
+node --test poc/refund-option.test.mjs     # 8 tests
 ```
