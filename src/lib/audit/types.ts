@@ -3,6 +3,7 @@ import type { LiveStateReport } from "./live-state.ts";
 import type { PocProvenance } from "./poc-outcome.ts";
 import type { FpMatch } from "./fp-signatures.ts";
 import type { ResnetResult } from "./resnet-result.ts";
+import type { ReachabilityClass } from "./reachability.ts";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -63,6 +64,14 @@ export type Finding = {
    *  time by the archive loaders; absent/null when no confirmed
    *  pattern matches (candidate and dismissed patterns never annotate). */
   fpMatch?: FpMatch | null;
+  /** Reachability class (Phase 4, 2026-10-27 detection upgrade): the answer
+   *  to "who can reach this site?", from reachability.ts. Tagged by
+   *  detectSource for findings whose function the model resolves; absent on
+   *  internal/private helper sites (attributed to their public entries) and
+   *  on records analysed before the tag existed. Additive: it never changes
+   *  a severity and never drops a finding — REACHABLE is the class triage
+   *  should read first, and the only one that becomes a reported finding. */
+  reachability?: ReachabilityClass | null;
 };
 
 export type SelectorHit = {
@@ -100,6 +109,16 @@ export type Inventory = {
   /** Missing/error evidence remains distinct from a quiet model. */
   resnetStatus?: {status:"ok"|"error"|"unavailable";error?:string};
   inputKind: "source" | "bytecode";
+  /** The compiler-verified contract name (C3, 2026-10-27 detection
+   *  upgrade): set from the registry that returned source, null when the
+   *  audit is bytecode-only. The UI must show this next to, not instead
+   *  of, any product/dashboard label. */
+  verifiedName?: string | null;
+  /** "label_ok" | "label_mismatch: …" | "label_unverified" — whether the
+   *  display label agrees with the verified name. Nine of the
+   *  engagement's 32 dashboard labels were provably wrong, so the
+   *  disagreement is surfaced rather than resolved silently. */
+  labelCheck?: string | null;
   contractNames: string[];
   kindNote: string;
   pragma: string | null;

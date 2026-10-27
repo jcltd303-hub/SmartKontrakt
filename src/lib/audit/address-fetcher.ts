@@ -2,7 +2,7 @@ import { sha3_256 } from "js-sha3";
 import type { Report } from "./types.ts";
 import { analyzeInput } from "./engine.ts";
 import { analyzeBytecode } from "./bytecode.ts";
-import { rpcLimiter, sourcifyLimiter, withRetry } from "./rate-limit.ts";
+import { rpcLimiter, sourcifyLimiter, blockscoutLimiter, withRetry } from "./rate-limit.ts";
 import { fetchAddressValue } from "./value.ts";
 import { gatherAbi } from "./abi.ts";
 import { gatherLiveState } from "./live-state.ts";
@@ -410,9 +410,176 @@ export function parseAddressList(
 }
 
 /**
+ * Where a verified source came from. C1 (2026-10-27 detection upgrade): a
+ * single-source fetcher (Sourcify only) declared 19 of 21 "unverified"
+ * contracts unanalysable when they were verified on a second registry —
+ * 1,160 ETH of coverage lost to one missing fallback. Every match now
+ * carries its registry so the record says where the source came from.
+ */
+export type VerifiedSourceMatch = {
+  source: string;
+  name: string;
+  contractName: string | null;
+  registry: "sourcify" | "blockscout";
+};
+
+/**
+ * Blockscout hosts, by chain. Blockscout runs a per-chain instance and its
+ * v2 API needs no key, which is what makes it usable from the browser as
+ * well as the worker. Chains without a public instance simply fall through
+ * to the bytecode path (and are labelled as analysed, never unreadable).
+ */
+export const BLOCKSCOUT_HOSTS: Record<number, string> = {
+  1: "https://eth.blockscout.com",
+  10: "https://optimism.blockscout.com",
+  100: "https://gnosis.blockscout.com",
+  137: "https://polygon.blockscout.com",
+  8453: "https://base.blockscout.com",
+  42161: "https://arbitrum.blockscout.com",
+};
+
+export function blockscoutHost(chainIdNumber: number): string | null {
+  return BLOCKSCOUT_HOSTS[chainIdNumber] ?? null;
+}
+
+/** `/api/v2/smart-contracts/{address}` — the verified-source endpoint. */
+export function blockscoutContractUrl(host: string, address: string): string {
+  return `${host.replace(/\/+$/, "")}/api/v2/smart-contracts/${address.toLowerCase()}`;
+}
+
+/** `/api/v2/addresses/{address}` — identity + creation bytecode, served even
+ *  when `is_verified` is false (C2). */
+export function blockscoutAddressUrl(host: string, address: string): string {
+  return `${host.replace(/\/+$/, "")}/api/v2/addresses/${address.toLowerCase()}`;
+}
+
+type BlockscoutContract = {
+  is_verified?: boolean;
+  name?: string | null;
+  source_code?: string | null;
+  abi?: unknown;
+  compiler_version?: string | null;
+  is_proxy?: boolean | null;
+};
+
+type BlockscoutAddress = {
+  is_contract?: boolean | null;
+  name?: string | null;
+  is_verified?: boolean | null;
+  creation_bytecode?: string | null;
+  deployed_bytecode?: string | null;
+  implementations?: { address?: string; name?: string | null }[] | null;
+  proxy_type?: string | null;
+};
+
+async function blockscoutJson<T>(url: string): Promise<T | null> {
+  try {
+    const res = await withRetry(async () => {
+      await blockscoutLimiter.acquire();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4000);
+      try {
+        return await fetch(url, { signal: controller.signal, headers: { accept: "application/json" } });
+      } finally {
+        clearTimeout(timer);
+      }
+    }, { retries: 2, baseDelayMs: 1000 });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch verified source from Blockscout (the C1 second registry). Returns
+ * null for an unverified contract — "no source" is a fact about the
+ * registry, not about the address: the caller still has the creation
+ * bytecode route below.
+ */
+export async function fetchBlockscoutSource(address: string, chainIdNumber: number): Promise<VerifiedSourceMatch | null> {
+  const host = blockscoutHost(chainIdNumber);
+  if (!host) return null;
+  const data = await blockscoutJson<BlockscoutContract>(blockscoutContractUrl(host, address));
+  if (!data) return null;
+  const source = typeof data.source_code === "string" ? data.source_code.trim() : "";
+  if (!source) return null;
+  const name = (data.name ?? "").trim() || `Verified (${address.slice(0, 6)}...)`;
+  return {
+    source,
+    name,
+    contractName: data.is_verified === false ? null : name,
+    registry: "blockscout",
+  };
+}
+
+export type BlockscoutIdentity = {
+  name: string | null;
+  isContract: boolean | null;
+  isVerified: boolean | null;
+  hasCreationBytecode: boolean;
+  implementations: string[];
+  proxyType: string | null;
+};
+
+/**
+ * Identity for an address whose source no registry returned (C2/C3).
+ * Blockscout serves this for unverified contracts too, which is how a
+ * "no source" address still gets a real name, a proxy shape and a
+ * creation-bytecode route instead of the label "unreadable".
+ */
+export async function fetchBlockscoutIdentity(address: string, chainIdNumber: number): Promise<BlockscoutIdentity | null> {
+  const host = blockscoutHost(chainIdNumber);
+  if (!host) return null;
+  const data = await blockscoutJson<BlockscoutAddress>(blockscoutAddressUrl(host, address));
+  if (!data) return null;
+  const impls = Array.isArray(data.implementations)
+    ? data.implementations.map((i) => i?.address ?? "").filter(Boolean)
+    : [];
+  return {
+    name: (data.name ?? "").trim() || null,
+    isContract: data.is_contract ?? null,
+    isVerified: data.is_verified ?? null,
+    hasCreationBytecode: typeof data.creation_bytecode === "string" && data.creation_bytecode.length > 2,
+    implementations: impls,
+    proxyType: data.proxy_type ?? null,
+  };
+}
+
+/**
+ * The label a bytecode-only audit gets. "Bytecode-analysed", never
+ * "unreadable": the runtime was disassembled, its selectors extracted and
+ * its shape classified, so the address was analysed — just not from
+ * source. Phase 2's target is that no address is reported as unanalysable
+ * because one registry had nothing.
+ */
+export function bytecodeAnalysedLabel(address: string, identity?: BlockscoutIdentity | null): string {
+  const short = `${address.slice(0, 6)}...${address.slice(-4)}`;
+  const name = identity?.name ? `${identity.name} · ` : "";
+  return `Bytecode-analysed (${name}${short})`;
+}
+
+/** The note that explains what a bytecode-only audit did and did not cover. */
+export function bytecodeAnalysedNote(identity?: BlockscoutIdentity | null): string {
+  const parts = [
+    "No registry returned verified source (Sourcify, then Blockscout), so this audit is of the runtime bytecode: opcodes, selectors and proxy shape are ground truth, source-level semantics are inferred.",
+  ];
+  if (identity?.hasCreationBytecode) {
+    parts.push("Blockscout served the creation bytecode, so constructor-time state is inspectable even though the source is unpublished.");
+  }
+  if (identity?.proxyType) {
+    parts.push(`Blockscout reports proxy type ${identity.proxyType}${identity.implementations.length ? ` with implementation ${identity.implementations.join(", ")}` : ""}.`);
+  }
+  if (identity?.name) {
+    parts.push(`Blockscout's name for the address is "${identity.name}" — registry metadata, not a compiler-verified label.`);
+  }
+  return parts.join(" ");
+}
+
+/**
  * Fetch verified source code from Sourcify public API
  */
-async function fetchSourcifySource(address: string, chainIdNumber: number): Promise<{ source: string; name: string; contractName: string | null } | null> {
+async function fetchSourcifySource(address: string, chainIdNumber: number): Promise<VerifiedSourceMatch | null> {
   try {
     const url = `https://sourcify.dev/server/files/any/${chainIdNumber}/${address}`;
     const res = await withRetry(async () => {
@@ -447,7 +614,7 @@ async function fetchSourcifySource(address: string, chainIdNumber: number): Prom
     // as the main contract, so no scoping — detectSource falls back to all
     // contracts when the name matches nothing.
     const contractName = solFiles.length === 1 ? name : null;
-    return { source, name, contractName };
+    return { source, name, contractName, registry: "sourcify" as const };
   } catch {
     return null;
   }
@@ -582,8 +749,12 @@ export async function analyzeAddress(
     }
   };
 
-  // 1. Try Sourcify verified source
-  const sourcifyMatch = await fetchSourcifySource(address, chain.chainId);
+  // 1. Try verified source: Sourcify first, then Blockscout (C1). A single
+  //    registry is not a verdict on an address — the engagement's 19-of-21
+  //    "unverified" contracts were all verified on the second one.
+  const sourcifyMatch =
+    (await fetchSourcifySource(address, chain.chainId)) ??
+    (await fetchBlockscoutSource(address, chain.chainId));
   if (sourcifyMatch) {
     const label = customLabel || sourcifyMatch.name || `Verified (${address.slice(0, 6)}...)`;
     // Address audit: scope detection to the deployed contract (Item 2).
@@ -632,6 +803,22 @@ export async function analyzeAddress(
       // Bytecode unavailable — source audit still stands.
       bytecodeNote = "Runtime bytecode fetch failed (RPC) — Bytecode & CFG tab unavailable for this audit.";
     }
+    // Provenance of the source itself (C1) and of the label (C3): the
+    // record states which registry answered and whether the display name
+    // the caller supplied disagrees with the verified one. A dashboard
+    // name is inferred, never fact — 9 of the engagement's 32 labels were
+    // wrong, so both are reported instead of the inferred one silently
+    // winning.
+    report.inventory.verifiedName = sourcifyMatch.contractName ?? sourcifyMatch.name;
+    report.inventory.labelCheck = customLabel && customLabel !== report.inventory.verifiedName
+      ? `label_mismatch: display label "${customLabel}" differs from the verified name "${report.inventory.verifiedName}"`
+      : "label_ok";
+    report.inventory.notes = [
+      ...report.inventory.notes,
+      sourcifyMatch.registry === "blockscout"
+        ? "Source came from Blockscout — Sourcify had no match for this address (second-registry fallback)."
+        : "Source came from Sourcify (verified match).",
+    ];
     if (bytecodeNote) report.inventory.notes = [...report.inventory.notes, bytecodeNote];
     // Resolve unknown selectors + event topics against the 4byte tables
     // (worker / server callers pass a DB lookup; the browser workbench
@@ -696,8 +883,19 @@ export async function analyzeAddress(
     throw new Error(`No deployed bytecode found at ${address} on ${chain.name}. It may be an un-deployed EOA or destroyed contract.`);
   }
 
-  const label = customLabel || `Bytecode (${address.slice(0, 6)}...${address.slice(-4)})`;
+  // 2b. Identity for an address no registry verified (C2/C3). Blockscout
+  //     answers for unverified contracts too, so the audit gets a real
+  //     name, a proxy shape and a creation-bytecode route instead of the
+  //     old "unreadable" label. Best-effort: a failure changes nothing.
+  const identity = await fetchBlockscoutIdentity(address, chain.chainId).catch(() => null);
+
+  const label = customLabel || bytecodeAnalysedLabel(address, identity);
   const report = analyzeInput(bytecode, label);
+  report.inventory.notes = [...report.inventory.notes, bytecodeAnalysedNote(identity)];
+  report.inventory.verifiedName = null;
+  report.inventory.labelCheck = customLabel && identity?.name && customLabel !== identity.name
+    ? `label_mismatch: display label "${customLabel}" differs from the registry name "${identity.name}" (unverified contract)`
+    : "label_unverified";
 
   if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
   await attachValueAndAbi(report);

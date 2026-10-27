@@ -33,6 +33,10 @@ export class RateLimiter {
 /** Conservative defaults. The 429 backoff in withRetry is the adaptive mechanism — these just keep us polite. */
 export const rpcLimiter = new RateLimiter(200); // 5 JSON-RPC req/sec
 export const sourcifyLimiter = new RateLimiter(500); // 2 Sourcify req/sec
+// Blockscout is the C1 second registry (2026-10-27 detection upgrade). Its
+// public instances are generous but shared; 2/sec matches Sourcify's pace so
+// the fallback never becomes the bottleneck it exists to remove.
+export const blockscoutLimiter = new RateLimiter(500); // 2 Blockscout req/sec
 // Paid account ($10 credit) — NOT the free tier, so this is 1/sec, not the
 // free-tier trickle. 429 backoff still adapts if the provider throttles.
 export const openRouterLimiter = new RateLimiter(1000); // 60 OpenRouter req/min

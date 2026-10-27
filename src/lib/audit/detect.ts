@@ -1,5 +1,6 @@
 import type { AstNode, Finding, Severity } from "./types.ts";
 import type { ContractModel, FnModel, ModModel, SourceModel, StateVar } from "./model.ts";
+import { classifyFunction, isExplicitGuardModifierName } from "./reachability.ts";
 import {
   DELEGATECALL_FIXED_TARGET_NOTE,
   DELEGATECALL_INITIALIZER_ENTRY_NOTE,
@@ -392,6 +393,19 @@ function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel, sk
     }
   }
   if (fn.modifiers.some((m) => /onlyowner|onlyadmin|onlyrole|onlygovernor|onlygovernance|onlyauth|requiresauth|authorized|onlyminter|onlyoperator|onlyguardian/i.test(m))) {
+    return true;
+  }
+  // P7 (2026-10-27 detection upgrade): the guard names the list above
+  // misses. The engagement's own false positives carried guards called
+  // ownerOnly (Bancor), hasMintPermission, oraclizeAction, isPlayer and
+  // treasuryOnly — none matched the legacy regex, so every one of them
+  // was reported as unauthenticated. Only the LEARNED list is credited
+  // as proven here: a bare `onlyXxx` convention (onlyBeacon) stays a
+  // POSSIBLE guard, so it caps at high with a note instead of clearing
+  // the finding — the Fix 38 discipline. The vocabulary lives in
+  // reachability.ts so the detector and the Phase 4 adjudicator cannot
+  // drift apart.
+  if (fn.modifiers.some((m) => isExplicitGuardModifierName(m))) {
     return true;
   }
   const src = fn.source;
@@ -1219,6 +1233,47 @@ function make(
   return { id: `s${seq}`, ...partial };
 }
 
+/**
+ * Phase 4 (2026-10-27 detection upgrade): tag findings with the class that
+ * answers "who can reach this?".
+ *
+ * Scope is deliberate. A site the model can resolve to an externally
+ * callable function gets a real class; an internal/private helper is left
+ * untagged, because detectSource attributes helper findings to their public
+ * entries and a bare INTERNAL tag on the helper would contradict that
+ * attribution. Nothing here changes a severity or drops a finding — the
+ * class is evidence for triage and for the report filter.
+ */
+function tagReachability(findings: Finding[], model: SourceModel): void {
+  const index = new Map<string, { fn: FnModel; contract: ContractModel }>();
+  for (const contract of model.contracts) {
+    for (const fn of contract.functions) {
+      if (fn.body === null) continue;
+      if (!index.has(fn.name)) index.set(fn.name, { fn, contract });
+    }
+  }
+  for (const finding of findings) {
+    if (!finding.locationFn) continue;
+    const hit = index.get(finding.locationFn);
+    if (!hit) continue;
+    const { fn, contract } = hit;
+    if (fn.visibility === "internal" || fn.visibility === "private") continue;
+    const hasDerivedContracts = model.contracts.some(
+      (c) => c !== contract && c.bases.includes(contract.name),
+    );
+    const verdict = classifyFunction(fn, {
+      hasDerivedContracts,
+      stateVars: contract.stateVars.map((s) => ({ name: s.name, constOrImmutable: s.constOrImmutable })),
+      // Caller-owned accounting: a balance read keyed by the caller bounds
+      // the amount to what they themselves own (E5: "does it send ETH" is
+      // not "can it be drained").
+      callerOwnedAccounting:
+        /\b(?:balances|balanceOf|deposits|credit|shares|stake|owed|pending)\w*\s*(?:\[\s*(?:msg\.sender|_msgSender\s*\(\s*\))|\()/.test(fn.source),
+    });
+    finding.reachability = verdict.class;
+  }
+}
+
 export function detectSource(model: SourceModel, displaySource: string, onlyContract?: string | null): Finding[] {
   seq = 0;
   const findings: Finding[] = [];
@@ -1341,6 +1396,14 @@ credit += 2; // equals 1. The deposit was not rejected.`,
     if (contract.kind === "interface") continue;
     scanContract(contract, model, parsed, delta, push);
   }
+
+  // Phase 4 (2026-10-27 detection upgrade): attach the reachability class
+  // to every finding whose site the model can resolve. Additive — no
+  // severity changes here; the class is what lets triage order the read
+  // queue by "who can reach this" instead of by detector score, which the
+  // engagement measured to be uncorrelated with validity (the top-ranked
+  // entry was a false positive on all six counts).
+  tagReachability(findings, model);
 
   const rank: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
   findings.sort((a, b) => rank[a.severity] - rank[b.severity] || (a.locationLine ?? 0) - (b.locationLine ?? 0));
@@ -3205,6 +3268,84 @@ function hashOnlyAsIdentifier(src: string): boolean {
   return true;
 }
 
+/** The argument span of the hash call that starts at `start` (the index of
+ *  the `keccak256`/`sha3` token) with `len` its full matched length. */
+function hashArgsSpan(src: string, start: number, len: number): string | null {
+  let depth = 1;
+  let i = start + len;
+  while (i < src.length && depth > 0) {
+    if (src[i] === "(") depth += 1;
+    else if (src[i] === ")") depth -= 1;
+    i += 1;
+  }
+  if (depth !== 0) return null;
+  return src.slice(start + len, i - 1);
+}
+
+/**
+ * R1 (2026-10-27 detection upgrade): the Team Just five-field mixer.
+ *
+ * F5D, FoMo3DSoon, FoMoJP and RobTheBank all derive their draw from
+ * `keccak256(abi.encodePacked(block.timestamp, block.difficulty,
+ * block.coinbase, players.length))` — three DIFFERENT block fields mixed
+ * into one hash. The rule set modelled one field at a time (a `%` on
+ * block data, or a hash containing *some* block data), so the five-term
+ * mixer was the measured recall gap. Three distinct fields in one hash
+ * input is the fingerprint; the count matters, not the exact order.
+ */
+function teamJustMixer(src: string): boolean {
+  for (const m of src.matchAll(/\b(?:keccak256|sha3)\s*\(/g)) {
+    const span = hashArgsSpan(src, m.index!, m[0].length);
+    if (!span) continue;
+    const clock = /block\.timestamp|\bnow\b/.test(span);
+    const difficulty = /block\.difficulty|block\.prevrandao/.test(span);
+    const third = /block\.coinbase|block\.gaslimit/.test(span);
+    if (clock && difficulty && third) return true;
+  }
+  return false;
+}
+
+/** A call whose name says it selects something with its argument. */
+const SELECTION_SINK = /\b(?:trait|rarity|random|rand|roll|draw|pick|winner|choose|seed|shuffle)\w*\s*\(/i;
+
+/**
+ * R2 (2026-10-27 detection upgrade): entropy that is DERIVED and then
+ * selected on, rather than `%`'d in the same statement.
+ *
+ * NEOLASTICS, EulerBeats and Arborithms hash block data into a variable
+ * (`bytes32 h = keccak256(...)`) and use the RESULT a statement later —
+ * as an array index, a comparison, a branch, or a trait lookup. The
+ * one-statement `%` rule and the identifier-only suppression both miss
+ * that shape, so the output is followed here: any arithmetic, comparison,
+ * branch, or selection-named sink on a variable assigned from a
+ * block-data hash is a selection.
+ *
+ * Deliberately NOT a selection: using the hash as a mapping KEY
+ * (`games[gameId] = ...`), which is the identifier shape Fix 20 protects
+ * — a game id is not a draw.
+ */
+function derivedEntropySelected(src: string): boolean {
+  const names = new Set<string>();
+  for (const m of src.matchAll(/\b(?:keccak256|sha3)\s*\(/g)) {
+    const span = hashArgsSpan(src, m.index!, m[0].length);
+    if (!span || !BLOCK_DATA.test(span)) continue;
+    const before = src.slice(0, m.index!).replace(/\s+$/, "");
+    const asg = before.match(/([A-Za-z_$][\w$]*)\s*=\s*(?:u?int\d*\s*\(\s*)?$/);
+    if (asg && asg[1]) names.add(asg[1]);
+  }
+  for (const name of names) {
+    const n = escapeRegExp(name);
+    if (new RegExp(`\\b${n}\\b\\s*[%/]`).test(src)) return true;
+    if (new RegExp(`[%/]\\s*\\b${n}\\b`).test(src)) return true;
+    if (new RegExp(`\\b${n}\\b\\s*(?:==|!=|<=|>=|<|>)`).test(src)) return true;
+    if (new RegExp(`(?:==|!=|<=|>=|<|>)\\s*\\b${n}\\b`).test(src)) return true;
+    if (new RegExp(`\\bif\\s*\\([^)]*\\b${n}\\b`).test(src)) return true;
+    if (new RegExp(`\\b${n}\\b[^;]*\\?|\\?[^;]*\\b${n}\\b`).test(src)) return true;
+    if (new RegExp(`${SELECTION_SINK.source}[^;]*\\b${n}\\b`).test(src)) return true;
+  }
+  return false;
+}
+
 type ReachInfo = {
   /** Public entry points that reach this function (itself included
    * when externally callable) — Fix 38 provenance for scanSimple. */
@@ -3692,16 +3833,26 @@ contract ReplayAttack {
   const clockSource = /block\.timestamp|\bnow\b|block\.number|block\.coinbase/.test(clean);
   const mixesEntropy = hashInputHasBlockData(clean) || moduloOfBlockData(clean);
   const oracleOnly = oracleNonceOnly(clean, fn.name);
-  const idOnly = !entropySource && hashOnlyAsIdentifier(clean);
-  const randomish = fn.mutability !== "view" && fn.mutability !== "pure" && !oracleOnly && !idOnly && (entropySource || (clockSource && mixesEntropy));
+  // R1 / R2 (2026-10-27 detection upgrade): the two measured recall gaps.
+  // The five-field mixer is entropy whatever it is assigned to; a hash of
+  // block data whose OUTPUT is later selected on is entropy too, so the
+  // identifier-only suppression (Fix 20) must not eat it.
+  const mixer = teamJustMixer(clean);
+  const derived = derivedEntropySelected(clean);
+  const idOnly = !entropySource && !mixer && !derived && hashOnlyAsIdentifier(clean);
+  const randomish = fn.mutability !== "view" && fn.mutability !== "pure" && !oracleOnly && !idOnly && (entropySource || mixer || derived || (clockSource && mixesEntropy));
   if (randomish) {
     push(make({
       severity: "high",
       swc: "SWC-120",
-      title: `${fn.name} draws randomness from the chain`,
-      confidence: "medium",
+      title: mixer
+        ? `${fn.name} mixes a five-field block fingerprint for its draw`
+        : `${fn.name} draws randomness from the chain`,
+      confidence: mixer ? "high" : "medium",
       detector: "weak-randomness",
-      summary: "block.timestamp, prevrandao, difficulty, or blockhash is mixed into a number someone can bias. Miners and searchers see it before they decide to include the transaction.",
+      summary: mixer
+        ? "The draw hashes three independent block fields (timestamp, difficulty/prevrandao, coinbase/gaslimit) — the Team Just mixer shape. Mixing more predictable values does not make a value unpredictable: a block producer still knows all three before the transaction is included."
+        : "block.timestamp, prevrandao, difficulty, or blockhash is mixed into a number someone can bias. Miners and searchers see it before they decide to include the transaction.",
       walkthrough: "1. The inputs are known in the mempool, or nudgeable by the block producer.\n2. A caller who dislikes the result waits a block or uses a different sender.\n3. Use a VRF, or commit-reveal with a penalty.",
       exploitSolidity: `// Wait until uint256(keccak256(abi.encode(block.timestamp, msg.sender))) % n == winningIndex.`,
       remediationSolidity: "// Chainlink VRF, or a commit in block n revealed in block n+k.",

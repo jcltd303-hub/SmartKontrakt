@@ -101,9 +101,27 @@ import {
  *                metadata severities are NOT recalibrated — presence
  *                correctness only. Same inputs now produce different
  *                records, so the archive refreshes.
+ * 2026-10-27.1 — Detection upgrade from the measured engagement (480
+ *                hits → 1 real issue, 47% FP rate). Precision: the
+ *                learned guard-name list (P7) credits ownerOnly /
+ *                hasMintPermission / isPlayer / treasuryOnly /
+ *                oraclizeAction as proven access control, while a bare
+ *                onlyXxx convention stays a possible guard (cap +
+ *                note). Recall: the Team Just five-field block mixer
+ *                (R1) and derived-value entropy — a hash of block data
+ *                whose OUTPUT is later selected on (R2) — now flag,
+ *                with the identifier-only suppression preserved.
+ *                Coverage/identity: Blockscout is a second verified-
+ *                source registry (C1) and a bytecode-only audit is
+ *                labelled analysed, not unreadable (C2), with the
+ *                verified name and a label check recorded (C3).
+ *                Adjudication: every finding whose function the model
+ *                resolves carries a reachability class (Phase 4). Same
+ *                inputs now produce different records, so the archive
+ *                refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-25.4";
+export const ANALYZER_BASELINE = "2026-10-27.1";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {
