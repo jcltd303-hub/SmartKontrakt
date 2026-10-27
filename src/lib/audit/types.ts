@@ -3,7 +3,7 @@ import type { LiveStateReport } from "./live-state.ts";
 import type { PocProvenance } from "./poc-outcome.ts";
 import type { FpMatch } from "./fp-signatures.ts";
 import type { ResnetResult } from "./resnet-result.ts";
-import type { ReachabilityClass } from "./reachability.ts";
+import type { GateKind, ReachabilityClass } from "./reachability.ts";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -72,6 +72,15 @@ export type Finding = {
    *  a severity and never drops a finding — REACHABLE is the class triage
    *  should read first, and the only one that becomes a reported finding. */
   reachability?: ReachabilityClass | null;
+  /** Gate kind (D1, 2026-10-27): GATED_MODIFIER, GATED_REQUIRE,
+   *  GATED_PRECONDITION or UNGATED. "Unguarded" is not one thing — a
+   *  second-collection holding requirement, a signature, an allowlist slot or
+   *  a round-fill threshold is a different verdict from a privileged gate, and
+   *  conflating them is what produced the 1-in-9 precision on the 480 hits. */
+  gate?: GateKind | null;
+  /** The precondition text of a GATED_PRECONDITION site, verbatim: the
+   *  difference between "unreachable" and "reachable at a cost". */
+  preconditions?: string[] | null;
 };
 
 export type SelectorHit = {

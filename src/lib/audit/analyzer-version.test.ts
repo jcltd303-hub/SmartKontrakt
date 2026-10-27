@@ -75,7 +75,9 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // verified-name label check (C1-C3), and the reachability tag.
   // And to 2026-10-27.2 with the 2026 incident classes: six detectors
   // derived from published post-mortems, each with a modelled harness.
-  assert.equal(ANALYZER_BASELINE, "2026-10-27.2");
+  // And to 2026-10-27.3 with the games work: gate kinds + preconditions
+  // (D1), settlement optionality (D2) and registry-dispatched logic (D3).
+  assert.equal(ANALYZER_BASELINE, "2026-10-27.3");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });

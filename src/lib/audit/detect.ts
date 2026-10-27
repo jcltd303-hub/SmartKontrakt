@@ -1,6 +1,7 @@
 import type { AstNode, Finding, Severity } from "./types.ts";
 import type { ContractModel, FnModel, ModModel, SourceModel, StateVar } from "./model.ts";
 import { classifyFunction, isExplicitGuardModifierName } from "./reachability.ts";
+import type { GateKind } from "./reachability.ts";
 import {
   DELEGATECALL_FIXED_TARGET_NOTE,
   DELEGATECALL_INITIALIZER_ENTRY_NOTE,
@@ -1271,6 +1272,8 @@ function tagReachability(findings: Finding[], model: SourceModel): void {
         /\b(?:balances|balanceOf|deposits|credit|shares|stake|owed|pending)\w*\s*(?:\[\s*(?:msg\.sender|_msgSender\s*\(\s*\))|\()/.test(fn.source),
     });
     finding.reachability = verdict.class;
+    finding.gate = verdict.gate;
+    if (verdict.preconditions.length > 0) finding.preconditions = verdict.preconditions;
   }
 }
 
@@ -2315,6 +2318,155 @@ modifier nonReentrant() {
       locationFn: null,
       locationLine: contract.line,
       snippet: "",
+    }));
+  }
+
+  // D2 / D3 (2026-10-27): the two contract-level classes the games work
+  // produced — settlement optionality and registry-dispatched logic. Both
+  // need the whole contract, not one function.
+  scanSettlementOptionality(contract, model, parsed, delta, push);
+  scanRegistryDispatch(contract, parsed, delta, push);
+}
+
+// ---------------------------------------------------------------------------
+// D2 / D3 (2026-10-27, the games work).
+//
+// The eight weak-randomness games audited in depth returned one genuine
+// finding, and it was NOT an entropy bug: BlockChainCasino's commit/reveal
+// binding is sound. The flaw is one hop later — settleBet pays the win,
+// refundBet returns the full stake after BET_EXPIRATION_BLOCKS, and nothing
+// on the house side forces settlement. Win -> settle, lose -> refund: the
+// loss is free, so the bet is a free option that is profitable with perfect
+// randomness. No entropy rule can see that, which is why 480 hits missed it.
+//
+// D3 is the other half: when a contract dispatches to a registered
+// sub-contract (gameAddress[gameId]), the win rule lives THERE, and a
+// detector that assumes it is how the caller reads it produces a confidently
+// wrong exploit. Marked SEMANTICS_UNVERIFIED until that source is read.
+// ---------------------------------------------------------------------------
+
+/** Function names that settle a round (pays the win). */
+const SETTLE_NAME = /(?:settle|resolve|claim|payout|finish|reveal|spin|roll|draw|cash\s?out)/i;
+/** Function names that abandon a round (returns the stake). */
+const REFUND_NAME = /(?:refund|cancel|abandon|expire|reclaim|withdrawbet|withdrawBet|bail)/i;
+/** Evidence that the abandon path is time-gated. */
+const TIMEOUT_EVIDENCE = /(?:block\.timestamp|block\.number|EXPIR\w*|TIMEOUT\w*|timeout|expire\w*|deadline|MAX_WAIT|BET_EXPIR\w*)/i;
+/** A function that pays value out. */
+const PAYS_OUT = /\.\s*(?:transfer|send|safeTransfer|safeTransferFrom)\s*\(|\.\s*call\s*\{\s*value/;
+
+/** A callee resolved from a registry (mapping/array index), then dispatched to. */
+function registryDispatch(body: string, paramNames: string[]): string | null {
+  for (const p of paramNames) {
+    const esc = escapeRegExp(p);
+    // gameAddress[gameId].call(...) / IGame(games[id]).settle(...)
+    const direct = new RegExp(`\\b([A-Za-z_$][\\w$]*)\\s*\\[[^\\]]*\\b${esc}\\b[^\\]]*\\]\\s*\\.\\s*(?:call|delegatecall|staticcall)\\s*[({]`).exec(body);
+    if (direct) return direct[0];
+    const cast = new RegExp(`\\bI[A-Z][\\w$]*\\s*\\(\\s*([A-Za-z_$][\\w$]*)\\s*\\[[^\\]]*\\b${esc}\\b[^\\]]*\\]\\s*\\)\\s*\\.`).exec(body);
+    if (cast) return cast[0];
+    // The common shape hoists the slot into a local first:
+    //   address game = gameAddress[gameId];  …  game.call{value: …}(…)
+    // Without following the alias, the detector misses every real dispatch.
+    const aliasRe = new RegExp(
+      `\\b([A-Za-z_$][\\w$]*)\\s*=\\s*[A-Za-z_$][\\w$]*\\s*\\[[^\\]]*\\b${esc}\\b[^\\]]*\\]`,
+      "g",
+    );
+    for (const m of body.matchAll(aliasRe)) {
+      const alias = m[1]!;
+      const viaCall = new RegExp(`\\b${escapeRegExp(alias)}\\s*\\.\\s*(?:call|delegatecall|staticcall)\\s*[({]`).test(body);
+      const viaCast = new RegExp(`\\bI[A-Z][\\w$]*\\s*\\(\\s*${escapeRegExp(alias)}\\s*\\)\\s*\\.`).test(body);
+      if (viaCall || viaCast) return `${m[0].trim()} … ${alias} dispatch`;
+    }
+  }
+  return null;
+}
+
+/**
+ * D2: optional settlement — the free-option shape.
+ *
+ * Fires on a contract that has (a) a caller-initiated settle path that pays
+ * out, (b) a caller-initiated refund path that pays the stake back after a
+ * timeout, and (c) no privileged forced settlement. The severity is capped at
+ * high with a note, because the actual magnitude (per-bet cap, bankroll,
+ * timeout length) is a LIVE read — publishing a number from source constants
+ * is the F-14 400x error this plan exists to stop.
+ */
+function scanSettlementOptionality(
+  contract: ContractModel,
+  model: SourceModel,
+  parsed: string,
+  delta: number,
+  push: (f: Finding) => void,
+) {
+  const fns = contract.functions.filter((f) => f.body !== null && isExternallyCallable(f));
+  const settle = fns.filter(
+    (f) => SETTLE_NAME.test(f.name) && PAYS_OUT.test(f.source) && !isAuthed(f, contract, model),
+  );
+  const refund = fns.filter(
+    (f) =>
+      REFUND_NAME.test(f.name) &&
+      PAYS_OUT.test(f.source) &&
+      TIMEOUT_EVIDENCE.test(f.source) &&
+      !isAuthed(f, contract, model),
+  );
+  if (settle.length === 0 || refund.length === 0) return;
+  // A house-side settlement closes the option: if a privileged caller can
+  // settle (or force-settle) the round, the player cannot simply wait.
+  const forced = fns.some((f) => SETTLE_NAME.test(f.name) && isAuthed(f, contract, model));
+  if (forced) return;
+  const s = settle[0]!;
+  const r = refund[0]!;
+  push(make({
+    severity: "high",
+    swc: null,
+    title: `${contract.name} lets a player choose the settlement: ${s.name} or ${r.name}`,
+    confidence: "medium",
+    detector: "settlement-optionality",
+    summary: `The player decides which branch settles. ${s.name} pays the win and ${r.name} returns the stake after a timeout, both callable by the same unprivileged account, and nothing on the house side forces settlement before the timeout. Win, settle. Lose, refund. The loss is free, so the bet is a free option — profitable with perfectly good randomness, which is why no entropy rule finds it. This is the BlockChainCasino shape (the only genuinely profitable finding in the eight-game set). The MAGNITUDE is a live read, not a source constant: fetch the per-bet cap, the timeout length, and the bankroll, and state them with any figure you publish.`,
+    walkthrough: `1. ${s.name} is caller-initiated and pays out on a win; ${r.name} is caller-initiated and returns the stake once the timeout passes.\n2. After a losing round the player simply waits and calls ${r.name}, recovering the stake.\n3. The expected loss is therefore zero and the expected win is unchanged: the option has positive value for any non-zero win probability.\n4. Make settlement mandatory — a house-side or anyone-can-trigger settlement that resolves the round after the reveal window, with the refund path only available while the round is unresolved.`,
+    exploitSolidity: `// Play, and only settle when the round won; otherwise wait out the timeout.\nif (predictedWin) { game.${s.name}(roundId); }\n// else: do nothing until the timeout, then\ngame.${r.name}(roundId); // stake back`,
+    remediationSolidity: `// Settlement must not be optional. Resolve the round on a deadline:\nfunction resolveExpired(uint256 roundId) external {\n    require(block.timestamp > rounds[roundId].revealDeadline, "too early");\n    _settle(roundId); // pays the win, or closes the round as a loss\n}`,
+    locationFn: s.name,
+    locationLine: s.line,
+    snippet: snippet(parsed, s.line + delta, delta),
+  }));
+}
+
+/**
+ * D3: the win rule lives in a registered sub-contract.
+ *
+ * A contract that resolves its callee from a registry (gameAddress[gameId])
+ * and pays out on the result is only as correct as the rule inside that
+ * sub-contract. A detector (or an exploit) that assumes the rule — "the win
+ * is entropy % modulo" — can be confidently wrong: CoinAndRoulette dispatches
+ * to whatever sits at gameAddress[gameId], so the mask-and-shift check the
+ * exploit assumed does not apply to a non-standard game. The finding is
+ * SEMANTICS_UNVERIFIED until that source is fetched and read.
+ */
+function scanRegistryDispatch(
+  contract: ContractModel,
+  parsed: string,
+  delta: number,
+  push: (f: Finding) => void,
+) {
+  for (const fn of contract.functions) {
+    if (fn.body === null || !isExternallyCallable(fn)) continue;
+    const body = stripCommentsAndStrings(fn.source);
+    if (!PAYS_OUT.test(body)) continue;
+    const dispatch = registryDispatch(body, fn.params.map((p) => p.name).filter(Boolean));
+    if (!dispatch) continue;
+    push(make({
+      severity: "medium",
+      swc: null,
+      title: `${fn.name} pays out on a rule that lives in a registered sub-contract`,
+      confidence: "medium",
+      detector: "registry-dispatched-logic",
+      summary: `This function resolves its callee from a registry (${dispatch.trim()}) and moves value on the result. The win/payout rule therefore lives in whatever contract that slot holds, not in this source — so any reading of this contract's outcome (including an exploit that predicts the win condition) is SEMANTICS_UNVERIFIED until that sub-contract's source is fetched and read. This is the CoinAndRoulette shape: the exploit assumed entropy % modulo, but the contract dispatches to gameAddress[gameId], so a non-standard game would make the win check wrong while the exploit still "ran".`,
+      walkthrough: `1. ${fn.name} reads a target address from a registry and calls it, then pays out based on the outcome.\n2. The rule that decides the payout is in the registered contract, which this analysis has not read.\n3. An exploit derived from this source alone can be wrong in either direction: it may claim a win the game does not pay, or miss the real condition.\n4. Fetch the registered implementation's source, derive the win/payout rule from it, and only then state a verdict.`,
+      exploitSolidity: "",
+      remediationSolidity: `// Not a code defect in itself — an analysis requirement. Read the registered\n// implementation before trusting any outcome rule:\naddress impl = gameAddress[gameId];\n// fetch impl source, derive win rule, then evaluate.`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
     }));
   }
 }

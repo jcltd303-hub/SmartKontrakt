@@ -126,9 +126,20 @@ import {
  *                self-attested-auth), each with a modelled Foundry
  *                harness (47-52). New findings on inputs that
  *                previously produced none, so the archive refreshes.
+ * 2026-10-27.3 — Games work (plan §3b). The gate now reports its KIND
+ *                (GATED_MODIFIER / GATED_REQUIRE / GATED_PRECONDITION /
+ *                UNGATED) and a precondition site carries its text, so
+ *                "reachable at a cost" stops reading as "unguarded";
+ *                contract-only callers are preconditions, not privilege.
+ *                Two new detectors: settlement-optionality (D2, the free
+ *                option that made BlockChainCasino profitable with sound
+ *                randomness) and registry-dispatched-logic (D3, the win rule
+ *                lives in a sub-contract and is SEMANTICS_UNVERIFIED until
+ *                read). Same inputs now produce different records, so the
+ *                archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-27.2";
+export const ANALYZER_BASELINE = "2026-10-27.3";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

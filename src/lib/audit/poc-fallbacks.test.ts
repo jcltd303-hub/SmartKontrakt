@@ -433,6 +433,11 @@ const EXPECTED_TOP_PICK: Record<string, string | null> = {
   "public-key-account-trust": "50-public-key-account-trust.t.sol",
   "unauthenticated-batch-call": "51-unauthenticated-batch-call.t.sol",
   "self-attested-auth": "52-self-attested-auth.t.sol",
+  // D2 / D3 (2026-10-27, the games work): settlement optionality is the free
+  // option and gets a harness; registry-dispatched logic is an analysis
+  // requirement (read the sub-contract), so it is not-PoC-able by design.
+  "settlement-optionality": "53-settlement-optionality.t.sol",
+  "registry-dispatched-logic": null,
   "hardcoded-gas": "31-gas-assumptions.t.sol",
   "locked-ether": "29-locked-ether.t.sol",
   "missing-event": null,

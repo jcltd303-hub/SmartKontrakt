@@ -837,6 +837,20 @@
         "sources": [],
         "note": "Modelled from the FlashLoopAdapter exploit (October 2026, ~$305k): a Safe module authenticated its caller by asking that caller whether the module was enabled, then made an unconstrained call to a caller-supplied router."
       }
+    },
+    {
+      "detectors": [
+        "settlement-optionality"
+      ],
+      "file": "53-settlement-optionality.t.sol",
+      "scenario": "Optional settlement: settle a win, refund a loss after the timeout (free option)",
+      "smartbugs": "other",
+      "provenance": {
+        "kind": "modelled",
+        "category": "other",
+        "sources": [],
+        "note": "Modelled from the BlockChainCasino finding in the 2026 games set \u2014 the only genuinely profitable case among eight weak-randomness games, and one that no entropy rule can see: commit/reveal is bound correctly, but refundBet() returns the full stake after BET_EXPIRATION_BLOCKS while nothing forces settlement."
+      }
     }
   ],
   "notPocable": [
@@ -862,6 +876,12 @@
         "report-cap"
       ],
       "reason": "Analyzer meta-findings (input could not be parsed / report was capped), not vulnerabilities in the target \u2014 no harness applies."
+    },
+    {
+      "detectors": [
+        "registry-dispatched-logic"
+      ],
+      "reason": "An analysis requirement, not a standalone exploit: the finding says the win/payout rule lives in a registered sub-contract and must be READ before any verdict. There is nothing to execute against the reporting contract \u2014 the harness would have to be written against the sub-contract once its source is fetched."
     }
   ],
   "version": 1

@@ -41,12 +41,36 @@ export const REACHABILITY_CLASSES: readonly ReachabilityClass[] = [
   "NEEDS_READ",
 ] as const;
 
+/**
+ * D1 (2026-10-27): the gate KIND. "An unguarded function" is not one thing —
+ * seven of the eight games audited in depth were unreachable for reasons that
+ * are not a modifier at all (a second-collection holding requirement, a
+ * signature, a contract-only caller, a round-fill threshold), and reporting
+ * all of them as "unguarded" is what produced the 1-in-9 precision.
+ */
+export type GateKind = "GATED_MODIFIER" | "GATED_REQUIRE" | "GATED_PRECONDITION" | "UNGATED";
+
+export type PreconditionKind =
+  | "token-holding"
+  | "allowlist"
+  | "signature"
+  | "eoa-only"
+  | "contract-only"
+  | "round-fill"
+  | "live-threshold"
+  | "privileged-role";
+
 export type ReachabilityVerdict = {
   class: ReachabilityClass;
+  /** How the site is gated (D1). */
+  gate: GateKind;
   /** One line, shown next to the finding: why this class. */
   reason: string;
   /** The evidence the verdict rests on (modifier names, the guard text). */
   evidence: string[];
+  /** The precondition text of a GATED_PRECONDITION site, verbatim, because it
+   *  is the difference between "unreachable" and "reachable at a cost". */
+  preconditions: string[];
 };
 
 export type ReachabilityInput = {
@@ -204,6 +228,14 @@ function squash(src: string): string {
 const PRIVILEGED = "[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*";
 const SENDER = "(?:msg\\.sender|_msgSender\\s*\\(\\s*\\))";
 
+/** Names that denote a contract rather than a privileged account. */
+const CONTRACT_CALLER_NAMES = /^(?:game|pool|router|vault|registry|factory|market|staking|controller|oracle|manager|keeper|bridge|hub|strategy)/i;
+
+function isContractCallerName(name: string): boolean {
+  const head = name.split(".")[0] ?? name;
+  return CONTRACT_CALLER_NAMES.test(head);
+}
+
 /** Reject a captured "privileged" expression that is really a per-asset
  *  owner (`.owner`) or the contract itself — neither gates a caller. */
 function isGlobalPrivileged(text: string): boolean {
@@ -259,6 +291,97 @@ function isCallerRecipient(target: string): boolean {
 }
 
 /**
+ * D1 precondition shapes. Each is tested against a GUARD SPAN (the condition
+ * text of a require/if), never against the whole body: a `balanceOf(msg.sender)`
+ * in an event or a comment is not a gate, and treating it as one is how a
+ * reachable function gets filed as unreachable.
+ *
+ * The labels are the report text — a reviewer reads "holding requirement
+ * (balanceOf(msg.sender))" and knows what the attacker must acquire, which is
+ * the whole point of separating this from a privileged gate.
+ */
+const PRECONDITION_PATTERNS: { kind: PreconditionKind; re: RegExp; label: string }[] = [
+  {
+    kind: "token-holding",
+    re: /\b(?:balanceOf|ownerOf|tokenOfOwnerByIndex|getPastVotes)\s*\(\s*(?:msg\.sender|_msgSender\s*\(\s*\)|sender)/,
+    label: "holding requirement",
+  },
+  {
+    kind: "allowlist",
+    re: /\b(?:isExcluded\w*|whitelist\w*|allowlist\w*|allowlisted\w*|verified\w*|kyc\w*|registered\w*|isPlayer\w*|onlyVerified|excludedFromFees)\s*\[\s*(?:msg\.sender|_msgSender\s*\(\s*\))/i,
+    label: "allowlist membership",
+  },
+  {
+    kind: "signature",
+    re: /\b(?:ecrecover|ECDSA\.recover|\.recover\s*\(|verifySignature|isValidSignature|_verify\w*)\b/,
+    label: "ECDSA signature",
+  },
+  {
+    kind: "eoa-only",
+    re: /(?:tx\.origin\s*==\s*msg\.sender|msg\.sender\s*==\s*tx\.origin)/,
+    label: "EOA-only caller",
+  },
+  {
+    kind: "contract-only",
+    re: /\bmsg\.sender\s*==\s*(?:address\s*\(\s*)?(?:game|pool|router|vault|registry|factory|market|staking|controller|oracle|manager|keeper)\w*\b/,
+    label: "contract-only caller",
+  },
+  {
+    kind: "round-fill",
+    re: /\b(?:players|participants|tickets|entrants|numPlayers|ticketCount|playerCount)\w*(?:\.length)?\s*(?:>=|>|==)\s*\w+/,
+    label: "round-fill threshold",
+  },
+  {
+    // TwoCoins: the round only fires once the pool reaches moonLevel, and the
+    // source cannot say whether it ever will — 16 ETH required against a
+    // 0.101 ETH balance. The gate is real; its satisfiability is a live read.
+    kind: "live-threshold",
+    re: /\b(?:address\s*\(\s*this\s*\)\s*\.\s*balance|totalStaked|totalDeposits|totalPool|pot|prizePool)\w*\s*(?:>=|>)\s*\w+/,
+    label: "live balance threshold",
+  },
+  {
+    kind: "privileged-role",
+    re: /\b(?:onlyOwner|hasRole\s*\()/,
+    label: "privileged caller role",
+  },
+];
+
+/** The condition text of every require(...) / if(...) in a body, found by
+ *  paren-depth scan so a nested call does not cut the span short. */
+function guardSpans(body: string): string[] {
+  const spans: string[] = [];
+  for (const m of body.matchAll(/\b(?:require|if|assert)\s*\(/g)) {
+    let depth = 1;
+    let i = m.index! + m[0].length;
+    while (i < body.length && depth > 0) {
+      if (body[i] === "(") depth += 1;
+      else if (body[i] === ")") depth -= 1;
+      i += 1;
+    }
+    spans.push(body.slice(m.index! + m[0].length, Math.max(m.index! + m[0].length, i - 1)));
+  }
+  return spans;
+}
+
+/** Every precondition the guards of this body impose, in pattern order. */
+export function preconditionsOf(bodySource: string): { kind: PreconditionKind; text: string }[] {
+  const body = squash(bodySource ?? "");
+  const spans = guardSpans(body);
+  if (spans.length === 0) return [];
+  const found: { kind: PreconditionKind; text: string }[] = [];
+  for (const { kind, re, label } of PRECONDITION_PATTERNS) {
+    for (const span of spans) {
+      if (!re.test(span)) continue;
+      // Collapse the span to something a report can carry.
+      const text = `${label}: ${span.trim().slice(0, 160)}`;
+      if (!found.some((f) => f.kind === kind && f.text === text)) found.push({ kind, text });
+      break;
+    }
+  }
+  return found;
+}
+
+/**
  * Classify one call site. Order matters and is deliberate:
  *
  *   INTERNAL  → nothing else can be true of a site no caller reaches.
@@ -272,48 +395,84 @@ export function classifyReachability(input: ReachabilityInput): ReachabilityVerd
   const modifiers = (input.modifiers ?? []).filter(Boolean);
   const evidence: string[] = [];
 
+  const verdict = (
+    cls: ReachabilityClass,
+    gate: GateKind,
+    reason: string,
+    ev: string[] = evidence,
+    preconditions: string[] = [],
+  ): ReachabilityVerdict => ({ class: cls, gate, reason, evidence: ev, preconditions });
+
   // --- INTERNAL -----------------------------------------------------
   const vis = (input.visibility || "default").toLowerCase();
   if (input.isConstructor) {
-    return { class: "INTERNAL", reason: "constructor: runs once at deployment, no caller entry", evidence: ["constructor"] };
+    return verdict("INTERNAL", "UNGATED", "constructor: runs once at deployment, no caller entry", ["constructor"]);
   }
   if (vis === "internal" || vis === "private") {
     if (input.reachableFromPublicEntry) {
       evidence.push(`reached from a public entry (declared ${vis})`);
     } else if (input.hasDerivedContracts) {
-      return {
-        class: "NEEDS_READ",
-        reason: `declared ${vis} but the compilation declares contracts deriving from this one — exposure uncertain`,
-        evidence: [`visibility: ${vis}`, "derived contracts present"],
-      };
+      return verdict(
+        "NEEDS_READ",
+        "UNGATED",
+        `declared ${vis} but the compilation declares contracts deriving from this one — exposure uncertain`,
+        [`visibility: ${vis}`, "derived contracts present"],
+      );
     } else {
-      return { class: "INTERNAL", reason: `declared ${vis} with no public entry reaching it`, evidence: [`visibility: ${vis}`] };
+      return verdict("INTERNAL", "UNGATED", `declared ${vis} with no public entry reaching it`, [`visibility: ${vis}`]);
     }
   }
 
-  // --- GATED --------------------------------------------------------
+  // --- GATED_MODIFIER -----------------------------------------------
   const guardMods = modifiers.filter(isGuardModifierName);
   if (guardMods.length > 0) {
     evidence.push(`modifier: ${guardMods.join(", ")}`);
-    return { class: "GATED", reason: `privileged entry (${guardMods.join(", ")})`, evidence };
+    return verdict("GATED", "GATED_MODIFIER", `privileged entry (${guardMods.join(", ")})`);
   }
+
+  // --- GATED_REQUIRE ------------------------------------------------
   for (const { re, note } of BODY_GUARD_PATTERNS) {
     const hit = body.match(re);
     if (!hit) continue;
     const privileged = hit[1] ?? "";
     if (privileged && !isGlobalPrivileged(privileged)) continue; // per-asset, not a gate
+    // D1: `require(msg.sender == game)` restricts the caller to a CONTRACT, not
+    // to a privileged human. That is contract-only reachability — a
+    // precondition — and reporting it as a privileged gate is what made the
+    // Lottery1ETH/10ETH pair look like an owner-only game.
+    if (privileged && isContractCallerName(privileged)) continue;
     evidence.push(note);
-    return { class: "GATED", reason: `privileged entry (${note})`, evidence };
+    return verdict("GATED", "GATED_REQUIRE", `privileged entry (${note})`);
   }
 
   // --- NEEDS_READ: an unresolvable modifier -------------------------
   const unresolved = modifiers.filter((m) => isUnresolvedModifierName(m, new Set()));
   if (unresolved.length > 0) {
-    return {
-      class: "NEEDS_READ",
-      reason: `unresolved modifier(s) ${unresolved.join(", ")} — could be a guard the classifier cannot see`,
-      evidence: [`modifier: ${unresolved.join(", ")}`],
-    };
+    return verdict(
+      "NEEDS_READ",
+      "UNGATED",
+      `unresolved modifier(s) ${unresolved.join(", ")} — could be a guard the classifier cannot see`,
+      [`modifier: ${unresolved.join(", ")}`],
+    );
+  }
+
+  // --- GATED_PRECONDITION (D1) --------------------------------------
+  // Reachable, but only after acquiring something: a token, a signature, an
+  // allowlist slot, a filled round. Reported as GATED with the precondition
+  // text, never as UNGATED — "reachable at a cost" is a different verdict
+  // from "anyone can call this", and conflating them is what produced
+  // KatWalkerz and TorpedoLaunchGame as false positives.
+  const preconditions = preconditionsOf(body);
+  if (preconditions.length > 0) {
+    const texts = preconditions.map((p) => p.text);
+    evidence.push(...texts);
+    return verdict(
+      "GATED",
+      "GATED_PRECONDITION",
+      `reachable at a cost — ${preconditions.map((p) => p.text.split(":")[0]).join(", ")}`,
+      evidence,
+      texts,
+    );
   }
 
   const perItem = PER_ITEM_GUARD.test(body);
@@ -328,31 +487,47 @@ export function classifyReachability(input: ReachabilityInput): ReachabilityVerd
     if ((allCaller || allFixed) && accounting) {
       evidence.push(allCaller ? "recipient is the caller" : "recipient is fixed");
       evidence.push("amount bounded by caller-owned accounting");
-      return {
-        class: "BOUNDED",
-        reason: "moves the caller's own value within their own accounting — a withdrawal, not a drain",
-        evidence,
-      };
+      return verdict(
+        "BOUNDED",
+        "UNGATED",
+        "moves the caller's own value within their own accounting — a withdrawal, not a drain",
+      );
     }
     if (allFixed) {
       evidence.push("recipient is fixed");
-      return {
-        class: "BOUNDED",
-        reason: "moves value to a fixed recipient the caller cannot redirect",
-        evidence,
-      };
+      return verdict("BOUNDED", "UNGATED", "moves value to a fixed recipient the caller cannot redirect");
     }
     evidence.push(targets.length ? `recipient: ${targets.join(", ")}` : "value moves with no resolvable recipient");
   }
 
   // --- REACHABLE ----------------------------------------------------
-  return {
-    class: "REACHABLE",
-    reason: input.movesValue
+  return verdict(
+    "REACHABLE",
+    "UNGATED",
+    input.movesValue
       ? "unprivileged caller, value flow not bounded to their own accounting"
       : "unprivileged caller can invoke it directly",
-    evidence: evidence.length ? evidence : [`visibility: ${vis}`],
-  };
+    evidence.length ? evidence : [`visibility: ${vis}`],
+  );
+}
+
+/** Is this a "reachable at a cost" site rather than a privileged one? */
+export function isGatedAtCost(verdict: ReachabilityVerdict): boolean {
+  return verdict.gate === "GATED_PRECONDITION";
+}
+
+/** Short UI label for a gate kind. */
+export function gateLabel(gate: GateKind): string {
+  switch (gate) {
+    case "GATED_MODIFIER":
+      return "Gated (modifier)";
+    case "GATED_REQUIRE":
+      return "Gated (require)";
+    case "GATED_PRECONDITION":
+      return "Gated (precondition)";
+    case "UNGATED":
+      return "Ungated";
+  }
 }
 
 /** Only REACHABLE becomes a finding (plan §5: stop reporting counts). */
