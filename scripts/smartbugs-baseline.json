@@ -1,0 +1,290 @@
+{
+  "files": 143,
+  "parsed": 143,
+  "parseFailures": [],
+  "totalFindings": 829,
+  "filesWithFindings": 143,
+  "findingsPerFile": 5.797,
+  "categories": [
+    {
+      "category": "reentrancy",
+      "expected": 31,
+      "predicted": 28,
+      "truePositives": 2,
+      "falseNegatives": 29,
+      "falsePositives": 26,
+      "recall": 0.065,
+      "precision": 0.071
+    },
+    {
+      "category": "access_control",
+      "expected": 18,
+      "predicted": 87,
+      "truePositives": 17,
+      "falseNegatives": 1,
+      "falsePositives": 70,
+      "recall": 0.944,
+      "precision": 0.195
+    },
+    {
+      "category": "arithmetic",
+      "expected": 15,
+      "predicted": 3,
+      "truePositives": 0,
+      "falseNegatives": 15,
+      "falsePositives": 3,
+      "recall": 0,
+      "precision": 0
+    },
+    {
+      "category": "unchecked_low_level_calls",
+      "expected": 52,
+      "predicted": 40,
+      "truePositives": 26,
+      "falseNegatives": 26,
+      "falsePositives": 14,
+      "recall": 0.5,
+      "precision": 0.65
+    },
+    {
+      "category": "denial_of_service",
+      "expected": 6,
+      "predicted": 103,
+      "truePositives": 3,
+      "falseNegatives": 3,
+      "falsePositives": 100,
+      "recall": 0.5,
+      "precision": 0.029
+    },
+    {
+      "category": "bad_randomness",
+      "expected": 8,
+      "predicted": 19,
+      "truePositives": 7,
+      "falseNegatives": 1,
+      "falsePositives": 12,
+      "recall": 0.875,
+      "precision": 0.368
+    },
+    {
+      "category": "front_running",
+      "expected": 4,
+      "predicted": 0,
+      "truePositives": 0,
+      "falseNegatives": 4,
+      "falsePositives": 0,
+      "recall": 0,
+      "precision": 0
+    },
+    {
+      "category": "time_manipulation",
+      "expected": 5,
+      "predicted": 17,
+      "truePositives": 2,
+      "falseNegatives": 3,
+      "falsePositives": 15,
+      "recall": 0.4,
+      "precision": 0.118
+    },
+    {
+      "category": "short_addresses",
+      "expected": 1,
+      "predicted": 0,
+      "truePositives": 0,
+      "falseNegatives": 1,
+      "falsePositives": 0,
+      "recall": 0,
+      "precision": 0
+    },
+    {
+      "category": "other",
+      "expected": 3,
+      "predicted": 13,
+      "truePositives": 2,
+      "falseNegatives": 1,
+      "falsePositives": 11,
+      "recall": 0.667,
+      "precision": 0.154
+    }
+  ],
+  "detectorsFired": [
+    "arbitrary-dispatch-call",
+    "balance-as-price",
+    "bridge-message-auth",
+    "centralization",
+    "default-visibility",
+    "delegatecall",
+    "div-before-mul",
+    "ecrecover-zero",
+    "encode-packed",
+    "erc20-unchecked",
+    "eth-gas-stipend",
+    "extcodesize",
+    "fee-on-transfer",
+    "floating-pragma",
+    "locked-ether",
+    "missing-event",
+    "old-compiler",
+    "private-secret",
+    "read-only-reentrancy",
+    "reentrancy",
+    "selfdestruct",
+    "shadowing",
+    "signature-malleability",
+    "signature-replay",
+    "storage-gap",
+    "strict-balance",
+    "timestamp",
+    "token-drain",
+    "tx-origin",
+    "unchecked-call",
+    "unprotected-admin",
+    "unprotected-ether",
+    "unprotected-initializer",
+    "weak-randomness",
+    "zero-address"
+  ],
+  "detectorsIdle": [],
+  "detectorFiles": {
+    "eth-gas-stipend": {
+      "fired": 146,
+      "onExpectedCategory": 9
+    },
+    "old-compiler": {
+      "fired": 143,
+      "onExpectedCategory": 3
+    },
+    "floating-pragma": {
+      "fired": 139,
+      "onExpectedCategory": 3
+    },
+    "unchecked-call": {
+      "fired": 54,
+      "onExpectedCategory": 33
+    },
+    "default-visibility": {
+      "fired": 51,
+      "onExpectedCategory": 9
+    },
+    "reentrancy": {
+      "fired": 46,
+      "onExpectedCategory": 7
+    },
+    "locked-ether": {
+      "fired": 41,
+      "onExpectedCategory": 0
+    },
+    "unprotected-ether": {
+      "fired": 40,
+      "onExpectedCategory": 7
+    },
+    "timestamp": {
+      "fired": 34,
+      "onExpectedCategory": 3
+    },
+    "weak-randomness": {
+      "fired": 28,
+      "onExpectedCategory": 13
+    },
+    "zero-address": {
+      "fired": 20,
+      "onExpectedCategory": 1
+    },
+    "missing-event": {
+      "fired": 16,
+      "onExpectedCategory": 0
+    },
+    "selfdestruct": {
+      "fired": 9,
+      "onExpectedCategory": 1
+    },
+    "tx-origin": {
+      "fired": 9,
+      "onExpectedCategory": 2
+    },
+    "unprotected-admin": {
+      "fired": 7,
+      "onExpectedCategory": 4
+    },
+    "delegatecall": {
+      "fired": 6,
+      "onExpectedCategory": 6
+    },
+    "erc20-unchecked": {
+      "fired": 5,
+      "onExpectedCategory": 5
+    },
+    "centralization": {
+      "fired": 4,
+      "onExpectedCategory": 1
+    },
+    "private-secret": {
+      "fired": 4,
+      "onExpectedCategory": 2
+    },
+    "div-before-mul": {
+      "fired": 3,
+      "onExpectedCategory": 0
+    },
+    "balance-as-price": {
+      "fired": 3,
+      "onExpectedCategory": 0
+    },
+    "unprotected-initializer": {
+      "fired": 3,
+      "onExpectedCategory": 0
+    },
+    "storage-gap": {
+      "fired": 3,
+      "onExpectedCategory": 0
+    },
+    "extcodesize": {
+      "fired": 2,
+      "onExpectedCategory": 2
+    },
+    "signature-malleability": {
+      "fired": 2,
+      "onExpectedCategory": 0
+    },
+    "signature-replay": {
+      "fired": 2,
+      "onExpectedCategory": 0
+    },
+    "arbitrary-dispatch-call": {
+      "fired": 1,
+      "onExpectedCategory": 1
+    },
+    "strict-balance": {
+      "fired": 1,
+      "onExpectedCategory": 0
+    },
+    "bridge-message-auth": {
+      "fired": 1,
+      "onExpectedCategory": 0
+    },
+    "ecrecover-zero": {
+      "fired": 1,
+      "onExpectedCategory": 0
+    },
+    "encode-packed": {
+      "fired": 1,
+      "onExpectedCategory": 0
+    },
+    "token-drain": {
+      "fired": 1,
+      "onExpectedCategory": 0
+    },
+    "read-only-reentrancy": {
+      "fired": 1,
+      "onExpectedCategory": 0
+    },
+    "fee-on-transfer": {
+      "fired": 1,
+      "onExpectedCategory": 0
+    },
+    "shadowing": {
+      "fired": 1,
+      "onExpectedCategory": 0
+    }
+  }
+}

@@ -4,6 +4,7 @@ import type { PocProvenance } from "./poc-outcome.ts";
 import type { FpMatch } from "./fp-signatures.ts";
 import type { ResnetResult } from "./resnet-result.ts";
 import type { GateKind, ReachabilityClass } from "./reachability.ts";
+import type { DetectorFamily } from "./detector-registry.ts";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -81,6 +82,22 @@ export type Finding = {
   /** The precondition text of a GATED_PRECONDITION site, verbatim: the
    *  difference between "unreachable" and "reachable at a cost". */
   preconditions?: string[] | null;
+  /** Mechanism family (2026-10-27): which STORY this finding belongs to, from
+   *  detector-registry.ts. Sixty-seven detectors describe eleven mechanisms;
+   *  grouping by family is how a report stays a list of problems rather than a
+   *  count of rules. */
+  family?: DetectorFamily | null;
+  /** Why the confidence is what it is (2026-10-27). Derived, not asserted:
+   *  "resolved" (gate and site both resolved), "unresolved-gate" (a modifier
+   *  the analyzer cannot see), "precondition-text" (gated on text only),
+   *  "file-level" (no single site). A rule can claim high confidence; this
+   *  field records what the evidence actually supported. */
+  confidenceBasis?: string | null;
+  /** A published money figure in this finding's text (2026-10-27). `basis`
+   *  is "assumption" unless a live read supplied it, because the engagement's
+   *  worst error was a 400x overstated pot computed from source constants.
+   *  Consumers must render the basis next to the number. */
+  economicClaim?: { figure: string; basis: "live" | "source" | "assumption" } | null;
 };
 
 export type SelectorHit = {

@@ -146,9 +146,18 @@ import {
  *                followed through one internal helper, which is the shape Poly
  *                actually used. Same inputs now produce different records, so
  *                the archive refreshes.
+ * 2026-10-27.5 — Detection quality (plan items 1-8). Findings now carry a
+ *                mechanism family, an evidence-derived confidence basis, and
+ *                an economic-claim marker for any published money figure; the
+ *                report sorts by severity then reachability, and
+ *                sortFindingsForTriage/reportableFindings expose the queue
+ *                order. `tx.origin == msg.sender` is no longer read as a
+ *                privileged gate (it is the caller, so it is a precondition).
+ *                Same inputs now produce different records, so the archive
+ *                refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-27.4";
+export const ANALYZER_BASELINE = "2026-10-27.5";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

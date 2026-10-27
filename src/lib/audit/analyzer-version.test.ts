@@ -79,7 +79,9 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // (D1), settlement optionality (D2) and registry-dispatched logic (D3).
   // And to 2026-10-27.4 with the six-year incident sweep (2021-2026):
   // dispatch, bridge auth, governance weight, ecrecover zero, oracle staleness.
-  assert.equal(ANALYZER_BASELINE, "2026-10-27.4");
+  // And to 2026-10-27.5 with the detection-quality pass: families,
+  // evidence-derived confidence, economic-claim markers, triage order.
+  assert.equal(ANALYZER_BASELINE, "2026-10-27.5");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });

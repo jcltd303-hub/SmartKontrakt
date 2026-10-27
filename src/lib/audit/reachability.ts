@@ -244,6 +244,12 @@ function isGlobalPrivileged(text: string): boolean {
   if (/\[/.test(t)) return false;
   if (/\.owner$/.test(t)) return false;
   if (/^(?:this|address)$/.test(t)) return false;
+  // `tx.origin` (and msg.sender, which never reaches here as the right-hand
+  // side) is the CALLER, not a privileged party. `require(tx.origin ==
+  // msg.sender)` is an EOA-only check — a precondition, not a gate — and
+  // treating it as a privileged entry marked every EOA-gated function as
+  // owner-only, which is the opposite of the truth.
+  if (/^(?:tx\.origin|msg\.sender)$/.test(t)) return false;
   return true;
 }
 

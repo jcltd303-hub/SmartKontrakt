@@ -2,6 +2,7 @@ import type { AstNode, Finding, Severity } from "./types.ts";
 import type { ContractModel, FnModel, ModModel, SourceModel, StateVar } from "./model.ts";
 import { classifyFunction, isExplicitGuardModifierName } from "./reachability.ts";
 import type { GateKind } from "./reachability.ts";
+import { familyForDetector } from "./detector-registry.ts";
 import {
   DELEGATECALL_FIXED_TARGET_NOTE,
   DELEGATECALL_INITIALIZER_ENTRY_NOTE,
@@ -1234,6 +1235,113 @@ function make(
   return { id: `s${seq}`, ...partial };
 }
 
+/** Severity order used by the report sort. */
+const SEVERITY_RANK: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+
+/** Reachability order used by triage: what a human should read first. */
+const REACHABILITY_RANK: Record<string, number> = {
+  REACHABLE: 0,
+  NEEDS_READ: 1,
+  BOUNDED: 2,
+  GATED: 3,
+  INTERNAL: 4,
+};
+
+const CONFIDENCE_ORDER: Record<Finding["confidence"], number> = { high: 0, medium: 1, low: 2 };
+
+/** The lower of two confidence levels. */
+function minConfidence(a: Finding["confidence"], b: Finding["confidence"]): Finding["confidence"] {
+  return CONFIDENCE_ORDER[a] >= CONFIDENCE_ORDER[b] ? a : b;
+}
+
+/**
+ * Derive confidence from the evidence instead of trusting the rule's claim.
+ *
+ * Every rule hardcodes `confidence: "high"`, which makes the field a constant
+ * rather than a signal. Two pieces of evidence now cap it, and the reason is
+ * recorded in `confidenceBasis` so a reviewer can see why:
+ *
+ *  - a NEEDS_READ site carries a modifier the analyzer could not resolve, so
+ *    the finding might be gated: cap at medium;
+ *  - a GATED_PRECONDITION site is gated on TEXT the analyzer matched, not on a
+ *    resolved modifier or a proven role: cap at medium.
+ *
+ * Nothing is ever raised — a rule that claims low confidence keeps it.
+ */
+function calibrateConfidence(findings: Finding[]): void {
+  for (const f of findings) {
+    let cap: Finding["confidence"] = "high";
+    let basis = f.locationFn ? "resolved" : "file-level";
+    if (f.reachability === "NEEDS_READ") {
+      cap = "medium";
+      basis = "unresolved-gate";
+    } else if (f.gate === "GATED_PRECONDITION") {
+      cap = "medium";
+      basis = "precondition-text";
+    }
+    f.confidence = minConfidence(f.confidence, cap);
+    f.confidenceBasis = basis;
+  }
+}
+
+/** A money figure in finding text: the thing that must never be published raw. */
+const MONEY_FIGURE =
+  /(?:\$\s?\d[\d,.]*)|(?:\d[\d,.]*\s*(?:ETH|WETH|BTC|USD|USDC|USDT|DAI|wei|rsETH|stETH)\b)/;
+
+/**
+ * Economic discipline, enforced rather than documented.
+ *
+ * The engagement's worst single error was publishing a 400x-overstated pot
+ * (30.8 ETH against a 0.0775 ETH pool) because a source constant was treated as
+ * live state, and an 87x gas-cost overstatement from an assumed 20 gwei. The
+ * rule that prevents it is not a rule about detectors: it is that every
+ * published figure carries where it came from.
+ *
+ * Any finding whose text contains a money figure gets an `economicClaim` with
+ * basis "assumption" (no rule can prove a live read) and a caution appended to
+ * its summary. A consumer that renders the number renders the basis with it, or
+ * it is publishing an assumption as a measurement.
+ */
+function flagEconomicClaims(findings: Finding[]): void {
+  for (const f of findings) {
+    if (f.economicClaim) continue;
+    const figure = `${f.summary} ${f.walkthrough}`.match(MONEY_FIGURE);
+    if (!figure) continue;
+    f.economicClaim = { figure: figure[0].trim(), basis: "assumption" };
+    f.summary = `${f.summary} (The figure "${figure[0].trim()}" is illustrative, not a live read — fetch the live value and state its basis before publishing it.)`;
+  }
+}
+
+/** Mechanism family for every finding (item: group by story, not by rule). */
+function tagFamilies(findings: Finding[]): void {
+  for (const f of findings) {
+    if (!f.family) f.family = familyForDetector(f.detector);
+  }
+}
+
+/**
+ * Triage order: REACHABLE first, then NEEDS_READ, then the gated and bounded
+ * classes, then severity inside each. This is the order the plan asks for —
+ * "the decisive question is always who can reach this" — and it is exported so
+ * the workbench can use the same order the report does.
+ */
+export function sortFindingsForTriage<T extends Finding>(findings: readonly T[]): T[] {
+  return [...findings].sort((a, b) => {
+    const ra = a.reachability ? (REACHABILITY_RANK[a.reachability] ?? 5) : 5;
+    const rb = b.reachability ? (REACHABILITY_RANK[b.reachability] ?? 5) : 5;
+    if (ra !== rb) return ra - rb;
+    const sa = SEVERITY_RANK[a.severity];
+    const sb = SEVERITY_RANK[b.severity];
+    if (sa !== sb) return sa - sb;
+    return (a.locationLine ?? 0) - (b.locationLine ?? 0);
+  });
+}
+
+/** The only findings that are reported: the reachable ones (plan §5). */
+export function reportableFindings<T extends Finding>(findings: readonly T[]): T[] {
+  return findings.filter((f) => f.reachability === "REACHABLE");
+}
+
 /**
  * Phase 4 (2026-10-27 detection upgrade): tag findings with the class that
  * answers "who can reach this?".
@@ -1439,9 +1547,23 @@ credit += 2; // equals 1. The deposit was not rejected.`,
   // engagement measured to be uncorrelated with validity (the top-ranked
   // entry was a false positive on all six counts).
   tagReachability(findings, model);
+  // Quality post-passes (2026-10-27): family, evidence-based confidence, and
+  // the economic-claim marker. All three are annotations — none changes a
+  // severity or drops a finding.
+  tagFamilies(findings);
+  calibrateConfidence(findings);
+  flagEconomicClaims(findings);
 
-  const rank: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-  findings.sort((a, b) => rank[a.severity] - rank[b.severity] || (a.locationLine ?? 0) - (b.locationLine ?? 0));
+  // Report order: severity first (a critical gated finding still leads a
+  // low reachable one), then reachability, then line. sortFindingsForTriage is
+  // the queue order for a human reader and puts REACHABLE first outright.
+  findings.sort(
+    (a, b) =>
+      SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
+      (a.reachability ? (REACHABILITY_RANK[a.reachability] ?? 5) : 5) -
+        (b.reachability ? (REACHABILITY_RANK[b.reachability] ?? 5) : 5) ||
+      (a.locationLine ?? 0) - (b.locationLine ?? 0),
+  );
   // The cap drops the LEAST severe first (the sort above), but it used to drop
   // them SILENTLY — so a report could quietly lose real lower-severity positives
   // with no trace. The omitted count is now an explicit INFO finding, so the

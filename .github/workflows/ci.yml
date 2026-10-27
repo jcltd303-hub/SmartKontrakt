@@ -35,6 +35,17 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Detection quality gates (2026-10-27). The benchmark scores the rules
+      # against SmartBugs Curated and fails on a regression against
+      # scripts/smartbugs-baseline.json; the binding check renames each
+      # detector's emission in a copy of the source and asserts a fixture
+      # notices, so a rule cannot ship with no test that depends on it.
+      - name: Detection benchmark (SmartBugs Curated)
+        run: npm run benchmark:smartbugs
+
+      - name: Detector binding check
+        run: npm run check:binding
+
   # The only place the PoC templates and the fixture corpus are actually
   # COMPILED. The unit suite is structural, so a template that cannot compile
   # passes it — `19-signature-malleability` shipped with invalid `0x123...`
@@ -56,7 +67,9 @@ jobs:
         run: forge --version
 
       # No `npm install`: both scripts use only Node built-ins.
-      - name: Compile every fallback harness (46)
+      # The count is deliberately not in the step name — it went stale at "46"
+      # while the directory grew to 59, and a step title is not a measurement.
+      - name: Compile every fallback harness
         run: npm run check:fallbacks
 
       - name: Run the fixture corpus (29 ports, differential)
