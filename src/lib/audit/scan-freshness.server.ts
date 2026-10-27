@@ -122,18 +122,31 @@ const REQUIRED_SCHEMA_COLUMNS: { table: string; column: string; migration: strin
   { table: "contract_scans", column: "analyzer_version", migration: "0014" },
   { table: "findings", column: "corroborated", migration: "0016" },
   { table: "contract_scans", column: "resnet_json", migration: "0018" },
+  // 0012_finding_triage: bulk-persist writes all seven on every save, so a
+  // database without them fails the FIRST flush of a run rather than degrading.
+  // That is the worst possible moment to find out — 50,000 findings into a queue
+  // with nothing saved — so /start refuses up front and names the migration.
+  { table: "findings", column: "family", migration: "0012_finding_triage" },
+  { table: "findings", column: "reachability", migration: "0012_finding_triage" },
+  { table: "findings", column: "gate", migration: "0012_finding_triage" },
+  { table: "findings", column: "preconditions", migration: "0012_finding_triage" },
+  { table: "findings", column: "confidence_basis", migration: "0012_finding_triage" },
+  { table: "findings", column: "economic_figure", migration: "0012_finding_triage" },
+  { table: "findings", column: "economic_basis", migration: "0012_finding_triage" },
 ];
 
 export async function assertFreshnessSchema(sql: Sql): Promise<void> {
   const rows = await sql<{ table_name: string; column_name: string }>`
     select table_name, column_name from information_schema.columns
     where (table_name = 'contract_scans' and column_name in ('analyzer_version', 'resnet_json'))
-       or (table_name = 'findings' and column_name = 'corroborated')`;
+       or (table_name = 'findings' and column_name in ('corroborated', 'family', 'reachability',
+                                                       'gate', 'preconditions', 'confidence_basis',
+                                                       'economic_figure', 'economic_basis'))`;
   const present = new Set(rows.map((r) => `${r.table_name}.${r.column_name}`));
   const missing = REQUIRED_SCHEMA_COLUMNS.filter((c) => !present.has(`${c.table}.${c.column}`));
   if (missing.length > 0) {
     const list = missing
-      .map((c) => `${c.table}.${c.column} (migration ${c.migration} not applied)`)
+      .map((c) => `${c.table}.${c.column} (migration ${c.migration} not applied)` )
       .join(", ");
     throw new Error(
       `Required schema column(s) missing: ${list}. ` +

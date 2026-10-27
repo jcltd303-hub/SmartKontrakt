@@ -156,10 +156,29 @@ const ALL_SCHEMA = [
   "contract_scans.analyzer_version",
   "findings.corroborated",
   "contract_scans.resnet_json",
+  // 0012_finding_triage — bulk-persist writes all seven on every save.
+  "findings.family",
+  "findings.reachability",
+  "findings.gate",
+  "findings.preconditions",
+  "findings.confidence_basis",
+  "findings.economic_figure",
+  "findings.economic_basis",
 ];
 
 test("assertFreshnessSchema: passes when every required column exists", async () => {
   await assertFreshnessSchema(fakeSchema(ALL_SCHEMA));
+});
+
+test("assertFreshnessSchema: a missing triage column fails the gate, naming 0012", async () => {
+  // Without these every bulk save throws on the first flush — 50,000 findings
+  // into a queue with nothing written. /start must refuse instead.
+  for (const column of ["family", "reachability", "preconditions", "economic_basis"]) {
+    await assert.rejects(
+      assertFreshnessSchema(fakeSchema(ALL_SCHEMA.filter((c) => c !== `findings.${column}`))),
+      new RegExp(`${column}.*migration 0012_finding_triage`),
+    );
+  }
 });
 
 test("assertFreshnessSchema: a missing post-0014 column fails the gate, naming its migration", async () => {
