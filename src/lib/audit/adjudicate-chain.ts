@@ -462,6 +462,13 @@ export async function runAdjudicationChain(
   // as 'no_tests' WITHOUT calling the backend (no wasted fork run). The
   // shared gate lives in poc-outcome.ts; the PoC Audits page's Run path
   // applies the identical gate.
+  // The repair's failure reason is captured, not swallowed. `ensureExecutablePocTests`
+  // treats a throw as "attempted, still none", which is correct for control flow but
+  // discards the only evidence of WHY: a provider error, a reply the output contract
+  // rejected (no Test contract / over 40k / no pragma), or a model that answered in
+  // prose. 209 no_tests rows on one run all read "generation attempt returned no
+  // source", which is not a diagnosis.
+  let repairError: string | null = null;
   const gate = await ensureExecutablePocTests(prepared.testCode, async (instruction) => {
     try {
       return await deps.repairPoc({
@@ -470,7 +477,8 @@ export async function runAdjudicationChain(
         errorLogs: instruction,
         body: ctx.body,
       });
-    } catch {
+    } catch (err) {
+      repairError = err instanceof Error ? err.message : String(err);
       return null;
     }
   });
@@ -478,9 +486,11 @@ export async function runAdjudicationChain(
     steps.harness = "skipped"; // deliberately not executed — nothing to execute
     step("harness", "skipped");
     const gateLogs = `Finding input SHA3-256: ${sha3_256(finding.exploitSolidity ?? "")}\n${
-      prepared.note ? `${prepared.note}\n` : ""
+      prepared.note ? `Preparation note: ${prepared.note}\n` : ""
     }[SmartPoC] Not run — the prepared PoC contains no executable test function, so forge would run 0 tests. ${
       gate.generationNote ?? ""
+    }${repairError ? `Repair call failed: ${repairError}\n` : ""}${
+      prepared.testCode.trim() ? "" : "The prepared code is EMPTY — the finding carries no exploit snippet.\n"
     } Saved as no_tests: a generation gap, not an error and not a verdict on the finding.`;
     let saveError: string | null = null;
     try {
