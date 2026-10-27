@@ -21,11 +21,24 @@ bash scripts/backup-supabase.sh
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/ops/wipe-keep-caches.sql
 ```
 
+## Checking what the database actually has
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/ops/check-schema.sql
+```
+
+Reports which expected tables exist, which migrations `_migrations` records as
+applied, and the cache row counts. Worth running before a long run: the runtime
+applies a migration only if `_migrations` does not already list it, so a table
+dropped by hand never comes back and the code degrades silently — the fourbyte
+caches were missing on a live database while 0005/0006 were recorded as applied.
+
 ## The scripts
 
 | File | What it does | Reversible |
 | --- | --- | --- |
 | `wipe-keep-caches.sql` | Truncates the five scan-output tables. **Keeps** `fp_signatures` (accumulated false-positive knowledge) and the fourbyte selector caches, and copies `auditor_dispositions` into `dispositions_archive` first, because `finding_id ... ON DELETE CASCADE` would otherwise destroy every human triage decision as a side effect. | No, but the caches and triage notes survive |
+| `check-schema.sql` | Reports table presence, applied migrations and cache counts. Read-only. | — |
 | `wipe-all.sql` | Truncates all nine tables. Nothing learned survives. | No |
 | `backup-snapshot.sql` | Copies every table into a `backup_<date>` schema in the same database, and refuses to re-run over an existing snapshot. | Yes, via `restore-snapshot.sql` — but only against the same database |
 | `restore-snapshot.sql` | Restores from a `backup_<date>` schema in one transaction, in foreign-key order. | — |
