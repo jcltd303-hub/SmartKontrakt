@@ -1,0 +1,202 @@
+{
+  "description": "Real exploit transcripts vendored from SunWeb3Sec/DeFiHackLabs (MIT), with the victim addresses and chains extracted from them. VERIFIED VICTIM SOURCE COULD NOT BE FETCHED: sourcify.dev, eth.blockscout.com and api.etherscan.io are all unreachable from the build sandbox (connection refused), so the corpus still reconstructs the mechanism from the transcript rather than analysing the deployed code. These files are the provenance and the source of the real entry-point names.",
+  "pocs": {
+    "KolanHook_exp.sol": {
+      "class": "hook-callback-auth",
+      "chain": "ethereum",
+      "source": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/KolanHook_exp.sol",
+      "victims": {
+        "KOLAN_HOOK": "0x0136feCf49E0217BFd2D9551E8e7b05f174Ba8eC",
+        "BALANCER_VAULT": "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+      },
+      "entryPoints": [
+        "accept",
+        "attack",
+        "balanceOf",
+        "deposit",
+        "flashLoan",
+        "receiveFlashLoan",
+        "setUp",
+        "settle",
+        "swap",
+        "sync",
+        "take",
+        "testExploit",
+        "transfer",
+        "unlock",
+        "unlockCallback",
+        "withdraw"
+      ]
+    },
+    "SpiralHookV2_exp.sol": {
+      "class": "hook-callback-auth",
+      "chain": "ethereum",
+      "source": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/SpiralHookV2_exp.sol",
+      "victims": {},
+      "entryPoints": [
+        "approve",
+        "balanceOf",
+        "borrow",
+        "executeBorrow",
+        "lastSwapBlockOf",
+        "pump",
+        "setUp",
+        "settle",
+        "swap",
+        "sync",
+        "take",
+        "testExploit",
+        "transfer",
+        "unlock",
+        "unlockCallback"
+      ]
+    },
+    "VTSwapHook_exp.sol": {
+      "class": "hook-callback-auth",
+      "chain": "ethereum",
+      "source": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/VTSwapHook_exp.sol",
+      "victims": {
+        "VTSWAP_HOOK": "0xbf4b4A83708474528A93C123F817e7f2A0637a88"
+      },
+      "entryPoints": [
+        "_swap",
+        "execute",
+        "reserve1",
+        "setUp",
+        "swap",
+        "take",
+        "testExploit",
+        "unlock",
+        "unlockCallback"
+      ]
+    },
+    "GoldPesa_exp.sol": {
+      "class": "shared-unlock-delta-netting",
+      "chain": "base",
+      "source": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/GoldPesa_exp.sol",
+      "victims": {
+        "GPX": "0x454F8c3f1FC79a98363DB6104A20AC59A02A3133",
+        "HOOK": "0x4519e2b040ff1B64fa03aBe2AeF0BC99D7CcEaA8"
+      },
+      "entryPoints": [
+        "_burnOwnAndTake",
+        "_mintOwnUnsettled",
+        "_resolve",
+        "_swap",
+        "approve",
+        "attack",
+        "balanceOf",
+        "beforeSwap",
+        "flashLoan",
+        "modifyLiquiditiesWithoutUnlock",
+        "nextTokenId",
+        "onMorphoFlashLoan",
+        "setUp",
+        "settle",
+        "swap",
+        "sync",
+        "take",
+        "testExploit",
+        "transfer",
+        "unlock",
+        "unlockCallback"
+      ]
+    },
+    "UNCXSmartTokenVesting_exp.sol": {
+      "class": "share-accounting-double-debit",
+      "chain": "ethereum",
+      "source": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/UNCXSmartTokenVesting_exp.sol",
+      "victims": {},
+      "entryPoints": [
+        "_create",
+        "_drainEdgen",
+        "_drainLoop",
+        "_drainPaal",
+        "_drainPepe",
+        "_drainZc",
+        "_topUp",
+        "approve",
+        "attack",
+        "balanceOf",
+        "cancel",
+        "createAirdropVesting",
+        "createVesting",
+        "decimals",
+        "flash",
+        "release",
+        "setUp",
+        "settle",
+        "swap",
+        "sync",
+        "take",
+        "testExploit",
+        "topUpVesting",
+        "transfer"
+      ]
+    },
+    "FlashLoopAdapter_exp.sol": {
+      "class": "self-attested-auth",
+      "chain": "ethereum",
+      "source": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/FlashLoopAdapter_exp.sol",
+      "victims": {
+        "ADAPTER": "0x16bb8B912da187870C23eC6756bB3FAd061283d8",
+        "VICTIM1": "0xCFeDF95a3653a128dFC2E4288758A1a1850D169f",
+        "VICTIM2": "0xE3b23E47dF7cD85876aC6cB05BDb9d7cd5b28520"
+      },
+      "entryPoints": [
+        "_drain",
+        "attack",
+        "execTransactionFromModule",
+        "flashLoan",
+        "isModuleEnabled",
+        "onMorphoFlashLoan",
+        "open",
+        "repay",
+        "setUp",
+        "supply",
+        "testExploit",
+        "withdraw"
+      ]
+    },
+    "AlpsCon_exp.sol": {
+      "class": "public-key-account-trust",
+      "chain": "bsc",
+      "source": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/AlpsCon_exp.sol",
+      "victims": {},
+      "entryPoints": [
+        "claimServiceResults",
+        "executeOperation",
+        "flashLoanSimple",
+        "migrate",
+        "purchaseServiceCredits",
+        "run",
+        "setUp",
+        "swap",
+        "testExploit",
+        "testWhitelistStillTrustsHardhatAccount",
+        "withdrawFunds"
+      ]
+    },
+    "BiFi_exp.sol": {
+      "class": "idle-gap-interest-accrual",
+      "chain": "ethereum",
+      "source": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/BiFi_exp.sol",
+      "victims": {
+        "BIFI_USDT": "0x808C3bA97268dbF9695b1EC10729E09c7e67A9E3"
+      },
+      "entryPoints": [
+        "_cycle",
+        "attack",
+        "borrow",
+        "deposit",
+        "flashLoan",
+        "getLastUpdatedBlock",
+        "onMorphoFlashLoan",
+        "repay",
+        "setUp",
+        "testExploit",
+        "withdraw"
+      ]
+    }
+  }
+}

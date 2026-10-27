@@ -396,6 +396,28 @@
         "ecrecover-zero": "the fixture uses raw ecrecover without a zero-address check, which is true and is a separate defect",
         "signature-malleability": "raw ecrecover without low-s normalisation, which is true and is a separate defect"
       }
+    },
+    {
+      "id": "hook-callback-auth.kolan-accept",
+      "file": "hook-callback-auth.kolan-accept.positive.sol",
+      "detector": "hook-callback-auth",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "KolanHook (Ethereum, 1.279453 ETH) \u2014 the real entry point, from the vendored PoC",
+      "note": "accept() is an ungated settlement entry in a hook contract; the callback itself is guarded. Added after the vendored PoC showed the name-keyed rule missed the incident.",
+      "expect": [
+        "hook-callback-auth"
+      ],
+      "tolerate": [
+        "reentrancy",
+        "timestamp",
+        "unprotected-ether"
+      ],
+      "tolerateWhy": {
+        "reentrancy": "accept() writes the window and then transfers, so the call-then-write window is real",
+        "timestamp": "the expiry check uses block.timestamp, which the rule correctly reports",
+        "unprotected-ether": "accept() pays an unguarded caller, which is true and is the same defect the detector under test describes from the hook side"
+      }
     }
   ]
 }

@@ -1,12 +1,12 @@
 {
-  "cases": 24,
+  "cases": 25,
   "recall": 1,
   "crossTalk": 0,
   "controlFires": 9,
   "byDetector": {
     "hook-callback-auth": {
-      "positives": 1,
-      "hit": 1,
+      "positives": 2,
+      "hit": 2,
       "crossTalk": 0
     },
     "calldata-offset-auth": {

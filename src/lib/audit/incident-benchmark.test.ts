@@ -19,7 +19,9 @@ import { runIncidentBenchmark } from "../../../scripts/benchmark-incidents.ts";
 test("the 2026-era incident corpus scores with no recall loss and no unexplained cross-talk", () => {
   const r = runIncidentBenchmark();
 
-  assert.equal(r.cases, 24, "the corpus should hold 12 detectors x (positive + control)");
+  // 12 detectors x (positive + control) = 24, plus the real KolanHook case added
+  // from the vendored PoC after the name-keyed rule was found to miss it.
+  assert.equal(r.cases, 25, "the corpus holds 12 detector pairs plus the real KolanHook entry point");
   assert.equal(r.recall, 1, `recall fell to ${(r.recall * 100).toFixed(1)}% — a positive fixture no longer fires`);
 
   // Cross-talk is the measurement a fixture corpus is uniquely able to make:
@@ -32,9 +34,10 @@ test("the 2026-era incident corpus scores with no recall loss and no unexplained
     "unexplained cross-talk: either a rule fires on a shape it should not, or the co-fire is correct and belongs in the manifest's tolerate list with a reason",
   );
 
-  // Every detector must have both halves, or the corpus is not measuring it.
+  // Every detector must have at least one positive that fires. hook-callback-auth
+  // has two: the v4 callback shape and the real KolanHook settlement entry.
   for (const [det, bucket] of Object.entries(r.byDetector)) {
-    assert.equal(bucket.positives, 1, `${det} needs exactly one positive fixture`);
-    assert.equal(bucket.hit, 1, `${det}'s positive fixture did not fire`);
+    assert.ok(bucket.positives >= 1, `${det} needs a positive fixture`);
+    assert.equal(bucket.hit, bucket.positives, `${det} has a positive fixture that does not fire`);
   }
 });

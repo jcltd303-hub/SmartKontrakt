@@ -1899,6 +1899,31 @@ function scanIncidentClasses(
   if (!isExternallyCallable(fn)) return;
 
   // 1. hook-callback-auth (Cork, KolanHook, GoldPesa, VTSwapHook)
+  //
+  // LOOSENED 2026-10-27 (recall-first). The vendored KolanHook PoC showed the
+  // exploit calling HOOK.accept(...), NOT beforeSwap: the callback was guarded,
+  // the SETTLEMENT entry was not. A rule keyed only on v4 callback names missed
+  // the incident it was written for. It now also fires on an ungated settlement
+  // entry in a hook contract, at LOW confidence, because "a name meaning settle
+  // plus a value move" is weaker evidence than a callback name.
+  const SETTLE_ENTRY = /^(?:accept|settle|settleWindow|close|closeWindow|execute|executeWindow|finalize|fill|payout|redeem)/i;
+  const isHookContract = contract.functions.some((f) => HOOK_CALLBACKS.has(f.name));
+  if (isHookContract && !authed && SETTLE_ENTRY.test(fn.name) && HOOK_ACCOUNTING.test(clean) && !POOL_MANAGER_GATE.test(clean)) {
+    push(make({
+      severity: "high",
+      swc: null,
+      title: `${fn.name} settles hook funds with no caller check`,
+      confidence: "low",
+      detector: "hook-callback-auth",
+      summary: `This is a hook contract, and ${fn.name} is an externally callable settlement path that moves value or pool accounting with no caller check. Guarding the callback is not enough: the settlement entry is where the funds leave. This is the KolanHook shape (October 2026, 1.28 ETH): accept() was ungated once a window expired, so the attacker settled windows they did not own and _closeWindow() mispositioned the escrowed ETH around a spot price the attacker had just moved.`,
+      walkthrough: `1. A buy window expires, so its settlement becomes callable.\n2. ${fn.name} has no caller check, so anyone can settle ANY window.\n3. The settlement prices the escrowed funds at whatever spot the attacker just moved.\n4. The funds are mispositioned and bought back at the attacker's price.\n5. Gate the settlement entry to the window's owner, and price against a TWAP with a bound.`,
+      exploitSolidity: `// Settle windows you do not own, at a price you just moved.\nIHook(HOOK).${fn.name}(windowId);`,
+      remediationSolidity: `modifier onlyWindowOwner(uint256 id) { require(windows[id].owner == msg.sender, "not owner"); _; }\nfunction ${fn.name}(uint256 id) external onlyWindowOwner(id) { /* TWAP, bounded */ }`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
   if (HOOK_CALLBACKS.has(fn.name) && !authed && !POOL_MANAGER_GATE.test(clean)) {
     const movesFunds = HOOK_ACCOUNTING.test(clean);
     push(make({
@@ -2005,8 +2030,13 @@ function scanIncidentClasses(
   // into the block body, where `payable(msg.sender).transfer(...)` matched —
   // a payout read as "the caller attested itself". The 2026-era corpus caught
   // it on the registry-dispatch fixture, which has no attestation at all.
+  // LOOSENED 2026-10-27 (recall-first): the attestation is often stored first
+  // (`bool ok = IGuard(msg.sender).isEnabled(address(this)); require(ok);`),
+  // which the condition-only form missed. payable/address casts stay excluded —
+  // payable(msg.sender).transfer(...) is a payout, not an attestation.
   const selfAttest =
-    /(?:require|if)\s*\([^)]{0,300}?\b(?!payable\b|address\b)[A-Za-z_$][\w$]*\s*\(\s*msg\.sender\s*\)\s*\.\s*\w+\s*\(/.test(clean);
+    /(?:require|if)\s*\([^)]{0,300}?\b(?!payable\b|address\b)[A-Za-z_$][\w$]*\s*\(\s*msg\.sender\s*\)\s*\.\s*\w+\s*\(/.test(clean) ||
+    /\b(?:bool|var)\s+[A-Za-z_$][\w$]*\s*=\s*(?!payable\b|address\b)[A-Za-z_$][\w$]*\s*\(\s*msg\.sender\s*\)\s*\.\s*\w+\s*\(/.test(clean);
   if (!authed && selfAttest) {
     push(make({
       severity: "high",
@@ -2873,18 +2903,28 @@ function scanSettlementOptionality(
       TIMEOUT_EVIDENCE.test(f.source) &&
       !isAuthed(f, contract, model),
   );
-  if (settle.length === 0 || refund.length === 0) return;
+  // LOOSENED 2026-10-27 (recall-first): a refund-with-timeout plus ANY unguarded
+  // payout path is enough. Requiring a function literally named settle/claim
+  // missed games that settle through a differently named entry; the free option
+  // exists as long as the stake can be recovered after a timeout and nothing
+  // forces settlement. The finding is downgraded to low confidence when the
+  // settle leg is inferred rather than named.
+  const inferredSettle =
+    settle.length === 0 && fns.some((f) => PAYS_OUT.test(f.source) && !isAuthed(f, contract, model));
+  if (refund.length === 0) return;
+  if (settle.length === 0 && !inferredSettle) return;
   // A house-side settlement closes the option: if a privileged caller can
   // settle (or force-settle) the round, the player cannot simply wait.
   const forced = fns.some((f) => SETTLE_NAME.test(f.name) && isAuthed(f, contract, model));
   if (forced) return;
-  const s = settle[0]!;
+  const s = settle[0] ?? refund[0]!;
   const r = refund[0]!;
+  const inferred = settle.length === 0;
   push(make({
     severity: "high",
     swc: null,
     title: `${contract.name} lets a player choose the settlement: ${s.name} or ${r.name}`,
-    confidence: "medium",
+    confidence: inferred ? "low" : "medium",
     detector: "settlement-optionality",
     summary: `The player decides which branch settles. ${s.name} pays the win and ${r.name} returns the stake after a timeout, both callable by the same unprivileged account, and nothing on the house side forces settlement before the timeout. Win, settle. Lose, refund. The loss is free, so the bet is a free option — profitable with perfectly good randomness, which is why no entropy rule finds it. This is the BlockChainCasino shape (the only genuinely profitable finding in the eight-game set). The MAGNITUDE is a live read, not a source constant: fetch the per-bet cap, the timeout length, and the bankroll, and state them with any figure you publish.`,
     walkthrough: `1. ${s.name} is caller-initiated and pays out on a win; ${r.name} is caller-initiated and returns the stake once the timeout passes.\n2. After a losing round the player simply waits and calls ${r.name}, recovering the stake.\n3. The expected loss is therefore zero and the expected win is unchanged: the option has positive value for any non-zero win probability.\n4. Make settlement mandatory — a house-side or anyone-can-trigger settlement that resolves the round after the reveal window, with the refund path only available while the round is unresolved.`,
@@ -2917,7 +2957,13 @@ function scanRegistryDispatch(
     if (fn.body === null || !isExternallyCallable(fn)) continue;
     const body = stripCommentsAndStrings(fn.source);
     if (!PAYS_OUT.test(body)) continue;
-    const dispatch = registryDispatch(body, fn.params.map((p) => p.name).filter(Boolean));
+    // LOOSENED 2026-10-27 (recall-first): the registry slot may be indexed by
+    // something other than a parameter — msg.sender, a stored id, a loop
+    // variable. Requiring a parameter index missed the dispatches where the id
+    // arrives from storage or from the caller's identity.
+    const dispatch =
+      registryDispatch(body, fn.params.map((p) => p.name).filter(Boolean)) ??
+      registryDispatch(body, ["msg.sender", "id", "index", "i"]);
     if (!dispatch) continue;
     push(make({
       severity: "medium",

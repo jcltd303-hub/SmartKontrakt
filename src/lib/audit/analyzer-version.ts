@@ -198,9 +198,17 @@ import {
  *                payable(msg.sender).transfer(...), reading a payout as a
  *                self-attestation. Same inputs now produce different records,
  *                so the archive refreshes.
+ * 2026-10-27.10 — Recall-first loosening, driven by the real PoCs. The vendored
+ *                KolanHook transcript calls accept(), not beforeSwap, so
+ *                hook-callback-auth now also fires on an ungated settlement
+ *                entry in a hook contract (low confidence); self-attested-auth
+ *                accepts the assigned-boolean form; settlement-optionality
+ *                accepts a refund-with-timeout plus any unguarded payout;
+ *                registry-dispatched-logic accepts a non-parameter index. Same
+ *                inputs now produce different records, so the archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-27.9";
+export const ANALYZER_BASELINE = "2026-10-27.10";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

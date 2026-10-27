@@ -87,7 +87,8 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // syntax, presence-note noise, pre-0.8 arithmetic, front-running.
   // And to 2026-10-27.8 with the four deferred classes.
   // And to 2026-10-27.9 with the 2026-era corpus and the two bugs it found.
-  assert.equal(ANALYZER_BASELINE, "2026-10-27.9");
+  // And to 2026-10-27.10 with the recall-first loosening.
+  assert.equal(ANALYZER_BASELINE, "2026-10-27.10");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });

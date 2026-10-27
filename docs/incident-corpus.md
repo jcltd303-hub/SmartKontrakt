@@ -63,11 +63,44 @@ contracts, and neither was caught by the per-rule fixtures, because a fixture
 only tests the rule it was written for. That is the argument for this corpus
 existing at all.
 
+## Real sources, and what could not be fetched
+
+Eight real exploit transcripts are vendored in
+`test/fixtures/incident-corpus/real/` from **SunWeb3Sec/DeFiHackLabs** (MIT),
+with `provenance.json` recording the victim addresses, the chain, and the entry
+points extracted from each: AlpsCon, BiFi, KolanHook, UNCX, GoldPesa,
+FlashLoopAdapter, SpiralHookV2, VTSwapHook.
+
+**Verified victim source could not be fetched.** `sourcify.dev`,
+`eth.blockscout.com` and `api.etherscan.io` all refuse connections from the
+build sandbox; only `raw.githubusercontent.com` answers. So the corpus still
+reconstructs each mechanism — but from the real transcript rather than from a
+post-mortem description, which is a real step up in fidelity:
+
+- the victim addresses and chains are now recorded facts
+  (`0x4519e2b040ff1B64fa03aBe2AeF0BC99D7CcEeaA8` for the GPX hook on Base,
+  `0x16bb8B912da187870C23eC6756bB3FAd061283d8` for the FlashLoop adapter, …);
+- the entry points are the ones the exploit actually called.
+
+### The KolanHook case changed a rule
+
+The transcript showed the exploit calling **`HOOK.accept(windowId)`**, not
+`beforeSwap`. The callback was guarded; the *settlement entry* was not. A rule
+keyed on the v4 callback names therefore **missed the incident it was written
+for** — a false negative of exactly the kind this corpus exists to find.
+
+`hook-callback-auth` now also fires on an ungated settlement entry in a hook
+contract (`accept`/`settle`/`close`/`execute`/`finalize`/`payout`/`redeem` plus a
+value move), at **low confidence** because that evidence is weaker than a
+callback name. `hook-callback-auth.kolan-accept.positive.sol` pins the real
+shape.
+
 ## Limits
 
-- **Positives are reconstructions.** Recall means "the rule fires on the shape I
-  encoded", not "the rule catches the incident". Fetching the deployed, patched
-  source of the twelve contracts would be the next step up in fidelity.
+- **Positives are reconstructions from real transcripts.** Recall means "the rule
+  fires on the shape the transcript encodes", not "the rule catches the
+  deployed contract". Fetching verified victim source (Sourcify / Blockscout /
+  Etherscan) is still the next step, and is blocked from this sandbox.
 - **Controls are reconstructions of the fix.** A control that fires is either a
   rule that does not implement its invariant, or a fixture whose fix is
   incomplete — this corpus cannot tell you which.

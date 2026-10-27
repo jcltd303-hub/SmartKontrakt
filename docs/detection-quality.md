@@ -161,7 +161,31 @@ label as well as on those it does. The benchmark test's ceiling was raised from
 6.5 to 7.5 with the reason written next to it, so this cannot be re-baselined
 silently.
 
-### What is still wrong
+### Recall-first loosening (2026-10-27)
+
+Policy change, at the project owner's direction: **a missed actionable
+vulnerability is worse than a false positive**, so a rule that is tight enough
+to miss real incidents should be loosened rather than kept precise.
+
+Four gates were loosened. Each keeps its evidence trail in the code with a
+`LOOSENED 2026-10-27` comment, and the weaker cases report **low confidence** so
+triage can still sort them:
+
+| Rule | Was | Now also fires on | Why |
+| --- | --- | --- | --- |
+| `hook-callback-auth` | a v4 callback name | an ungated settlement entry (`accept`/`settle`/`close`/`execute`/`finalize`/`payout`/`redeem`) in a hook contract | the real KolanHook exploit calls `accept()`, not `beforeSwap` — the name-keyed rule missed the incident |
+| `self-attested-auth` | a cast inside a `require`/`if` condition | the assigned-boolean form (`bool ok = IGuard(msg.sender).isEnabled(…); require(ok);`) | that is how the adapter in the real PoC is written |
+| `settlement-optionality` | a settle-named function **and** a refund | a refund-with-timeout **and any** unguarded payout path | games settle through entries that are not named `settle`; the option exists regardless of the name |
+| `registry-dispatched-logic` | a registry slot indexed by a parameter | a slot indexed by `msg.sender`, a stored id, or a loop variable | the id often arrives from storage or from the caller's identity |
+
+Measured cost: **SmartBugs unchanged** (1014 findings, 7.091 per contract, no
+per-category movement) — the loosened paths need modern constructs the 2018
+corpus does not have. The 2026-era corpus gained the real KolanHook case and
+holds recall 100% with cross-talk 0 once three co-fires on that case are
+justified (they are all true of it: it pays an unguarded caller, checks
+`block.timestamp`, and writes-then-transfers).
+
+## What is still wrong
 
 1. **`denial_of_service` recall 0.167.** The real DoS detectors
    (`strict-balance`, `gas-estimator-dos`, `msg-value-loop`, `zero-address`,
