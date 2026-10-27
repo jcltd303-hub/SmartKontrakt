@@ -588,7 +588,11 @@ export function bytecodeAnalysedNote(identity?: BlockscoutIdentity | null): stri
  */
 async function fetchSourcifySource(address: string, chainIdNumber: number): Promise<VerifiedSourceMatch | null> {
   try {
-    const url = `https://sourcify.dev/server/files/any/${chainIdNumber}/${address}`;
+    // Sourcify v2. The v1 path this used (`/server/files/any/...`) was turned off
+    // on 2026-07-07 — for four months every Sourcify lookup here failed, so every
+    // verified contract silently fell through to Blockscout or to bytecode-only
+    // analysis. v2 returns { sources: { "<path>": { content } } }.
+    const url = `https://sourcify.dev/server/v2/contract/${chainIdNumber}/${address}?fields=sources`;
     const res = await withRetry(async () => {
       await sourcifyLimiter.acquire();
       const controller = new AbortController();
@@ -601,18 +605,32 @@ async function fetchSourcifySource(address: string, chainIdNumber: number): Prom
     }, { retries: 2, baseDelayMs: 1000 });
     if (!res.ok) return null;
 
-    const data = (await res.json()) as { files?: { name: string; content: string }[] };
-    if (!data || !Array.isArray(data.files) || data.files.length === 0) return null;
+    const data = (await res.json()) as {
+      sources?: Record<string, { content?: string }>;
+      // The v1 shape, kept only so an old mirror or a cached proxy response still
+      // parses; v2 never sends it.
+      files?: { name: string; content: string }[];
+    };
+    if (!data) return null;
+
+    let files: { name: string; content: string }[] = [];
+    if (data.sources && typeof data.sources === "object") {
+      files = Object.entries(data.sources)
+        .filter(([, v]) => typeof v?.content === "string")
+        .map(([name, v]) => ({ name, content: v.content as string }));
+    } else if (Array.isArray(data.files)) {
+      files = data.files;
+    }
+    if (files.length === 0) return null;
 
     // Look for solidity files
-    const solFiles = data.files.filter((f) => f.name.endsWith(".sol"));
+    const solFiles = files.filter((f) => f.name.endsWith(".sol"));
     if (solFiles.length === 0) return null;
 
     // Combine or pick primary
     const mainFile = solFiles.find((f) => !f.name.includes("/") && !f.name.toLowerCase().includes("interface")) ?? solFiles[0];
-    const source = solFiles.length === 1 || !mainFile
-      ? solFiles.map((f) => `// File: ${f.name}\n${f.content}`).join("\n\n")
-      : mainFile.content;
+    const ordered = mainFile ? [mainFile, ...solFiles.filter((f) => f !== mainFile)] : solFiles;
+    const source = ordered.map((f) => `// File: ${f.name}\n${f.content}`).join("\n\n");
 
     const name = mainFile?.name.replace(/\.sol$/, "") ?? "VerifiedContract";
     // Scope detection to the deployed contract only when the match is a
