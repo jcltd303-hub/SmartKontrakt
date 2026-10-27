@@ -6,6 +6,8 @@ File-level scoring: a category counts as predicted for a contract when any findi
 
 Total findings: **1014** across 143 contracts (**7.091** per contract). 143 contracts produced at least one finding.
 
+**Contracts caught: 117 of 143 (81.8%)** — a contract counts as caught when at least one of its labelled categories was predicted.
+
 | Category | Contracts | Predicted | TP | FN | FP | Recall | Precision |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | reentrancy | 31 | 54 | 22 | 9 | 32 | 0.71 | 0.407 |
@@ -18,6 +20,37 @@ Total findings: **1014** across 143 contracts (**7.091** per contract). 143 cont
 | time_manipulation | 5 | 17 | 2 | 3 | 15 | 0.4 | 0.118 |
 | short_addresses | 1 | 0 | 0 | 1 | 0 | 0 | 0 |
 | other | 3 | 13 | 2 | 1 | 11 | 0.667 | 0.154 |
+
+## Contracts missed entirely
+
+No labelled category was predicted for these. A contract here is not "clean" — it is one the rules do not describe at all.
+
+- `dataset/access_control/arbitrary_location_write_simple.sol`
+- `dataset/arithmetic/BECToken.sol`
+- `dataset/arithmetic/integer_overflow_benign_1.sol`
+- `dataset/bad_randomness/random_number_generator.sol`
+- `dataset/denial_of_service/auction.sol`
+- `dataset/denial_of_service/dos_address.sol`
+- `dataset/denial_of_service/dos_number.sol`
+- `dataset/denial_of_service/dos_simple.sol`
+- `dataset/denial_of_service/send_loop.sol`
+- `dataset/front_running/ERC20.sol`
+- `dataset/front_running/eth_tx_order_dependence_minimal.sol`
+- `dataset/front_running/odds_and_evens.sol`
+- `dataset/other/name_registrar.sol`
+- `dataset/reentrancy/0x7541b76cb60f4c60af330c208b0623b7f54bf615.sol`
+- `dataset/reentrancy/0x7b368c4e805c3870b6c49a3f1f49f69af8662cf3.sol`
+- `dataset/reentrancy/0x93c32845fae42c83a70e5f06214c8433665c2ab5.sol`
+- `dataset/reentrancy/0x96edbe868531bd23a6c05e9d0c424ea64fb1b78b.sol`
+- `dataset/reentrancy/0xbe4041d55db380c5ae9d4a9b9703f1ed4e7e3888.sol`
+- `dataset/reentrancy/0xcead721ef5b11f1a7b530171aab69b16c5e66b6e.sol`
+- `dataset/reentrancy/0xf015c35649c82f5467c9c74b7f28ee67665aad68.sol`
+- `dataset/reentrancy/modifier_reentrancy.sol`
+- `dataset/reentrancy/reentrancy_bonus.sol`
+- `dataset/short_addresses/short_address_example.sol`
+- `dataset/time_manipulation/ether_lotto.sol`
+- `dataset/time_manipulation/roulette.sol`
+- `dataset/time_manipulation/timed_crowdsale.sol`
 
 ## Noise leaders
 

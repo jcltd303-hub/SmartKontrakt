@@ -193,6 +193,41 @@ holds recall 100% with cross-talk 0 once three co-fires on that case are
 justified (they are all true of it: it pays an unguarded caller, checks
 `block.timestamp`, and writes-then-transfers).
 
+## How much of SmartBugs we catch (2026-10-27)
+
+**117 of 143 contracts — 81.8%.** A contract counts as caught when at least one
+of its labelled categories was predicted. The number is now in the report
+(`docs/smartbugs-benchmark.md`), in the baseline, on the console line, and gated
+in the suite, because per-category recall is a diagnostic and this is the
+question people actually ask.
+
+The 26 misses, by category:
+
+| Category | Missed | Contracts |
+| --- | --- | --- |
+| reentrancy | 9 | seven `0x…` contracts, plus `modifier_reentrancy`, `reentrancy_bonus` |
+| denial_of_service | 5 | `auction`, `dos_address`, `dos_number`, `dos_simple`, `send_loop` — **parked at the owner's direction** |
+| front_running | 3 | `ERC20`, `eth_tx_order_dependence_minimal`, `odds_and_evens` |
+| time_manipulation | 3 | `ether_lotto`, `roulette`, `timed_crowdsale` |
+| arithmetic | 2 | `BECToken`, `integer_overflow_benign_1` |
+| access_control | 1 | `arbitrary_location_write_simple` |
+| bad_randomness | 1 | `random_number_generator` |
+| other | 1 | `name_registrar` |
+| short_addresses | 1 | `short_address_example` — retired deliberately (the class died with the 0.5 ABI decoder) |
+
+Two of those are structural rather than tuning:
+
+- **`modifier_reentrancy`**: the reentrancy is inside a *modifier*, and
+  `walkFn` only walks function bodies. Modifier bodies are never analysed for
+  call-then-write ordering, so this whole class is invisible. That is the
+  biggest single gap in the reentrancy column and it is not a threshold to
+  loosen — it is a missing traversal.
+- **`random_number_generator`**: the entropy is `salt = block.timestamp` stored
+  in a state variable and then combined by multiplication (`salt * block.number
+  / 3`, `salt % 300`). `weak-randomness` looks for block data inside a hash or a
+  modulo in the same function, so entropy laundered through a state variable is
+  missed. A recall-first loosening would catch it at low confidence.
+
 ## What is still wrong
 
 1. **`denial_of_service` recall 0.167.** The real DoS detectors

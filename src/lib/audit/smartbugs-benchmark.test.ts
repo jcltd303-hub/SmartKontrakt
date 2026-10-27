@@ -33,6 +33,18 @@ test("detection benchmark does not regress against the committed baseline", () =
   // two largest categories bought 0.9 more findings per contract.
   assert.ok(result.findingsPerFile <= 7.5, `noise rose to ${result.findingsPerFile} findings per contract`);
 
+  // The headline number, and the floor for it. Per-category recall is the
+  // diagnostic; this is what "how much of SmartBugs do we catch" means. 117 of
+  // 143 (81.8%) as of 2026-10-27; the 26 misses are listed in the report, and
+  // the biggest structural one is reentrancy inside a MODIFIER (modifier bodies
+  // are not walked) — the rest are 5 denial_of_service (parked), 3
+  // front_running, 3 time_manipulation, 2 arithmetic, and one each of
+  // access_control / bad_randomness / other / short_addresses (retired).
+  assert.ok(
+    result.contractsCaught >= 117,
+    `contracts caught fell to ${result.contractsCaught} of ${result.parsed}`,
+  );
+
   const byId = Object.fromEntries(result.categories.map((c) => [c.category, c]));
   // Categories with real coverage must not silently lose it.
   assert.ok((byId["unchecked_low_level_calls"]?.recall ?? 0) >= 0.45, "low-level-call recall fell below 0.45");

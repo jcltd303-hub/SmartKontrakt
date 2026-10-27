@@ -107,6 +107,11 @@ export type BenchmarkResult = {
   /** detector -> files it fired on, and of those, how many were labelled with
    *  its own category. The second number is the noise leader board. */
   detectorFiles: Record<string, { fired: number; onExpectedCategory: number }>;
+  /** Contracts where at least one labelled category was predicted — the
+   *  headline coverage number. */
+  contractsCaught: number;
+  /** Contract paths with no labelled category predicted. */
+  contractsMissed: string[];
 };
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
@@ -123,6 +128,8 @@ export function runBenchmark(): BenchmarkResult {
   const fp = new Map<string, number>();
   const detectorsFired = new Set<string>();
   const detectorFiles = new Map<string, { fired: number; onExpectedCategory: number }>();
+  let contractsCaught = 0;
+  const contractsMissed: string[] = [];
   const parseFailures: string[] = [];
   let totalFindings = 0;
   let filesWithFindings = 0;
@@ -152,6 +159,8 @@ export function runBenchmark(): BenchmarkResult {
         .filter((f) => !HYGIENE_DETECTORS.has(f.detector))
         .map((f) => smartbugsCategoryForDetector(f.detector)),
     );
+    if ([...predicted].some((c) => expected.includes(c))) contractsCaught += 1;
+    else contractsMissed.push(entry.path);
     for (const f of report.findings) {
       detectorsFired.add(f.detector);
       const row = detectorFiles.get(f.detector) ?? { fired: 0, onExpectedCategory: 0 };
@@ -200,6 +209,8 @@ export function runBenchmark(): BenchmarkResult {
     detectorsFired: [...detectorsFired].sort(),
     detectorsIdle: [],
     detectorFiles: Object.fromEntries([...detectorFiles.entries()].sort((a, b) => b[1].fired - a[1].fired)),
+    contractsCaught,
+    contractsMissed,
   };
 }
 
@@ -215,6 +226,12 @@ function markdown(result: BenchmarkResult, previous?: BenchmarkResult): string {
   lines.push("");
   lines.push(`Total findings: **${result.totalFindings}** across ${result.parsed} contracts (**${result.findingsPerFile}** per contract). ${result.filesWithFindings} contracts produced at least one finding.`);
   lines.push("");
+  // The headline. Per-category recall is the diagnostic; this is the number a
+  // client asks for, and it was missing from the report until 2026-10-27.
+  lines.push(
+    `**Contracts caught: ${result.contractsCaught} of ${result.parsed} (${((result.contractsCaught / result.parsed) * 100).toFixed(1)}%)** — a contract counts as caught when at least one of its labelled categories was predicted.`,
+  );
+  lines.push("");
   lines.push("| Category | Contracts | Predicted | TP | FN | FP | Recall | Precision |");
   lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const c of result.categories) {
@@ -225,6 +242,12 @@ function markdown(result: BenchmarkResult, previous?: BenchmarkResult): string {
       `| ${c.category} | ${c.expected} | ${c.predicted} | ${c.truePositives} | ${c.falseNegatives} | ${c.falsePositives} | ${mark(c.recall, delta?.recall)} | ${mark(c.precision, delta?.precision)} |`,
     );
   }
+  lines.push("");
+  lines.push("## Contracts missed entirely");
+  lines.push("");
+  lines.push("No labelled category was predicted for these. A contract here is not \"clean\" — it is one the rules do not describe at all.");
+  lines.push("");
+  for (const miss of result.contractsMissed) lines.push(`- \`${miss}\``);
   lines.push("");
   lines.push("## Noise leaders");
   lines.push("");
@@ -268,6 +291,9 @@ function main() {
   }
   console.log(
     `\n${result.totalFindings} findings over ${result.parsed} contracts (${result.findingsPerFile}/contract); ${result.parseFailures.length} not analysed`,
+  );
+  console.log(
+    `CONTRACTS CAUGHT: ${result.contractsCaught} of ${result.parsed} (${((result.contractsCaught / result.parsed) * 100).toFixed(1)}%) — ${result.contractsMissed.length} contracts have no labelled category predicted`,
   );
 
   if (reportPath) {
