@@ -149,11 +149,14 @@ as the PoC Audits page's Adjudicate button, no human tap:
   verdict saved onto the finding row (plus the run-history row).
   Without an `OPENROUTER_API_KEY`, generation/repair return nothing
   and outcomes still save honestly — template/snippet PoCs run.
-- **Budget:** `autoPocCap` caps **backend attempts** per run
-  (default 25, `0` = unlimited). An attempt is a finding whose chain
-  actually sent new PoC code to the backend (one run, plus one
-  compile-repair re-run at most), sequential — the backend runs one
-  PoC at a time.
+- **No attempt cap (removed 2026-10-27).** Every PoC-eligible
+  finding is attempted. There used to be an `autoPocCap` (default 25
+  backend attempts per run) and it was a silent recall ceiling: every
+  flagged finding past the 25th kept a static-only record, which is
+  precisely where a PoC is most useful. The identical-code dedupe
+  below already removes the duplicate work the cap was protecting the
+  backend from, and the circuit breaker still stops a broken backend.
+  Size a run by how long you are willing to wait, not by a constant.
 - **Identical-draft dedupe:** sibling findings of the same detector
   often prepare byte-identical PoC code. Within one entry, the code
   that would be sent to the backend is hashed (SHA-256); a repeat is

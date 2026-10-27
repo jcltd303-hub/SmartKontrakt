@@ -18,15 +18,15 @@
  *   GET  /status   — state, totals, current address, last flush/error
  *   POST /start    — { addressesFile, chainId?, aiSecondPass?, delayMs?,
  *                     deepAgent?, deepAgentMaxItems?, deepAgentMinSeverity?,
- *                     autoPoc?, autoPocCap? }
+ *                     autoPoc? }
  *                     autoPoc (default ON) runs the adjudication chain —
  *                     LLM-gen -> Foundry run -> Supabase save — for every
  *                     PoC-eligible high/critical finding right after its
- *                     entry is persisted. autoPocCap caps backend
- *                     attempts per run (default 25, 0 = unlimited;
- *                     identical-code shared saves are free). A circuit
- *                     breaker stops auto-PoC for the run after 3
- *                     consecutive backend-infra failures.
+ *                     entry is persisted. There is NO attempt cap — every
+ *                     PoC-eligible finding is attempted (identical-code
+ *                     shared saves cost nothing). A circuit breaker stops
+ *                     auto-PoC for the run after 3 consecutive
+ *                     backend-infra failures.
  *                     deepAgent runs the Deep Agent loop (propose ->
  *                     fork-PoC -> reward -> deeper) for flagged addresses
  *                     only: >= 1 finding at deepAgentMinSeverity
@@ -169,9 +169,7 @@ const { runResnetNode } = await import("../src/lib/image-ml/resnet-node.server.t
 const {
   runAutoPocForEntry,
   selectAutoPocFindings,
-  autoPocCapReached,
   newAutoPocRunState,
-  WORKER_AUTO_POC_DEFAULT_CAP,
 } = await import("./auto-poc.ts");
 
 // ------------------------------------------------------------------ config --
@@ -223,7 +221,6 @@ type Status = {
   deepAgentConfirmed: number;
   deepAgentBackendDown: boolean;
   autoPoc: boolean;
-  autoPocCap: number;
   autoPocAttempted: number;
   autoPocPassed: number;
   autoPocFailed: number;
@@ -258,7 +255,6 @@ let status: Status = {
   deepAgentConfirmed: 0,
   deepAgentBackendDown: false,
   autoPoc: true,
-  autoPocCap: WORKER_AUTO_POC_DEFAULT_CAP,
   autoPocAttempted: 0,
   autoPocPassed: 0,
   autoPocFailed: 0,
@@ -276,7 +272,7 @@ let runPromise: Promise<void> | null = null;
 // flush in batches), so the loop tracks what it has already done.
 // Cleared on every /start; survives pause/resume with runCtx.
 const runSeen = new Set<string>();
-// Auto-PoC per-run state (tally + cap/breaker bookkeeping). Owned here
+// Auto-PoC per-run state (tally + breaker bookkeeping). Owned here
 // because the /status counters read it; reset on every /start.
 let autoPocState = newAutoPocRunState();
 let pauseRequested = false;
@@ -589,7 +585,9 @@ async function runLoop(): Promise<void> {
         !autoPocState.breakerTripped &&
         selectAutoPocFindings(result.report, result.rawBody).length > 0
       ) {
-        if (!autoPocCapReached(autoPocState, status.autoPocCap)) await flush();
+        // Flush before spending backend time: the static record for every
+        // entry so far is durable before a slow PoC run starts.
+        await flush();
         const ap = await runAutoPocForEntry(
           autoPocState,
           {
@@ -602,7 +600,6 @@ async function runLoop(): Promise<void> {
           {
             backendUrl:
               process.env.FOUNDRY_BACKEND_URL?.trim() || WORKER_DEEP_AGENT_DEFAULT_BACKEND_URL,
-            cap: status.autoPocCap,
             enabled: status.autoPoc,
           },
         );
@@ -772,13 +769,6 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   // honestly (template/snippet PoCs still run); aiSecondPass and
   // deepAgent keep their hard requirement above.
   const autoPoc = body.autoPoc !== false;
-  // Attempt cap per run (chain attempts, not findings scanned).
-  // 0 = unlimited (not recommended on a 43k run).
-  const autoPocCap =
-    typeof body.autoPocCap === "number" && Number.isFinite(body.autoPocCap) && body.autoPocCap >= 0
-      ? Math.floor(body.autoPocCap)
-      : WORKER_AUTO_POC_DEFAULT_CAP;
-
   let text: string;
   try {
     text = await fsp.readFile(addressesFile, "utf8");
@@ -855,7 +845,6 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     deepAgentConfirmed: 0,
     deepAgentBackendDown: false,
     autoPoc,
-    autoPocCap,
     autoPocAttempted: 0,
     autoPocPassed: 0,
     autoPocFailed: 0,
@@ -873,9 +862,9 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   });
   writeStatusFile();
   console.log(
-    `[worker] started: ${items.length} addresses (${skipped} current, skipped; ${stale} stale, re-analyzing), refresh=${refresh}, chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems}), autoPoc=${autoPoc} (cap=${autoPocCap === 0 ? "unlimited" : autoPocCap})`,
+    `[worker] started: ${items.length} addresses (${skipped} current, skipped; ${stale} stale, re-analyzing), refresh=${refresh}, chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems}), autoPoc=${autoPoc} (no attempt cap)`,
   );
-  sendJson(res, 200, { ok: true, started: true, total: items.length, skipped, stale, refresh, deepAgent, deepAgentMaxItems, deepAgentMinSeverity, autoPoc, autoPocCap });
+  sendJson(res, 200, { ok: true, started: true, total: items.length, skipped, stale, refresh, deepAgent, deepAgentMaxItems, deepAgentMinSeverity, autoPoc });
 }
 
 // Which database is the worker actually talking to? The dashboard-shows-0

@@ -49,13 +49,15 @@
  *   no_tests, the value-guard skip, a compile error); infra outcomes
  *   (backend unreachable, RPC/fork failure) are never cached — they
  *   carry no information about the code.
- * - Per-run cap (autoPocCap, default 25; 0 = unlimited): the cap
- *   counts BACKEND ATTEMPTS — findings whose chain actually sent new
- *   code to the backend. Shared saves consume no slot. The cap is
- *   checked before each finding's chain (sharing can only be known
- *   after generation), so once the backend budget is spent the
- *   entry's remaining findings wait — logged once, pipeline
- *   continues static-only.
+ * - No per-run cap (removed 2026-10-27). There used to be one
+ *   (`autoPocCap`, default 25 attempts). It counted BACKEND ATTEMPTS
+ *   and stopped the run once spent, so every flagged finding past the
+ *   25th kept a static-only record — a silent recall ceiling on
+ *   exactly the findings a PoC is most useful for. The identical-code
+ *   cache below already removes the duplicate work the cap was
+ *   protecting the backend from, and the circuit breaker still stops
+ *   a broken backend. What remains is a budget question, and the
+ *   answer belongs to the operator's run size, not to a constant.
  * - Circuit breaker: 3 CONSECUTIVE infra outcomes (backend
  *   unreachable / RPC-or-fork failure — an "error" verdict that is
  *   not attributable to the PoC) trip it for the rest of the run;
@@ -93,13 +95,13 @@ import { externalTokenCandidate, fourbyteForStoredReport } from "../src/lib/audi
 import type { FourbyteResults } from "../src/lib/audit/fourbyte.ts";
 import type { Finding, Report } from "../src/lib/audit/types.ts";
 
-export const WORKER_AUTO_POC_DEFAULT_CAP = 25;
 /** Consecutive infra outcomes that trip the per-run circuit breaker. */
 export const WORKER_AUTO_POC_BREAKER_THRESHOLD = 3;
 
 export type AutoPocTally = {
-  /** Findings whose chain sent at least one new PoC to the backend —
-   *  the cap counts these (see the header's dedupe/cap rules). */
+  /** Findings whose chain sent at least one new PoC to the backend.
+   *  A finding served entirely from the identical-code cache is a
+   *  `shared` save and does not appear here. */
   attempted: number;
   passed: number;
   failed: number;
@@ -117,7 +119,6 @@ export type AutoPocRunState = {
   consecutiveInfra: number;
   /** Breaker tripped: no more auto-PoC this run. */
   breakerTripped: boolean;
-  capLogged: boolean;
   breakerLogged: boolean;
 };
 
@@ -126,14 +127,8 @@ export function newAutoPocRunState(): AutoPocRunState {
     tally: { attempted: 0, passed: 0, failed: 0, errors: 0, skipped: 0, shared: 0 },
     consecutiveInfra: 0,
     breakerTripped: false,
-    capLogged: false,
     breakerLogged: false,
   };
-}
-
-/** True when the per-run attempt cap is reached (cap 0 = unlimited). */
-export function autoPocCapReached(state: AutoPocRunState, cap: number): boolean {
-  return cap > 0 && state.tally.attempted >= cap;
 }
 
 /**
@@ -289,7 +284,6 @@ export type AutoPocEntryInput = {
 export type AutoPocOptions = {
   backendUrl: string;
   /** Max chain attempts this run (0 = unlimited). */
-  cap: number;
   /** The /start autoPoc flag — false makes every call a no-op. */
   enabled: boolean;
 };
@@ -459,20 +453,11 @@ export async function runAutoPocForEntry(
 
   for (const { ord } of candidates) {
     if (state.breakerTripped) break;
-    if (autoPocCapReached(state, opts.cap)) {
-      if (!state.capLogged) {
-        state.capLogged = true;
-        deps.log(
-          `[worker] auto-poc per-run cap reached (${opts.cap}) — remaining flagged findings keep static-only records`,
-        );
-      }
-      break;
-    }
     const finding = dbFindings[ord]!;
     // Backend accounting for THIS finding, filled by the runPoc dep
-    // below: the cap counts findings that sent new code to the
-    // backend (realBackendCalls > 0); a finding served entirely from
-    // the identical-code cache is a shared save instead.
+    // below: realBackendCalls counts findings that sent new code to
+    // the backend; a finding served entirely from the identical-code
+    // cache is a shared save instead.
     let realBackendCalls = 0;
     let sharedHits = 0;
     // The most recent backend interaction for THIS attempt — the
@@ -604,7 +589,7 @@ export async function runAutoPocForEntry(
 
   const note =
     processed === 0
-      ? "cap reached — skipped"
+      ? "nothing to run"
       : `${attempted} attempted: ${delta.passed} passed, ${delta.failed} failed, ${delta.errors} error(s), ${delta.skipped} skipped` +
         (delta.shared > 0 ? `, ${delta.shared} shared` : "") +
         (state.breakerTripped ? " — circuit breaker tripped" : "");

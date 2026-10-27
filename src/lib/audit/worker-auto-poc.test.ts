@@ -14,7 +14,6 @@ import {
   runAutoPocForEntry,
   selectAutoPocFindings,
   newAutoPocRunState,
-  autoPocCapReached,
   type AutoPocDeps,
   type AutoPocOptions,
 } from "../../../pipeline-worker/auto-poc.ts";
@@ -28,7 +27,7 @@ contract PoC is Test {
 }`;
 
 // Distinct-code variants: tests whose subject is per-run sequencing
-// (cap, breaker) or independent runs need findings whose prepared
+// (breaker) or independent runs need findings whose prepared
 // PoC code DIFFERS — identical code now dedupes within an entry
 // (identical-draft dedupe, see the dedupe suite below), which would
 // silently turn their later findings into shared saves.
@@ -132,7 +131,7 @@ function makeDeps(overrides: Partial<AutoPocDeps> = {}) {
   return { deps, calls, saved, logs };
 }
 
-const OPTS: AutoPocOptions = { backendUrl: "http://127.0.0.1:8787", cap: 25, enabled: true };
+const OPTS: AutoPocOptions = { backendUrl: "http://127.0.0.1:8787", enabled: true };
 const entry = (report: Report, scanId = "scan-1") => ({
   scanId,
   address: "0x3dfd23a6c5e8bbcfc9581d2e864a68feb6a076d3",
@@ -276,27 +275,28 @@ describe("runAutoPocForEntry", () => {
     assert.equal(state.consecutiveInfra, 0);
   });
 
-  it("(d) the per-run cap is enforced and logged once", async () => {
+  it("(d) there is no attempt cap: every finding in every entry is attempted", async () => {
+    // Removed 2026-10-27. The cap (default 25 backend attempts per run) was a
+    // silent recall ceiling — every flagged finding past the 25th kept a
+    // static-only record. This test used to assert the cap stopped at 2; it now
+    // asserts the opposite, including across entries, because a cap that
+    // resets per entry would be just as quiet a ceiling.
     const { deps, calls, logs } = makeDeps();
     const state = newAutoPocRunState();
-    const opts = { ...OPTS, cap: 2 };
-    // Distinct code per finding: the cap counts backend attempts, so
-    // each finding must be one — identical code would share instead.
     const report = makeReport([
       makeFinding(),
       makeFinding({ title: "Two", detector: "access", exploitSolidity: TEST_SNIPPET_B }),
       makeFinding({ title: "Three", detector: "overflow", exploitSolidity: TEST_SNIPPET_C }),
     ]);
-    const res = await runAutoPocForEntry(state, entry(report), opts, deps);
-    assert.equal(res.attempted, 2);
-    assert.equal(calls.backend, 2);
-    assert.equal(autoPocCapReached(state, 2), true);
-    assert.equal(logs.filter((l) => l.includes("cap reached")).length, 1);
-    // Next entry: nothing attempted, no second cap log line.
-    const res2 = await runAutoPocForEntry(state, entry(report, "scan-2"), opts, deps);
-    assert.equal(res2.attempted, 0);
-    assert.equal(calls.backend, 2);
-    assert.equal(logs.filter((l) => l.includes("cap reached")).length, 1);
+
+    const res = await runAutoPocForEntry(state, entry(report), OPTS, deps);
+    assert.equal(res.attempted, 3);
+    assert.equal(calls.backend, 3);
+
+    const res2 = await runAutoPocForEntry(state, entry(report, "scan-2"), OPTS, deps);
+    assert.equal(res2.attempted, 3, "the second entry is attempted in full too");
+    assert.equal(calls.backend, 6);
+    assert.equal(logs.filter((l) => l.includes("cap reached")).length, 0);
   });
 
   it("(e) circuit breaker: 3 consecutive infra failures trip it; entries still complete", async () => {
@@ -464,26 +464,22 @@ describe("auto-PoC identical-draft dedupe", () => {
     assert.doesNotMatch(saved[1]!.output, /shared run/);
   });
 
-  it("a shared save does not consume a cap slot (cap = backend attempts)", async () => {
-    const { deps, calls, saved, logs } = makeDeps();
+  it("a shared save does not consume a backend run", async () => {
+    const { deps, calls, saved } = makeDeps();
     const state = newAutoPocRunState();
-    const opts = { ...OPTS, cap: 2 };
     const report = makeReport([
       makeFinding(),
       makeFinding({ title: "Identical twin", detector: "access" }),
       makeFinding({ title: "Other code", detector: "overflow", exploitSolidity: TEST_SNIPPET_B }),
     ]);
-    const res = await runAutoPocForEntry(state, entry(report), opts, deps);
-    // A ran (slot 1), its identical twin shared (no slot), and the
-    // different-code finding still got slot 2 — had the shared save
-    // consumed a slot, the third finding would have hit the cap.
+    const res = await runAutoPocForEntry(state, entry(report), OPTS, deps);
+    // A ran, its identical twin shared without a backend call, and the
+    // different-code finding got its own run: three verdicts, two runs.
     assert.equal(calls.backend, 2);
     assert.equal(saved.length, 3);
     assert.equal(res.attempted, 2);
     assert.equal(res.shared, 1);
     assert.equal(res.passed, 3);
-    assert.equal(autoPocCapReached(state, 2), true);
-    assert.equal(logs.filter((l) => l.includes("cap reached")).length, 0);
   });
 
   it("a compile-error outcome is shared too — it is a property of the code alone", async () => {
