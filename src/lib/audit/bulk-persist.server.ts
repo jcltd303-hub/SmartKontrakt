@@ -97,6 +97,13 @@ export async function writeAuditBatch(
     walkthrough: f.walkthrough, exploit_solidity: f.exploitSolidity,
     remediation_solidity: f.remediationSolidity, location_fn: f.locationFn,
     location_line: f.locationLine, snippet: f.snippet,
+    // Migration 0012: the triage layer. Without these the reachability and
+    // family work never leaves the in-memory report.
+    family: f.family ?? null, reachability: f.reachability ?? null,
+    gate: f.gate ?? null, preconditions: f.preconditions?.length ? JSON.stringify(f.preconditions) : null,
+    confidence_basis: f.confidenceBasis ?? null,
+    economic_figure: f.economicClaim?.figure ?? null,
+    economic_basis: f.economicClaim?.basis ?? null,
     poc_status: f.pocStatus ?? null, poc_output: f.pocOutput ?? null,
     poc_duration_ms: f.pocDurationMs ?? null, poc_run_at: f.pocRunAt ?? null, poc_code: f.pocCode ?? null,
     // Migration 0016 (G3): the corroboration marker persists as a
@@ -163,11 +170,14 @@ export async function writeAuditBatch(
     await tx.query(`insert into findings (
       id, scan_id, ord, severity, swc, title, confidence, detector, summary, walkthrough,
       exploit_solidity, remediation_solidity, location_fn, location_line, snippet,
+      family, reachability, gate, preconditions, confidence_basis, economic_figure, economic_basis,
       poc_status, poc_output, poc_duration_ms, poc_run_at, poc_code, corroborated
     ) select * from jsonb_to_recordset($1::jsonb) as r(
       id text, scan_id text, ord integer, severity text, swc text, title text, confidence text,
       detector text, summary text, walkthrough text, exploit_solidity text,
       remediation_solidity text, location_fn text, location_line integer, snippet text,
+      family text, reachability text, gate text, preconditions jsonb, confidence_basis text,
+      economic_figure text, economic_basis text,
       poc_status text, poc_output text, poc_duration_ms integer, poc_run_at timestamptz, poc_code text,
       corroborated boolean
     ) on conflict (id) do update set
@@ -176,6 +186,9 @@ export async function writeAuditBatch(
       walkthrough=excluded.walkthrough, exploit_solidity=excluded.exploit_solidity,
       remediation_solidity=excluded.remediation_solidity, location_fn=excluded.location_fn,
       location_line=excluded.location_line, snippet=excluded.snippet,
+      family=excluded.family, reachability=excluded.reachability, gate=excluded.gate,
+      preconditions=excluded.preconditions, confidence_basis=excluded.confidence_basis,
+      economic_figure=excluded.economic_figure, economic_basis=excluded.economic_basis,
       poc_status=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_status, findings.poc_status) else excluded.poc_status end, poc_output=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_output, findings.poc_output) else excluded.poc_output end,
       poc_duration_ms=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_duration_ms, findings.poc_duration_ms) else excluded.poc_duration_ms end, poc_run_at=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_run_at, findings.poc_run_at) else excluded.poc_run_at end, poc_code=case when excluded.exploit_solidity = findings.exploit_solidity then coalesce(excluded.poc_code, findings.poc_code) else excluded.poc_code end, corroborated=coalesce(excluded.corroborated, findings.corroborated)`, [JSON.stringify(findings)]);
   });
