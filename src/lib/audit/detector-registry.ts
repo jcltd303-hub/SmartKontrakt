@@ -70,11 +70,20 @@ export const DETECTOR_FAMILIES: DetectorFamilyMeta[] = [
  * smartbugs.ts and shipped a harness each, yet nothing in detect.ts ever emits
  * them, so no scan has ever produced one. They are listed here rather than
  * given a family, because giving them a family would claim coverage that does
- * not exist. Either a rule is written for them or the template is retired.
+ * not exist.
+ *
+ * `front-running` was fixed on 2026-10-27 (the approve race and the
+ * answer-in-the-mempool shape) and now lives in the `ordering` family.
+ * `short-address` is deliberately still here: the 2018 attack needed a client
+ * that under-padded calldata, and the ABI decoder has enforced calldata length
+ * since 0.5, so the only source-level thing to say about such a contract is
+ * "this compiler is old" — which `old-compiler` already says. A rule would
+ * fire on every pre-0.5 token and mean nothing. `external-contract-referencing`
+ * is a modelling gap rather than a retired class: it needs the callee's own
+ * source to decide, which is what `registry-dispatched-logic` now flags.
  */
 export const HARNESS_ONLY_DETECTORS = [
   "external-contract-referencing",
-  "front-running",
   "short-address",
 ] as const;
 
@@ -132,6 +141,7 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   "strict-balance": "value-and-settlement",
   "zero-address": "value-and-settlement",
   // ordering
+  "front-running": "ordering",
   "slippage": "ordering",
   "zero-slippage-swap": "ordering",
   // token-accounting

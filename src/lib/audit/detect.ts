@@ -195,6 +195,40 @@ function unwrapCallee(expr: AstNode): { member: string | null; base: AstNode | n
     const next = unwrapCallee(inner);
     return { ...next, named: (expr.arguments as AstNode) ?? next.named };
   }
+  // Pre-0.5 call modifiers — `x.call.value(y)()`, `x.call.gas(g).value(y)()`.
+  //
+  // The parser renders `.value(y)` as a CALL on a member access named `value`,
+  // so a pre-0.5 ether send arrives as FunctionCall(MemberAccess("value", …)).
+  // Without this branch unwrapCallee reports member "value", which is not in
+  // LOW_LEVEL: the call is classified as an ordinary member call and every
+  // downstream rule that keys on kind "call" (reentrancy above all) never sees
+  // it. That is the whole pre-0.5 syntax family, and it is why the reentrancy
+  // detector scored 0.065 recall on the 2018 SmartBugs corpus — measured, not
+  // guessed: `.call.value(x)()` produced no finding while `.call()` and
+  // `.call{value: x}("")` both did.
+  //
+  // The modifier is a CHAIN STEP, not the callee: unwrap past it and rebuild
+  // the `named` node the modern `.call{value: y}` form produces, so the
+  // existing consumers (sendsValue, the send amount, the literal gas cap) work
+  // unchanged instead of each needing its own pre-0.5 special case.
+  if (expr.type === "FunctionCall") {
+    const inner = unwrapCallee(expr.expression as AstNode);
+    if (inner.member === "value" || inner.member === "gas") {
+      const below = unwrapCallee((expr.expression as AstNode).expression as AstNode);
+      const belowNamed = below.named as AstNode | undefined;
+      const names = [
+        inner.member,
+        ...(((belowNamed?.names as string[] | undefined) ?? [])),
+      ];
+      const args = [
+        ...(((expr.arguments as AstNode[] | undefined) ?? [])),
+        ...(((belowNamed?.arguments as AstNode[] | undefined) ?? [])),
+      ];
+      return { member: below.member, base: below.base, named: { names, arguments: args } as AstNode };
+    }
+    // A call on a call result (x.f().g()): the callee is still the inner member.
+    return inner;
+  }
   if (expr.type === "MemberAccess") {
     return { member: String(expr.memberName ?? ""), base: expr.expression as AstNode };
   }
@@ -2676,8 +2710,12 @@ modifier nonReentrant() {
 
   if (anyPayable && !anyValueSend) {
     push(make({
-      severity: "medium",
+      severity: "info",
       swc: "SWC-132",
+      // Info, not medium (2026-10-27): nothing is overwhelmed, and the
+      // benchmark measured 41 firings on the SmartBugs corpus with a 0.00
+      // signal rate. It is a real observation — payable in, no way out — but
+      // it is not a denial of service and it is not exploitable on its own.
       title: `${contract.name} can receive ether it cannot send`,
       confidence: "medium",
       detector: "locked-ether",
@@ -3223,6 +3261,11 @@ token.safeTransfer(to, amount);`,
       push(make({
         severity: checkedSend ? "info" : "low",
         swc: "SWC-134",
+        // Info (2026-10-27): measured at 146 firings over 143 contracts with a
+        // 0.06 signal rate — it fires on every .transfer()/.send() in the
+        // corpus. The 2300-gas stipend is a real constraint on the CALLEE, not
+        // a denial of service on this contract, so it is a note, not a finding
+        // to triage.
         title: `${fn.name} forwards ether with a 2300-gas stipend`,
         confidence: "high",
         detector: "eth-gas-stipend",
@@ -3269,6 +3312,12 @@ require(ok, "pay");`,
       const args = (node.arguments as unknown[]) ?? [];
       args.forEach((a) => noteExpr(a, false));
       const callee = unwrapCallee(node.expression as AstNode);
+      // Modern call options live on the CALL node (`x.call{value: v, gas: g}()`),
+      // pre-0.5 ones on the modifier chain (handled in unwrapCallee). Normalise
+      // both into `named` so sendsValue / amount / gasCap read one shape.
+      if (!callee.named && Array.isArray(node.names) && (node.names as unknown[]).length > 0) {
+        callee.named = { names: node.names, arguments: node.arguments } as AstNode;
+      }
       const member = callee.member;
       // Fix 12 (b): record EVERY bare internal call, not only the
       // LOW_LEVEL ones. The `internal` branch below sits inside a gate
@@ -4700,6 +4749,107 @@ contract ReplayAttack {
       locationLine: fn.line,
       snippet: snippet(parsed, fn.line + delta, delta),
     }));
+  }
+
+  // front-running (2026-10-27, item 4 of the quality list).
+  //
+  // The detector existed in the registry, the SmartBugs map and the PoC library
+  // with NO rule behind it — a phantom, found when the family registry was made
+  // total. Two shapes cover the corpus's four contracts, and both are ordering
+  // problems rather than access problems:
+  //
+  //  (a) the ERC-20 approve race: `approve` overwrites an allowance directly,
+  //      so a spender who sees the new value in the mempool can spend the old
+  //      one first (SWC-114);
+  //  (b) a reward paid for an answer revealed in the transaction: the solution
+  //      is visible before the transaction lands, so a searcher copies it and
+  //      takes the payout (FindThisHash, the tx-order-dependence cases).
+  const erc20ApproveRace =
+    /^approve$/i.test(fn.name) &&
+    /\b(?:allowance|allowed|_allowances|allowances)\s*\[[^\]]*\]\s*(?:\[[^\]]*\]\s*)?=\s*/.test(clean) &&
+    contract.functions.some((f) => /^transferFrom$/i.test(f.name));
+  // Nested parens: `keccak256(abi.encodePacked(x)) == h` breaks a `[^)]*` scan,
+  // so allow a bounded span instead of a single paren group.
+  const revealsAnswer =
+    /(?:keccak256|sha3)\s*\([\s\S]{0,240}?==|==\s*(?:keccak256|sha3)\s*\(/.test(clean) ||
+    /require\s*\([^;]{0,240}?\b(?:answer|solution|secret|guess)\b[^;]{0,160}?==|==\s*\w*(?:answer|solution|secret)\b/i.test(clean);
+  const paysCaller = /\.\s*(?:transfer|send)\s*\(|\.call\s*\{[^}]*value/.test(clean) && /msg\.sender/.test(clean);
+  // A commit path closes the answer-reveal race: the answer is hidden behind a
+  // hash the player stored before the payout could be claimed. The fixture that
+  // proves the rule also proves the exemption.
+  const hasCommitPath = contract.functions.some(
+    (f) => /^commit/i.test(f.name) && /\[[^\]]*\]\s*=/.test(f.source),
+  );
+  if (
+    isExternallyCallable(fn) &&
+    !authed &&
+    (erc20ApproveRace || (revealsAnswer && paysCaller && !hasCommitPath))
+  ) {
+    push(make({
+      severity: "medium",
+      swc: "SWC-114",
+      title: erc20ApproveRace ? `${fn.name} overwrites an allowance (approve race)` : `${fn.name} pays for an answer revealed in the transaction`,
+      confidence: "medium",
+      detector: "front-running",
+      summary: erc20ApproveRace
+        ? "approve() writes the allowance directly, so a spender who sees the new value in the mempool can spend the OLD allowance first and then the new one — the classic ERC-20 approve race (SWC-114). The token cannot tell a legitimate change from a front-run."
+        : "The payout depends on a value the caller supplies in the transaction (an answer, a guess, a hash preimage). That value is visible in the mempool before it lands, so a searcher can copy it, submit it with a higher fee, and take the reward. Nothing here commits to the answer before it is revealed.",
+      walkthrough: erc20ApproveRace
+        ? "1. The owner calls approve(spender, newAmount), which overwrites the stored allowance.\n2. The spender sees the transaction in the mempool and spends the old allowance first.\n3. The approve lands, and the spender spends the new allowance too — total spend is old + new.\n4. Use increaseAllowance/decreaseAllowance, or require the allowance to be zero before changing it."
+        : "1. The function pays out when a caller-supplied value matches a stored answer.\n2. The value is in the transaction before it is mined, so anyone watching the mempool can copy it.\n3. The copy lands first and takes the payout.\n4. Commit first: the player submits keccak256(answer + secret), and reveals only after their commit is mined.",
+      exploitSolidity: erc20ApproveRace
+        ? `// Front-run the approve: spend the old allowance, then the new one.\ntoken.transferFrom(owner, attacker, oldAllowance);\n// ... approve lands ...\ntoken.transferFrom(owner, attacker, newAllowance);`
+        : `// Copy the answer out of the mempool and land first with a higher fee.\nIVictim(target).${fn.name}(answerFromTheMempool);`,
+      remediationSolidity: erc20ApproveRace
+        ? `function increaseAllowance(address spender, uint256 added) external returns (bool) {\n    allowance[msg.sender][spender] += added;\n    return true;\n}`
+        : `// Commit-reveal: the answer is hidden until the commit is mined.\nfunction commit(bytes32 h) external { commits[msg.sender] = h; }\nfunction reveal(uint256 answer, bytes32 salt) external {\n    require(keccak256(abi.encode(answer, salt)) == commits[msg.sender], "no");\n    _pay(msg.sender);\n}`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
+  // Pre-0.8 arithmetic (2026-10-27, item 3 of the quality list).
+  //
+  // `arithmetic` recall was 0.000 on 15 SmartBugs contracts, all 0.4.x: the
+  // `unchecked-block` rule below looks for an `unchecked { }` block, which only
+  // exists from 0.8, so it cannot see the class it is named after in the era
+  // that class comes from. The pre-0.8 shape is different and just as
+  // mechanical: a compound assignment on stored state with no SafeMath call in
+  // the same function.
+  //
+  // Gated three ways so it stays a signal rather than noise:
+  //   - the compilation targets a compiler below 0.8 (the model's pragma floor);
+  //   - the assignment is compound (-= += *= /=) or an index write on stored
+  //     state — a plain `=` is not arithmetic;
+  //   - no SafeMath-style call (`.add(`/`.sub(`/`.mul(`/`.div(`, or a
+  //     `SafeMath`/`Math.` reference) appears in the function.
+  const pre08 = model.versionFloor !== null && model.versionFloor < 8_000_000;
+  if (pre08) {
+    const cleanArith = stripCommentsAndStrings(src);
+    const usesSafeMath = /\.\s*(?:add|sub|mul|div|mod)\s*\(|SafeMath|\.tryAdd\s*\(/.test(cleanArith);
+    const compound = [...cleanArith.matchAll(/([A-Za-z_$][\w$]*(?:\s*\[[^\]]*\])?)\s*(-=|\+=|\*=|\/=)/g)];
+    const storedNames = new Set(contract.stateVars.map((v) => v.name));
+    const storedArith = compound.find((m) => {
+      const head = (m[1] ?? "").split("[")[0]!.trim();
+      return storedNames.has(head);
+    });
+    if (storedArith && !usesSafeMath && fn.mutability !== "view" && fn.mutability !== "pure") {
+      push(make({
+        severity: "medium",
+        swc: "SWC-101",
+        title: `${fn.name} does arithmetic on stored state before 0.8`,
+        confidence: "medium",
+        detector: "unchecked-block",
+        summary: `The contract targets a compiler below 0.8, so ${storedArith[1]}${storedArith[2]} wraps instead of reverting — and no SafeMath call guards it in this function. A subtraction underflow turns a balance into 2^256-1 and an addition overflow turns a supply into zero, which is the arithmetic class behind the 0.4.x/0.5.x losses (and Truebit's 2026 loss was this same class in a contract deployed five years earlier).`,
+        walkthrough: `1. The pragma floor is below 0.8, so the compiler emits no overflow check.\n2. ${fn.name} performs ${storedArith[1]} ${storedArith[2]} on stored state.\n3. A caller who can drive that value past zero (or past 2^256) gets a wrapped result — an enormous balance or a zeroed supply.\n4. Use SafeMath (pre-0.8) or move to 0.8+, where the check is built in.`,
+        exploitSolidity: `// Pre-0.8: underflow makes the balance enormous.\nIVictim(target).${fn.name}(type(uint256).max);`,
+        remediationSolidity: `// pre-0.8: use SafeMath for every stored-value operation\ncount = count.sub(input);\n// or compile with 0.8+, where underflow reverts`,
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
   }
 
   if (/extcodesize/.test(src)) {

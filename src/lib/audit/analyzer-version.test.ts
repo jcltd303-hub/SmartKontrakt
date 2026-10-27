@@ -83,7 +83,9 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // evidence-derived confidence, economic-claim markers, triage order.
   // And to 2026-10-27.6 with the LLM output contract: coerced text,
   // bounded prose, an honest missing-summary line, a code gate.
-  assert.equal(ANALYZER_BASELINE, "2026-10-27.6");
+  // And to 2026-10-27.7 with the four measured weaknesses: pre-0.5 call
+  // syntax, presence-note noise, pre-0.8 arithmetic, front-running.
+  assert.equal(ANALYZER_BASELINE, "2026-10-27.7");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });

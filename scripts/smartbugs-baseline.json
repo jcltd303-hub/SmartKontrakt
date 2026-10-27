@@ -2,59 +2,59 @@
   "files": 143,
   "parsed": 143,
   "parseFailures": [],
-  "totalFindings": 829,
+  "totalFindings": 1014,
   "filesWithFindings": 143,
-  "findingsPerFile": 5.797,
+  "findingsPerFile": 7.091,
   "categories": [
     {
       "category": "reentrancy",
       "expected": 31,
-      "predicted": 28,
-      "truePositives": 2,
-      "falseNegatives": 29,
-      "falsePositives": 26,
-      "recall": 0.065,
-      "precision": 0.071
+      "predicted": 54,
+      "truePositives": 22,
+      "falseNegatives": 9,
+      "falsePositives": 32,
+      "recall": 0.71,
+      "precision": 0.407
     },
     {
       "category": "access_control",
       "expected": 18,
-      "predicted": 87,
+      "predicted": 96,
       "truePositives": 17,
       "falseNegatives": 1,
-      "falsePositives": 70,
+      "falsePositives": 79,
       "recall": 0.944,
-      "precision": 0.195
+      "precision": 0.177
     },
     {
       "category": "arithmetic",
       "expected": 15,
-      "predicted": 3,
-      "truePositives": 0,
-      "falseNegatives": 15,
-      "falsePositives": 3,
-      "recall": 0,
-      "precision": 0
+      "predicted": 64,
+      "truePositives": 13,
+      "falseNegatives": 2,
+      "falsePositives": 51,
+      "recall": 0.867,
+      "precision": 0.203
     },
     {
       "category": "unchecked_low_level_calls",
       "expected": 52,
-      "predicted": 40,
-      "truePositives": 26,
-      "falseNegatives": 26,
+      "predicted": 66,
+      "truePositives": 52,
+      "falseNegatives": 0,
       "falsePositives": 14,
-      "recall": 0.5,
-      "precision": 0.65
+      "recall": 1,
+      "precision": 0.788
     },
     {
       "category": "denial_of_service",
       "expected": 6,
-      "predicted": 103,
-      "truePositives": 3,
-      "falseNegatives": 3,
-      "falsePositives": 100,
-      "recall": 0.5,
-      "precision": 0.029
+      "predicted": 23,
+      "truePositives": 1,
+      "falseNegatives": 5,
+      "falsePositives": 22,
+      "recall": 0.167,
+      "precision": 0.043
     },
     {
       "category": "bad_randomness",
@@ -69,12 +69,12 @@
     {
       "category": "front_running",
       "expected": 4,
-      "predicted": 0,
-      "truePositives": 0,
-      "falseNegatives": 4,
-      "falsePositives": 0,
-      "recall": 0,
-      "precision": 0
+      "predicted": 8,
+      "truePositives": 1,
+      "falseNegatives": 3,
+      "falsePositives": 7,
+      "recall": 0.25,
+      "precision": 0.125
     },
     {
       "category": "time_manipulation",
@@ -122,6 +122,8 @@
     "extcodesize",
     "fee-on-transfer",
     "floating-pragma",
+    "front-running",
+    "hardcoded-gas",
     "locked-ether",
     "missing-event",
     "old-compiler",
@@ -137,6 +139,7 @@
     "timestamp",
     "token-drain",
     "tx-origin",
+    "unchecked-block",
     "unchecked-call",
     "unprotected-admin",
     "unprotected-ether",
@@ -148,7 +151,7 @@
   "detectorFiles": {
     "eth-gas-stipend": {
       "fired": 146,
-      "onExpectedCategory": 9
+      "onExpectedCategory": 2
     },
     "old-compiler": {
       "fired": 143,
@@ -158,25 +161,25 @@
       "fired": 139,
       "onExpectedCategory": 3
     },
+    "unchecked-block": {
+      "fired": 114,
+      "onExpectedCategory": 17
+    },
     "unchecked-call": {
-      "fired": 54,
-      "onExpectedCategory": 33
+      "fired": 92,
+      "onExpectedCategory": 71
+    },
+    "reentrancy": {
+      "fired": 78,
+      "onExpectedCategory": 28
+    },
+    "unprotected-ether": {
+      "fired": 55,
+      "onExpectedCategory": 7
     },
     "default-visibility": {
       "fired": 51,
       "onExpectedCategory": 9
-    },
-    "reentrancy": {
-      "fired": 46,
-      "onExpectedCategory": 7
-    },
-    "locked-ether": {
-      "fired": 41,
-      "onExpectedCategory": 0
-    },
-    "unprotected-ether": {
-      "fired": 40,
-      "onExpectedCategory": 7
     },
     "timestamp": {
       "fired": 34,
@@ -198,9 +201,21 @@
       "fired": 9,
       "onExpectedCategory": 1
     },
+    "locked-ether": {
+      "fired": 9,
+      "onExpectedCategory": 0
+    },
     "tx-origin": {
       "fired": 9,
       "onExpectedCategory": 2
+    },
+    "front-running": {
+      "fired": 9,
+      "onExpectedCategory": 1
+    },
+    "hardcoded-gas": {
+      "fired": 8,
+      "onExpectedCategory": 0
     },
     "unprotected-admin": {
       "fired": 7,
@@ -250,6 +265,10 @@
       "fired": 2,
       "onExpectedCategory": 0
     },
+    "read-only-reentrancy": {
+      "fired": 2,
+      "onExpectedCategory": 0
+    },
     "arbitrary-dispatch-call": {
       "fired": 1,
       "onExpectedCategory": 1
@@ -271,10 +290,6 @@
       "onExpectedCategory": 0
     },
     "token-drain": {
-      "fired": 1,
-      "onExpectedCategory": 0
-    },
-    "read-only-reentrancy": {
       "fired": 1,
       "onExpectedCategory": 0
     },

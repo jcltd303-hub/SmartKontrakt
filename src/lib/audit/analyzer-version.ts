@@ -165,9 +165,22 @@ import {
  *                proposal parser no longer crashes when `hypotheses` is not
  *                an array. Saved AI narratives differ for the same input, so
  *                the archive refreshes.
+ * 2026-10-27.7 — The four measured weaknesses. (1) Pre-0.5 call syntax is
+ *                normalised: `.call.value(x)()` and `.call.gas(g).value(x)()`
+ *                parse as a member access named `value`/`gas`, so the walker
+ *                classified them as ordinary member calls and every rule
+ *                keyed on kind "call" missed them — reentrancy recall on the
+ *                SmartBugs corpus went 0.065 -> 0.710 and precision 0.071 ->
+ *                0.407. (2) eth-gas-stipend and locked-ether are info and no
+ *                longer vote for denial_of_service. (3) A pre-0.8 arithmetic
+ *                rule (compound assignment on stored state with no SafeMath)
+ *                took arithmetic recall 0.000 -> 0.867. (4) front-running has
+ *                a rule at last (approve race, answer-in-the-mempool) and is
+ *                no longer a phantom detector. Same inputs now produce
+ *                different records, so the archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-27.6";
+export const ANALYZER_BASELINE = "2026-10-27.7";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

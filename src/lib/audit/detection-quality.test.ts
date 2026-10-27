@@ -83,7 +83,9 @@ test("harness-only detectors are declared, categorised, and NOT counted as cover
       `${id} must not get a family — that would claim coverage the analyzer does not have`,
     );
   }
-  assert.equal(HARNESS_ONLY_DETECTORS.length, 3);
+  // Was 3; `front-running` gained a rule on 2026-10-27 and moved into the
+  // `ordering` family. The list may only shrink, so this number only goes down.
+  assert.equal(HARNESS_ONLY_DETECTORS.length, 2);
 });
 
 test("familyForDetector falls back to analyzer-meta for an unknown id", () => {

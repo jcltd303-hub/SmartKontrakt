@@ -132,18 +132,51 @@ A mechanical split with no behaviour change is safe but large; it should be its
 own commit, and I would rather not fold it into a change that also moved the
 numbers.
 
-## What is still wrong, in order
+## The four weaknesses, fixed (2026-10-27, second pass)
 
-1. **`reentrancy` precision 0.071.** The biggest single number in the table.
-2. **`eth-gas-stipend` / `locked-ether` noise.** 146 and 41 firings at 0.06 and
-   0.00 signal. Both are "presence" findings that should probably be info, not
-   findings, unless something is at stake.
-3. **`arithmetic` has no pre-0.8 rule.** Recall 0 on 15 contracts.
-4. **`front_running` and `short_addresses` have no rule at all** — 5 contracts
-   between them, and the three phantoms above.
-5. **The benchmark is 2018-era.** It cannot exercise the 2026 classes. The
-   incident corpora cover those, but with reconstructions rather than deployed
-   code.
+The list that used to be here. Each item is now closed, and the benchmark
+measures the result.
+
+| # | Was | Fix | Effect on the benchmark |
+| --- | --- | --- | --- |
+| 1 | `reentrancy` recall 0.065 / precision 0.071 | Pre-0.5 call syntax normalised in `unwrapCallee`: `.call.value(x)()` parses as a member access named `value`, so the walker called it an ordinary member call and no `kind: "call"` rule ever saw it | recall **0.710**, precision **0.407** |
+| 2 | `eth-gas-stipend` (146 firings, 0.06 signal) and `locked-ether` (41, 0.00) voting for `denial_of_service` | Both are info severity and neither votes in the category table — they are presence notes, not vulnerability classes | `denial_of_service` precision 0.029 → 0.043, and its recall drop from 0.5 to 0.167 is the **truth**: those two were the only DoS hits |
+| 3 | `arithmetic` recall 0.000 on 15 contracts | `unchecked-block` now also fires pre-0.8: a compound assignment on stored state with no SafeMath in the function, gated on the pragma floor | recall **0.867**, precision 0.203 |
+| 4 | `front_running` and `short_addresses` had no rule at all | `front-running` implemented (ERC-20 approve race, answer-in-the-mempool) with a commit-reveal exemption; `short-address` retired with a reason | `front_running` recall 0 → 0.250 |
+
+The single biggest win was #1, and it was found by measuring rather than by
+reading: the same minimal contract fired `critical: reentrancy` in the modern
+`.call{value: x}("")` form and produced **nothing** in the `.call.value(x)()`
+form. That one normalisation also took `unchecked_low_level_calls` recall from
+0.500 to **1.000** (precision 0.650 → 0.788), because pre-0.5 `call()`/
+`send()` returns were invisible for the same reason.
+
+### The price, stated
+
+Noise rose from 5.797 to **7.091** findings per contract, and
+`access_control` precision fell 0.195 → 0.177. That is the trade for +13
+arithmetic true positives and +26 on `unchecked_low_level_calls`: revealing
+calls that were invisible adds findings on contracts the dataset does not
+label as well as on those it does. The benchmark test's ceiling was raised from
+6.5 to 7.5 with the reason written next to it, so this cannot be re-baselined
+silently.
+
+### What is still wrong
+
+1. **`denial_of_service` recall 0.167.** The real DoS detectors
+   (`strict-balance`, `gas-estimator-dos`, `msg-value-loop`, `zero-address`,
+   `hardcoded-gas`) catch 1 of 6 contracts. The old 0.5 was an artefact.
+2. **`arithmetic` precision 0.203** — 64 contracts predicted against 15
+   labelled. Pre-0.8 arithmetic really is everywhere in a 2018 corpus, so this
+   may be the honest number; it needs a human read to say.
+3. **`front_running` recall 0.250** — 2 of 4. The remaining two
+   (`eth_tx_order_dependence_minimal`, `odds_and_evens`) pay out on a race this
+   rule does not model.
+4. **`short_addresses` recall 0.000, deliberately.** The class died with the
+   0.5 ABI decoder; the detector is retired with that reason in
+   `detector-registry.ts` rather than given a rule that would fire on every
+   pre-0.5 token and mean nothing.
+5. **The benchmark is 2018-era.** It cannot exercise the 2026 classes.
 
 ## Verification
 

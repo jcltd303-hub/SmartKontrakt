@@ -343,3 +343,54 @@ contract Vault {
     assert.equal(f.reachability, "BOUNDED", `${f.detector} should be BOUNDED`);
   }
 });
+
+// ------------------------------------------------------------------
+// front-running (2026-10-27): the rule that used to be a phantom — a
+// detector id with a PoC harness and a SmartBugs category but no rule.
+// ------------------------------------------------------------------
+
+test("front-running: an approve() that overwrites an allowance flags (ERC-20 race)", () => {
+  const src = `pragma solidity ^0.8.0;
+contract Token {
+    mapping(address => mapping(address => uint256)) public allowed;
+    mapping(address => uint256) public balanceOf;
+    function approve(address spender, uint256 value) external returns (bool) {
+        allowed[msg.sender][spender] = value;
+        return true;
+    }
+    function transferFrom(address from, address to, uint256 value) external returns (bool) {
+        allowed[from][msg.sender] -= value;
+        balanceOf[from] -= value;
+        balanceOf[to] += value;
+        return true;
+    }
+}`;
+  assert.equal(has(src, "front-running"), true);
+});
+
+test("front-running: a payout for an answer revealed in the transaction flags", () => {
+  const src = `pragma solidity ^0.4.24;
+contract FindThisHash {
+    bytes32 public constant hash = 0x1234567890123456789012345678901234567890123456789012345678901234;
+    function solve(string solution) public {
+        require(keccak256(abi.encodePacked(solution)) == hash);
+        msg.sender.transfer(10 ether);
+    }
+}`;
+  assert.equal(has(src, "front-running"), true);
+});
+
+test("front-running: a commit-reveal answer does not flag (control)", () => {
+  const src = `pragma solidity ^0.8.0;
+contract CommitReveal {
+    mapping(address => bytes32) public commits;
+    function commit(bytes32 h) external {
+        commits[msg.sender] = h;
+    }
+    function reveal(uint256 answer, bytes32 salt) external {
+        require(keccak256(abi.encode(answer, salt)) == commits[msg.sender], "no");
+        payable(msg.sender).transfer(1 ether);
+    }
+}`;
+  assert.equal(has(src, "front-running"), false);
+});

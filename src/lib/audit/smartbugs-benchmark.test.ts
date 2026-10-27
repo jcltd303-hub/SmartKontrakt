@@ -24,7 +24,14 @@ test("detection benchmark does not regress against the committed baseline", () =
   // script itself; here we pin the two numbers that summarise it, so a change
   // in either direction is visible in the test output rather than only in a
   // regenerated report.
-  assert.ok(result.findingsPerFile <= 6.5, `noise rose to ${result.findingsPerFile} findings per contract`);
+  // 7.5 after the 2026-10-27 rule work, up from 6.5. The raise is a DELIBERATE
+  // trade and is recorded here so it cannot be re-baselined silently: the
+  // pre-0.5 call fix (`.call.value(x)()` was invisible to the walker) took
+  // unchecked_low_level_calls recall from 0.500 to 1.000, the pre-0.8
+  // arithmetic rule took arithmetic from 0.000 to 0.867, and both add findings
+  // — including findings on contracts the dataset does not label. Recall on the
+  // two largest categories bought 0.9 more findings per contract.
+  assert.ok(result.findingsPerFile <= 7.5, `noise rose to ${result.findingsPerFile} findings per contract`);
 
   const byId = Object.fromEntries(result.categories.map((c) => [c.category, c]));
   // Categories with real coverage must not silently lose it.

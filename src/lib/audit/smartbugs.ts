@@ -140,10 +140,16 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "bytecode-selfdestruct": "unchecked_low_level_calls",
   // denial_of_service
   "strict-balance": "denial_of_service",
-  "eth-gas-stipend": "denial_of_service",
+  // 2026-10-27: the benchmark measured these two as presence findings with no
+  // signal — eth-gas-stipend fired on 146 of 143 contracts (0.06), locked-ether
+  // on 41 (0.00). Neither is a denial of service: nothing is overwhelmed, and
+  // the 2300-gas stipend is a constraint on the CALLEE. They stay findings (both
+  // are real observations) but they no longer vote for denial_of_service in the
+  // dataset scoring, which is what made that column meaningless (precision 0.029).
+  "eth-gas-stipend": "other",
   "hardcoded-gas": "denial_of_service",
   "gas-estimator-dos": "denial_of_service",
-  "locked-ether": "denial_of_service",
+  "locked-ether": "other",
   "zero-address": "denial_of_service",
   // bad_randomness
   "weak-randomness": "bad_randomness",
