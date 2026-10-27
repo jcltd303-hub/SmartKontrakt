@@ -138,6 +138,9 @@ curl -s -X POST http://127.0.0.1:8788/start \
 - `/status` reports `deepAgentRuns` (addresses that ran the agent) and
   `deepAgentConfirmed` (fork-confirmed findings total).
 
+The full per-address pipeline — stage order, what each stage may write, the
+failure behaviour of each, and the knobs — is in **`docs/pipeline.md`**.
+
 ## Endpoints
 
 `GET /` (or `/health`) returns the route index, and an unknown path returns
