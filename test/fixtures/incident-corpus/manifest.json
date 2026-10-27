@@ -1,0 +1,401 @@
+{
+  "description": "2026-era incident corpus. The SmartBugs Curated benchmark is 2018-era and cannot exercise these classes, so this corpus is the instrument for them. Each detector has a POSITIVE fixture (must fire) and a CONTROL (must not). Scored by scripts/benchmark-incidents.ts: recall on positives, and cross-talk \u2014 findings on a fixture that its manifest entry does not expect, which is the false-positive measure a fixture corpus can actually make. CROSS-TALK excludes hygiene/presence notes and each case's `tolerate` list; every tolerance carries a `tolerateWhy` justification, so co-firing is either explained or it fails the gate.",
+  "cases": [
+    {
+      "id": "hook-callback-auth.positive",
+      "file": "hook-callback-auth.positive.sol",
+      "detector": "hook-callback-auth",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "Cork Protocol ($12M), KolanHook, GoldPesa, VTSwapHook",
+      "note": "A v4 hook callback invoked outside a real swap.",
+      "expect": [
+        "hook-callback-auth"
+      ],
+      "tolerate": [
+        "reentrancy",
+        "shared-unlock-delta-netting"
+      ],
+      "tolerateWhy": {
+        "reentrancy": "the fixture takes and settles inside a callback, which IS both a call-then-write window and the delta-netting shape; all three statements are true of it",
+        "shared-unlock-delta-netting": "the fixture takes and settles inside a callback, which IS both a call-then-write window and the delta-netting shape; all three statements are true of it"
+      }
+    },
+    {
+      "id": "hook-callback-auth.control",
+      "file": "hook-callback-auth.control.sol",
+      "detector": "hook-callback-auth",
+      "kind": "control",
+      "year": "2026",
+      "incident": "Cork Protocol ($12M), KolanHook, GoldPesa, VTSwapHook",
+      "note": "A v4 hook callback invoked outside a real swap.",
+      "expect": [],
+      "tolerate": [
+        "reentrancy",
+        "shared-unlock-delta-netting"
+      ],
+      "tolerateWhy": {
+        "reentrancy": "the control fixes only the CALLER check; the delta-settlement defect is still present, so the netting rule is right to fire and the reentrancy ordering is unchanged",
+        "shared-unlock-delta-netting": "the control fixes only the CALLER check; the delta-settlement defect is still present, so the netting rule is right to fire and the reentrancy ordering is unchanged"
+      }
+    },
+    {
+      "id": "calldata-offset-auth.positive",
+      "file": "calldata-offset-auth.positive.sol",
+      "detector": "calldata-offset-auth",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "UniswapV4Router04 ($42.6k)",
+      "note": "A fixed calldata offset used as an authorization check.",
+      "expect": [
+        "calldata-offset-auth"
+      ],
+      "tolerate": [
+        "timestamp"
+      ],
+      "tolerateWhy": {
+        "timestamp": "the fixture uses block.timestamp for a deadline, which the rule reports and which is true"
+      }
+    },
+    {
+      "id": "calldata-offset-auth.control",
+      "file": "calldata-offset-auth.control.sol",
+      "detector": "calldata-offset-auth",
+      "kind": "control",
+      "year": "2026",
+      "incident": "UniswapV4Router04 ($42.6k)",
+      "note": "A fixed calldata offset used as an authorization check.",
+      "expect": [],
+      "tolerate": [
+        "timestamp"
+      ],
+      "tolerateWhy": {
+        "timestamp": "the fixture uses block.timestamp for a deadline, which the rule reports and which is true"
+      }
+    },
+    {
+      "id": "eoa-only-guard.positive",
+      "file": "eoa-only-guard.positive.sol",
+      "detector": "eoa-only-guard",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "POT token (BSC, ~$85k), Gana Payment ($3.1M), QNT pool",
+      "note": "tx.origin == msg.sender as a load-bearing guard, defeated by EIP-7702.",
+      "expect": [
+        "eoa-only-guard"
+      ],
+      "tolerate": [
+        "timestamp",
+        "tx-origin",
+        "zero-slippage-swap"
+      ],
+      "tolerateWhy": {
+        "timestamp": "the fixture uses block.timestamp for a deadline, which the rule reports and which is true",
+        "tx-origin": "the fixture uses tx.origin by design \u2014 it is the mechanism this corpus measures under a different detector",
+        "zero-slippage-swap": "the fixture passes 0 as the slippage bound, which is a real defect the rule is right to report"
+      }
+    },
+    {
+      "id": "eoa-only-guard.control",
+      "file": "eoa-only-guard.control.sol",
+      "detector": "eoa-only-guard",
+      "kind": "control",
+      "year": "2026",
+      "incident": "POT token (BSC, ~$85k), Gana Payment ($3.1M), QNT pool",
+      "note": "tx.origin == msg.sender as a load-bearing guard, defeated by EIP-7702.",
+      "expect": [],
+      "tolerate": [
+        "tx-origin"
+      ],
+      "tolerateWhy": {
+        "tx-origin": "the fixture uses tx.origin by design \u2014 it is the mechanism this corpus measures under a different detector"
+      }
+    },
+    {
+      "id": "public-key-account-trust.positive",
+      "file": "public-key-account-trust.positive.sol",
+      "detector": "public-key-account-trust",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "AlpsCon AI Trade Hub ($152.8k)",
+      "note": "A published-key development account on a trust list.",
+      "expect": [
+        "public-key-account-trust"
+      ],
+      "tolerate": [
+        "unprotected-ether"
+      ],
+      "tolerateWhy": {
+        "unprotected-ether": "the payout is gated by an allowlist mapping, which isAuthed does not credit; the reachability class marks it GATED_PRECONDITION, so the nuance survives on the finding"
+      }
+    },
+    {
+      "id": "public-key-account-trust.control",
+      "file": "public-key-account-trust.control.sol",
+      "detector": "public-key-account-trust",
+      "kind": "control",
+      "year": "2026",
+      "incident": "AlpsCon AI Trade Hub ($152.8k)",
+      "note": "A published-key development account on a trust list.",
+      "expect": [],
+      "tolerate": [
+        "unprotected-ether"
+      ],
+      "tolerateWhy": {
+        "unprotected-ether": "the payout is gated by an allowlist mapping, which isAuthed does not credit; the reachability class marks it GATED_PRECONDITION, so the nuance survives on the finding"
+      }
+    },
+    {
+      "id": "unauthenticated-batch-call.positive",
+      "file": "unauthenticated-batch-call.positive.sol",
+      "detector": "unauthenticated-batch-call",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "QNT pool drain ($124.9k)",
+      "note": "A public batch executor with no access control.",
+      "expect": [
+        "unauthenticated-batch-call"
+      ],
+      "tolerate": [],
+      "tolerateWhy": {}
+    },
+    {
+      "id": "unauthenticated-batch-call.control",
+      "file": "unauthenticated-batch-call.control.sol",
+      "detector": "unauthenticated-batch-call",
+      "kind": "control",
+      "year": "2026",
+      "incident": "QNT pool drain ($124.9k)",
+      "note": "A public batch executor with no access control.",
+      "expect": [],
+      "tolerate": [],
+      "tolerateWhy": {}
+    },
+    {
+      "id": "self-attested-auth.positive",
+      "file": "self-attested-auth.positive.sol",
+      "detector": "self-attested-auth",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "FlashLoopAdapter (~$305k)",
+      "note": "The guard asks the caller whether the caller is authorised.",
+      "expect": [
+        "self-attested-auth"
+      ],
+      "tolerate": [],
+      "tolerateWhy": {}
+    },
+    {
+      "id": "self-attested-auth.control",
+      "file": "self-attested-auth.control.sol",
+      "detector": "self-attested-auth",
+      "kind": "control",
+      "year": "2026",
+      "incident": "FlashLoopAdapter (~$305k)",
+      "note": "The guard asks the caller whether the caller is authorised.",
+      "expect": [],
+      "tolerate": [],
+      "tolerateWhy": {}
+    },
+    {
+      "id": "settlement-optionality.positive",
+      "file": "settlement-optionality.positive.sol",
+      "detector": "settlement-optionality",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "BlockChainCasino (risk-free option)",
+      "note": "Settle a win, refund a loss after the timeout.",
+      "expect": [
+        "settlement-optionality"
+      ],
+      "tolerate": [
+        "unprotected-ether"
+      ],
+      "tolerateWhy": {
+        "unprotected-ether": "the payout is gated by an allowlist mapping, which isAuthed does not credit; the reachability class marks it GATED_PRECONDITION, so the nuance survives on the finding"
+      }
+    },
+    {
+      "id": "settlement-optionality.control",
+      "file": "settlement-optionality.control.sol",
+      "detector": "settlement-optionality",
+      "kind": "control",
+      "year": "2026",
+      "incident": "BlockChainCasino (risk-free option)",
+      "note": "Settle a win, refund a loss after the timeout.",
+      "expect": [],
+      "tolerate": [
+        "unprotected-ether"
+      ],
+      "tolerateWhy": {
+        "unprotected-ether": "the payout is gated by an allowlist mapping, which isAuthed does not credit; the reachability class marks it GATED_PRECONDITION, so the nuance survives on the finding"
+      }
+    },
+    {
+      "id": "registry-dispatched-logic.positive",
+      "file": "registry-dispatched-logic.positive.sol",
+      "detector": "registry-dispatched-logic",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "CoinAndRoulette (win rule unverified)",
+      "note": "Payout logic lives in a registry-supplied contract.",
+      "expect": [
+        "registry-dispatched-logic"
+      ],
+      "tolerate": [
+        "unprotected-ether"
+      ],
+      "tolerateWhy": {
+        "unprotected-ether": "the payout is gated by an allowlist mapping, which isAuthed does not credit; the reachability class marks it GATED_PRECONDITION, so the nuance survives on the finding"
+      }
+    },
+    {
+      "id": "registry-dispatched-logic.control",
+      "file": "registry-dispatched-logic.control.sol",
+      "detector": "registry-dispatched-logic",
+      "kind": "control",
+      "year": "2026",
+      "incident": "CoinAndRoulette (win rule unverified)",
+      "note": "Payout logic lives in a registry-supplied contract.",
+      "expect": [],
+      "tolerate": [
+        "unprotected-ether"
+      ],
+      "tolerateWhy": {
+        "unprotected-ether": "the payout is gated by an allowlist mapping, which isAuthed does not credit; the reachability class marks it GATED_PRECONDITION, so the nuance survives on the finding"
+      }
+    },
+    {
+      "id": "share-accounting-double-debit.positive",
+      "file": "share-accounting-double-debit.positive.sol",
+      "detector": "share-accounting-double-debit",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "UNCX Vesting V2 (~$88k), Hedgey ($45M)",
+      "note": "Two paths debit the same position's shares, neither clears it.",
+      "expect": [
+        "share-accounting-double-debit"
+      ],
+      "tolerate": [
+        "unprotected-ether"
+      ],
+      "tolerateWhy": {
+        "unprotected-ether": "the payout is gated by an allowlist mapping, which isAuthed does not credit; the reachability class marks it GATED_PRECONDITION, so the nuance survives on the finding"
+      }
+    },
+    {
+      "id": "share-accounting-double-debit.control",
+      "file": "share-accounting-double-debit.control.sol",
+      "detector": "share-accounting-double-debit",
+      "kind": "control",
+      "year": "2026",
+      "incident": "UNCX Vesting V2 (~$88k), Hedgey ($45M)",
+      "note": "Two paths debit the same position's shares, neither clears it.",
+      "expect": [],
+      "tolerate": [
+        "unprotected-ether"
+      ],
+      "tolerateWhy": {
+        "unprotected-ether": "the payout is gated by an allowlist mapping, which isAuthed does not credit; the reachability class marks it GATED_PRECONDITION, so the nuance survives on the finding"
+      }
+    },
+    {
+      "id": "shared-unlock-delta-netting.positive",
+      "file": "shared-unlock-delta-netting.positive.sol",
+      "detector": "shared-unlock-delta-netting",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "GoldPesa ($115k)",
+      "note": "An unsettled debt nets against the callback's own credit.",
+      "expect": [
+        "shared-unlock-delta-netting"
+      ],
+      "tolerate": [
+        "hook-callback-auth"
+      ],
+      "tolerateWhy": {
+        "hook-callback-auth": "lockAcquired IS an unauthenticated hook callback in this fixture \u2014 the two classes overlap by construction, and both statements are true"
+      }
+    },
+    {
+      "id": "shared-unlock-delta-netting.control",
+      "file": "shared-unlock-delta-netting.control.sol",
+      "detector": "shared-unlock-delta-netting",
+      "kind": "control",
+      "year": "2026",
+      "incident": "GoldPesa ($115k)",
+      "note": "An unsettled debt nets against the callback's own credit.",
+      "expect": [],
+      "tolerate": [
+        "hook-callback-auth"
+      ],
+      "tolerateWhy": {
+        "hook-callback-auth": "lockAcquired IS an unauthenticated hook callback in this fixture \u2014 the two classes overlap by construction, and both statements are true"
+      }
+    },
+    {
+      "id": "idle-gap-interest-accrual.positive",
+      "file": "idle-gap-interest-accrual.positive.sol",
+      "detector": "idle-gap-interest-accrual",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "BiFi (~165,574 USDT)",
+      "note": "The whole idle gap is charged again on every call in the block.",
+      "expect": [
+        "idle-gap-interest-accrual"
+      ],
+      "tolerate": [],
+      "tolerateWhy": {}
+    },
+    {
+      "id": "idle-gap-interest-accrual.control",
+      "file": "idle-gap-interest-accrual.control.sol",
+      "detector": "idle-gap-interest-accrual",
+      "kind": "control",
+      "year": "2026",
+      "incident": "BiFi (~165,574 USDT)",
+      "note": "The whole idle gap is charged again on every call in the block.",
+      "expect": [],
+      "tolerate": [],
+      "tolerateWhy": {}
+    },
+    {
+      "id": "signature-field-omission.positive",
+      "file": "signature-field-omission.positive.sol",
+      "detector": "signature-field-omission",
+      "kind": "positive",
+      "year": "2026",
+      "incident": "GiddyDeFi ($1.3M)",
+      "note": "The digest omits a parameter that steers value.",
+      "expect": [
+        "signature-field-omission"
+      ],
+      "tolerate": [
+        "ecrecover-zero",
+        "signature-malleability"
+      ],
+      "tolerateWhy": {
+        "ecrecover-zero": "the fixture uses raw ecrecover without a zero-address check, which is true and is a separate defect",
+        "signature-malleability": "raw ecrecover without low-s normalisation, which is true and is a separate defect"
+      }
+    },
+    {
+      "id": "signature-field-omission.control",
+      "file": "signature-field-omission.control.sol",
+      "detector": "signature-field-omission",
+      "kind": "control",
+      "year": "2026",
+      "incident": "GiddyDeFi ($1.3M)",
+      "note": "The digest omits a parameter that steers value.",
+      "expect": [],
+      "tolerate": [
+        "ecrecover-zero",
+        "signature-malleability"
+      ],
+      "tolerateWhy": {
+        "ecrecover-zero": "the fixture uses raw ecrecover without a zero-address check, which is true and is a separate defect",
+        "signature-malleability": "raw ecrecover without low-s normalisation, which is true and is a separate defect"
+      }
+    }
+  ]
+}

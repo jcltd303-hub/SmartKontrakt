@@ -1,0 +1,68 @@
+{
+  "cases": 24,
+  "recall": 1,
+  "crossTalk": 0,
+  "controlFires": 9,
+  "byDetector": {
+    "hook-callback-auth": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    },
+    "calldata-offset-auth": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    },
+    "eoa-only-guard": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    },
+    "public-key-account-trust": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    },
+    "unauthenticated-batch-call": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    },
+    "self-attested-auth": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    },
+    "settlement-optionality": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    },
+    "registry-dispatched-logic": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    },
+    "share-accounting-double-debit": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    },
+    "shared-unlock-delta-netting": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    },
+    "idle-gap-interest-accrual": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    },
+    "signature-field-omission": {
+      "positives": 1,
+      "hit": 1,
+      "crossTalk": 0
+    }
+  }
+}

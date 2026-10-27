@@ -189,9 +189,18 @@ import {
  *                steering value). Also: an ECDSA claim is no longer reported as
  *                an unverified bridge handler. Same inputs now produce
  *                different records, so the archive refreshes.
+ * 2026-10-27.9 — The 2026-era incident corpus, and the two bugs it found on its
+ *                first run. unchecked-block's pre-0.8 gate compared
+ *                versionFloor (encoded 8024 for 0.8.24) against 8_000_000, so
+ *                it was always true and the rule fired on modern code where the
+ *                compiler already emits the check; self-attested-auth's span ran
+ *                from `if (` into the block body and matched
+ *                payable(msg.sender).transfer(...), reading a payout as a
+ *                self-attestation. Same inputs now produce different records,
+ *                so the archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-27.8";
+export const ANALYZER_BASELINE = "2026-10-27.9";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

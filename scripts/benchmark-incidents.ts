@@ -1,0 +1,247 @@
+#!/usr/bin/env node
+/**
+ * 2026-era incident benchmark.
+ *
+ * `benchmark-smartbugs.ts` scores the rules against SmartBugs Curated, which is
+ * 2018-era: it cannot fire a Uniswap-v4 hook rule, an EIP-7702 guard rule or a
+ * shared-unlock netting rule, because those shapes did not exist. Every class
+ * added after the 2026 work has therefore been *asserted* by fixtures and never
+ * *measured*.
+ *
+ * This scores the corpus in `test/fixtures/incident-corpus`: 12 detectors, each
+ * with a positive fixture (must fire) and a control (must not). Two numbers come
+ * out, and the second is the one a fixture corpus is uniquely able to produce:
+ *
+ *   RECALL   — positives where the expected detector fired.
+ *   CROSS-TALK — findings on a fixture that its manifest entry does not expect.
+ *                This is the false-positive measure here: if the hook rule also
+ *                fires on the bridge fixture, the rules are not separable and a
+ *                reviewer reading "hook-callback-auth" is being misled.
+ *
+ * Usage:
+ *   node --experimental-strip-types scripts/benchmark-incidents.ts
+ *   ... --write          re-baseline
+ *   ... --report <path>  write a markdown report
+ */
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { analyzeInput } from "../src/lib/audit/engine.ts";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CORPUS = path.join(ROOT, "test/fixtures/incident-corpus");
+const BASELINE = path.join(ROOT, "scripts/incident-baseline.json");
+
+export type IncidentCase = {
+  id: string;
+  file: string;
+  detector: string;
+  kind: "positive" | "control";
+  year: string;
+  incident: string;
+  note: string;
+  expect: string[];
+  /** Co-firing that is CORRECT behaviour, justified per case. */
+  tolerate?: string[];
+  tolerateWhy?: Record<string, string>;
+};
+
+export type IncidentRow = {
+  id: string;
+  detector: string;
+  kind: "positive" | "control";
+  expected: string[];
+  tolerated: string[];
+  fired: string[];
+  /** Fired, not expected, not tolerated — the cross-talk a reviewer pays for. */
+  unexpected: string[];
+  missed: boolean;
+};
+
+/**
+ * Hygiene and presence notes are excluded from cross-talk, for the same reason
+ * the SmartBugs benchmark excludes them from the category vote: they fire on
+ * essentially every contract and say nothing about which mechanism a fixture
+ * demonstrates.
+ */
+const NOT_CROSS_TALK = new Set([
+  "floating-pragma",
+  "old-compiler",
+  "missing-event",
+  "rtl-override",
+  "parse",
+  "report-cap",
+  "bytecode-metadata",
+  "eth-gas-stipend",
+  "locked-ether",
+]);
+
+export type IncidentResult = {
+  cases: number;
+  positives: number;
+  recall: number;
+  controls: number;
+  controlFires: number;
+  crossTalk: number;
+  rows: IncidentRow[];
+  /** detector -> { positives, hit, crossTalk } */
+  byDetector: Record<string, { positives: number; hit: number; crossTalk: number }>;
+};
+
+export function runIncidentBenchmark(): IncidentResult {
+  const manifest = JSON.parse(readFileSync(path.join(CORPUS, "manifest.json"), "utf8")) as {
+    cases: IncidentCase[];
+  };
+  const rows: IncidentRow[] = [];
+  const byDetector: IncidentResult["byDetector"] = {};
+
+  for (const c of manifest.cases) {
+    const source = readFileSync(path.join(CORPUS, c.file), "utf8");
+    const report = analyzeInput(source, c.id);
+    const fired = [...new Set(report.findings.map((f) => f.detector))].sort();
+    const expected = [...c.expect].sort();
+    const tolerated = [...(c.tolerate ?? [])].sort();
+    const unexpected = fired.filter(
+      (d) => !expected.includes(d) && !tolerated.includes(d) && !NOT_CROSS_TALK.has(d),
+    );
+    const missed = expected.some((d) => !fired.includes(d));
+    rows.push({ id: c.id, detector: c.detector, kind: c.kind, expected, tolerated, fired, unexpected, missed });
+
+    const bucket = (byDetector[c.detector] ??= { positives: 0, hit: 0, crossTalk: 0 });
+    if (c.kind === "positive") {
+      bucket.positives += 1;
+      if (!missed) bucket.hit += 1;
+    }
+    bucket.crossTalk += unexpected.length;
+  }
+
+  const positives = rows.filter((r) => r.kind === "positive");
+  const controls = rows.filter((r) => r.kind === "control");
+  return {
+    cases: rows.length,
+    positives: positives.length,
+    recall: positives.length === 0 ? 0 : positives.filter((r) => !r.missed).length / positives.length,
+    controls: controls.length,
+    // A control firing ANY finding is not automatically wrong (hygiene notes
+    // fire everywhere), so the count is reported, not gated.
+    controlFires: controls.filter((r) => r.fired.length > 0).length,
+    crossTalk: rows.reduce((n, r) => n + r.unexpected.length, 0),
+    rows,
+    byDetector,
+  };
+}
+
+function report(result: IncidentResult): string {
+  const lines: string[] = [];
+  lines.push("# 2026-era incident benchmark");
+  lines.push("");
+  lines.push(
+    `Generated by \`scripts/benchmark-incidents.ts\` over \`test/fixtures/incident-corpus\` (${result.cases} cases: ${result.positives} positives, ${result.controls} controls).`,
+  );
+  lines.push("");
+  lines.push(
+    `**Recall on positives: ${(result.recall * 100).toFixed(1)}%** · **cross-talk: ${result.crossTalk} unexpected findings** · controls with any finding: ${result.controlFires}/${result.controls}.`,
+  );
+  lines.push("");
+  lines.push("## Per detector");
+  lines.push("");
+  lines.push("| Detector | Positives | Fired | Cross-talk |");
+  lines.push("| --- | --- | --- | --- |");
+  for (const [det, b] of Object.entries(result.byDetector).sort()) {
+    lines.push(`| \`${det}\` | ${b.positives} | ${b.hit} | ${b.crossTalk} |`);
+  }
+  lines.push("");
+  lines.push("## Cases");
+  lines.push("");
+  lines.push("| Case | Expected | Fired | Tolerated | Unexpected |");
+  lines.push("| --- | --- | --- | --- | --- |");
+  for (const r of result.rows) {
+    lines.push(
+      `| ${r.id} | ${r.expected.join(", ") || "—"} | ${r.fired.join(", ") || "—"} | ${r.tolerated.join(", ") || "—"} | ${r.unexpected.join(", ") || "—"} |`,
+    );
+  }
+  lines.push("");
+  lines.push("## What this measures, and what it cannot");
+  lines.push("");
+  lines.push(
+    "- The positives are reconstructions of each incident's mechanism, written by the same hand as the rules. A rule and its fixture can therefore share a blind spot: recall here means \"the rule fires on the shape I encoded\", not \"the rule catches the incident\".",
+  );
+  lines.push(
+    "- Cross-talk is the measurement worth trusting, because it is a relation BETWEEN rules on shapes written for other rules.",
+  );
+  lines.push(
+    "- Controls are reconstructions of the FIX. A control that fires is either a rule that does not implement its invariant, or a fixture whose fix is incomplete.",
+  );
+  return lines.join("\n");
+}
+
+function main() {
+  const result = runIncidentBenchmark();
+  const write = process.argv.includes("--write");
+  const reportIdx = process.argv.indexOf("--report");
+  const reportPath = reportIdx >= 0 ? process.argv[reportIdx + 1] : null;
+
+  for (const r of result.rows) {
+    if (r.missed || r.unexpected.length > 0) {
+      console.log(
+        `${r.id.padEnd(38)} expected ${(r.expected.join(",") || "—").padEnd(32)} fired ${r.fired.join(",") || "—"}${
+          r.unexpected.length ? `  UNEXPECTED ${r.unexpected.join(",")}` : ""
+        }`,
+      );
+    }
+  }
+  console.log(
+    `\n${result.cases} cases: recall ${(result.recall * 100).toFixed(1)}% on ${result.positives} positives, cross-talk ${result.crossTalk}, controls with findings ${result.controlFires}/${result.controls}`,
+  );
+
+  if (write) {
+    writeFileSync(
+      BASELINE,
+      JSON.stringify(
+        {
+          cases: result.cases,
+          recall: result.recall,
+          crossTalk: result.crossTalk,
+          controlFires: result.controlFires,
+          byDetector: result.byDetector,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    console.log("baseline -> scripts/incident-baseline.json");
+  } else {
+    let prior: { recall: number; crossTalk: number } | null = null;
+    try {
+      prior = JSON.parse(readFileSync(BASELINE, "utf8")) as { recall: number; crossTalk: number };
+    } catch {
+      console.log("no baseline yet: run with --write");
+    }
+    if (prior) {
+      const problems: string[] = [];
+      if (result.recall < prior.recall) problems.push(`recall ${prior.recall} -> ${result.recall}`);
+      if (result.crossTalk > prior.crossTalk) problems.push(`cross-talk ${prior.crossTalk} -> ${result.crossTalk}`);
+      if (problems.length > 0) {
+        console.log("\nINCIDENT BENCHMARK REGRESSION");
+        for (const p of problems) console.log(`  ${p}`);
+        process.exitCode = 1;
+      } else {
+        console.log("no regression against the committed baseline");
+      }
+    }
+  }
+
+  if (reportPath) {
+    writeFileSync(path.resolve(ROOT, reportPath), report(result) + "\n");
+    console.log(`report -> ${reportPath}`);
+  }
+}
+
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url)) &&
+  !process.env.NODE_TEST_CONTEXT
+) {
+  main();
+}

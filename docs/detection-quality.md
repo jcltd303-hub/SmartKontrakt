@@ -176,7 +176,12 @@ silently.
    0.5 ABI decoder; the detector is retired with that reason in
    `detector-registry.ts` rather than given a rule that would fire on every
    pre-0.5 token and mean nothing.
-5. **The benchmark is 2018-era.** It cannot exercise the 2026 classes.
+5. ~~**The benchmark is 2018-era.** It cannot exercise the 2026 classes.~~
+   Closed on 2026-10-27 by `test/fixtures/incident-corpus` +
+   `scripts/benchmark-incidents.ts`: 12 detectors, 24 cases, recall 100% and
+   cross-talk 0 (see `docs/incident-corpus.md`). It caught two real bugs on its
+   first run — a pre-0.8 gate that was always true, and a self-attestation rule
+   that matched a payout.
 
 ## Verification
 

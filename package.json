@@ -26,7 +26,8 @@
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write .",
     "benchmark:smartbugs": "node --experimental-strip-types scripts/benchmark-smartbugs.ts",
-    "check:binding": "node scripts/detector-binding-check.mjs"
+    "check:binding": "node scripts/detector-binding-check.mjs",
+    "benchmark:incidents": "node --experimental-strip-types scripts/benchmark-incidents.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",

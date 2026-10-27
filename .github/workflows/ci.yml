@@ -46,6 +46,12 @@ jobs:
       - name: Detector binding check
         run: npm run check:binding
 
+      # The 2026-era corpus: SmartBugs Curated is 2018-era and cannot fire the
+      # classes added for the 2026 incidents, so those rules are measured here.
+      # Fails on any recall loss or unexplained cross-talk.
+      - name: Incident corpus (2026-era classes)
+        run: npm run benchmark:incidents
+
   # The only place the PoC templates and the fixture corpus are actually
   # COMPILED. The unit suite is structural, so a template that cannot compile
   # passes it — `19-signature-malleability` shipped with invalid `0x123...`

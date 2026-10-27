@@ -2000,7 +2000,13 @@ function scanIncidentClasses(
   // 6. self-attested-auth (FlashLoopAdapter, Oct 2026)
   //    The guard asks the CALLER whether the caller is allowed: the answer is
   //    supplied by the untrusted party, so any contract can say yes.
-  const selfAttest = /(?:require|if)\s*\([^;]{0,300}?\b[A-Za-z_$][\w$]*\s*\(\s*msg\.sender\s*\)\s*\.\s*\w+\s*\(/.test(clean);
+  // The cast must be part of the CONDITION, and must not be a value-transfer
+  // cast. `[^;]{0,300}` let the match run out of the `if (...)` condition and
+  // into the block body, where `payable(msg.sender).transfer(...)` matched —
+  // a payout read as "the caller attested itself". The 2026-era corpus caught
+  // it on the registry-dispatch fixture, which has no attestation at all.
+  const selfAttest =
+    /(?:require|if)\s*\([^)]{0,300}?\b(?!payable\b|address\b)[A-Za-z_$][\w$]*\s*\(\s*msg\.sender\s*\)\s*\.\s*\w+\s*\(/.test(clean);
   if (!authed && selfAttest) {
     push(make({
       severity: "high",
@@ -5105,7 +5111,12 @@ contract ReplayAttack {
   //     state — a plain `=` is not arithmetic;
   //   - no SafeMath-style call (`.add(`/`.sub(`/`.mul(`/`.div(`, or a
   //     `SafeMath`/`Math.` reference) appears in the function.
-  const pre08 = model.versionFloor !== null && model.versionFloor < 8_000_000;
+  // versionFloor is major*1000 + minor (8024 for 0.8.24, 4019 for 0.4.19) —
+  // NOT a packed major/minor/patch integer. Comparing against 8_000_000 made
+  // this always true, so the rule fired on 0.8 code, where the compiler emits
+  // the overflow check and there is nothing to find. Caught by the 2026-era
+  // corpus, whose fixtures are 0.8.24 and were reported as unchecked arithmetic.
+  const pre08 = model.versionFloor !== null && model.versionFloor < 8000;
   if (pre08) {
     const cleanArith = stripCommentsAndStrings(src);
     const usesSafeMath = /\.\s*(?:add|sub|mul|div|mod)\s*\(|SafeMath|\.tryAdd\s*\(/.test(cleanArith);
