@@ -224,7 +224,7 @@ function unwrapCallee(expr: AstNode): { member: string | null; base: AstNode | n
         ...(((expr.arguments as AstNode[] | undefined) ?? [])),
         ...(((belowNamed?.arguments as AstNode[] | undefined) ?? [])),
       ];
-      return { member: below.member, base: below.base, named: { names, arguments: args } as AstNode };
+      return { member: below.member, base: below.base, named: { type: "FunctionCall", names, arguments: args } as unknown as AstNode };
     }
     // A call on a call result (x.f().g()): the callee is still the inner member.
     return inner;
@@ -3668,7 +3668,7 @@ require(ok, "pay");`,
       // pre-0.5 ones on the modifier chain (handled in unwrapCallee). Normalise
       // both into `named` so sendsValue / amount / gasCap read one shape.
       if (!callee.named && Array.isArray(node.names) && (node.names as unknown[]).length > 0) {
-        callee.named = { names: node.names, arguments: node.arguments } as AstNode;
+        callee.named = { type: "FunctionCall", names: node.names, arguments: node.arguments } as unknown as AstNode;
       }
       const member = callee.member;
       // Fix 12 (b): record EVERY bare internal call, not only the
@@ -5322,7 +5322,7 @@ contract ReplayAttack {
         confidence: "medium",
         detector: "unchecked-block",
         summary: `The contract targets a compiler below 0.8, so ${storedArith ? `${storedArith[1]}${storedArith[2]}` : "a subtraction"} wraps instead of reverting — and no SafeMath call guards it in this function. A subtraction underflow turns a balance into 2^256-1 and an addition overflow turns a supply into zero, which is the arithmetic class behind the 0.4.x/0.5.x losses (and Truebit's 2026 loss was this same class in a contract deployed five years earlier).`,
-        walkthrough: `1. The pragma floor is below 0.8, so the compiler emits no overflow check.\n2. ${fn.name} performs ${storedArith[1]} ${storedArith[2]} on stored state.\n3. A caller who can drive that value past zero (or past 2^256) gets a wrapped result — an enormous balance or a zeroed supply.\n4. Use SafeMath (pre-0.8) or move to 0.8+, where the check is built in.`,
+        walkthrough: `1. The pragma floor is below 0.8, so the compiler emits no overflow check.\n2. ${fn.name} performs ${storedArith ? `${storedArith[1]} ${storedArith[2]}` : "arithmetic"} on stored state.\n3. A caller who can drive that value past zero (or past 2^256) gets a wrapped result — an enormous balance or a zeroed supply.\n4. Use SafeMath (pre-0.8) or move to 0.8+, where the check is built in.`,
         exploitSolidity: `// Pre-0.8: underflow makes the balance enormous.\nIVictim(target).${fn.name}(type(uint256).max);`,
         remediationSolidity: `// pre-0.8: use SafeMath for every stored-value operation\ncount = count.sub(input);\n// or compile with 0.8+, where underflow reverts`,
         locationFn: fn.name,

@@ -103,6 +103,7 @@ test("readQueue drops the background and keeps the order", () => {
 
 test("triageFinding is total: every band is reachable from a real finding shape", () => {
   const base: Finding = {
+    swc: null,
     id: "x",
     severity: "high",
     title: "t",

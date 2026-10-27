@@ -33,7 +33,6 @@ const ROW: ScanSummaryRow = {
   probes_json: JSON.stringify([{}, {}]),
   cert_hash: "abc",
   source_origin: "pipeline",
-  is_rag_indexed: true,
   risk_score: 88,
   critical_count: 1,
   high_count: 2,
@@ -58,7 +57,6 @@ test("queryScanSummaries maps rows and reports no error on success", async () =>
   assert.equal(s.riskScore, 88);
   assert.equal(s.hasProxy, true);
   assert.equal(s.probesCount, 2);
-  assert.equal(s.isRagIndexed, true);
   assert.equal(s.valueUsd, 42.5);
   assert.equal(s.analyzerVersion, "2026-10-21.1+deadbeefcafebabe");
 });
@@ -85,10 +83,12 @@ test("queryScanSummaries surfaces a query failure as an error payload, never a s
 });
 
 test("queryScansStats parses the aggregate row", async () => {
+  // The fake still offers a rag_indexed column, as a drifted archive would; the
+  // reader ignores it because RAG was removed in migration 0019.
   const sql = fakeSql(async () => [{ total: "2553", critical: "18", high: "2974", rag_indexed: "2543" }]);
   const { stats, error } = await queryScansStats(sql);
   assert.equal(error, null);
-  assert.deepEqual(stats, { total: 2553, critical: 18, high: 2974, ragIndexed: 2543 });
+  assert.deepEqual(stats, { total: 2553, critical: 18, high: 2974, ragIndexed: 0 });
 });
 
 test("queryScansStats surfaces a failure instead of silent zeros", async () => {
@@ -153,9 +153,7 @@ test("an empty archive is an EXPLICIT empty: no error, no warning, state remote"
   assert.equal(list.dbState, "remote");
   assert.deepEqual(list.summaries, []);
 
-  const statsSql = fakeSql(async (text) =>
-    text.includes("is_rag_indexed") ? [{ rag_indexed: "0" }] : [{ total: "0", critical: "0", high: "0" }],
-  );
+  const statsSql = fakeSql(async () => [{ total: "0", critical: "0", high: "0" }]);
   const stats = await queryScansStats(statsSql);
   assert.equal(stats.error, null);
   assert.equal(stats.dbState, "remote");
@@ -169,7 +167,7 @@ test("missing drift columns degrade the summaries read instead of zeroing it", a
   // (absent fields nulled), and name the missing columns in the warning.
   const PRESENT = [
     "id", "label", "input_kind", "contract_name", "target_address", "chain_id",
-    "proxy_info_json", "probes_json", "cert_hash", "source_origin", "is_rag_indexed",
+    "proxy_info_json", "probes_json", "cert_hash", "source_origin",
     "risk_score", "critical_count", "high_count", "medium_count", "low_count",
     "info_count", "balance_wei", "unparsed", "created_at",
   ];
@@ -209,21 +207,28 @@ test("stats and list fail independently — one bad query never zeroes the other
   const listFail = await queryScanSummaries(badList);
   assert.deepEqual(listFail.summaries, []);
   assert.ok(listFail.error && listFail.error.includes("list relation gone"));
-  const goodStats = fakeSql(async (text) =>
-    text.includes("is_rag_indexed") ? [{ rag_indexed: "7" }] : [{ total: "9", critical: "1", high: "2" }],
-  );
+  const goodStats = fakeSql(async () => [{ total: "9", critical: "1", high: "2" }]);
   const stats = await queryScansStats(goodStats);
   assert.equal(stats.error, null);
-  assert.deepEqual(stats.stats, { total: 9, critical: 1, high: 2, ragIndexed: 7 });
+  // ragIndexed stays 0: RAG was removed in migration 0019, so there is no count
+  // to make and nothing to warn about.
+  assert.deepEqual(stats.stats, { total: 9, critical: 1, high: 2, ragIndexed: 0 });
 });
 
-test("a failed RAG count degrades to a warning — headline totals stay intact", async () => {
+test("stats issue no RAG query at all after migration 0019", async () => {
+  // The separate count query used to run after the headline totals and degrade to
+  // a warning when the legacy column was missing. The column and the table are
+  // both gone now, so the reader must not mention them: a stray query against a
+  // dropped relation would throw on every stats call.
+  const seen: string[] = [];
   const sql = fakeSql(async (text) => {
-    if (text.includes("is_rag_indexed")) throw new Error('column "is_rag_indexed" does not exist');
+    seen.push(text);
     return [{ total: "8931", critical: "18", high: "2974" }];
   });
   const { stats, error, warning } = await queryScansStats(sql);
   assert.equal(error, null);
+  assert.equal(warning, null, "no warning is needed when nothing can fail");
   assert.deepEqual(stats, { total: 8931, critical: 18, high: 2974, ragIndexed: 0 });
-  assert.ok(warning && warning.includes("RAG"), `warning was: ${warning}`);
+  assert.equal(seen.length, 1, "one query, not two");
+  assert.ok(!seen.some((t) => t.includes("is_rag_indexed")), "the dropped column is never referenced");
 });

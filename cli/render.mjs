@@ -13,6 +13,75 @@
 const ESC = "\x1b[";
 const noColor = Boolean(process.env.NO_COLOR) || process.env.TERM === "dumb";
 
+
+/**
+ * @typedef {Object} WorkerStatus
+ * @property {string} [state]
+ * @property {string} [chainId]
+ * @property {string | null} [shard]
+ * @property {number} [total]
+ * @property {number} [completed]
+ * @property {number} [failed]
+ * @property {number} [skipped]
+ * @property {number} [stale]
+ * @property {number} [pending]
+ * @property {string | null} [current]
+ * @property {string | null} [lastError]
+ * @property {string | null} [startedAt]
+ * @property {string[]} [features]
+ */
+
+/**
+ * @typedef {Object} LlmHealth
+ * @property {{ state?: string, reason?: string }} [verdict]
+ * @property {number} [ok]
+ * @property {number} [empty]
+ * @property {number} [error]
+ */
+
+/**
+ * @typedef {Object} QueueRow
+ * @property {string} [band]
+ * @property {string | null} [address]
+ * @property {string} [scanId]
+ * @property {string} [title]
+ * @property {string} [detector]
+ */
+
+/**
+ * @typedef {Object} QueueView
+ * @property {QueueRow[]} [rows]
+ * @property {{ readNow?: number, readNext?: number, needsLiveState?: number, background?: number, total?: number }} [counts]
+ */
+
+/**
+ * @typedef {Object} ArchiveStats
+ * @property {number} [scans]
+ * @property {number} [findings]
+ * @property {number} [critical]
+ * @property {number} [high]
+ * @property {string} [dbState]
+ * @property {string} [error]
+ */
+
+/**
+ * @typedef {Object} TuiState
+ * @property {WorkerStatus} [status]
+ * @property {LlmHealth | null} [llm]
+ * @property {ArchiveStats | null} [db]
+ * @property {QueueView | null} [queue]
+ * @property {number} [width]
+ * @property {number} [queueLimit]
+ * @property {string} [notice]
+ */
+
+/** @typedef {(s: string) => string} Painter */
+
+/** @type {Painter} */
+/**
+ * @param {string} code
+ * @returns {Painter}
+ */
 export const colour = (code) => (s) => (noColor ? String(s) : `${ESC}${code}m${s}${ESC}0m`);
 export const bold = colour("1");
 export const dim = colour("2");
@@ -25,10 +94,12 @@ export const cyan = colour("36");
 export const grey = colour("90");
 
 /** Strip ANSI — used by the tests to measure visible width. */
+/** @param {string} s @returns {number} */
 export function visibleLength(s) {
   return String(s).replace(/\x1b\[[0-9;]*m/g, "").length;
 }
 
+/** @param {string} s @param {number} width @returns {string} */
 export function truncate(s, width) {
   const plain = String(s);
   if (visibleLength(plain) <= width) return plain;
@@ -37,12 +108,14 @@ export function truncate(s, width) {
   return plain.slice(0, Math.max(0, width - 1)) + "…";
 }
 
+/** @param {number} fraction @param {number} width @returns {string} */
 export function bar(fraction, width) {
   const f = Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0));
   const filled = Math.round(f * width);
   return "█".repeat(filled) + "░".repeat(Math.max(0, width - filled));
 }
 
+/** @param {number} ms @returns {string} */
 export function humanDuration(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "—";
   const s = Math.round(ms / 1000);
@@ -54,6 +127,7 @@ export function humanDuration(ms) {
   return `${Math.floor(h / 24)}d${String(h % 24).padStart(2, "0")}h`;
 }
 
+/** @param {number} n @returns {string} */
 export function humanCount(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return "—";
@@ -64,16 +138,19 @@ export function humanCount(n) {
 }
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/** @param {number} tick @returns {string} */
 export function spinnerFrame(tick) {
   return SPINNER[Math.abs(Math.trunc(tick)) % SPINNER.length];
 }
 
+/** @type {Record<string, Painter>} */
 const STATE_COLOUR = { running: green, paused: yellow, idle: grey, stopped: red };
 
 /** The header: worker identity, state, and the spinner while it runs. */
+/** @param {TuiState} state @param {number} tick @returns {string} */
 export function renderHeader(state, tick) {
   const st = state.status ?? {};
-  const paint = STATE_COLOUR[st.state] ?? grey;
+  const paint = STATE_COLOUR[st.state ?? ""] ?? grey;
   const spin = st.state === "running" ? `${spinnerFrame(tick)} ` : "";
   const shard = st.shard ? ` shard ${st.shard}` : "";
   const chain = st.chainId ? ` ${st.chainId}` : "";
@@ -89,6 +166,7 @@ export function renderHeader(state, tick) {
 }
 
 /** Progress: the numbers that decide whether the run is worth waiting for. */
+/** @param {TuiState} state @returns {string} */
 export function renderProgress(state) {
   const st = state.status ?? {};
   const total = Number(st.total ?? 0);
@@ -123,15 +201,19 @@ export function renderProgress(state) {
 }
 
 /** LLM health, from /health/llm — or an explicit "off" when the pass is disabled. */
+/** @param {TuiState} state @returns {string} */
 export function renderLlm(state) {
   const llm = state.llm ?? {};
   const verdict = llm.verdict ?? {};
-  const paint = { smooth: green, off: grey, waiting: blue, degraded: yellow, dead: red }[verdict.state] ?? grey;
+  /** @type {Record<string, Painter>} */
+  const byState = { smooth: green, off: grey, waiting: blue, degraded: yellow, dead: red };
+  const paint = byState[verdict.state ?? ""] ?? grey;
   const calls = `${llm.ok ?? 0}/${(llm.ok ?? 0) + (llm.empty ?? 0) + (llm.error ?? 0)} usable`;
   return `${dim("LLM")} ${paint(verdict.state ?? "unknown")} ${dim(calls)} ${dim(truncate(verdict.reason ?? "", 70))}`;
 }
 
 /** The read queue: the product's actual output, one line per contract. */
+/** @param {QueueView | null} [queue] @param {number} [limit] @returns {string} */
 export function renderQueue(queue, limit = 8) {
   const rows = (queue?.rows ?? []).slice(0, limit);
   const counts = queue?.counts ?? {};
@@ -140,7 +222,9 @@ export function renderQueue(queue, limit = 8) {
   )}`;
   if (rows.length === 0) return `${head}\n${dim("  (nothing yet — findings arrive as scans land)")}`;
   const lines = rows.map((r) => {
-    const band = { "read-now": red("now "), "read-next": yellow("next"), "needs-live-state": blue("live"), background: grey("bg  ") }[r.band] ?? grey("?   ");
+    /** @type {Record<string, string>} */
+    const bands = { "read-now": red("now "), "read-next": yellow("next"), "needs-live-state": blue("live"), background: grey("bg  ") };
+    const band = bands[r.band ?? ""] ?? grey("?   ");
     const who = (r.address ?? r.scanId ?? "").slice(0, 10);
     return `  ${band} ${dim(who)} ${truncate(r.title ?? r.detector ?? "", 58)}`;
   });
@@ -148,6 +232,7 @@ export function renderQueue(queue, limit = 8) {
 }
 
 /** Archive stats, straight from the DB. */
+/** @param {TuiState} state @returns {string} */
 export function renderStats(state) {
   const s = state.db ?? {};
   if (s.error) return `${bold("Archive")} ${red(s.error)}`;
@@ -172,6 +257,7 @@ export const MENU = [
   { key: "x", label: "Quit", hint: "" },
 ];
 
+/** @param {number} selected @returns {string} */
 export function renderMenu(selected) {
   return MENU.map((item, i) => {
     const row = ` ${item.key}  ${item.label.padEnd(14)} ${dim(item.hint)}`;
@@ -180,6 +266,7 @@ export function renderMenu(selected) {
 }
 
 /** A full frame: header, progress, llm, stats, queue, menu, footer. */
+/** @param {TuiState} state @param {number} selected @param {number} tick @returns {string} */
 export function renderFrame(state, selected, tick) {
   const width = state.width ?? 100;
   const rule = dim("─".repeat(Math.min(width, 100)));

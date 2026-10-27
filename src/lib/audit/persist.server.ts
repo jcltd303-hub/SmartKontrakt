@@ -238,7 +238,7 @@ export async function getScansStats(): Promise<ScansStatsResult> {
   const a = await archiveSql();
   if (!a.sql) {
     return {
-      stats: { total: 0, critical: 0, high: 0 },
+      stats: { total: 0, critical: 0, high: 0, ragIndexed: 0 },
       error: a.error,
       warning: null,
       dbState: a.conn.state,

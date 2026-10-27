@@ -18,6 +18,39 @@
 // scan, so a run whose narratives are all fallback text still shows up here as a
 // distribution — that is how you find out the LLM was off for last night's run.
 
+
+/**
+ * @typedef {Object} HealthCounters
+ * @property {number} [ok]
+ * @property {number} [empty]
+ * @property {number} [error]
+ * @property {number} [unavailable]
+ * @property {number} [consecutiveFailures]
+ * @property {string | null} [lastError]
+ * @property {string | null} [lastOkAt]
+ */
+
+/**
+ * @typedef {Object} JudgeContext
+ * @property {number | null} [completed]
+ * @property {number | null} [total]
+ * @property {boolean | null} [aiSecondPass]
+ * @property {string | null} [state]
+ */
+
+/**
+ * @typedef {Object} CheckOptions
+ * @property {string} [url]
+ * @property {number} [timeoutMs]
+ * @property {(endpoint: string, timeoutMs?: number) => Promise<any>} [fetchImpl]
+ */
+
+/**
+ * @typedef {Object} DbRow
+ * @property {number} scans
+ * @property {string} status
+ */
+
 import http from "node:http";
 import { createRequire } from "node:module";
 
@@ -28,6 +61,11 @@ const DEFAULTS = { url: "http://127.0.0.1:8788", timeoutMs: 8000 };
  * @param ctx    optional /status fields — `calls === 0` is ambiguous without them:
  *               it means "not enabled", "not started yet" or "enabled but broken",
  *               and only the run state can tell you which.
+ */
+/**
+ * @param {HealthCounters} health
+ * @param {JudgeContext} [ctx]
+ * @returns {{ state: string, code: number, reason: string }}
  */
 export function judge(health, ctx = {}) {
   const attempted = (health.ok ?? 0) + (health.empty ?? 0) + (health.error ?? 0);
@@ -91,9 +129,15 @@ export function judge(health, ctx = {}) {
  * hunting the wrong problem. node:http needs no WASM and exists on every Node
  * this repo supports.
  */
+/**
+ * @param {string} endpoint
+ * @param {number} [timeoutMs]
+ * @returns {Promise<any>}
+ */
 function httpGetJson(endpoint, timeoutMs) {
   return new Promise((resolve, reject) => {
     const req = http.get(endpoint, { timeout: timeoutMs }, (res) => {
+      /** @type {Buffer[]} */
       const chunks = [];
       res.on("data", (c) => chunks.push(c));
       res.on("end", () => {
@@ -114,6 +158,10 @@ function httpGetJson(endpoint, timeoutMs) {
   });
 }
 
+/**
+ * @param {CheckOptions} [options]
+ * @returns {Promise<any>}
+ */
 export async function checkLlmHealth({ url = DEFAULTS.url, timeoutMs = DEFAULTS.timeoutMs, fetchImpl } = {}) {
   const base = url.replace(/\/+$/, "");
   const endpoint = `${base}/health/llm`;
@@ -138,8 +186,9 @@ export async function checkLlmHealth({ url = DEFAULTS.url, timeoutMs = DEFAULTS.
       : computed;
     return { reachable: true, health, verdict, ctx, model: body.model, keyPresent: body.keyPresent };
   } catch (err) {
-    if (err && typeof err.statusCode === "number") {
-      return { reachable: false, verdict: { state: "unreachable", code: 2, reason: `${endpoint} returned HTTP ${err.statusCode}` } };
+    const statusCode = /** @type {{ statusCode?: number }} */ (err)?.statusCode;
+    if (typeof statusCode === "number") {
+      return { reachable: false, verdict: { state: "unreachable", code: 2, reason: `${endpoint} returned HTTP ${statusCode}` } };
     }
     const msg = err instanceof Error ? err.message : String(err);
     return {
@@ -180,8 +229,10 @@ export async function checkDb({ hours = 24 } = {}) {
         group by 1 order by 2 desc`,
       [String(hours)],
     );
-    const total = rows.reduce((a, r) => a + r.scans, 0);
-    const ok = rows.find((r) => r.status === "ok")?.scans ?? 0;
+    /** @type {DbRow[]} */
+    const typed = rows;
+    const total = typed.reduce((a, r) => a + r.scans, 0);
+    const ok = typed.find((r) => r.status === "ok")?.scans ?? 0;
     return {
       ok: true,
       hours,
@@ -229,7 +280,7 @@ async function main() {
   if (wantDb) {
     const db = await checkDb();
     console.log(db.ok ? `DB: ${db.reason}` : `DB: skipped — ${db.reason}`);
-    if (db.ok && db.share !== null && db.share < 0.5 && db.total > 0) {
+    if (db.ok && db.share != null && db.share < 0.5 && (db.total ?? 0) > 0) {
       console.log("  -> most recent scans have no AI narrative: the second pass was off or failing for this window");
       dbCode = 1;
     }

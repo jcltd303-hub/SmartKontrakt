@@ -243,7 +243,6 @@ test("summaries: a failed findings-counts read surfaces as an error, never store
     probes_json: null,
     cert_hash: null,
     source_origin: "pipeline",
-    is_rag_indexed: false,
     risk_score: 10,
     critical_count: 7,
     high_count: 7,

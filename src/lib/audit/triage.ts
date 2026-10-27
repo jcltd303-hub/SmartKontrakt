@@ -174,7 +174,7 @@ export type TriageCounts = {
   familiesInQueue: number;
 };
 
-export function triageCounts(findings: readonly T[]): TriageCounts {
+export function triageCounts(findings: readonly Finding[]): TriageCounts {
   const queue = triageQueue(findings);
   const inQueue = queue.filter((t) => t.band !== "background");
   return {

@@ -40,7 +40,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { analyzeInput } from "../src/lib/audit/engine.ts";
-import { SMARTBUGS_CATEGORIES, smartbugsCategoryForDetector } from "../src/lib/audit/smartbugs.ts";
+import {
+  SMARTBUGS_CATEGORIES,
+  smartbugsCategoryForDetector,
+  type SmartBugsCategory,
+} from "../src/lib/audit/smartbugs.ts";
 
 /**
  * Hygiene detectors are excluded from CATEGORY scoring. They are real findings,
@@ -174,8 +178,8 @@ export function runBenchmark(): BenchmarkResult {
     for (const c of expected) bump(expectedByCategory, c);
     for (const c of predicted) bump(predictedByCategory, c);
     for (const c of expected) {
-      if (predicted.has(c)) bump(tp, c);
-      else bump(fn, c);
+      if (predicted.has(c as SmartBugsCategory)) bump(tp, c as SmartBugsCategory);
+      else bump(fn, c as SmartBugsCategory);
     }
     for (const c of predicted) {
       if (!expected.includes(c)) bump(fp, c);

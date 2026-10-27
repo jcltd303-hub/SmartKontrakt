@@ -12,6 +12,11 @@ export type AiSecurityReview = {
   foundryTestCode: string;
   economicRiskSummary: string;
   source: "openrouter" | "template";
+  // Read by the workbench's report export (use-workbench-controller). They were
+  // always part of the model's reply, just never declared here, so the UI was
+  // typed against fields the type did not have.
+  overallVerdict?: string;
+  summary?: string;
 };
 
 /** OpenRouter chat-completions endpoint (OpenAI-compatible). */

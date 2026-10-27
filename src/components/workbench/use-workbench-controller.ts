@@ -1521,7 +1521,7 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
       }
       const disposition = findingDispositions[f.id];
       if (disposition) {
-        lines.push(`- **Triage Disposition**: \`${disposition.state.toUpperCase()}\`${disposition.note ? ` — ${disposition.note}` : ""}`);
+        lines.push(`- **Triage Disposition**: \`${disposition.disposition.toUpperCase()}\`${disposition.note ? ` — ${disposition.note}` : ""}`);
       }
       lines.push("");
       lines.push(`#### Description`);
@@ -1582,9 +1582,13 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
       lines.push("## 5. Active Call Probes");
       lines.push("");
       probes.forEach((p) => {
-        lines.push(`- **Selector**: \`${p.selector}\` | **Signature**: \`${p.signature || "unknown"}\` | **State**: \`${p.resultState}\``);
-        if (p.returnValue) lines.push(`  - Return Value: \`${p.returnValue}\``);
-        if (p.revertReason) lines.push(`  - Revert Reason: \`${p.revertReason}\``);
+        // CallProbeResult carries name/success/rawResult/error — not the
+        // signature/resultState/returnValue/revertReason names this export was
+        // written against.
+        const state = p.success ? "ok" : "reverted";
+        lines.push(`- **Selector**: \`${p.selector}\` | **Signature**: \`${p.name || "unknown"}\` | **State**: \`${state}\``);
+        if (p.rawResult) lines.push(`  - Return Value: \`${p.rawResult}\``);
+        if (p.error) lines.push(`  - Revert Reason: \`${p.error}\``);
       });
       lines.push("");
     }
