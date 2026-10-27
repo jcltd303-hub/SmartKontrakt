@@ -9,6 +9,8 @@ Four files, in the order you run them:
 | `02_priority_queue.sql` | BigQuery | rank contracts by likelihood of a real, reachable vulnerability |
 | `03_chain_candidates.sql` | BigQuery public data | find contracts on-chain that meet the *preconditions* for our classes |
 | `04_value_at_risk.sql` | BigQuery | join findings to live value and activity |
+| `05_chain_wide_screen.sql` | BigQuery public data | **chain-wide**: likely-vulnerable contracts from behaviour alone, no dependency on our scans |
+| `06_reentrancy_cycles.sql` | BigQuery public data | **chain-wide**: re-entry into a contract from inside its own call tree |
 
 ## Why BigQuery at all
 
@@ -45,6 +47,51 @@ mean the same thing:
   BigQuery as a JSON string column. Use `JSON_EXTRACT_ARRAY` to read it.
 - `balance_wei` is a **string** because a balance exceeds 2^53 — keep it a
   string or a `NUMERIC`/`BIGNUMERIC` in BigQuery. Never `FLOAT64` for wei.
+
+## Chain-wide, from public data only
+
+`05` and `06` never touch our own tables: they work on any contract on the chain,
+whether or not it has been scanned, and whether or not it has source.
+
+### Do not screen bytecode with `LIKE '%f4%'`
+
+The obvious filter for DELEGATECALL is a substring match on `contracts.bytecode`.
+It does not work, and the arithmetic says why: bytecode is hex, so a 10 KB
+contract is ~20,000 characters, and the probability that a given 1-byte opcode
+pattern appears somewhere by accident is `1 - (1 - 1/256)^20000 ≈ 1`. **Every
+contract matches every opcode.** And an `f4` inside PUSH32 constant data is not an
+opcode at all — separating the two needs a disassembler, which SQL is not.
+
+So both queries are behavioural, read from `traces`, where BigQuery records the
+call type the EVM actually executed:
+
+| Signal | Source | Why it matters |
+| --- | --- | --- |
+| `call_type = 'DELEGATECALL'` | traces | exact, not a hex guess — the proxy/upgrade surface (SWC-112) |
+| value in | traces | something to take |
+| value sent out | traces | a payout path exists |
+| distinct callers | traces | the on-chain proxy for reachability |
+| ≥3 entries in one tx | traces | the reentrancy tell (a flash loan enters twice) |
+| `A → B → A` in one call tree | traces + `trace_address` | the reentrancy **shape**, not a precondition for it |
+
+### `06` is the one to run first
+
+A reentrancy is a cycle in the call tree. BigQuery records the tree positionally
+in `trace_address`, so a cycle is an equality join between a trace and its parent
+(`parent.path = child.path` minus the last index, with the addresses reversed).
+That detects the attack shape directly, rather than a precondition that might
+lead to one.
+
+It also finds flash loans (pool → borrower → pool to repay) and legitimate
+callbacks, which is why it returns discriminators rather than a verdict:
+
+- **same-selector re-entry** — the inner frame calls the same entry point it came
+  from (`withdraw` inside `withdraw`). That is the reentrancy tell; a flash loan
+  re-enters a *different* function (borrow → repay).
+- **depth ≥ 4** — three or more entries into one contract inside one transaction.
+- **value on the inner frame** — the re-entrant call moving value is the drain.
+
+Nothing here decides. Each row needs the contract read.
 
 ## The scoring model, as constants
 
