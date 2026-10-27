@@ -29,6 +29,18 @@ export type FourbyteLookup = {
   topics(topics: string[]): Promise<Map<string, string[]>>;
 };
 
+export type FourbyteKind = "signatures" | "event-signatures";
+
+/**
+ * The DB-backed lookup, which also remembers misses. Kept separate from
+ * FourbyteLookup so every existing fake (tests, cache-less callers) still
+ * satisfies the small contract.
+ */
+export type FourbyteCache = FourbyteLookup & {
+  recentMisses(kind: FourbyteKind, keys: string[]): Promise<Set<string>>;
+  recordMisses(kind: FourbyteKind, keys: string[]): Promise<void>;
+};
+
 /** Plain-map form of a lookup result — what the resolveFourbyte server fn returns. */
 export type FourbyteResults = {
   selectors: Record<string, string[]>;
@@ -38,7 +50,7 @@ export type FourbyteResults = {
 /** Cap per lookup: a contract's dispatcher + PUSH32s stay well under this. */
 const MAX_KEYS = 500;
 
-export function createDbFourbyteLookup(sql: Sql): FourbyteLookup {
+export function createDbFourbyteLookup(sql: Sql): FourbyteCache {
   return {
     selectors: async (keys) => {
       const out = new Map<string, string[]>();
@@ -66,13 +78,45 @@ export function createDbFourbyteLookup(sql: Sql): FourbyteLookup {
       }
       return out;
     },
+    /** Keys recently checked and NOT found upstream — skip the network for these. */
+    recentMisses: async (kind, keys) => {
+      const out = new Set<string>();
+      const uniq = [...new Set(keys.map((k) => k.toLowerCase()))].slice(0, MAX_KEYS);
+      if (uniq.length === 0) return out;
+      const rows = await sql<{ key: string }>`
+        select key from fourbyte_misses
+        where kind = ${kind}
+          and key = any(${uniq})
+          and checked_at > now() - make_interval(days => ${MISS_TTL_DAYS})`;
+      for (const r of rows) out.add(r.key);
+      return out;
+    },
+    recordMisses: async (kind, keys) => {
+      const uniq = [...new Set(keys.map((k) => k.toLowerCase()))].slice(0, MAX_KEYS);
+      if (uniq.length === 0) return;
+      await sql`
+        insert into fourbyte_misses (kind, key, checked_at)
+        select ${kind}, k, now() from unnest(${uniq}::text[]) as k
+        on conflict (kind, key) do update set checked_at = now()`;
+    },
   };
 }
 
 /** Upstream 4byte.directory API base (verified live 2026-10-22). */
 const FOURBYTE_API_BASE = "https://www.4byte.directory/api/v1";
-/** Per-request upstream timeout — enrichment must never stall an audit. */
-const UPSTREAM_TIMEOUT_MS = 5_000;
+/**
+ * Per-request upstream timeout — enrichment must never stall an audit.
+ *
+ * 5s was too generous: on a bytecode-only contract every selector is a miss, so
+ * the timeout is multiplied by N/8 lanes and became the whole audit's cost
+ * (measured: 20 s per address, 23 days for 100k). A reply that takes more than
+ * two seconds is not worth waiting for, and with negative caching the cost is
+ * paid once per selector rather than once per contract.
+ */
+const UPSTREAM_TIMEOUT_MS = 2_000;
+
+/** How long a miss is trusted before 4byte.directory is asked again. */
+const MISS_TTL_DAYS = 7;
 /** Bounded parallelism for batch upstream pulls. */
 const UPSTREAM_CONCURRENCY = 8;
 /** How long a negative upstream result stays memoized (ms). Successes
@@ -210,8 +254,20 @@ export function createOnDemandFourbyteLookup(
         // Missing table / DB down: cache-less for this batch.
       }
     }
-    const misses = uniq.filter((k) => !out.has(k));
+    // A key 4byte did not know within the TTL is not asked again: this is the
+    // difference between 20 s per contract and a fraction of a second, because
+    // on a bytecode-only report EVERY selector is a miss.
+    let recent = new Set<string>();
+    if (cache) {
+      try {
+        recent = await cache.recentMisses(kind, uniq);
+      } catch {
+        // Missing table / DB down: behave as before, cache-less.
+      }
+    }
+    const misses = uniq.filter((k) => !out.has(k) && !recent.has(k));
     let idx = 0;
+    const unanswered: string[] = [];
     const lanes = Array.from(
       { length: Math.min(UPSTREAM_CONCURRENCY, misses.length) },
       async () => {
@@ -221,11 +277,22 @@ export function createOnDemandFourbyteLookup(
           if (sigs && sigs.length > 0) {
             out.set(hex, sigs);
             if (sql) await cachePulled(sql, kind, hex, sigs);
+          } else {
+            // "I do not know this" is worth remembering too: the next contract
+            // with this selector would otherwise pay the same timeout again.
+            unanswered.push(hex);
           }
         }
       },
     );
     await Promise.all(lanes);
+    if (cache && unanswered.length > 0) {
+      try {
+        await cache.recordMisses(kind, unanswered);
+      } catch {
+        // A failed miss write costs a repeat lookup later, never correctness.
+      }
+    }
     return out;
   };
 
