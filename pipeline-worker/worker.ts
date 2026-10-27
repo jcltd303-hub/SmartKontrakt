@@ -139,6 +139,7 @@ const { detectProxyArchitecture } = await import("../src/lib/audit/proxy-resolve
 const { probeContractInterfaces } = await import("../src/lib/audit/simulator.ts");
 const { withRetry } = await import("../src/lib/audit/rate-limit.ts");
 const { secondPass } = await import("../src/lib/audit/persist.server.ts");
+const { newLlmHealth, recordLlm, llmVerdict } = await import("./llm-health.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
 const { getSql, getDbConnectionState } = await import("../src/lib/db.ts");
@@ -228,6 +229,9 @@ type Status = {
   autoPocSkipped: number;
   autoPocShared: number;
   autoPocBackendDown: boolean;
+  /** LLM health for this run — see pipeline-worker/llm-health.ts. */
+  llm: ReturnType<typeof newLlmHealth>;
+  llmVerdict: ReturnType<typeof llmVerdict>;
 };
 
 let status: Status = {
@@ -491,8 +495,24 @@ async function runLoop(): Promise<void> {
           const pass = await secondPass(result.report, result.rawBody);
           if (pass.text) result.report.aiNarrative = pass.text;
           result.report.aiStatus = pass.status;
+          // `ok` with no text is the quiet failure: a 200 the output contract
+          // rejected looks like success in a log and leaves a fallback
+          // narrative behind. Count it as `empty`, not `ok`.
+          const before = status.llmVerdict.state;
+          recordLlm(
+            status.llm,
+            pass.status === "unavailable" ? "unavailable" : pass.text ? "ok" : "empty",
+            pass.text ? undefined : `status=${pass.status}, no usable text`,
+          );
+          status.llmVerdict = llmVerdict(status.llm);
+          if (status.llmVerdict.state !== before && status.llmVerdict.state !== "smooth") {
+            console.warn(`[worker] LLM ${status.llmVerdict.state}: ${status.llmVerdict.reason}`);
+          }
         } catch (err) {
-          console.warn("[worker] second pass notice:", err instanceof Error ? err.message : String(err));
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn("[worker] second pass notice:", msg);
+          recordLlm(status.llm, "error", msg);
+          status.llmVerdict = llmVerdict(status.llm);
         }
       }
 
@@ -946,6 +966,18 @@ const server = http.createServer((req, res) => {
     void getSql()
       .then((sql) => scanFreshness(sql).then((f) => sendJson(res, 200, { ...f, analyzer: analyzerStamp() })))
       .catch((err) => sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) }));
+    return;
+  }
+
+  // One-line LLM health poll: `curl -s localhost:8788/health/llm`.
+  // The key itself is never returned — only whether one is configured.
+  if (req.method === "GET" && url.pathname === "/health/llm") {
+    sendJson(res, 200, {
+      verdict: status.llmVerdict,
+      ...status.llm,
+      model: process.env.OPENROUTER_MODEL?.trim() || "(default)",
+      keyPresent: Boolean(process.env.OPENROUTER_API_KEY?.trim()),
+    });
     return;
   }
 

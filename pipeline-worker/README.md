@@ -131,6 +131,49 @@ curl -s -X POST http://127.0.0.1:8788/start \
 - `/status` reports `deepAgentRuns` (addresses that ran the agent) and
   `deepAgentConfirmed` (fork-confirmed findings total).
 
+## Is the LLM working? (poll without reading logs)
+
+The worker records `aiStatus` per saved record, but that is only visible by
+reading the database afterwards. `llm-health.ts` keeps a per-run tally and
+`/health/llm` returns it in one line:
+
+```bash
+curl -s localhost:8788/health/llm | jq .
+```
+
+```json
+{
+  "verdict": { "state": "smooth", "reason": "18/18 usable replies" },
+  "calls": 18, "ok": 18, "empty": 0, "error": 0, "unavailable": 0,
+  "consecutiveFailures": 0, "lastError": null, "lastOkAt": "2026-10-27T18:41:02Z",
+  "model": "(default)", "keyPresent": true
+}
+```
+
+Four outcomes, and the distinction between the middle two is the point:
+
+| outcome | meaning | verdict effect |
+| --- | --- | --- |
+| `ok` | usable text | good reply |
+| `empty` | the call succeeded but produced nothing usable — a 200 with an empty body, or a narrative the output contract rejected | **counted as a failure**; this is the failure a log hides |
+| `error` | the call was attempted and threw | failure |
+| `unavailable` | no `OPENROUTER_API_KEY` | not a failure: `off`, static-only run |
+
+Verdicts: `smooth` (≤20% failures), `degraded` (>20%), `dead` (3 consecutive
+failures — the same count the PoC breaker uses), `off` (no key). The worker also
+prints one `[worker] LLM degraded|dead: …` line at the moment the state changes,
+so the log and the endpoint agree.
+
+Watching a run:
+
+```bash
+watch -n 30 'curl -s localhost:8788/health/llm | jq -c "{s:.verdict.state,r:.verdict.reason,calls,ok,empty,error}"'
+```
+
+A run whose narratives are all fallback text with `error: 0` and `empty: 0` means
+`aiSecondPass` was never turned on — check `aiSecondPass` in `/status` before
+suspecting the model.
+
 ## Auto-PoC (automatic PoC for high/critical findings)
 
 On by default (`autoPoc: false` in the `/start` body turns it off).
