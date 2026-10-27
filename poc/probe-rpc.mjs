@@ -124,8 +124,13 @@ async function main() {
     }
     const head = Number(BigInt(blockNumber.result));
 
-    const atHead = await logs(endpoint, head - 1, head);
-    console.log(`  getLogs 1 block @ head       ${describe(atHead)}  (${atHead.ms}ms, http ${atHead.http})`);
+    // Not the tip: Blockscout's PRO RPC answers the newest block or two with 500
+    // "Internal server error" while the same filter works a few blocks back.
+    const atHead = await logs(endpoint, head - 3, head - 2);
+    console.log(`  getLogs 1 block @ head-2     ${describe(atHead)}  (${atHead.ms}ms, http ${atHead.http})`);
+    if (atHead.http >= 500) {
+      console.log(`  -> 5xx at the tip is usually indexer lag; the window retries two blocks short`);
+    }
 
     if (deployBlock) {
       const atDeploy = await logs(endpoint, deployBlock, deployBlock + 1);
@@ -133,8 +138,8 @@ async function main() {
       if (atDeploy.error) console.log(`  -> no archive depth: cannot read this contract's history here`);
     }
 
-    const wide = await logs(endpoint, Math.max(0, head - 2000), head);
-    console.log(`  getLogs 2000 blocks @ head   ${describe(wide)}  (${wide.ms}ms, http ${wide.http})`);
+    const wide = await logs(endpoint, Math.max(0, head - 2002), head - 2);
+    console.log(`  getLogs 2000 blocks @ head-2 ${describe(wide)}  (${wide.ms}ms, http ${wide.http})`);
     console.log("");
   }
   console.log("Read the table, not the status code: several endpoints answer 200 with an");

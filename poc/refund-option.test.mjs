@@ -296,3 +296,35 @@ test("the range defaults to the deployment block, not genesis", async () => {
     server.close();
   }
 });
+
+test("a 500 at the tip is retried two blocks short, not treated as a failure", async () => {
+  // Measured on Blockscout's PRO JSON-RPC: getLogs at the newest block returns 500
+  // "Internal server error" while the same filter works a few blocks back.
+  const ADDRESS = "0x6eb0e558140025cb740f99979613a0876685f0be";
+  const REVEAL = 999999999999999999999999n;
+  const commit = "0x" + commitOf(REVEAL);
+  const HEAD = 5000;
+  const server = await serve({
+    eth_blockNumber: () => "0x" + HEAD.toString(16),
+    eth_getCode: () => "0x6080",
+    eth_getLogs: (params) => {
+      const { fromBlock, toBlock } = params[0];
+      const to = Number(toBlock);
+      if (to >= HEAD - 1) throw new Error("Internal server error"); // only if the walk ignores the cap
+      return Number(fromBlock) <= 4990 && to >= 4990
+        ? [{ blockNumber: "0x137e", transactionHash: "0xaa", topics: [T_COMMIT], data: "0x" + commit.slice(2) }]
+        : [];
+    },
+    eth_getTransactionByHash: () => ({ input: placeBetCalldata({ commit: commit.slice(2), amount: [10n ** 16n] }) }),
+  });
+  const port = server.address().port;
+  try {
+    const { stdout } = await run(process.execPath, [
+      "poc/refund-option.mjs", "--address", ADDRESS, "--source", "rpc",
+      "--rpc", `http://127.0.0.1:${port}`, "--from", "0",
+    ]);
+    assert.match(stdout, /commit events 1/, "the run survived the lagging tip");
+  } finally {
+    server.close();
+  }
+});

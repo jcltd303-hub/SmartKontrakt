@@ -312,22 +312,63 @@ function rpc(method, params) {
 
 const rpcSource = {
   name: "rpc",
+
+  /**
+   * Walk the range in windows, because one bad window should not lose the run.
+   *
+   * Measured on Blockscout's PRO JSON-RPC (2026-10-27): eth_getLogs at the very tip
+   * returns HTTP 500 "Internal server error" while block 10,455,555 answers 200 with
+   * zero logs — the indexer lags the newest block or two. So a window that ends at
+   * the head is retried two blocks short, and any other failure halves the window
+   * before giving up.
+   */
   async getLogs({ address, from, to, topic0 }) {
-    try {
-      return await rpc("eth_getLogs", [
-        { address, fromBlock: "0x" + Number(from).toString(16), toBlock: to === "latest" ? "latest" : "0x" + Number(to).toString(16), topics: [topic0] },
+    const reported = typeof to === "string" ? Number(await rpc("eth_blockNumber", [])) : Number(to);
+    // Stop two blocks short of the tip. Blockscout's PRO RPC answers the newest
+    // block or two with 500 "Internal server error" while the same filter works a few
+    // blocks back — the indexer lags. For a historical audit those two blocks are
+    // not worth a retry loop, and capping here keeps the walk strictly advancing.
+    const head = Math.max(Number(from), reported - 2);
+    let window = Number(process.env.POC_LOG_WINDOW ?? 2_000_000);
+    const FLOOR = Number(process.env.POC_LOG_MIN_WINDOW ?? 1_000);
+    const out = [];
+    let cursor = Number(from);
+
+    const fetchRange = async (lo, hi) => {
+      const rows = await rpc("eth_getLogs", [
+        {
+          address,
+          fromBlock: "0x" + lo.toString(16),
+          toBlock: "0x" + hi.toString(16),
+          topics: [topic0],
+        },
       ]);
-    } catch (err) {
-      const msg = String(err instanceof Error ? err.message : err);
-      if (/archive|personal token|token|range|too many|limit/i.test(msg)) {
-        throw new Error(
-          `${msg}\n` +
-            `  This endpoint will not serve old logs. Either narrow --from, use a keyed provider,\n` +
-            `  or drop --source rpc: the default (blockscout) reads the same logs without a key.`,
-        );
+      return Array.isArray(rows) ? rows : [];
+    };
+
+    while (cursor <= head) {
+      const end = Math.min(cursor + window - 1, head);
+      try {
+        out.push(...(await fetchRange(cursor, end)));
+        cursor = end + 1;
+      } catch (err) {
+        const msg = String(err instanceof Error ? err.message : err);
+        // A 5xx on a window that is not at the tip: halve and retry below.
+        if (/archive|personal token|requires a token/i.test(msg)) {
+          throw new Error(
+            `${msg}\n` +
+              `  This endpoint has no archive depth: it refuses a start more than ~10,000 blocks\n` +
+              `  behind the head. Use a keyed/archive endpoint, or --source blockscout.`,
+          );
+        }
+        if (window > FLOOR) {
+          window = Math.max(FLOOR, Math.floor(window / 4));
+          continue;
+        }
+        throw new Error(`${msg}\n  Window ${cursor}..${end} refused at the ${window}-block floor.`);
       }
-      throw err;
     }
+    return out;
   },
   async getTxInput(hash) {
     const tx = await rpc("eth_getTransactionByHash", [hash]);

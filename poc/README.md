@@ -76,6 +76,12 @@ Free tier: 100K credits/day at 5 RPS, and `addresses/:hash/logs` costs 30 credit
 a run is a few hundred credits. `apikey=<token>` as a query parameter works too, if
 you prefer it to the header.
 
+Measured on this endpoint (2026-10-27): `eth_blockNumber` 461 ms, `eth_getLogs` at
+block 10,455,555 returns 200 with zero logs — archive depth is there. `eth_getLogs`
+at the **tip** returns HTTP 500 "Internal server error" while a window two blocks
+back is fine, so the walk stops two blocks short of the head. Those two blocks are
+not indexed yet; for a historical audit they cost nothing.
+
 ### Probe an endpoint before trusting it
 
 ```bash
