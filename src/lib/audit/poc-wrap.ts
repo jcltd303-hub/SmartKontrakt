@@ -469,7 +469,18 @@ export function wrapPocSnippetWithReason(snippet: string): WrapResult {
   const deploy = `new ${attack.name}(${ctorFilled.args})`;
   const prefix: string[] = [];
   if (!/SPDX-License-Identifier/.test(working)) prefix.push("// SPDX-License-Identifier: MIT");
-  if (!/pragma\s+solidity/.test(working)) prefix.push("pragma solidity ^0.8.0;");
+  // The snippet's own pragma is KEPT when it is 0.8-compatible, and replaced when
+  // it is not. A snippet copied from a 0.4/0.6 target pins the whole generated
+  // file ("No compiler version exists that matches ^0.4.15") and forge-std/Test.sol
+  // only builds under 0.8 — so keeping a 0.4 pin guaranteed a failure that looked
+  // like a broken PoC. A 0.8 pin is honoured, because replacing it could drop a
+  // feature the snippet relies on.
+  const ownPragma = working.match(/^\s*pragma\s+solidity\s+([^;]+);/m);
+  const ownIs08 = ownPragma ? /\b0\.8\./.test(ownPragma[1] ?? "") : false;
+  if (ownPragma && !ownIs08) {
+    working = working.replace(/^\s*pragma\s+solidity\s+[^;]+;/m, "").replace(/^\s*\n/, "");
+  }
+  if (!ownIs08) prefix.push("pragma solidity ^0.8.0;");
   if (!/forge-std\/Test\.sol/.test(working)) prefix.push('import "forge-std/Test.sol";');
   const header = prefix.length ? prefix.join("\n") + "\n" : "";
   const testContract = [

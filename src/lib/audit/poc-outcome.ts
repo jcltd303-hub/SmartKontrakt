@@ -115,6 +115,29 @@ export function hasInconclusiveEvidence(output: string | null | undefined): bool
 }
 
 /**
+ * Failures that are NOT evidence about the PoC's test content.
+ *
+ * A fork that never came up and a file that never compiled both print
+ * `tests=0` in the SmartPoC header, so the zero-test rule claimed them as
+ * `no_tests` — a TERMINAL, shareable verdict. A transient RPC outage was
+ * therefore cached as "this finding has no executable test", which is both
+ * false and permanent: the identical-code cache then served that verdict to
+ * siblings, and no re-run was attempted.
+ *
+ * Measured on one run: of 209 no_tests rows, 139 were fork-endpoint failures
+ * ("failed to retrieve chain ID", "could not instantiate forked environment"),
+ * 33 were compile failures, 5 were unsatisfiable pragmas. Zero were hollow
+ * runs. These are infra outcomes and must save as "error".
+ */
+export const ENVIRONMENT_FAILURE_RE =
+  /failed to retrieve chain ID|could not instantiate forked environment|Encountered invalid compiler version|Compiler run failed|could not instantiate fork|failed to get chain id/i;
+
+export function hasEnvironmentFailure(output: string | null | undefined): boolean {
+  if (!output) return false;
+  return ENVIRONMENT_FAILURE_RE.test(output);
+}
+
+/**
  * Map a FRESH run result to the status it is saved under. The run's own
  * status field is authoritative here — a value-guard skip arrives as
  * status "skipped", never embedded in an "error" — except for the
@@ -137,13 +160,19 @@ export function savedStatusFromRun(run: { status: string; logs?: string | null }
     return "unadapted";
   }
   if (run.status === "passed" || run.status === "failed") {
+    // Environment failure first: tests=0 from a fork that never came up is
+    // not a hollow run.
+    if (hasEnvironmentFailure(logs)) return "error";
     if (hasZeroTestEvidence(logs)) return "no_tests";
     if (run.status === "passed" && hasInconclusiveEvidence(logs)) return "failed";
     return run.status;
   }
   // "error", "backend_unreachable", and anything unrecognized save as
   // "error" — unless the output proves the harness ran zero tests, in
-  // which case the honest kind is "no_tests", not a failure.
+  // which case the honest kind is "no_tests", not a failure. An environment
+  // failure outranks that: it explains the zero without saying anything
+  // about the test.
+  if (hasEnvironmentFailure(logs)) return "error";
   if (hasZeroTestEvidence(logs)) return "no_tests";
   return "error";
 }
@@ -171,9 +200,13 @@ export function effectivePocStatus(
     return "failed";
   }
   if (status === "error") {
+    if (hasEnvironmentFailure(output)) return "error"; // never a no_tests
     if (hasZeroTestEvidence(output)) return "no_tests";
     if (hasSkipSentinel(output)) return "skipped";
   }
+  // A row already SAVED as no_tests by the pre-fix classifier carries an
+  // environment failure in its output; report it as the infra outcome it was.
+  if (status === "no_tests" && hasEnvironmentFailure(output)) return "error";
   return status;
 }
 
@@ -341,6 +374,35 @@ export function countExecutableTestFunctions(source: string): number {
     count++;
   }
   return count;
+}
+
+/**
+ * A compact, local audit of a PoC source, for the no_tests record.
+ *
+ * A hollow run (forge matched zero tests) is currently indistinguishable from a
+ * backend fault: the row says tests=0 and nothing else. Everything needed to tell
+ * those apart is computable from the source we sent — whether the test contract
+ * exists and inherits Test, whether the test function is parameterless, whether
+ * the file is even syntactically balanced, and how big it is. Recording that
+ * turns the next hollow run into a statement about WHICH invariant broke, and if
+ * all of them hold, the fault is provably on the execution side.
+ */
+export function pocSelfCheck(testCode: string): string {
+  if (!testCode || !testCode.trim()) return "Self-check: EMPTY source — nothing was prepared.";
+  const code = stripCommentsAndStrings(testCode);
+  const tests = countExecutableTestFunctions(testCode);
+  const hasTestContract = /contract\s+PoC\s+is\s+[^{]*\bTest\b/.test(code);
+  const declarations = (code.match(/\b(?:contract|library|interface)\s+[A-Za-z_$][\w$]*/g) ?? []).length;
+  const braces = (code.match(/\{/g) ?? []).length - (code.match(/\}/g) ?? []).length;
+  const parens = (code.match(/\(/g) ?? []).length - (code.match(/\)/g) ?? []).length;
+  const problems: string[] = [];
+  if (!hasTestContract) problems.push("no `contract PoC is Test`");
+  if (tests === 0) problems.push("no parameterless test function");
+  if (braces !== 0) problems.push(`brace balance ${braces}`);
+  if (parens !== 0) problems.push(`paren balance ${parens}`);
+  return `Self-check: ${tests} executable test(s), testContract=${hasTestContract}, declarations=${declarations}, braceBalance=${braces}, parenBalance=${parens}, bytes=${testCode.length}${
+    problems.length ? ` — PROBLEMS: ${problems.join(", ")}` : " — source looks runnable; a zero-test run here is an execution-side fault"
+  }`;
 }
 
 /** The explicit instruction handed to the LLM repair/generation

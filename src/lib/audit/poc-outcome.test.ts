@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   countExecutableTestFunctions,
   effectivePocStatus,
+  hasEnvironmentFailure,
   ensureExecutablePocTests,
   findingPocProvenance,
   hasInconclusiveEvidence,
@@ -429,5 +430,56 @@ contract PoC is Test {
     assert.equal(pocOriginOfExecutedCode("contract Mine is Test { }"), "generated");
     assert.equal(pocOriginOfExecutedCode(null), "template"); // code-less rows take the house fallback
     assert.equal(pocOriginOfExecutedCode(""), "template");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Environment failures are not verdicts (2026-10-27).
+//
+// Measured on one run: 209 rows saved as no_tests, of which 139 were fork
+// failures, 33 compile failures and 5 unsatisfiable pragmas. Zero were hollow
+// runs. no_tests is terminal and shareable, so a transient RPC outage was being
+// cached as "this finding has no executable test" and served to siblings.
+// ---------------------------------------------------------------------------
+describe("environment failures never classify as no_tests", () => {
+  const FORK = "Error: failed to retrieve chain ID from fork endpoint, retrying…\n[SmartPoC | Foundry] target=0xabc chain=ethereum tests=0";
+  const PROVIDER = "[SmartPoC | Foundry] target=0xabc chain=ethereum tests=0\nError: could not instantiate forked environment with provider cloudflare-eth.com";
+  const COMPILE = "[SmartPoC | Foundry] target=0xabc chain=ethereum tests=0\nCompiler run failed:\nError (1234): ...";
+  const PRAGMA = "[SmartPoC | Foundry] tests=0\nError: Encountered invalid compiler version in test/PoC.t.sol: No compiler version exists that matches the version requirement: ^0.4.15";
+  const HOLLOW = "[SmartPoC | Foundry] target=0xabc chain=ethereum tests=0\nNo tests match the provided pattern";
+
+  it("a fork failure saves as error, not no_tests", () => {
+    assert.equal(savedStatusFromRun({ status: "error", logs: FORK }), "error");
+    assert.equal(savedStatusFromRun({ status: "failed", logs: FORK }), "error");
+  });
+
+  it("a provider instantiation failure saves as error", () => {
+    assert.equal(savedStatusFromRun({ status: "error", logs: PROVIDER }), "error");
+  });
+
+  it("a compile failure saves as error", () => {
+    assert.equal(savedStatusFromRun({ status: "error", logs: COMPILE }), "error");
+  });
+
+  it("an unsatisfiable pragma saves as error", () => {
+    assert.equal(savedStatusFromRun({ status: "error", logs: PRAGMA }), "error");
+  });
+
+  it("a genuine hollow run still saves as no_tests", () => {
+    assert.equal(savedStatusFromRun({ status: "error", logs: HOLLOW }), "no_tests");
+    assert.equal(savedStatusFromRun({ status: "passed", logs: HOLLOW }), "no_tests");
+  });
+
+  it("stored no_tests rows with an environment failure read back as error", () => {
+    assert.equal(effectivePocStatus("no_tests", FORK), "error");
+    assert.equal(effectivePocStatus("no_tests", PROVIDER), "error");
+    assert.equal(effectivePocStatus("no_tests", HOLLOW), "no_tests");
+  });
+
+  it("the detector does not fire on ordinary test output", () => {
+    assert.equal(hasEnvironmentFailure("[PASS] testPoc() (gas: 12345)"), false);
+    assert.equal(hasEnvironmentFailure("[FAIL. Reason: no value moved] testPoc()"), false);
+    assert.equal(hasEnvironmentFailure(""), false);
+    assert.equal(hasEnvironmentFailure(null), false);
   });
 });

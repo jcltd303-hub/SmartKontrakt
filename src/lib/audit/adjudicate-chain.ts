@@ -38,6 +38,7 @@ import {
   savedStatusFromRun,
   unadaptedTemplateCheck,
   unadaptedTemplateOutput,
+  pocSelfCheck,
 } from "./poc-outcome.ts";
 import type { AiSecurityReview } from "./ai-review.server.ts";
 import type { PocOrigin } from "./poc-evidence.ts";
@@ -491,7 +492,7 @@ export async function runAdjudicationChain(
       gate.generationNote ?? ""
     }${repairError ? `Repair call failed: ${repairError}\n` : ""}${
       prepared.testCode.trim() ? "" : "The prepared code is EMPTY — the finding carries no exploit snippet.\n"
-    } Saved as no_tests: a generation gap, not an error and not a verdict on the finding.`;
+    }${pocSelfCheck(gate.testCode)}\n Saved as no_tests: a generation gap, not an error and not a verdict on the finding.`;
     let saveError: string | null = null;
     try {
       await deps.saveRun({
