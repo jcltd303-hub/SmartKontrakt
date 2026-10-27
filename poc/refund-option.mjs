@@ -39,7 +39,7 @@ const { keccak256 } = require("js-sha3");
 
 // ------------------------------------------------------------------ args ----
 function parseArgs(argv) {
-  const out = { from: 0, to: "latest", maxTxs: 400, json: null, address: null, rpc: null, source: "blockscout" };
+  const out = { from: null, to: "latest", maxTxs: 400, json: null, address: null, rpc: null, source: "blockscout" };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--address") out.address = argv[++i];
@@ -99,30 +99,106 @@ function getJson(url) {
 
 const blockscoutSource = {
   name: "blockscout",
+
+  /**
+   * The explorer answers a too-wide query with {"status":"0","message":"Something
+   * went wrong."} rather than an error code — fromBlock=0 to latest over 26M blocks
+   * is too heavy for its backend. So walk the range in windows, halving the window
+   * whenever the explorer refuses, and merge the results.
+   */
   async getLogs({ address, from, to, topic0 }) {
-    // v1 logs API: keyless, accepts fromBlock=0 (it is the explorer's own index).
-    const url =
-      `${BLOCKSCOUT}/api?module=logs&action=getLogs&address=${address}` +
-      `&fromBlock=${from}&toBlock=${to}&topic0=${topic0}`;
-    const body = await getJson(url);
-    if (body.status === "0") {
-      if (/no logs found/i.test(String(body.message ?? ""))) return [];
-      throw new Error(`blockscout logs: ${body.message ?? "unknown error"}`);
+    const head = to === "latest" ? Number(await this.head()) : Number(to);
+    const start = Number(from);
+    if (start > head) return [];
+
+    let window = Number(process.env.POC_LOG_WINDOW ?? 2_000_000);
+    const out = [];
+    const seen = new Set();
+    let cursor = start;
+    let attempts = 0;
+    let requests = 0;
+    // A pathological explorer can refuse anything; the floor is what keeps the walk
+    // making progress instead of giving up, and the request cap stops it running
+    // forever when nothing is answered.
+    const FLOOR = Number(process.env.POC_LOG_MIN_WINDOW ?? 1_000);
+    const MAX_REQUESTS = 5_000;
+
+    while (cursor <= head) {
+      if (++requests > MAX_REQUESTS) {
+        throw new Error(`blockscout logs: gave up after ${MAX_REQUESTS} requests at block ${cursor}`);
+      }
+      const end = Math.min(cursor + window - 1, head);
+      const url =
+        `${BLOCKSCOUT}/api?module=logs&action=getLogs&address=${address}` +
+        `&fromBlock=${cursor}&toBlock=${end}&topic0=${topic0}`;
+      let body;
+      try {
+        body = await getJson(url);
+      } catch (err) {
+        body = { status: "0", message: String(err instanceof Error ? err.message : err) };
+      }
+      const failed = body.status === "0" && !/no logs found/i.test(String(body.message ?? ""));
+      if (failed) {
+        // Too wide, or the backend is busy: shrink and retry the same window.
+        if (window > FLOOR && attempts < 24) {
+          window = Math.max(FLOOR, Math.floor(window / 4));
+          attempts++;
+          continue;
+        }
+        throw new Error(
+          `blockscout logs ${cursor}..${end}: ${body.message ?? "unknown error"}\n` +
+            `  The explorer would not answer even at a ${window}-block window (floor ${FLOOR}).\n` +
+            `  Try FROM_BLOCK=<deployment block> or a different source (--source rpc).`,
+        );
+      }
+      const rows = Array.isArray(body.result) ? body.result : [];
+      if (rows.length >= 1000) {
+        console.warn(`  warning: ${rows.length} logs in ${cursor}..${end} — the API caps at 1000 per call; that window is clipped`);
+      }
+      for (const r of rows) {
+        const key = `${r.transactionHash}:${r.logIndex ?? r.log_index ?? ""}:${r.data?.slice(0, 18)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          blockNumber: r.blockNumber,
+          transactionHash: r.transactionHash,
+          topics: r.topics,
+          data: r.data,
+        });
+      }
+      cursor = end + 1;
     }
-    const rows = Array.isArray(body.result) ? body.result : [];
-    if (rows.length >= 1000) {
-      console.warn(`  warning: ${rows.length} logs for ${topic0.slice(0, 10)}… — the API caps at 1000; narrow the range`);
-    }
-    return rows.map((r) => ({
-      blockNumber: r.blockNumber,
-      transactionHash: r.transactionHash,
-      topics: r.topics,
-      data: r.data,
-    }));
+    return out;
   },
+
+  async head() {
+    const body = await getJson(`${BLOCKSCOUT}/api/v2/main-page/blocks`);
+    const first = Array.isArray(body?.items) ? body.items[0] : null;
+    const n = first?.height;
+    if (typeof n === "number") return n;
+    // Fall back to the address's own counter if the blocks page changes shape.
+    throw new Error("could not read the chain head from blockscout; pass --to <block>");
+  },
+
   async getTxInput(hash) {
     const body = await getJson(`${BLOCKSCOUT}/api/v2/transactions/${hash}`);
     return typeof body.raw_input === "string" ? body.raw_input : null;
+  },
+
+  /** The block a contract was created in — the honest default for --from. */
+  async getDeploymentBlock(address) {
+    try {
+      const info = await getJson(`${BLOCKSCOUT}/api/v2/addresses/${address}`);
+      const hash = info?.creation_transaction_hash;
+      if (!hash) return null;
+      const tx = await getJson(`${BLOCKSCOUT}/api/v2/transactions/${hash}`);
+      const n = tx?.block_number ?? tx?.block;
+      if (typeof n === "number") return n;
+      if (typeof n === "string") return n.startsWith("0x") ? parseInt(n, 16) : Number(n);
+      return null;
+    } catch {
+      return null;
+    }
   },
 };
 
@@ -262,12 +338,21 @@ async function main() {
 
   console.log(`source        ${source.name}${source === blockscoutSource ? ` (${BLOCKSCOUT})` : ` (${args.rpc})`}`);
 
+  // Scanning from genesis is both slow and too heavy for the explorer's backend;
+  // the deployment block is the honest lower bound for a contract's own logs.
+  let fromBlock = args.from;
+  if (fromBlock === null) {
+    const deploy = typeof source.getDeploymentBlock === "function" ? await source.getDeploymentBlock(address) : null;
+    fromBlock = deploy ?? 0;
+    console.log(`from          ${fromBlock}${deploy ? " (deployment block)" : " (unknown — scanning from genesis)"}`);
+  }
+
   // Bets are placed via placeBet; the Commit event marks each one.
-  const commits = await source.getLogs({ address, from: args.from, to: toBlock, topic0: TOPICS.commit });
-  const games = await source.getLogs({ address, from: args.from, to: toBlock, topic0: TOPICS.game });
+  const commits = await source.getLogs({ address, from: fromBlock, to: toBlock, topic0: TOPICS.commit });
+  const games = await source.getLogs({ address, from: fromBlock, to: toBlock, topic0: TOPICS.game });
 
   console.log(`contract      ${address}`);
-  console.log(`block range   ${args.from} .. ${toBlock}`);
+  console.log(`block range   ${fromBlock} .. ${toBlock}`);
   console.log(`commit events ${commits.length}`);
   console.log(`game events   ${games.length}  (a settlement)`);
 
@@ -376,7 +461,7 @@ async function main() {
       JSON.stringify(
         {
           address,
-          blockRange: [args.from, toBlock],
+          blockRange: [fromBlock, toBlock],
           bets: bets.map((b) => ({
             commit: b.commit,
             tx: b.tx,

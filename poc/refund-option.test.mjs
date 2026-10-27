@@ -50,16 +50,26 @@ function gameLogData(reveal, totalWin, totalJackpot) {
 }
 
 /** A fake Blockscout: v1 logs + v2 transaction raw_input. */
-function serveBlockscout({ commits = [], games = [], inputs = {} }) {
+function serveBlockscout({ commits = [], games = [], inputs = {}, head = 1000, maxWindow = Infinity }) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     const send = (obj) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(obj));
     };
+    if (url.pathname === "/api/v2/main-page/blocks") {
+      return send({ items: [{ height: head }] });
+    }
     if (url.pathname === "/api" && url.searchParams.get("action") === "getLogs") {
       const topic0 = url.searchParams.get("topic0");
-      const rows = topic0 === T_COMMIT ? commits : topic0 === T_GAME ? games : [];
+      const from = Number(url.searchParams.get("fromBlock"));
+      const to = Number(url.searchParams.get("toBlock"));
+      // The live API answers a too-wide query with exactly this.
+      if (to - from + 1 > maxWindow) return send({ status: "0", message: "Something went wrong.", result: [] });
+      const rows = (topic0 === T_COMMIT ? commits : topic0 === T_GAME ? games : []).filter((r) => {
+        const n = Number(r.blockNumber);
+        return n >= from && n <= to;
+      });
       if (rows.length === 0) return send({ status: "0", message: "No logs found", result: [] });
       return send({ status: "1", message: "OK", result: rows });
     }
@@ -186,6 +196,48 @@ test("an RPC that refuses archive logs points at the keyless source", async () =
     ]).then(() => null, (e) => e);
     assert.ok(err, "must fail rather than silently report zero bets");
     assert.match(String(err.stderr ?? ""), /eth_getLogs|no handler/);
+  } finally {
+    server.close();
+  }
+});
+
+test("a wide range the explorer refuses is chunked, not failed", async () => {
+  // The live API answers fromBlock=0..latest with {"status":"0",
+  // "message":"Something went wrong."}. The walker must halve the window and
+  // still find the logs rather than giving up.
+  const ADDRESS = "0x6eb0e558140025cb740f99979613a0876685f0be";
+  const REVEAL = 999999999999999999999999n; // wide, so it is not flagged
+  const commit = "0x" + commitOf(REVEAL);
+  const server = await serveBlockscout({
+    head: 1000,
+    maxWindow: 1000, // refuse anything wider than the walker's floor
+    commits: [{ blockNumber: "0x2bc", transactionHash: "0xaa", topics: [T_COMMIT], data: "0x" + commit.slice(2) }], // block 700
+    games: [{ blockNumber: "0x2bd", transactionHash: "0xcc", topics: [T_GAME], data: gameLogData(REVEAL, 10n ** 16n, 0n) }],
+    inputs: { "0xaa": placeBetCalldata({ commit: commit.slice(2), amount: [10n ** 16n] }) },
+  });
+  const port = server.address().port;
+  try {
+    const { stdout } = await run(process.execPath, [
+      "poc/refund-option.mjs", "--address", ADDRESS, "--source", "blockscout", "--from", "0",
+    ], { env: { ...process.env, BLOCKSCOUT_URL: `http://127.0.0.1:${port}` } });
+    assert.match(stdout, /commit events 1/, "the log was found despite the refusal");
+    assert.match(stdout, /settled\s+1/);
+  } finally {
+    server.close();
+  }
+});
+
+test("an explorer that never answers fails with the range it tried", async () => {
+  const server = await serveBlockscout({ head: 1000, maxWindow: 1 }); // refuse everything
+  const port = server.address().port;
+  try {
+    const err = await run(process.execPath, [
+      "poc/refund-option.mjs", "--address", "0x6eb0e558140025cb740f99979613a0876685f0be",
+      "--source", "blockscout", "--from", "0",
+    ], { env: { ...process.env, BLOCKSCOUT_URL: `http://127.0.0.1:${port}` } }).then(() => null, (e) => e);
+    assert.ok(err, "must fail rather than report zero bets");
+    assert.match(String(err.stderr ?? ""), /blockscout logs \d+\.\.\d+/);
+    assert.match(String(err.stderr ?? ""), /deployment block/);
   } finally {
     server.close();
   }

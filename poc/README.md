@@ -26,7 +26,16 @@ Blockscout explorer API, which is keyless and archive-capable.
 
 Public JSON-RPC endpoints now refuse `eth_getLogs` over old ranges without a paid
 token ("Archive requests require a personal token"), which is why the default is not
-RPC. If you do have an endpoint that will serve `getLogs`:
+RPC.
+
+The explorer refuses a single query spanning millions of blocks ("Something went
+wrong."), so the range is walked in windows — starting at 2,000,000 blocks and
+shrinking by 4× whenever the explorer refuses, down to a 1,000-block floor, with a
+request cap. `--from` now defaults to the contract's **deployment block**, read from
+the explorer, so it does not scan from genesis. Override the window with
+`POC_LOG_WINDOW=<blocks>` and the floor with `POC_LOG_MIN_WINDOW=<blocks>`.
+
+If you do have an endpoint that will serve `getLogs`:
 
 ```bash
 SOURCE=rpc RPC_URL="$YOUR_RPC" FROM_BLOCK=<deployment block> ./poc/run-refund-option.sh 0x…
