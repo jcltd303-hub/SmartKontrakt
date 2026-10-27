@@ -146,7 +146,12 @@ export function hasEnvironmentFailure(output: string | null | undefined): boolea
  * "passed" whose logs show the attack was inconclusive or failed to
  * interact becomes "failed".
  */
-export function savedStatusFromRun(run: { status: string; logs?: string | null }): SavedPocStatus {
+export function savedStatusFromRun(run: {
+  status: string;
+  logs?: string | null;
+  /** The PoC source, when the caller has it: a passing run must be able to fail. */
+  pocSource?: string | null;
+}): SavedPocStatus {
   const logs = run.logs ?? "";
   if (run.status === "skipped") return "skipped";
   if (run.status === "no_tests") return "no_tests";
@@ -165,6 +170,11 @@ export function savedStatusFromRun(run: { status: string; logs?: string | null }
     if (hasEnvironmentFailure(logs)) return "error";
     if (hasZeroTestEvidence(logs)) return "no_tests";
     if (run.status === "passed" && hasInconclusiveEvidence(logs)) return "failed";
+    // Last gate before a green suite becomes a verdict: a PoC with no assertion
+    // cannot fail, so its PASS says nothing about the target. The INCONCLUSIVE
+    // wording above is the model reporting on itself; this is a property of the
+    // test. Measured 2026-10-27: six passing tests, none of which asserted.
+    if (run.status === "passed" && assertionFreeReason(run.pocSource ?? "")) return "unadapted";
     return run.status;
   }
   // "error", "backend_unreachable", and anything unrecognized save as
@@ -594,4 +604,46 @@ export function unadaptedTemplateOutput(file: string, unfilled: string[]): strin
     "Run as shipped, the template aborts on its own precondition before judging the target, so no verdict exists. " +
     "Saved as unadapted — adapt the template's TODO constants to the target (or let the AI path adapt it) and re-run."
   );
+}
+
+/**
+ * Does this PoC assert anything that could fail?
+ *
+ * Measured 2026-10-27 on a live run: six tests "passed", and none of them proved
+ * anything. `test_exploit()` logged `drained from target: 0` and
+ * `INCONCLUSIVE: cannot create a bet without a valid secretSigner signature` and
+ * then passed, because it contained no assertion — a test that cannot fail always
+ * passes. Two more were flagged by solc as "can be restricted to pure", meaning
+ * they never touched chain state at all. The rest printed findings with
+ * console.log.
+ *
+ * `savedStatusFromRun` caught that run only because the generated prose happened to
+ * contain the word "inconclusive". That is the model self-reporting, not a
+ * property of the test, and a PoC that omits the word would have been archived as a
+ * genuine pass.
+ *
+ * This is the property that does not depend on wording: a test that claims an
+ * exploit must contain at least one assertion, or an expectRevert/expectEmit pair,
+ * or it is a report rather than a proof.
+ */
+const ASSERTION_RE = /\b(assert[A-Za-z]*|require|revert|expectRevert|expectEmit|expectCall)\s*\(/g;
+
+export function countAssertions(source: string): number {
+  if (!source) return 0;
+  const code = stripCommentsAndStrings(source);
+  return (code.match(ASSERTION_RE) ?? []).length;
+}
+
+/**
+ * A run may only be reported as a reproduced exploit if the PoC source can fail.
+ *
+ * Returns the reason it cannot, or null when it can. `unadapted` rather than
+ * `failed`: an assertion-free harness is a scaffold that reports, not a verdict
+ * about the target — the same distinction the TODO-precondition rule makes.
+ */
+export function assertionFreeReason(pocSource: string): string | null {
+  if (!pocSource) return null; // nothing to judge; other rules cover a missing file
+  if (countExecutableTestFunctions(pocSource) === 0) return null; // covered by no_tests
+  if (countAssertions(pocSource) > 0) return null;
+  return "the PoC contains no assertion — a test that cannot fail always passes, so a green suite proves nothing";
 }

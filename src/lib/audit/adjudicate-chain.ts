@@ -203,8 +203,8 @@ export function failedAdjudicationOutcome(message: string, stoppedAt: ChainStep)
 // (compile, backend, RPC/fork, timeout) map to "error". The chain used
 // to fold everything non-verdict into "error" — that conflation is
 // what polluted the Errors bucket with skips and zero-test runs.
-function verdictFromRunStatus(status: string, logs: string): PocVerdict {
-  return savedStatusFromRun({ status, logs });
+function verdictFromRunStatus(status: string, logs: string, pocSource?: string): PocVerdict {
+  return savedStatusFromRun({ status, logs, pocSource });
 }
 
 function verdictFromStoredStatus(status: string, output?: string | null): PocVerdict {
@@ -551,7 +551,7 @@ export async function runAdjudicationChain(
       testCode,
       ...(ctx.pocToken ? { tokenAddress: ctx.pocToken } : {}),
     });
-    verdict = verdictFromRunStatus(poc.status, poc.logs ?? "");
+    verdict = verdictFromRunStatus(poc.status, poc.logs ?? "", testCode);
     logs = poc.logs ?? "";
     durationMs = poc.durationMs ?? 0;
     if (poc.status === "backend_unreachable") harnessState = "failed";
@@ -574,7 +574,7 @@ export async function runAdjudicationChain(
             testCode,
             ...(ctx.pocToken ? { tokenAddress: ctx.pocToken } : {}),
           });
-          verdict = verdictFromRunStatus(poc.status, poc.logs ?? "");
+          verdict = verdictFromRunStatus(poc.status, poc.logs ?? "", testCode);
           logs = poc.logs ?? "";
           durationMs = poc.durationMs ?? 0;
           testCode = poc.executedSource ?? testCode;
