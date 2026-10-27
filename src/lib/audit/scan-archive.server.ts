@@ -26,7 +26,6 @@ export type ScanSummaryRow = {
   cert_hash?: string | null;
   source_origin?: string | null;
   analyzer_version?: string | null;
-  is_rag_indexed?: boolean | null;
   risk_score: number;
   critical_count: number;
   high_count: number;
@@ -167,7 +166,6 @@ export function summaryFromRow(row: ScanSummaryRow, derived?: DerivedSeverityCou
     balanceWei: row.balance_wei ?? null,
     valueUsd: row.value_usd === null || row.value_usd === undefined ? null : Number(row.value_usd),
     certHash: row.cert_hash ?? null,
-    isRagIndexed: Boolean(row.is_rag_indexed),
     sourceOrigin: row.source_origin ?? "workbench",
     hasProxy,
     probesCount,
@@ -238,7 +236,6 @@ const OPTIONAL_SUMMARY_COLUMNS = [
   "probes_json",
   "cert_hash",
   "source_origin",
-  "is_rag_indexed",
   "balance_wei",
   "value_usd",
   "unparsed",
@@ -257,7 +254,6 @@ const SUMMARY_COLUMN_ORDER = [
   "probes_json",
   "cert_hash",
   "source_origin",
-  "is_rag_indexed",
   "risk_score",
   "critical_count",
   "high_count",
@@ -291,7 +287,7 @@ export async function queryScanSummaries(
   try {
     const rows = await sql<ScanSummaryRow>`
       select id, label, input_kind, contract_name, target_address, chain_id,
-             proxy_info_json, probes_json, cert_hash, source_origin, is_rag_indexed,
+             proxy_info_json, probes_json, cert_hash, source_origin,
              risk_score, critical_count, high_count, medium_count, low_count, info_count,
              balance_wei, value_usd, unparsed, analyzer_version,
              created_at::text as created_at
@@ -374,9 +370,8 @@ export async function queryScanSummaries(
  *  fallback, mirroring queryScanSummaries). The headline therefore
  *  equals the sum of the per-scan derived counts by construction, and a
  *  direct findings edit moves it immediately. The headline counts and
- *  the RAG count are SEPARATE queries: is_rag_indexed is a legacy column
- *  a drifted archive may lack, and its failure must not zero the
- *  totals — it degrades to ragIndexed 0 + a warning instead. */
+ *  the RAG count were separate queries while is_rag_indexed existed; RAG is
+ *  gone (migration 0019) and ragIndexed now reports 0 unconditionally. */
 export async function queryScansStats(sql: Sql): Promise<ScansStatsResult> {
   const zero: ScansStats = { total: 0, critical: 0, high: 0, ragIndexed: 0 };
   const num = (v: string | undefined) => {
@@ -402,22 +397,11 @@ export async function queryScansStats(sql: Sql): Promise<ScansStatsResult> {
     console.warn("[kiln] DB scans stats failed:", err);
     return { stats: zero, error: errorMessage(err), warning: null, dbState: "remote", dbError: null };
   }
-  try {
-    const rows = await sql<{ rag_indexed: string }>`
-      select coalesce(sum(case when is_rag_indexed then 1 else 0 end), 0) as rag_indexed
-      from contract_scans`;
-    base.ragIndexed = rows[0] ? num(rows[0].rag_indexed) : 0;
-    return { stats: base, error: null, warning: null, dbState: "remote", dbError: null };
-  } catch (err) {
-    console.warn("[kiln] DB scans RAG count failed:", err);
-    return {
-      stats: base,
-      error: null,
-      dbState: "remote",
-      dbError: null,
-      warning: `Could not read the RAG index count (${errorMessage(err)}) — totals are unaffected.`,
-    };
-  }
+  // RAG was removed (migration 0019): rag_knowledge_chunks is dropped and
+  // is_rag_indexed with it, so there is no count to make and nothing to warn
+  // about. The field stays at 0 for the shapes that still read it.
+  base.ragIndexed = 0;
+  return { stats: base, error: null, warning: null, dbState: "remote", dbError: null };
 }
 
 /**

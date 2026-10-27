@@ -38,29 +38,53 @@ where not exists (
   select 1 from dispositions_archive a where a.finding_id = d.finding_id
 );
 
--- 2. What is being removed, counted first.
-select 'contract_scans' as table, count(*) from contract_scans
-union all select 'findings', count(*) from findings
-union all select 'finding_poc_runs', count(*) from finding_poc_runs
-union all select 'scan_payloads', count(*) from scan_payloads
-union all select 'rag_knowledge_chunks', count(*) from rag_knowledge_chunks
-union all select 'auditor_dispositions', count(*) from auditor_dispositions
-order by 1;
+-- 2. What is being removed, counted first. Only tables that EXIST are counted and
+--    truncated: a database whose migrations drifted (or where a table was dropped
+--    by hand) must not abort the wipe on a missing relation — that is what
+--    happened with rag_knowledge_chunks before migration 0019 removed it.
+do $$
+declare
+  t text;
+  n bigint;
+  targets text[] := array['contract_scans','findings','finding_poc_runs','scan_payloads','rag_knowledge_chunks','auditor_dispositions'];
+begin
+  foreach t in array targets loop
+    if to_regclass('public.' || t) is not null then
+      execute format('select count(*) from public.%I', t) into n;
+      raise notice 'will remove  %  % rows', rpad(t, 24), n;
+    else
+      raise notice 'skipping      %  (does not exist)', rpad(t, 24);
+    end if;
+  end loop;
+end $$;
 
 -- 3. Scan output only. fp_signatures and the fourbyte caches are NOT touched.
-truncate table
-  finding_poc_runs,
-  findings,
-  scan_payloads,
-  rag_knowledge_chunks,
-  contract_scans
-restart identity cascade;
+--    Built dynamically so a missing table is skipped rather than fatal.
+do $$
+declare
+  t text;
+  targets text[] := array['finding_poc_runs','findings','scan_payloads','rag_knowledge_chunks','contract_scans'];
+begin
+  foreach t in array targets loop
+    if to_regclass('public.' || t) is not null then
+      execute format('truncate table public.%I restart identity cascade', t);
+    end if;
+  end loop;
+end $$;
 
 -- 4. What survived, so the transcript shows it.
-select 'fp_signatures (kept)' as table, count(*) from fp_signatures
-union all select 'fourbyte_signatures (kept)', count(*) from fourbyte_signatures
-union all select 'fourbyte_event_signatures (kept)', count(*) from fourbyte_event_signatures
-union all select 'dispositions_archive (kept)', count(*) from dispositions_archive
-order by 1;
+do $$
+declare
+  t text;
+  n bigint;
+  keeps text[] := array['fp_signatures','fourbyte_signatures','fourbyte_event_signatures','dispositions_archive'];
+begin
+  foreach t in array keeps loop
+    if to_regclass('public.' || t) is not null then
+      execute format('select count(*) from public.%I', t) into n;
+      raise notice 'kept          %  % rows', rpad(t, 24), n;
+    end if;
+  end loop;
+end $$;
 
 commit;

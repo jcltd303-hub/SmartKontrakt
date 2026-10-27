@@ -29,16 +29,20 @@ union all select 'fourbyte_event_signatures', count(*) from fourbyte_event_signa
 
 -- RESTART IDENTITY is harmless (ids are text) and keeps any sequence honest.
 -- CASCADE handles the FK order: findings -> contract_scans, poc runs -> findings.
-truncate table
-  finding_poc_runs,
-  findings,
-  scan_payloads,
-  rag_knowledge_chunks,
-  auditor_dispositions,
-  fp_signatures,
-  fourbyte_signatures,
-  fourbyte_event_signatures,
-  contract_scans
-restart identity cascade;
+-- Guarded: a drifted database may lack some of these (RAG is dropped by
+-- migration 0019), and a missing relation must not abort the rest.
+do $$
+declare
+  t text;
+  targets text[] := array['finding_poc_runs','findings','scan_payloads','rag_knowledge_chunks',
+                           'auditor_dispositions','fp_signatures','fourbyte_signatures',
+                           'fourbyte_event_signatures','contract_scans'];
+begin
+  foreach t in array targets loop
+    if to_regclass('public.' || t) is not null then
+      execute format('truncate table public.%I restart identity cascade', t);
+    end if;
+  end loop;
+end $$;
 
 commit;

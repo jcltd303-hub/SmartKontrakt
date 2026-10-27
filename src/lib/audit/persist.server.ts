@@ -115,7 +115,6 @@ type ScanRow = {
   cert_hash?: string | null;
   source_origin?: string | null;
   analyzer_version?: string | null;
-  is_rag_indexed?: boolean | null;
   risk_score: number;
   critical_count: number;
   high_count: number;
@@ -239,7 +238,7 @@ export async function getScansStats(): Promise<ScansStatsResult> {
   const a = await archiveSql();
   if (!a.sql) {
     return {
-      stats: { total: 0, critical: 0, high: 0, ragIndexed: 0 },
+      stats: { total: 0, critical: 0, high: 0 },
       error: a.error,
       warning: null,
       dbState: a.conn.state,
@@ -289,7 +288,7 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
   const rows = await sql<ScanRow>`
     select id, label, input_kind, contract_name, target_address, chain_id,
            compiler_version, proxy_info_json, probes_json, ai_review_json,
-           triage_states_json, cert_hash, source_origin, is_rag_indexed,
+           triage_states_json, cert_hash, source_origin,
            risk_score, critical_count, high_count, medium_count, low_count, info_count,
            balance_wei, value_usd, abi_json, abi_source, analyzer_version,
            summary, inventory_json, ai_narrative, ai_status, unparsed,
