@@ -39,7 +39,7 @@ const { keccak256 } = require("js-sha3");
 
 // ------------------------------------------------------------------ args ----
 function parseArgs(argv) {
-  const out = { from: 0, to: "latest", maxTxs: 400, json: null, address: null, rpc: null };
+  const out = { from: 0, to: "latest", maxTxs: 400, json: null, address: null, rpc: null, source: "blockscout" };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--address") out.address = argv[++i];
@@ -48,18 +48,84 @@ function parseArgs(argv) {
     else if (a === "--to") out.to = argv[++i];
     else if (a === "--json") out.json = argv[++i];
     else if (a === "--max-txs") out.maxTxs = Number(argv[++i]);
+    else if (a === "--source") out.source = argv[++i];
     else if (a === "--help" || a === "-h") out.help = true;
   }
   return out;
 }
 
 const args = parseArgs(process.argv);
-if (args.help || !args.address || !args.rpc) {
-  console.log(`usage: node poc/refund-option.mjs --address 0x… --rpc https://… [--from N] [--to latest] [--json out.json]`);
+if (args.help || !args.address || (args.source === "rpc" && !args.rpc)) {
+  console.log(`usage: node poc/refund-option.mjs --address 0x… [--source blockscout|rpc] [--rpc https://…]
+                                   [--from N] [--to latest] [--json out.json] [--max-txs N]
+
+  --source blockscout   keyless explorer API (default); --rpc not needed
+  --source rpc          requires --rpc, and an endpoint that will serve eth_getLogs`);
   process.exit(args.help ? 0 : 2);
 }
 
-// -------------------------------------------------------------- json-rpc ----
+// -------------------------------------------------------------- sources ----
+//
+// Two ways to read the chain:
+//   blockscout  keyless, archive-capable, no node — the default. A public RPC
+//               (publicnode et al) now refuses eth_getLogs over old ranges
+//               without a paid token, which made --from 0 unusable.
+//   rpc         any JSON-RPC endpoint, if you have one that will serve getLogs.
+const BLOCKSCOUT = process.env.BLOCKSCOUT_URL ?? "https://eth.blockscout.com";
+
+function getJson(url) {
+  const u = new URL(url);
+  const lib = u.protocol === "https:" ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = lib.get(
+      { hostname: u.hostname, port: u.port || undefined, path: u.pathname + u.search, timeout: 30_000, headers: { accept: "application/json" } },
+      (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => (text += c));
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(text));
+          } catch {
+            reject(new Error(`non-JSON from ${u.pathname} (${res.statusCode}): ${text.slice(0, 160)}`));
+          }
+        });
+      },
+    );
+    req.on("timeout", () => req.destroy(new Error(`timeout: ${u.pathname}`)));
+    req.on("error", reject);
+  });
+}
+
+const blockscoutSource = {
+  name: "blockscout",
+  async getLogs({ address, from, to, topic0 }) {
+    // v1 logs API: keyless, accepts fromBlock=0 (it is the explorer's own index).
+    const url =
+      `${BLOCKSCOUT}/api?module=logs&action=getLogs&address=${address}` +
+      `&fromBlock=${from}&toBlock=${to}&topic0=${topic0}`;
+    const body = await getJson(url);
+    if (body.status === "0") {
+      if (/no logs found/i.test(String(body.message ?? ""))) return [];
+      throw new Error(`blockscout logs: ${body.message ?? "unknown error"}`);
+    }
+    const rows = Array.isArray(body.result) ? body.result : [];
+    if (rows.length >= 1000) {
+      console.warn(`  warning: ${rows.length} logs for ${topic0.slice(0, 10)}… — the API caps at 1000; narrow the range`);
+    }
+    return rows.map((r) => ({
+      blockNumber: r.blockNumber,
+      transactionHash: r.transactionHash,
+      topics: r.topics,
+      data: r.data,
+    }));
+  },
+  async getTxInput(hash) {
+    const body = await getJson(`${BLOCKSCOUT}/api/v2/transactions/${hash}`);
+    return typeof body.raw_input === "string" ? body.raw_input : null;
+  },
+};
+
 let rpcId = 0;
 function rpc(method, params) {
   const url = new URL(args.rpc);
@@ -97,6 +163,31 @@ function rpc(method, params) {
     req.end();
   });
 }
+
+const rpcSource = {
+  name: "rpc",
+  async getLogs({ address, from, to, topic0 }) {
+    try {
+      return await rpc("eth_getLogs", [
+        { address, fromBlock: "0x" + Number(from).toString(16), toBlock: to === "latest" ? "latest" : "0x" + Number(to).toString(16), topics: [topic0] },
+      ]);
+    } catch (err) {
+      const msg = String(err instanceof Error ? err.message : err);
+      if (/archive|personal token|token|range|too many|limit/i.test(msg)) {
+        throw new Error(
+          `${msg}\n` +
+            `  This endpoint will not serve old logs. Either narrow --from, use a keyed provider,\n` +
+            `  or drop --source rpc: the default (blockscout) reads the same logs without a key.`,
+        );
+      }
+      throw err;
+    }
+  },
+  async getTxInput(hash) {
+    const tx = await rpc("eth_getTransactionByHash", [hash]);
+    return tx?.input ?? null;
+  },
+};
 
 // ------------------------------------------------------------------ abi -----
 const strip0x = (h) => (h.startsWith("0x") ? h.slice(2) : h);
@@ -158,20 +249,22 @@ const PLACE_BET_SELECTOR =
 // ------------------------------------------------------------------ main ----
 async function main() {
   const address = args.address;
-  const toBlock = args.to === "latest" ? Number(await rpc("eth_blockNumber", [])) : Number(args.to);
-  const code = await rpc("eth_getCode", [address, "latest"]);
-  if (!code || code === "0x") {
-    console.error(`no code at ${address} — an EOA or a wrong address`);
-    process.exit(3);
+  const source = args.source === "rpc" ? rpcSource : blockscoutSource;
+  const toBlock = args.to === "latest" ? "latest" : Number(args.to);
+
+  if (source === rpcSource) {
+    const code = await rpc("eth_getCode", [address, "latest"]);
+    if (!code || code === "0x") {
+      console.error(`no code at ${address} — an EOA or a wrong address`);
+      process.exit(3);
+    }
   }
 
+  console.log(`source        ${source.name}${source === blockscoutSource ? ` (${BLOCKSCOUT})` : ` (${args.rpc})`}`);
+
   // Bets are placed via placeBet; the Commit event marks each one.
-  const commits = await rpc("eth_getLogs", [
-    { address, fromBlock: "0x" + args.from.toString(16), toBlock: "0x" + toBlock.toString(16), topics: [TOPICS.commit] },
-  ]);
-  const games = await rpc("eth_getLogs", [
-    { address, fromBlock: "0x" + args.from.toString(16), toBlock: "0x" + toBlock.toString(16), topics: [TOPICS.game] },
-  ]);
+  const commits = await source.getLogs({ address, from: args.from, to: toBlock, topic0: TOPICS.commit });
+  const games = await source.getLogs({ address, from: args.from, to: toBlock, topic0: TOPICS.game });
 
   console.log(`contract      ${address}`);
   console.log(`block range   ${args.from} .. ${toBlock}`);
@@ -199,14 +292,14 @@ async function main() {
   for (const log of commits.slice(0, args.maxTxs)) {
     if (seenTx.has(log.transactionHash)) continue;
     seenTx.add(log.transactionHash);
-    let tx;
+    let input;
     try {
-      tx = await rpc("eth_getTransactionByHash", [log.transactionHash]);
+      input = await source.getTxInput(log.transactionHash);
     } catch {
       continue;
     }
-    if (!tx) continue;
-    const parsed = decodePlaceBet(tx.input);
+    if (!input) continue;
+    const parsed = decodePlaceBet(input);
     if (!parsed) continue;
     decoded++;
     bets.push({ ...parsed, tx: log.transactionHash, block: Number(BigInt(log.blockNumber)) });

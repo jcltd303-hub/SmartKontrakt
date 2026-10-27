@@ -19,12 +19,21 @@ holds a free option on every bet in `0x6eb0e558…5f0be` (a dice2.win derivative
 
 ```bash
 ./poc/run-refund-option.sh 0x6eb0e558140025cb740f99979613a0876685f0be
-RPC_URL=https://eth-mainnet.example/v3/KEY FROM_BLOCK=19000000 ./poc/run-refund-option.sh 0x…
 ```
 
-Needs `node >= 18` and one RPC that serves `eth_getLogs`. `js-sha3` is already a
-repo dependency (`npm ci`). Read-only: nothing is signed or sent. Output JSON lands
-in `poc/out/`.
+That is the whole command — no key, no node, no Foundry. It reads logs from the
+Blockscout explorer API, which is keyless and archive-capable.
+
+Public JSON-RPC endpoints now refuse `eth_getLogs` over old ranges without a paid
+token ("Archive requests require a personal token"), which is why the default is not
+RPC. If you do have an endpoint that will serve `getLogs`:
+
+```bash
+SOURCE=rpc RPC_URL="$YOUR_RPC" FROM_BLOCK=<deployment block> ./poc/run-refund-option.sh 0x…
+```
+
+Needs `node >= 18`; `js-sha3` is already a repo dependency (`npm ci`). Read-only:
+nothing is signed or sent. Output JSON lands in `poc/out/`.
 
 ### Reading the output
 
@@ -35,6 +44,7 @@ in `poc/out/`.
 | `unsettled … stake S` | bets that expired — value the gambler could only get back, never win |
 | `% of decoded stake expired` | the exposure the option creates |
 | `under 64 bits` / `duplicates` / `sequential` | the reveal is guessable, so the gambler can settle their own wins |
+| `source` | `blockscout` (keyless, default) or `rpc` |
 
 A large `unsettled` share is the finding. `under 64 bits 0`, `duplicates 0`,
 `sequential 0` means the operator's entropy is sound and only the option remains.
@@ -47,12 +57,15 @@ EVM, so it cannot demonstrate a reentrant drain — because there isn't one:
 `.send()` (2300 gas). A PoC claiming reentrancy there is chasing a bug that isn't
 in the code.
 
-### Tested against a fake RPC
+### Tested against a fake explorer
 
 `refund-option.test.mjs` builds `placeBet` calldata and `Game` event data the way
-the contract does, serves them from a local server, and asserts the classification
-— so the ABI decoding is verified, not assumed:
+the contract does, serves them from a local fake Blockscout (v1 logs + v2
+`raw_input`), and asserts the classification — so the ABI decoding is verified, not
+assumed. It also pins the two failure modes that actually bit: an RPC that refuses
+archive logs must fail loudly rather than report zero bets, and an address with no
+code must be rejected.
 
 ```bash
-node --test poc/refund-option.test.mjs     # 3 tests
+node --test poc/refund-option.test.mjs     # 4 tests
 ```

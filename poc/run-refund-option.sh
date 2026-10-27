@@ -14,13 +14,19 @@ set -euo pipefail
 ADDRESS="${1:-}"
 if [ -z "$ADDRESS" ]; then
   echo "usage: $0 <address> [extra args…]" >&2
-  echo "  env: RPC_URL (default: https://ethereum-rpc.publicnode.com)" >&2
-  echo "       FROM_BLOCK (default: 0), TO_BLOCK (default: latest)" >&2
+  echo "  env: SOURCE=blockscout|rpc (default blockscout — keyless, archive-capable)" >&2
+  echo "       RPC_URL (only when SOURCE=rpc)" >&2
+  echo "       FROM_BLOCK (default: 0), TO_BLOCK (default: latest), OUT_DIR, MAX_TXS" >&2
   exit 2
 fi
 shift || true
 
-RPC_URL="${RPC_URL:-https://ethereum-rpc.publicnode.com}"
+# Default source is the keyless explorer API: public RPCs now refuse eth_getLogs over
+# old ranges without a paid token ("Archive requests require a personal token"), which
+# made FROM_BLOCK=0 unusable. Set SOURCE=rpc and RPC_URL=… only if you have an endpoint
+# that will serve getLogs.
+SOURCE="${SOURCE:-blockscout}"
+RPC_URL="${RPC_URL:-}"
 FROM_BLOCK="${FROM_BLOCK:-0}"
 TO_BLOCK="${TO_BLOCK:-latest}"
 OUT_DIR="${OUT_DIR:-poc/out}"
@@ -44,12 +50,20 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 JSON_OUT="$OUT_DIR/refund-option-${ADDRESS:0:10}-${STAMP}.json"
 
 # --- reachability ------------------------------------------------------------
-echo "rpc:     $RPC_URL"
-if ! curl -sS --max-time 15 -X POST "$RPC_URL" \
-      -H 'content-type: application/json' \
-      -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
-      >/dev/null 2>&1; then
-  echo "warning: eth_blockNumber probe failed; the script will report the real error" >&2
+if [ "$SOURCE" = "rpc" ]; then
+  if [ -z "$RPC_URL" ]; then
+    echo "SOURCE=rpc needs RPC_URL" >&2
+    exit 2
+  fi
+  echo "source:  rpc ($RPC_URL)"
+  if ! curl -sS --max-time 15 -X POST "$RPC_URL" \
+        -H 'content-type: application/json' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
+        >/dev/null 2>&1; then
+    echo "warning: eth_blockNumber probe failed; the script will report the real error" >&2
+  fi
+else
+  echo "source:  blockscout (keyless)"
 fi
 
 # --- run ---------------------------------------------------------------------
@@ -59,7 +73,8 @@ echo "----------------------------------------------------------------------"
 set +e
 node poc/refund-option.mjs \
   --address "$ADDRESS" \
-  --rpc "$RPC_URL" \
+  --source "$SOURCE" \
+  ${RPC_URL:+--rpc "$RPC_URL"} \
   --from "$FROM_BLOCK" \
   --to "$TO_BLOCK" \
   --max-txs "$MAX_TXS" \
