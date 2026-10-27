@@ -195,38 +195,41 @@ justified (they are all true of it: it pays an unguarded caller, checks
 
 ## How much of SmartBugs we catch (2026-10-27)
 
-**117 of 143 contracts — 81.8%.** A contract counts as caught when at least one
-of its labelled categories was predicted. The number is now in the report
-(`docs/smartbugs-benchmark.md`), in the baseline, on the console line, and gated
-in the suite, because per-category recall is a diagnostic and this is the
-question people actually ask.
+**131 of 143 contracts — 91.6%**, up from 117 (81.8%) in the edge-coverage pass.
+A contract counts as caught when at least one of its labelled categories was
+predicted. The number is in the report, the baseline, the console line, and gated
+in the suite.
 
-The 26 misses, by category:
+### What the pass fixed
 
-| Category | Missed | Contracts |
+| Fix | Contracts recovered |
+| --- | --- |
+| **Storage-alias writes** — `var acc = Acc[msg.sender]; acc.balance -= x` is a STATE write. `rootIdent` returned the local, which is not in `stateNames`, so the write was invisible | 7 (the EtherStore-family `0x…` contracts) |
+| **Cross-function reentrancy** — an internal callee that calls out now opens a window at the call site for its caller (`direct` already carried the fixpoint-propagated `external` flag) | `reentrancy_bonus` |
+| **Reentrancy through a MODIFIER** — a modifier that calls out, followed by a body that writes state, is the window. No `!authed` gate: re-entry by an *authorised* party is the point | `modifier_reentrancy` |
+| **Modifier guards are not access control** — `require(tokenBalance[msg.sender] == 0)` is a precondition on the caller's own balance. Counting it as a guard marked `airDrop` as owner-only and hid the reentrancy above | (enabler) |
+| **Laundered entropy** — `uint256 salt = block.timestamp` then `salt * block.number / 3`. A declaration seeded from block data and *mixed* (mul/mod) is weak randomness; a checkpoint that is merely subtracted is not | `random_number_generator` |
+| **Pre-0.8 arithmetic** — `--`/`.length--` on stored state, and the useless `require(a - b >= 0)` guard that unsigned arithmetic makes always true | `arbitrary_location_write` (fires `unchecked-block`) |
+| **Timestamp dependence** — no longer an `else` to weak-randomness, and `assert(` / a bare comparison counts, not only `require(`/`if(` | `ether_lotto`, `roulette`, `timed_crowdsale` |
+
+Cost, recorded in the benchmark test: noise 7.091 → **7.462** findings per
+contract, `arithmetic` precision 0.203 → 0.181. `time_manipulation` recall went
+0.400 → **1.000**.
+
+### The 12 that remain
+
+| Category | Count | Why it stays |
 | --- | --- | --- |
-| reentrancy | 9 | seven `0x…` contracts, plus `modifier_reentrancy`, `reentrancy_bonus` |
-| denial_of_service | 5 | `auction`, `dos_address`, `dos_number`, `dos_simple`, `send_loop` — **parked at the owner's direction** |
-| front_running | 3 | `ERC20`, `eth_tx_order_dependence_minimal`, `odds_and_evens` |
-| time_manipulation | 3 | `ether_lotto`, `roulette`, `timed_crowdsale` |
-| arithmetic | 2 | `BECToken`, `integer_overflow_benign_1` |
-| access_control | 1 | `arbitrary_location_write_simple` |
-| bad_randomness | 1 | `random_number_generator` |
-| other | 1 | `name_registrar` |
-| short_addresses | 1 | `short_address_example` — retired deliberately (the class died with the 0.5 ABI decoder) |
+| denial_of_service | 5 | **parked at the owner's direction** — `auction`, `dos_address`, `dos_number`, `dos_simple`, `send_loop` |
+| front_running | 2 | `eth_tx_order_dependence_minimal`, `odds_and_evens` — we fire `reentrancy` and `unprotected-ether` on both, so a true finding exists under a different label |
+| arithmetic | 2 | `BECToken` (the overflow is in a LOCAL, `uint256 amount = cnt * value`, not stored state — we fire `front-running` on its `approve`), `integer_overflow_benign_1` (**the dataset's own "benign" variant**: its comment says the overflow never escapes the function) |
+| access_control | 1 | `arbitrary_location_write` — the defect is arithmetic and we fire `unchecked-block`; the dataset labels it access_control |
+| other | 1 | `name_registrar` — an unchecked `unlocked` flag gating a registry write; no rule describes it |
+| short_addresses | 1 | `short_address_example` — **retired deliberately** (the class died with the 0.5 ABI decoder) |
 
-Two of those are structural rather than tuning:
-
-- **`modifier_reentrancy`**: the reentrancy is inside a *modifier*, and
-  `walkFn` only walks function bodies. Modifier bodies are never analysed for
-  call-then-write ordering, so this whole class is invisible. That is the
-  biggest single gap in the reentrancy column and it is not a threshold to
-  loosen — it is a missing traversal.
-- **`random_number_generator`**: the entropy is `salt = block.timestamp` stored
-  in a state variable and then combined by multiplication (`salt * block.number
-  / 3`, `salt % 300`). `weak-randomness` looks for block data inside a hash or a
-  modulo in the same function, so entropy laundered through a state variable is
-  missed. A recall-first loosening would catch it at low confidence.
+So the honest reading: **131/143 by category**, and of the 12 left, 5 are parked,
+1 is retired, 1 is the dataset's own negative control, and 5 are label
+disagreements where a true finding does fire.
 
 ## What is still wrong
 

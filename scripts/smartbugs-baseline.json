@@ -2,19 +2,19 @@
   "files": 143,
   "parsed": 143,
   "parseFailures": [],
-  "totalFindings": 1014,
+  "totalFindings": 1067,
   "filesWithFindings": 143,
-  "findingsPerFile": 7.091,
+  "findingsPerFile": 7.462,
   "categories": [
     {
       "category": "reentrancy",
       "expected": 31,
-      "predicted": 54,
-      "truePositives": 22,
-      "falseNegatives": 9,
+      "predicted": 63,
+      "truePositives": 31,
+      "falseNegatives": 0,
       "falsePositives": 32,
-      "recall": 0.71,
-      "precision": 0.407
+      "recall": 1,
+      "precision": 0.492
     },
     {
       "category": "access_control",
@@ -29,12 +29,12 @@
     {
       "category": "arithmetic",
       "expected": 15,
-      "predicted": 64,
+      "predicted": 72,
       "truePositives": 13,
       "falseNegatives": 2,
-      "falsePositives": 51,
+      "falsePositives": 59,
       "recall": 0.867,
-      "precision": 0.203
+      "precision": 0.181
     },
     {
       "category": "unchecked_low_level_calls",
@@ -59,32 +59,32 @@
     {
       "category": "bad_randomness",
       "expected": 8,
-      "predicted": 19,
-      "truePositives": 7,
-      "falseNegatives": 1,
+      "predicted": 20,
+      "truePositives": 8,
+      "falseNegatives": 0,
       "falsePositives": 12,
-      "recall": 0.875,
-      "precision": 0.368
+      "recall": 1,
+      "precision": 0.4
     },
     {
       "category": "front_running",
       "expected": 4,
-      "predicted": 8,
-      "truePositives": 1,
-      "falseNegatives": 3,
+      "predicted": 9,
+      "truePositives": 2,
+      "falseNegatives": 2,
       "falsePositives": 7,
-      "recall": 0.25,
-      "precision": 0.125
+      "recall": 0.5,
+      "precision": 0.222
     },
     {
       "category": "time_manipulation",
       "expected": 5,
-      "predicted": 17,
-      "truePositives": 2,
-      "falseNegatives": 3,
-      "falsePositives": 15,
-      "recall": 0.4,
-      "precision": 0.118
+      "predicted": 22,
+      "truePositives": 5,
+      "falseNegatives": 0,
+      "falsePositives": 17,
+      "recall": 1,
+      "precision": 0.227
     },
     {
       "category": "short_addresses",
@@ -130,6 +130,7 @@
     "private-secret",
     "read-only-reentrancy",
     "reentrancy",
+    "report-cap",
     "selfdestruct",
     "shadowing",
     "signature-malleability",
@@ -150,8 +151,12 @@
   "detectorsIdle": [],
   "detectorFiles": {
     "eth-gas-stipend": {
-      "fired": 146,
+      "fired": 145,
       "onExpectedCategory": 2
+    },
+    "unchecked-block": {
+      "fired": 144,
+      "onExpectedCategory": 17
     },
     "old-compiler": {
       "fired": 143,
@@ -161,20 +166,16 @@
       "fired": 139,
       "onExpectedCategory": 3
     },
-    "unchecked-block": {
-      "fired": 114,
-      "onExpectedCategory": 17
+    "reentrancy": {
+      "fired": 93,
+      "onExpectedCategory": 37
     },
     "unchecked-call": {
       "fired": 92,
       "onExpectedCategory": 71
     },
-    "reentrancy": {
-      "fired": 78,
-      "onExpectedCategory": 28
-    },
     "unprotected-ether": {
-      "fired": 55,
+      "fired": 56,
       "onExpectedCategory": 7
     },
     "default-visibility": {
@@ -182,12 +183,12 @@
       "onExpectedCategory": 9
     },
     "timestamp": {
-      "fired": 34,
-      "onExpectedCategory": 3
+      "fired": 40,
+      "onExpectedCategory": 6
     },
     "weak-randomness": {
-      "fired": 28,
-      "onExpectedCategory": 13
+      "fired": 29,
+      "onExpectedCategory": 14
     },
     "zero-address": {
       "fired": 20,
@@ -197,33 +198,33 @@
       "fired": 16,
       "onExpectedCategory": 0
     },
+    "front-running": {
+      "fired": 10,
+      "onExpectedCategory": 2
+    },
     "selfdestruct": {
       "fired": 9,
       "onExpectedCategory": 1
-    },
-    "locked-ether": {
-      "fired": 9,
-      "onExpectedCategory": 0
     },
     "tx-origin": {
       "fired": 9,
       "onExpectedCategory": 2
     },
-    "front-running": {
-      "fired": 9,
-      "onExpectedCategory": 1
+    "unprotected-admin": {
+      "fired": 8,
+      "onExpectedCategory": 4
     },
     "hardcoded-gas": {
       "fired": 8,
       "onExpectedCategory": 0
     },
-    "unprotected-admin": {
-      "fired": 7,
-      "onExpectedCategory": 4
-    },
     "delegatecall": {
       "fired": 6,
       "onExpectedCategory": 6
+    },
+    "locked-ether": {
+      "fired": 5,
+      "onExpectedCategory": 0
     },
     "erc20-unchecked": {
       "fired": 5,
@@ -232,6 +233,10 @@
     "centralization": {
       "fired": 4,
       "onExpectedCategory": 1
+    },
+    "read-only-reentrancy": {
+      "fired": 4,
+      "onExpectedCategory": 0
     },
     "private-secret": {
       "fired": 4,
@@ -265,10 +270,6 @@
       "fired": 2,
       "onExpectedCategory": 0
     },
-    "read-only-reentrancy": {
-      "fired": 2,
-      "onExpectedCategory": 0
-    },
     "arbitrary-dispatch-call": {
       "fired": 1,
       "onExpectedCategory": 1
@@ -297,38 +298,28 @@
       "fired": 1,
       "onExpectedCategory": 0
     },
+    "report-cap": {
+      "fired": 1,
+      "onExpectedCategory": 0
+    },
     "shadowing": {
       "fired": 1,
       "onExpectedCategory": 0
     }
   },
-  "contractsCaught": 117,
+  "contractsCaught": 131,
   "contractsMissed": [
     "dataset/access_control/arbitrary_location_write_simple.sol",
     "dataset/arithmetic/BECToken.sol",
     "dataset/arithmetic/integer_overflow_benign_1.sol",
-    "dataset/bad_randomness/random_number_generator.sol",
     "dataset/denial_of_service/auction.sol",
     "dataset/denial_of_service/dos_address.sol",
     "dataset/denial_of_service/dos_number.sol",
     "dataset/denial_of_service/dos_simple.sol",
     "dataset/denial_of_service/send_loop.sol",
-    "dataset/front_running/ERC20.sol",
     "dataset/front_running/eth_tx_order_dependence_minimal.sol",
     "dataset/front_running/odds_and_evens.sol",
     "dataset/other/name_registrar.sol",
-    "dataset/reentrancy/0x7541b76cb60f4c60af330c208b0623b7f54bf615.sol",
-    "dataset/reentrancy/0x7b368c4e805c3870b6c49a3f1f49f69af8662cf3.sol",
-    "dataset/reentrancy/0x93c32845fae42c83a70e5f06214c8433665c2ab5.sol",
-    "dataset/reentrancy/0x96edbe868531bd23a6c05e9d0c424ea64fb1b78b.sol",
-    "dataset/reentrancy/0xbe4041d55db380c5ae9d4a9b9703f1ed4e7e3888.sol",
-    "dataset/reentrancy/0xcead721ef5b11f1a7b530171aab69b16c5e66b6e.sol",
-    "dataset/reentrancy/0xf015c35649c82f5467c9c74b7f28ee67665aad68.sol",
-    "dataset/reentrancy/modifier_reentrancy.sol",
-    "dataset/reentrancy/reentrancy_bonus.sol",
-    "dataset/short_addresses/short_address_example.sol",
-    "dataset/time_manipulation/ether_lotto.sol",
-    "dataset/time_manipulation/roulette.sol",
-    "dataset/time_manipulation/timed_crowdsale.sol"
+    "dataset/short_addresses/short_address_example.sol"
   ]
 }

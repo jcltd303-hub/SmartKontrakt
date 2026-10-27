@@ -208,7 +208,7 @@ import {
  *                inputs now produce different records, so the archive refreshes.
  */
 // Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-27.10";
+export const ANALYZER_BASELINE = "2026-10-27.11";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

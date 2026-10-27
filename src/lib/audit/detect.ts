@@ -405,9 +405,15 @@ function modifierGuardsSender(name: string, contract: ContractModel, model?: Sou
     const def = c.modifiers.find((d) => d.name === name);
     if (!def) continue;
     found = true;
+    // Strip index expressions first: `tokenBalance[msg.sender] == 0` is a check
+    // on the CALLER'S OWN balance (a precondition — D1's "token-holding" class),
+    // not a comparison of the caller against a privileged party. Counting it as
+    // a guard marked the modifier_reentrancy airDrop as access-controlled and
+    // hid the reentrancy entirely.
+    const withoutIndexes = def.source.replace(/\[[^\]]*\]/g, "[]");
     if (
-      /(msg\.sender|_msgSender\s*\(\s*\))/.test(def.source) &&
-      /(==|!=|require\s*\()/.test(def.source)
+      /(msg\.sender|_msgSender\s*\(\s*\))/.test(withoutIndexes) &&
+      /(==|!=|require\s*\()/.test(withoutIndexes)
     ) {
       return true;
     }
@@ -3327,10 +3333,23 @@ function walkFn(
   const params = new Set(fn.params.map((p) => p.name).filter(Boolean));
   const inherited = inheritedFnNames(contract, model);
 
+  // Storage aliases: `var acc = Acc[msg.sender]` (0.4) and
+  // `Acc storage acc = Acc[msg.sender]` (0.5+) create a pointer into state, so
+  // `acc.balance -= x` IS a state write. Without this the local name fails the
+  // stateNames check and the write is invisible — which is why the seven
+  // EtherStore-family reentrancy contracts in the corpus were missed.
+  const storageAliases = new Set<string>();
+  for (const m of fn.source.matchAll(
+    /(?:\bvar\b|[A-Za-z_$][\w$]*\s+storage)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\[/g,
+  )) {
+    const [, local, base] = m;
+    if (local && base && stateNames.has(base)) storageAliases.add(local);
+  }
+
   const noteWrite = (node: AstNode | undefined) => {
     const id = rootIdent(node);
     const assembly = node?.type === "AssemblyCall";
-    if (!assembly && (!id || !stateNames.has(id))) return;
+    if (!assembly && (!id || (!stateNames.has(id) && !storageAliases.has(id)))) return;
     const writeKey = id || "*";
     flow.sawWrite = true;
     if (flow.seen) {
@@ -3659,6 +3678,25 @@ require(ok, "pay");`,
       // callee-read consumer check would never see it.
       if (!callee.base && member && byName.has(member)) {
         flow.calleeCalls.push({ name: member, line: lineOf(node, delta, fn.line) });
+        // The callee calls out, so this call site opens the same window one
+        // level down. `direct` already carries the fixpoint-propagated
+        // external flag (profile()), so a write after this line is a
+        // call-then-write for the CALLER too — the reentrancy_bonus shape.
+        const calleeProfile = direct.get(member);
+        if (calleeProfile?.external) {
+          noteCall({
+            kind: "member",
+            line: lineOf(node, delta, fn.line),
+            checked: true,
+            sendsValue: false,
+            target: member,
+            targetIsParam: false,
+            targetIsConst: false,
+            argCount: args.length,
+            raw: sliceOf(parsed, node),
+            synthetic: true,
+          });
+        }
       }
       // Fix 27 (hook window): a BARE call to a known receiver-hook
       // carrier genuinely opens a reentrancy window — the callee
@@ -5025,7 +5063,41 @@ contract ReplayAttack {
   const mixer = teamJustMixer(clean);
   const derived = derivedEntropySelected(clean);
   const idOnly = !entropySource && !mixer && !derived && hashOnlyAsIdentifier(clean);
-  const randomish = fn.mutability !== "view" && fn.mutability !== "pure" && !oracleOnly && !idOnly && (entropySource || mixer || derived || (clockSource && mixesEntropy));
+  // Entropy laundered through a STATE VARIABLE (2026-10-27, recall-first):
+  // `uint256 private salt = block.timestamp;` then `salt * block.number / 3`,
+  // `salt % 300`. The clock never appears next to a hash or modulo in the same
+  // function, so the rule above misses it — which is the random_number_generator
+  // contract in SmartBugs Curated. Fired at low confidence: the link between the
+  // seed assignment and the draw is one hop, not one expression.
+  const launderedSeed = (() => {
+    const seeded = new Set<string>();
+    for (const c of model.contracts) {
+      for (const v of c.stateVars) {
+        // A DECLARATION initialised from block data (`uint256 salt = block.timestamp`),
+        // not any later assignment: a checkpoint like `lastBlock = block.number`
+        // is a clock cursor, not a seed. Treating the cursor as entropy made the
+        // BiFi idle-gap fixture fire weak-randomness — caught by the corpus.
+        const decl = new RegExp(
+          `(?:uint\\d*|int\\d*|bytes32|var)\\s+(?:(?:public|private|internal|constant|immutable)\\s+)*${escapeRegExp(v.name)}\\s*=\\s*[^;]*(?:block\\.(?:timestamp|number|difficulty|prevrandao|coinbase)|blockhash\\s*\\()`,
+        ).test(parsed);
+        if (decl) seeded.add(v.name);
+      }
+    }
+    for (const name of seeded) {
+      const n = escapeRegExp(name);
+      // Mixed, not merely moved: entropy is multiplied or reduced by modulo.
+      // `block.number - lastBlock` is elapsed time, and subtracting a cursor is
+      // not a draw.
+      if (new RegExp(`\\b${n}\\b\\s*[%*/]|[%*/]\\s*\\b${n}\\b`).test(clean)) return name;
+    }
+    return null;
+  })();
+  const randomish =
+    !oracleOnly &&
+    !idOnly &&
+    ((fn.mutability !== "view" && fn.mutability !== "pure" &&
+      (entropySource || mixer || derived || (clockSource && mixesEntropy))) ||
+      launderedSeed !== null);
   if (randomish) {
     push(make({
       severity: "high",
@@ -5045,7 +5117,17 @@ contract ReplayAttack {
       locationLine: fn.line,
       snippet: snippet(parsed, fn.line + delta, delta),
     }));
-  } else if (/block\.timestamp|\bnow\b/.test(clean) && /(require|if)\s*\(/.test(clean)) {
+  }
+  // Timestamp dependence, loosened 2026-10-27: no longer an `else` to
+  // weak-randomness (a function can draw from the clock AND gate on it), and a
+  // bare comparison or `assert(` counts, not only `require(`/`if(`. That is the
+  // ether_lotto / roulette / timed_crowdsale family, all labelled
+  // time_manipulation in the corpus and all silent before this.
+  if (
+    /block\.timestamp|\bnow\b/.test(clean) &&
+    (/(?:require|if|assert)\s*\(/.test(clean) ||
+      /(?:return|\bif\b)[^;]{0,120}(?:block\.timestamp|\bnow\b)\s*(?:>=|<=|>|<|==)/.test(clean))
+  ) {
     // Long-window computation: timestamp divided by >= 1 hour (e.g.
     // (block.timestamp - last) / (60*60*24)) — a ~15s producer shift is
     // immaterial over a days-scale window, so that is info, not low.
@@ -5084,6 +5166,49 @@ contract ReplayAttack {
     }));
   }
 
+  // Reentrancy through a MODIFIER (2026-10-27).
+  //
+  // `airDrop() hasNoBalance supportsToken { tokenBalance[msg.sender] += 20; }`
+  // where `supportsToken` calls out to the caller. The modifier runs BEFORE the
+  // body, so the callee re-enters while the balance the modifier checked is
+  // still zero — the classic modifier reentrancy (SWC-107, and the
+  // modifier_reentrancy contract in SmartBugs Curated).
+  //
+  // walkFn only walks FUNCTION bodies, so modifier bodies never contribute a
+  // call to the flow. This is the structural approximation: a modifier that
+  // calls out, followed by a body that writes state, is the window. Fired at
+  // low confidence because the modifier's call is not ordered against the
+  // body's writes by the flow analysis — the source order is the evidence.
+  const modCallsOut = fn.modifiers.some((name) => {
+    const def =
+      contract.modifiers.find((m) => m.name === name) ??
+      model.contracts.flatMap((c) => c.modifiers).find((m) => m.name === name);
+    if (!def) return false;
+    const src = stripCommentsAndStrings(def.source);
+    return /\.\s*(?:call|delegatecall|send|transfer|staticcall)\s*[({]|\)\s*\.\s*\w+\s*\(/.test(src);
+  });
+  const bodyWrites = /\b[A-Za-z_$][\w$]*(?:\s*\[[^\]]*\])?\s*(?:\+=|-=|\*=|\/=)\s*/.test(clean);
+  // No `!authed` here on purpose: re-entry by an AUTHORISED party is exactly
+  // what this shape is. `supportsToken` even gates on the caller (it compares a
+  // hash against Bank(msg.sender).supportsToken()), and that check is what the
+  // attacker satisfies while re-entering. Gating the rule on auth hid the bug.
+  if (modCallsOut && bodyWrites && isExternallyCallable(fn)) {
+    push(make({
+      severity: "high",
+      swc: "SWC-107",
+      title: `${fn.name} calls out from a modifier before its body writes state`,
+      confidence: "low",
+      detector: "reentrancy",
+      summary: `One of ${fn.name}'s modifiers makes an external call, and the body then writes state. Modifiers run before the body, so the callee is executing while the state the modifier just checked is unchanged — it can re-enter ${fn.name} and pass the same check again. This is the modifier_reentrancy shape in SmartBugs Curated: airDrop() is guarded by a zero-balance modifier and a supportsToken() call to the caller, and the airdrop credit lands after both.`,
+      walkthrough: `1. ${fn.name} runs its modifiers first; one of them calls out to an address the caller controls.\n2. The call is live before the body has written anything.\n3. The callee re-enters ${fn.name}, and the modifier's check still passes.\n4. The body then credits the caller once per entry.\n5. Do the state write before the modifier's external call, or move the call into the body after the write.`,
+      exploitSolidity: `contract Reenter {\n    function supportsToken() external returns (bytes32) {\n        IVictim(target).${fn.name}(); // re-enter while the guard still passes\n        return keccak256(abi.encodePacked("Nu Token"));\n    }\n}`,
+      remediationSolidity: `modifier supportsToken() {\n    _;                       // body first: the credit is written\n    require(ok, "token");    // then the external check\n}`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
   // front-running (2026-10-27, item 4 of the quality list).
   //
   // The detector existed in the registry, the SmartBugs map and the PoC library
@@ -5099,7 +5224,7 @@ contract ReplayAttack {
   //      takes the payout (FindThisHash, the tx-order-dependence cases).
   const erc20ApproveRace =
     /^approve$/i.test(fn.name) &&
-    /\b(?:allowance|allowed|_allowances|allowances)\s*\[[^\]]*\]\s*(?:\[[^\]]*\]\s*)?=\s*/.test(clean) &&
+    /\b_?(?:allowance|allowed|allowances)\w*\s*\[[^\]]*\]\s*(?:\[[^\]]*\]\s*)?=\s*/.test(clean) &&
     contract.functions.some((f) => /^transferFrom$/i.test(f.name));
   // Nested parens: `keccak256(abi.encodePacked(x)) == h` breaks a `[^)]*` scan,
   // so allow a bounded span instead of a single paren group.
@@ -5166,20 +5291,37 @@ contract ReplayAttack {
   if (pre08) {
     const cleanArith = stripCommentsAndStrings(src);
     const usesSafeMath = /\.\s*(?:add|sub|mul|div|mod)\s*\(|SafeMath|\.tryAdd\s*\(/.test(cleanArith);
-    const compound = [...cleanArith.matchAll(/([A-Za-z_$][\w$]*(?:\s*\[[^\]]*\])?)\s*(-=|\+=|\*=|\/=)/g)];
+    // `--`/`++` count too: `bonusCodes.length--` on a pre-0.8 array is an
+    // underflow to 2^256-1, which is the arbitrary_location_write shape.
+    const compound = [
+      ...cleanArith.matchAll(/([A-Za-z_$][\w$]*(?:\s*\[[^\]]*\])?(?:\s*\.\s*\w+)?)\s*(-=|\+=|\*=|\/=|--|\+\+)/g),
+    ];
     const storedNames = new Set(contract.stateVars.map((v) => v.name));
     const storedArith = compound.find((m) => {
-      const head = (m[1] ?? "").split("[")[0]!.trim();
+      // `bonusCodes.length--` and `acc.balance -= x` are writes to a state
+      // VAR through a member, so the head is the first identifier, not the
+      // whole member path.
+      const head = (m[1] ?? "").split("[")[0]!.split(".")[0]!.trim();
       return storedNames.has(head);
     });
-    if (storedArith && !usesSafeMath && fn.mutability !== "view" && fn.mutability !== "pure") {
+    // The other pre-0.8 shape: the underflow guard itself, `require(balance -
+    // value >= 0)`. Unsigned arithmetic makes that always true, so the check
+    // that was meant to prevent the underflow guarantees nothing — BECToken's
+    // shape, and the reason `arithmetic` missed it while `front-running` fired
+    // on the same contract's approve().
+    const uselessUnderflowGuard =
+      /(?:require|assert)\s*\([^;]{0,120}?[A-Za-z_$][\w$.]*(?:\[[^\]]*\])?\s*-\s*[A-Za-z_$0-9][\w$.]*\s*>=\s*0\s*\)/.test(cleanArith) &&
+      !usesSafeMath;
+    if ((storedArith || uselessUnderflowGuard) && !usesSafeMath && fn.mutability !== "view" && fn.mutability !== "pure") {
       push(make({
         severity: "medium",
         swc: "SWC-101",
-        title: `${fn.name} does arithmetic on stored state before 0.8`,
+        title: storedArith
+          ? `${fn.name} does arithmetic on stored state before 0.8`
+          : `${fn.name} guards an underflow with a check that cannot fail`,
         confidence: "medium",
         detector: "unchecked-block",
-        summary: `The contract targets a compiler below 0.8, so ${storedArith[1]}${storedArith[2]} wraps instead of reverting — and no SafeMath call guards it in this function. A subtraction underflow turns a balance into 2^256-1 and an addition overflow turns a supply into zero, which is the arithmetic class behind the 0.4.x/0.5.x losses (and Truebit's 2026 loss was this same class in a contract deployed five years earlier).`,
+        summary: `The contract targets a compiler below 0.8, so ${storedArith ? `${storedArith[1]}${storedArith[2]}` : "a subtraction"} wraps instead of reverting — and no SafeMath call guards it in this function. A subtraction underflow turns a balance into 2^256-1 and an addition overflow turns a supply into zero, which is the arithmetic class behind the 0.4.x/0.5.x losses (and Truebit's 2026 loss was this same class in a contract deployed five years earlier).`,
         walkthrough: `1. The pragma floor is below 0.8, so the compiler emits no overflow check.\n2. ${fn.name} performs ${storedArith[1]} ${storedArith[2]} on stored state.\n3. A caller who can drive that value past zero (or past 2^256) gets a wrapped result — an enormous balance or a zeroed supply.\n4. Use SafeMath (pre-0.8) or move to 0.8+, where the check is built in.`,
         exploitSolidity: `// Pre-0.8: underflow makes the balance enormous.\nIVictim(target).${fn.name}(type(uint256).max);`,
         remediationSolidity: `// pre-0.8: use SafeMath for every stored-value operation\ncount = count.sub(input);\n// or compile with 0.8+, where underflow reverts`,
