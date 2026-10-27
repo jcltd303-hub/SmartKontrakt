@@ -75,7 +75,7 @@ import type {
   AdjudicationOutcome,
   AdjudicationRunRecord,
 } from "../src/lib/audit/adjudicate-chain.ts";
-import { pocAuditEligibility, type PocVerdict } from "../src/lib/audit/adjudication.ts";
+import { pocAuditEligibility, prepareFindingPoc, type PocVerdict } from "../src/lib/audit/adjudication.ts";
 import { generateAiSecurityReview } from "../src/lib/audit/ai-review.server.ts";
 import type { AiSecurityReview } from "../src/lib/audit/ai-review.server.ts";
 import { repairPocCode } from "../src/lib/audit/deep-agent.server.ts";
@@ -183,7 +183,19 @@ export function selectAutoPocFindings(report: Report, source: string): AutoPocCa
   report.findings.forEach((finding, ord) => {
     if (finding.pocStatus) return; // a verdict of record already exists
     const { eligible } = pocAuditEligibility(finding, "critical_and_high", source);
-    if (eligible) out.push({ finding, ord });
+    if (!eligible) return;
+    // A finding whose exploit snippet cannot become an executable Foundry test
+    // cannot be verified by running it. prepareFindingPoc returns null exactly
+    // for those: no contract, interface-only, a bare attack contract the wrapper
+    // rejected, or no fallback template for the detector.
+    //
+    // Measured before this filter: 209 of 518 attempts ended as no_tests, and the
+    // one-repair LLM rescue recovered none of them. Attempting those costs a
+    // generation and a queue slot to learn nothing, so they are excluded here
+    // rather than at the gate. The static finding stands untouched — this is the
+    // PoC stage declining, not the finding being withdrawn.
+    if (prepareFindingPoc(finding) === null) return;
+    out.push({ finding, ord });
   });
   return out;
 }

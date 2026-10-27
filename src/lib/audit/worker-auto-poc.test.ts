@@ -275,6 +275,33 @@ describe("runAutoPocForEntry", () => {
     assert.equal(state.consecutiveInfra, 0);
   });
 
+  it("a finding whose snippet cannot become a test is not attempted", () => {
+    // prepareFindingPoc returns null for a snippet with no contract, an
+    // interface-only snippet, or a bare attack contract the wrapper rejects.
+    // Measured before this filter: 209 of 518 attempts ended as no_tests and the
+    // one-repair rescue recovered none, so those attempts bought nothing.
+    // The fallback selector is broader than it first looks: a detector without
+    // its own harness inherits its SmartBugs-category templates, so an
+    // unwrappable snippet is usually rescued and honestly reports unadapted if
+    // the template's TODOs are unfilled. prepareFindingPoc therefore returns null
+    // for exactly two cases — an empty snippet, and a detector on the
+    // not-PoC-able list (no on-chain exploit exists, so any verdict would be
+    // unearned). Both are excluded here.
+    const report = makeReport([
+      makeFinding({ title: "Empty snippet", detector: "access", exploitSolidity: "" }),
+      // Unwrappable snippet AND a detector on the not-PoC-able list: no template
+      // is offered, so there is nothing to run.
+      makeFinding({ title: "Not PoC-able", detector: "registry-dispatched-logic", exploitSolidity: "interface IVictim { function go() external; }" }),
+      makeFinding({ title: "Preparable", detector: "access", exploitSolidity: TEST_SNIPPET }),
+    ]);
+    const selected = selectAutoPocFindings(report, "contract V {}");
+    assert.deepEqual(
+      selected.map((c) => c.finding.title),
+      ["Preparable"],
+      "only the finding with a runnable PoC is attempted",
+    );
+  });
+
   it("(d) there is no attempt cap: every finding in every entry is attempted", async () => {
     // Removed 2026-10-27. The cap (default 25 backend attempts per run) was a
     // silent recall ceiling — every flagged finding past the 25th kept a

@@ -140,6 +140,7 @@ const { probeContractInterfaces } = await import("../src/lib/audit/simulator.ts"
 const { withRetry } = await import("../src/lib/audit/rate-limit.ts");
 const { secondPass } = await import("../src/lib/audit/persist.server.ts");
 const { newLlmHealth, recordLlm, llmVerdict } = await import("./llm-health.ts");
+const { implementationItems, dedupeKey } = await import("./proxy-follow.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
 const { getSql, getDbConnectionState } = await import("../src/lib/db.ts");
@@ -377,6 +378,9 @@ async function runLoop(): Promise<void> {
   // In-run dedupe re-checks use this handle; null (DB unreachable at
   // loop start) disables the re-check for the run — fail-open, the
   // seen-set still applies. Logged for the same reason as above.
+  // Every (chain, address) the queue already holds, so a proxy implementation
+  // discovered mid-run is not queued twice and a clone is not re-queued.
+  const queuedKeys = new Set(items.map((i) => dedupeKey(i.chainId, i.address)));
   let dedupeSql: Awaited<ReturnType<typeof getSql>> | null = null;
   try {
     dedupeSql = await getSql();
@@ -486,6 +490,26 @@ async function runLoop(): Promise<void> {
 
       const [proxyOutcome, probeOutcome] = await Promise.all([proxyPromise, probePromise]);
       const proxyInfo = proxyOutcome.status === "fulfilled" ? proxyOutcome.value : null;
+
+      // Follow the proxy: an implementation's logic is where a finding can be,
+      // and analysing the delegatecall shell instead is the pipeline's largest
+      // silent blind spot. Each implementation becomes its own queue entry with
+      // its own source, findings and version stamp; the proxy's record keeps the
+      // link through proxy_info_json.
+      const followed = implementationItems(proxyInfo, item.chainId, queuedKeys);
+      if (followed.length > 0) {
+        for (const impl of followed) {
+          queuedKeys.add(dedupeKey(impl.chainId, impl.address));
+          ctx.items.push(impl as never);
+        }
+        status.total = ctx.items.length;
+        console.log(
+          `[worker] ${item.address} is a proxy — queued ${followed.length} implementation(s): ${followed
+            .map((f) => f.address)
+            .join(", ")}`,
+        );
+        writeStatusFile();
+      }
       const probes = probeOutcome.status === "fulfilled" ? probeOutcome.value : [];
 
       // Opt-in OpenRouter second pass, per item (keeps the bulk save fast).
