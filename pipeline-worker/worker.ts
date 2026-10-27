@@ -958,11 +958,14 @@ const server = http.createServer((req, res) => {
   }
 
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? HOST}`);
+  // A trailing slash 404s on an exact-match route table, which reads as "the
+  // route does not exist" when it does. Normalise once, here.
+  const route = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") : url.pathname;
 
   // How much of the archive the current analyzer would refresh. Ask this
   // before committing to a long run: a pipeline change makes every older row
   // stale, so "freshen everything" is a run with refresh=stale (the default).
-  if (req.method === "GET" && url.pathname === "/freshness") {
+  if (req.method === "GET" && route === "/freshness") {
     void getSql()
       .then((sql) => scanFreshness(sql).then((f) => sendJson(res, 200, { ...f, analyzer: analyzerStamp() })))
       .catch((err) => sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) }));
@@ -971,7 +974,7 @@ const server = http.createServer((req, res) => {
 
   // One-line LLM health poll: `curl -s localhost:8788/health/llm`.
   // The key itself is never returned — only whether one is configured.
-  if (req.method === "GET" && url.pathname === "/health/llm") {
+  if (req.method === "GET" && route === "/health/llm") {
     sendJson(res, 200, {
       verdict: status.llmVerdict,
       ...status.llm,
@@ -981,17 +984,17 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/status") {
+  if (req.method === "GET" && route === "/status") {
     void handleStatus(req, res);
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/start") {
+  if (req.method === "POST" && route === "/start") {
     void handleStart(req, res);
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/pause") {
+  if (req.method === "POST" && route === "/pause") {
     if (status.state !== "running") {
       sendJson(res, 409, { error: `no run is active (state: ${status.state})` });
       return;
@@ -1003,7 +1006,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/resume") {
+  if (req.method === "POST" && route === "/resume") {
     if (status.state !== "paused" || !runCtx) {
       sendJson(res, 409, { error: `nothing to resume (state: ${status.state})` });
       return;
@@ -1018,7 +1021,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/stop") {
+  if (req.method === "POST" && route === "/stop") {
     if (status.state === "paused") {
       runCtx = null;
       status.state = "idle";
@@ -1037,7 +1040,23 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  sendJson(res, 404, { error: "not found" });
+  // The index: hitting the base URL should not be an error, and a mistyped path
+  // should say what the routes are rather than just "not found" — the failure
+  // this replaces cost a round trip to diagnose.
+  const routes = {
+    "GET /status": "run state, counters, LLM health",
+    "GET /health/llm": "LLM verdict in one line",
+    "GET /freshness": "how stale the analysed set is",
+    "POST /start": "begin a run",
+    "POST /pause": "pause after the current item",
+    "POST /resume": "resume a paused run",
+    "POST /stop": "stop after the current item",
+  };
+  if (req.method === "GET" && (route === "/" || route === "/health")) {
+    sendJson(res, 200, { ok: true, routes });
+    return;
+  }
+  sendJson(res, 404, { error: "not found", path: url.pathname, routes });
 });
 
 // ------------------------------------------------------- graceful shutdown --

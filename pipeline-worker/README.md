@@ -131,6 +131,20 @@ curl -s -X POST http://127.0.0.1:8788/start \
 - `/status` reports `deepAgentRuns` (addresses that ran the agent) and
   `deepAgentConfirmed` (fork-confirmed findings total).
 
+## Endpoints
+
+`GET /` (or `/health`) returns the route index, and an unknown path returns
+`{"error":"not found","path":…,"routes":{…}}` rather than a bare `not found` —
+so a wrong port or a stale build is diagnosable from the response. Trailing
+slashes are normalised (`/health/llm/` works).
+
+| Route | Purpose |
+| --- | --- |
+| `GET /status` | run state, counters, LLM health |
+| `GET /health/llm` | LLM verdict in one line |
+| `GET /freshness` | how stale the analysed set is |
+| `POST /start` `/pause` `/resume` `/stop` | run control |
+
 ## Is the LLM working? (poll without reading logs)
 
 The worker records `aiStatus` per saved record, but that is only visible by
