@@ -31,6 +31,9 @@ export type FourbyteLookup = {
 
 export type FourbyteKind = "signatures" | "event-signatures";
 
+/** Why a selector is being remembered as absent. */
+export type MissReason = "unknown" | "unreachable";
+
 /**
  * The DB-backed lookup, which also remembers misses. Kept separate from
  * FourbyteLookup so every existing fake (tests, cache-less callers) still
@@ -38,7 +41,7 @@ export type FourbyteKind = "signatures" | "event-signatures";
  */
 export type FourbyteCache = FourbyteLookup & {
   recentMisses(kind: FourbyteKind, keys: string[]): Promise<Set<string>>;
-  recordMisses(kind: FourbyteKind, keys: string[]): Promise<void>;
+  recordMisses(kind: FourbyteKind, keys: string[], reason: MissReason): Promise<void>;
 };
 
 /** Plain-map form of a lookup result — what the resolveFourbyte server fn returns. */
@@ -78,7 +81,7 @@ export function createDbFourbyteLookup(sql: Sql): FourbyteCache {
       }
       return out;
     },
-    /** Keys recently checked and NOT found upstream — skip the network for these. */
+    /** Keys recently missed upstream — skip the network for these. */
     recentMisses: async (kind, keys) => {
       const out = new Set<string>();
       const uniq = [...new Set(keys.map((k) => k.toLowerCase()))].slice(0, MAX_KEYS);
@@ -87,17 +90,20 @@ export function createDbFourbyteLookup(sql: Sql): FourbyteCache {
         select key from fourbyte_misses
         where kind = ${kind}
           and key = any(${uniq})
-          and checked_at > now() - make_interval(days => ${MISS_TTL_DAYS})`;
+          and (
+            (reason = 'unknown' and checked_at > now() - make_interval(days => ${MISS_TTL_DAYS}))
+            or (reason = 'unreachable' and checked_at > now() - make_interval(mins => ${UNREACHABLE_TTL_MINUTES}))
+          )`;
       for (const r of rows) out.add(r.key);
       return out;
     },
-    recordMisses: async (kind, keys) => {
+    recordMisses: async (kind, keys, reason) => {
       const uniq = [...new Set(keys.map((k) => k.toLowerCase()))].slice(0, MAX_KEYS);
       if (uniq.length === 0) return;
       await sql`
-        insert into fourbyte_misses (kind, key, checked_at)
-        select ${kind}, k, now() from unnest(${uniq}::text[]) as k
-        on conflict (kind, key) do update set checked_at = now()`;
+        insert into fourbyte_misses (kind, key, checked_at, reason)
+        select ${kind}, k, now(), ${reason} from unnest(${uniq}::text[]) as k
+        on conflict (kind, key) do update set checked_at = now(), reason = ${reason}`;
     },
   };
 }
@@ -115,8 +121,15 @@ const FOURBYTE_API_BASE = "https://www.4byte.directory/api/v1";
  */
 const UPSTREAM_TIMEOUT_MS = 2_000;
 
-/** How long a miss is trusted before 4byte.directory is asked again. */
+/**
+ * How long a miss is trusted, by why it was missed.
+ *
+ * "Not in the database" is a durable fact and is trusted for a week. "Could not
+ * ask" is not a fact at all — an outage must not poison the cache, so it expires in
+ * an hour and the selector is asked again.
+ */
 const MISS_TTL_DAYS = 7;
+const UNREACHABLE_TTL_MINUTES = 60;
 /** Bounded parallelism for batch upstream pulls. */
 const UPSTREAM_CONCURRENCY = 8;
 /** How long a negative upstream result stays memoized (ms). Successes
@@ -131,7 +144,7 @@ export type FourbyteFetchLike = (
 ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
 /** Per-process memo of upstream pulls: `s:<hex>` / `e:<hex>` -> promise. */
-const upstreamMemo = new Map<string, Promise<string[] | null>>();
+const upstreamMemo = new Map<string, Promise<UpstreamOutcome>>();
 
 /** Test/ops helper: drop every memoized upstream pull. */
 export function clearFourbyteUpstreamMemo(): void {
@@ -143,18 +156,31 @@ export function clearFourbyteUpstreamMemo(): void {
  * text_signature, hex_signature, ... }] }` NEWEST first — the
  * canonical registration for a selector is the LOWEST id (e.g.
  * transfer(address,uint256) is id 145 among six 0xa9059cbb rows), so
- * results are re-sorted ascending before use. Returns null on ANY
- * failure (HTTP error, timeout, bad JSON, no registrations).
+ * results are re-sorted ascending before use.
+ *
+ * It returns WHY it produced nothing, because the caller caches the answer: an
+ * empty 200 means the signature is absent, while a timeout means we never learned
+ * anything. Collapsing both into one miss cached a transient outage for a week.
  */
+/**
+ * The outcome of one upstream lookup. `null` sigs used to mean two different
+ * things — "not in the database" and "could not reach the database" — which made
+ * a timeout indistinguishable from a genuine absence once it was cached.
+ */
+export type UpstreamOutcome =
+  | { status: "found"; sigs: string[] }
+  | { status: "unknown" }
+  | { status: "unreachable" };
+
 async function pullFromUpstream(
   kind: "signatures" | "event-signatures",
   hex: string,
   fetchImpl: FourbyteFetchLike,
-): Promise<string[] | null> {
+): Promise<UpstreamOutcome> {
   const memoKey = `${kind === "signatures" ? "s" : "e"}:${hex}`;
   const hit = upstreamMemo.get(memoKey);
   if (hit) return hit;
-  const p = (async (): Promise<string[] | null> => {
+  const p = (async (): Promise<UpstreamOutcome> => {
     try {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), UPSTREAM_TIMEOUT_MS);
@@ -162,7 +188,8 @@ async function pullFromUpstream(
         const res = await fetchImpl(`${FOURBYTE_API_BASE}/${kind}/?hex_signature=${hex}`, {
           signal: ctl.signal,
         });
-        if (!res.ok) return null;
+        // A non-2xx is the API refusing to answer, not an absence.
+        if (!res.ok) return { status: "unreachable" };
         const body = (await res.json()) as { results?: unknown };
         const rows = Array.isArray(body?.results) ? body.results : [];
         const parsed: { id: number; sig: string }[] = [];
@@ -172,18 +199,20 @@ async function pullFromUpstream(
             parsed.push({ id: row.id, sig: row.text_signature });
           }
         }
-        if (parsed.length === 0) return null;
+        // 200 with an empty set: the signature really is not there.
+        if (parsed.length === 0) return { status: "unknown" };
         parsed.sort((a, b) => a.id - b.id);
-        return [...new Set(parsed.map((x) => x.sig))];
+        return { status: "found", sigs: [...new Set(parsed.map((x) => x.sig))] };
       } finally {
         clearTimeout(timer);
       }
     } catch {
-      return null;
+      // Timeout, abort, connection error: we learned nothing about this selector.
+      return { status: "unreachable" };
     }
   })();
   upstreamMemo.set(memoKey, p);
-  if ((await p) === null) {
+  if ((await p).status !== "found") {
     const t = setTimeout(() => upstreamMemo.delete(memoKey), NEGATIVE_MEMO_MS);
     (t as unknown as { unref?: () => void }).unref?.();
   }
@@ -268,27 +297,33 @@ export function createOnDemandFourbyteLookup(
     const misses = uniq.filter((k) => !out.has(k) && !recent.has(k));
     let idx = 0;
     const unanswered: string[] = [];
+    const unreachable: string[] = [];
     const lanes = Array.from(
       { length: Math.min(UPSTREAM_CONCURRENCY, misses.length) },
       async () => {
         while (idx < misses.length) {
           const hex = misses[idx++]!;
-          const sigs = await pullFromUpstream(kind, hex, fetchImpl);
-          if (sigs && sigs.length > 0) {
-            out.set(hex, sigs);
-            if (sql) await cachePulled(sql, kind, hex, sigs);
-          } else {
-            // "I do not know this" is worth remembering too: the next contract
-            // with this selector would otherwise pay the same timeout again.
+          const outcome = await pullFromUpstream(kind, hex, fetchImpl);
+          if (outcome.status === "found") {
+            out.set(hex, outcome.sigs);
+            if (sql) await cachePulled(sql, kind, hex, outcome.sigs);
+          } else if (outcome.status === "unknown") {
+            // The API answered and does not know it: worth remembering, because
+            // the next contract with this selector would pay the round trip again.
             unanswered.push(hex);
+          } else {
+            // We could not ask. Remember it briefly so an outage does not turn into
+            // a request storm, but never treat it as a fact about the selector.
+            unreachable.push(hex);
           }
         }
       },
     );
     await Promise.all(lanes);
-    if (cache && unanswered.length > 0) {
+    if (cache) {
       try {
-        await cache.recordMisses(kind, unanswered);
+        if (unanswered.length > 0) await cache.recordMisses(kind, unanswered, "unknown");
+        if (unreachable.length > 0) await cache.recordMisses(kind, unreachable, "unreachable");
       } catch {
         // A failed miss write costs a repeat lookup later, never correctness.
       }
