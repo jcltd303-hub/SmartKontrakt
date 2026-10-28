@@ -116,6 +116,11 @@ contract:
 - `abi.encodePacked(uint40 commitLastBlock, uint256 commit)` is **5 + 32 = 37 bytes**.
   Padding `commitLastBlock` to a 32-byte word hashes a different message, and every
   signature fails `ecrecover` with "ECDSA signature is not valid".
+- `placeBet`'s own transaction is a block, so the current height is already B. Mining
+  249 lands on B+249; the window closes at B+250, so it takes 250.
+- Wei values are past 2^53. `Number()` subtraction silently rounds them, and the
+  assertions compare for exact equality — the arithmetic is BigInt, and the parser
+  fails loudly on anything it cannot read rather than yielding `NaN ETH`.
 - A shell function ending in `echo` returns success even when the command before it
   failed. `cast send` failing inside `place_bet` was masked, the run continued against
   a bet that was never created, and it surfaced later as "Wrong blockHash" — because

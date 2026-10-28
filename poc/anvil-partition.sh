@@ -135,7 +135,9 @@ echo "  placed in block $PLACED  (blockhash $BLOCKHASH)"
 
 # ---------------------------------------------------------------- window ----
 step "at B+250: settle must work, refund must not"
-cast rpc --rpc-url "$RPC" anvil_mine $(printf '0x%x' 249) >/dev/null
+# placeBet's transaction is itself a block, so the current height is already B.
+# Mining 249 lands on B+249; the window closes at B+250, which needs 250.
+cast rpc --rpc-url "$RPC" anvil_mine $(printf '0x%x' 250) >/dev/null
 NOW=$(cast block-number --rpc-url "$RPC")
 [ "$NOW" -eq $((PLACED + 250)) ] || fail "expected block $((PLACED + 250)), at $NOW"
 expect_ok "settleBet at B+250" call --rpc-url "$RPC" "$CASINO" \

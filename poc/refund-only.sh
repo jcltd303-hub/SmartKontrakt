@@ -34,7 +34,21 @@ THIRD=$(cast wallet address --private-key $THIRD_KEY)
 
 step() { printf '\n== %s\n' "$*"; }
 fail() { printf 'FAILED: %s\n' "$*" >&2; exit 1; }
-wei()  { node -e 'console.log(Number(process.argv[1]))' "$1"; }
+# cast returns decimal for some calls and hex for others; an error string parses to
+# NaN and silently poisons every later comparison. Fail loudly instead.
+dec() {
+  local v=${1//[[:space:]]/}
+  # Some cast versions annotate large values, e.g. "1000000000000000 [1e15]".
+  v=${v%%\[*}
+  v=${v%\]}
+  case "$v" in
+    0x*|0X*) cast to-dec "$v" 2>/dev/null || fail "cannot parse '$1' as a number" ;;
+    '') fail "empty value where a number was expected" ;;
+    *[!0-9]*) fail "cannot parse '$1' as a number" ;;
+    *) echo "$v" ;;
+  esac
+}
+wei()  { dec "$1"; }
 eth()  { node -e 'console.log((Number(process.argv[1])/1e18).toFixed(6))' "$1"; }
 
 step "chain"
@@ -86,7 +100,7 @@ free_bankroll() {
   bal=$(wei "$(cast balance "$CASINO" --rpc-url "$RPC")")
   jack=$(wei "$(cast call --rpc-url "$RPC" "$CASINO" "jackpotSize()(uint128)")")
   locked=$(wei "$(cast call --rpc-url "$RPC" "$CASINO" "lockedInBets()(uint128)")")
-  node -e 'console.log(Number(process.argv[1]) - Number(process.argv[2]) - Number(process.argv[3]))' "$bal" "$jack" "$locked"
+  node -e 'console.log((BigInt(process.argv[1]) - BigInt(process.argv[2]) - BigInt(process.argv[3])).toString())' "$bal" "$jack" "$locked"
 }
 
 # place_bet <reveal> -> echoes the commit
@@ -144,10 +158,11 @@ free_A=$(free_bankroll)
 gambler_A=$(wei "$(cast balance "$OWNER" --rpc-url "$RPC")")
 echo "  settled: free bankroll $(eth "$free_A") ETH"
 node -e '
-  const before = Number(process.argv[1]), after = Number(process.argv[2]);
+  const f = (x) => (Number(x) / 1e18).toFixed(6);
+  const before = BigInt(process.argv[1]), after = BigInt(process.argv[2]);
   const lost = before - after;
-  console.log(`  house lost ${(lost/1e18).toFixed(6)} ETH by settling a winner`);
-  if (lost <= 0) { console.error("  EXPECTED a loss — the mock pays 2x, so settling must cost the house"); process.exit(1); }
+  console.log(`  house lost ${f(lost)} ETH by settling a winner`);
+  if (lost <= 0n) { console.error("  EXPECTED a loss — the mock pays 2x, so settling must cost the house"); process.exit(1); }
 ' "$start_free" "$free_A" || fail "branch A did not cost the house anything"
 
 # ---------------------------------------------------------------- branch B ----
@@ -162,7 +177,9 @@ HASH_B=$(cast block "$PLACED_B" --field hash --rpc-url "$RPC")
 free_before_B=$(free_bankroll)
 echo "  placed in block $PLACED_B; free bankroll $(eth "$free_before_B") ETH"
 
-cast rpc --rpc-url "$RPC" anvil_mine $(printf '0x%x' 249) >/dev/null
+# placeBet's transaction is itself a block, so the current height is already B.
+# Mining 249 lands on B+249; the window closes at B+250, which needs 250.
+cast rpc --rpc-url "$RPC" anvil_mine $(printf '0x%x' 250) >/dev/null
 NOW=$(cast block-number --rpc-url "$RPC")
 [ "$NOW" -eq $((PLACED_B + 250)) ] || fail "expected block $((PLACED_B + 250)), at $NOW"
 if cast call --rpc-url "$RPC" "$CASINO" "refundBet(uint256)" "$COMMIT_B" >/dev/null 2>&1; then
@@ -191,13 +208,9 @@ echo "  a second refundBet reverts — bet is processed"
 # ---------------------------------------------------------------- verdict ----
 step "verdict"
 node -e '
-  const start   = Number(process.argv[1]); // free bankroll, before any bet
-  const freeA   = Number(process.argv[2]); // after settling branch A
-  const baseB   = Number(process.argv[3]); // free bankroll immediately before bet B
-  const freeB   = Number(process.argv[4]); // after refunding branch B
-  const balBefore = Number(process.argv[5]); // casino balance before bet B
-  const balAfter  = Number(process.argv[6]); // casino balance after the refund
-  const f = (x) => (x / 1e18).toFixed(6);
+  // BigInt throughout: these are wei, well past 2^53, and Number() would round them.
+  const [start, freeA, baseB, freeB, balBefore, balAfter] = process.argv.slice(1, 7).map(BigInt);
+  const f = (x) => (Number(x) / 1e18).toFixed(6);
   console.log(`  A  settled  : free bankroll ${f(freeA)}  (house lost ${f(start - freeA)})`);
   console.log(`  B  refunded : free bankroll ${f(freeB)}  (house lost ${f(baseB - freeB)})`);
   let ok = true;
