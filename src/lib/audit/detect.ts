@@ -2111,8 +2111,40 @@ const BRIDGE_VERIFICATION =
 /** Effect an inbound handler has when it accepts a message. */
 const BRIDGE_EFFECT = /_mint\s*\(|\.mint\s*\(|unlock|release\s*\(|\.safeTransfer\w*\s*\(|\.transfer\s*\(/;
 
-/** Names an inbound cross-chain handler uses. */
+/**
+ * Names an inbound cross-chain handler uses.
+ *
+ * NOT widened to `release`/`redeem`/`withdraw`: measured 2026-10-28, adding them
+ * produced cross-talk on share-accounting-double-debit, whose ERC4626-style
+ * `release` is a vault redemption. A bare `release(address, uint256)` takes no
+ * message, so there is no cross-chain message to authenticate and nothing to
+ * verify — it is not this class. Keying this rule on the name was the original
+ * mistake; widening it would repeat that mistake in the other direction.
+ */
 const BRIDGE_HANDLER = /^(?:process|receive|execute|handle|onMessage|lzReceive|consume|claim|crossChain|finalize|complete)/i;
+
+/**
+ * A self-service payout: the transfer pays the caller an amount that was already
+ * recorded against the caller.
+ *
+ * `claimComp()` pays `msg.sender` the value of `accrued[msg.sender]` and zeroes it —
+ * permissionless by design, and nothing can be taken from anyone else. Without this
+ * discriminator the rule fired critical on it, and on every other claim-style
+ * function in the sample (KeepBonding x2, Ahoolee Token Sale, Launchpad,
+ * CompoundTreasury: 7 of the 26 non-proxy criticals).
+ *
+ * Deliberately narrow: a MINT to msg.sender still fires, because minting on an
+ * unverified inbound message creates value rather than releasing it — that is
+ * Qubit Finance (2022, $80M), where the attacker deposited a fake token and was
+ * minted real qTokens. So the exemption requires a transfer (not a mint) whose
+ * amount is keyed to the caller.
+ */
+function payoutIsSelfService(clean: string): boolean {
+  const paysCaller = /\.(?:transfer|safeTransfer\w*)\s*\(\s*(?:payable\s*\(\s*)?(?:msg\.sender|_msgSender\s*\(\s*\))/.test(clean);
+  const amountKeyedToCaller = /\[\s*(?:msg\.sender|_msgSender\s*\(\s*\))\s*\]/.test(clean);
+  const mintsToCaller = /(?:_mint|\.mint)\s*\(\s*(?:payable\s*\(\s*)?(?:msg\.sender|_msgSender\s*\(\s*\))/.test(clean);
+  return paysCaller && amountKeyedToCaller && !mintsToCaller;
+}
 
 /** Governance functions that execute a decision. */
 const GOV_EXECUTE = /(?:execute|commit|queue|proposeAndExecute|emergencyCommit|runProposal|apply)/i;
@@ -2179,7 +2211,8 @@ function scanHistoricalFn(
     BRIDGE_HANDLER.test(fn.name) &&
     BRIDGE_EFFECT.test(clean) &&
     !BRIDGE_VERIFICATION.test(clean) &&
-    !authed
+    !authed &&
+    !payoutIsSelfService(clean)
   ) {
     push(make({
       severity: "critical",
