@@ -104,3 +104,77 @@ export function withAccessControlCap(finding: Finding, authed: boolean): Finding
     summary: finding.summary + CALIBRATION_NOTE_AUTHED,
   };
 }
+
+/**
+ * Gate 4: a proxy shell's own mechanism is not a finding.
+ *
+ * Measured 2026-10-28 on 0xDD9BC35aE942eF0cFa76930954a156B3fF30a4E1 — a verified,
+ * 27-line OpenZeppelin ERC1967Proxy whose entire source is a constructor and an
+ * internal `_implementation()` view. The archive recorded 29 criticals against it:
+ * 17 `delegatecall`, 6 `arbitrary-dispatch-call`, 5 `selfdestruct`, 1
+ * `unprotected-admin`. Five of those are impossible — that contract contains no
+ * selfdestruct at all — so the row was stale, but the 17 delegatecalls are not: a
+ * proxy delegates every call by design, and its upgrade guard lives in the
+ * implementation, at a different address, which no single-contract scan can see.
+ *
+ * Across a 24-contract sample, five such rows carried 145 of 171 criticals. A rule
+ * that fires on the mechanism makes the severity column useless.
+ *
+ * So: when the source is a proxy shell, findings that describe the shell's own
+ * delegation are informational, and findings about the upgrade guard are capped at
+ * medium until the implementation is examined. The note says which, so the
+ * downgrade is visible rather than silent. The implementation is queued as its own
+ * scan by the worker, which is where those guards are actually checkable.
+ *
+ * Deliberately conservative: a `delegatecall` in ordinary business logic, with no
+ * fallback and no `_implementation` accessor, is left alone.
+ */
+
+/** Detectors that describe a proxy's delegation rather than a defect. */
+const PROXY_MECHANISM_DETECTORS = new Set(["delegatecall", "arbitrary-dispatch-call"]);
+
+/** Detectors whose guard normally lives in the implementation, not the shell. */
+const PROXY_GUARD_DETECTORS = new Set(["unprotected-admin", "unprotected-upgrade"]);
+
+export const CALIBRATION_NOTE_PROXY_MECHANISM =
+  "\n\n[Calibrated: critical → info — this is the proxy's own delegation mechanism. A proxy forwards every call by design; the finding describes the pattern, not a defect in it.]";
+
+export const CALIBRATION_NOTE_PROXY_GUARD =
+  "\n\n[Calibrated: critical → medium — this is a proxy shell, so the upgrade/admin guard normally lives in the implementation contract at a different address, which a single-contract scan cannot see. Verify against the implementation, which is scanned separately.]";
+
+/**
+ * Is this source a proxy shell?
+ *
+ * True when it delegates from a fallback (or a `_delegate`/`_fallback` helper) AND
+ * exposes an implementation accessor, which together are the proxy pattern rather
+ * than ordinary delegatecall use. A shell that also contains `selfdestruct` is not
+ * treated as one: that is a different contract with real behaviour.
+ */
+export function looksLikeProxyShell(source: string): boolean {
+  if (!source || !/delegatecall/i.test(source)) return false;
+  if (/selfdestruct\s*\(/i.test(source)) return false;
+
+  const hasFallbackDelegation =
+    /function\s+(fallback|receive|_fallback|_delegate)\s*\(/i.test(source) ||
+    /\bfallback\s*\(\s*\)\s*external/i.test(source) ||
+    /\breceive\s*\(\s*\)\s*external/i.test(source);
+  const hasImplementationAccessor =
+    /function\s+(_implementation|_getImplementation|getImplementation|implementation|_logic)\s*\(/i.test(source) ||
+    /360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc/i.test(source); // EIP-1967 slot
+
+  return hasFallbackDelegation && hasImplementationAccessor;
+}
+
+/** Gate 4: apply the proxy-shell calibration. */
+export function calibrateProxyShell(findings: Finding[], source: string): Finding[] {
+  if (!looksLikeProxyShell(source)) return findings;
+  return findings.map((f) => {
+    if (PROXY_MECHANISM_DETECTORS.has(f.detector)) {
+      return { ...f, severity: "info", summary: f.summary + CALIBRATION_NOTE_PROXY_MECHANISM };
+    }
+    if (PROXY_GUARD_DETECTORS.has(f.detector) && f.severity === "critical") {
+      return { ...f, severity: "medium", summary: f.summary + CALIBRATION_NOTE_PROXY_GUARD };
+    }
+    return f;
+  });
+}

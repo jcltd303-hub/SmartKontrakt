@@ -1,7 +1,7 @@
 import { analyzeBytecode, looksLikeBytecode } from "./bytecode.ts";
 import { detectSource } from "./detect.ts";
 import { parseSource, type SourceModel } from "./model.ts";
-import { calibrateFindings } from "./severity-calibration.ts";
+import { calibrateFindings, calibrateProxyShell } from "./severity-calibration.ts";
 import { riskScore } from "./risk.ts";
 import type { Finding, Inventory, Report } from "./types.ts";
 
@@ -118,8 +118,11 @@ export function analyzeInput(body: string, label: string, onlyContract?: string 
     opts?.deployedName ?? null,
     opts?.selectMainContract ?? false,
   );
-  const findings = calibrateFindings(
-    model.contracts.length ? detectSource(model, text, mainContract ?? onlyContract) : regexFallback(text),
+  const findings = calibrateProxyShell(
+    calibrateFindings(
+      model.contracts.length ? detectSource(model, text, mainContract ?? onlyContract) : regexFallback(text),
+    ),
+    text,
   );
   const names = model.contracts.map((c) => c.name);
   const notes = [
