@@ -454,6 +454,20 @@ function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel, sk
   if (/_checkOwner\s*\(|_requireOwner\s*\(|onlyOwner\s*\(/.test(src)) return true;
   if (/msg\.sender\s*==\s*[A-Za-z_]/.test(src) && !/tx\.origin/.test(src)) return true;
   if (/require\s*\(\s*msg\.sender\s*==/.test(src)) return true;
+  // Fixed-caller gate written as an early abort rather than an equality check:
+  //   if (msg.sender != GATEWAY) { revert Unauthorized(); }
+  // This is the Snowbridge Agent's only guard (0xd803472c…46a8, 1,068 ETH), and the
+  // doctrine above already credits "fixed-caller gates" — but only the `==` order was
+  // matched, so `authed` was false and arbitrary-dispatch-call reported it critical on
+  // a function an external attacker cannot call. Either operand order, and the abort
+  // must actually abort (revert / throw / a braced block that reverts).
+  if (
+    !/tx\.origin/.test(src) &&
+    (/if\s*\(\s*msg\.sender\s*!=\s*[A-Za-z_][\w.]*\s*\)\s*(?:\{|revert|throw)/.test(src) ||
+      /if\s*\(\s*[A-Za-z_][\w.]*\s*!=\s*msg\.sender\s*\)\s*(?:\{|revert|throw)/.test(src))
+  ) {
+    return true;
+  }
   // Per-asset ownership: items[_itemId].owner == msg.sender or
   // ownerOf(_itemId) == msg.sender. The asset's owner is the only party
   // who may act on that asset — ERC-721 approve and marketplace
@@ -2184,13 +2198,22 @@ function scanHistoricalFn(
     new RegExp(`require\\s*\\(\\s*(${paramNames.map((n) => escapeRegExp(n)).join("|") || "\\b"})\\s*==`).test(clean);
   if (external && takesAddress && takesBytes && dispatches && !constrained) {
     const delegates = paramNames.some((n) => new RegExp(`\\b${escapeRegExp(n)}\\s*\\.\\s*delegatecall`).test(clean));
+    // A PROVEN guard caps the finding, per the standing guard-credit rule — it does
+    // not erase it. Measured 2026-10-28 on Snowfork's Snowbridge Agent
+    // (0xd803472c…46a8, 1,068 ETH): `invoke(address executor, bytes data)` guards with
+    // `if (msg.sender != GATEWAY) revert Unauthorized();` and GATEWAY is immutable, so
+    // an external attacker cannot reach it — yet it was reported critical, because this
+    // rule never consulted `authed` (unlike bridge-message-auth, which does). The lead
+    // is still worth stating: the authorised gateway forwards (executor, data), and if
+    // it forwards user-supplied values this IS the Poly shape.
+    const guarded = authed;
     push(make({
-      severity: delegates ? "critical" : "high",
+      severity: delegates && !guarded ? "critical" : "high",
       swc: "SWC-105",
       title: `${fn.name} executes a caller-supplied call target and calldata`,
       confidence: "high",
       detector: "arbitrary-dispatch-call",
-      summary: `The function takes a target address and a calldata blob from its caller and executes them${delegates ? " with delegatecall, in this contract's own storage" : ""}. Whoever controls the arguments controls what this contract does — and anything that trusts this contract by address inherits that control. This is the Poly Network shape (August 2021, $611M): the cross-chain manager executed a user-supplied _method on a user-supplied contract, the attacker brute-forced a 4-byte selector to reach the keeper-update function, and the bridge's own authority did the rest. Beanstalk's proposal executor is the same door from the governance side.`,
+      summary: `The function takes a target address and a calldata blob from its caller and executes them${delegates ? " with delegatecall, in this contract's own storage" : ""}.${guarded ? "\n\n[Capped: high — the function is access-controlled, so an external attacker cannot reach this path directly. Verify that the authorised caller does not forward user-supplied target and calldata: if it does, this is the Poly shape and the guard is on the wrong side of the door.]" : ""} Whoever controls the arguments controls what this contract does — and anything that trusts this contract by address inherits that control. This is the Poly Network shape (August 2021, $611M): the cross-chain manager executed a user-supplied _method on a user-supplied contract, the attacker brute-forced a 4-byte selector to reach the keeper-update function, and the bridge's own authority did the rest. Beanstalk's proposal executor is the same door from the governance side.`,
       walkthrough: `1. ${fn.name} is externally callable and forwards a caller-supplied target and payload.\n2. The caller therefore chooses both the code that runs and the context it runs in.\n3. Any privileged function this contract can reach becomes reachable by the caller — including governance state (Poly) or an arbitrary delegatecall (Beanstalk).\n4. Allowlist the target and the selector, or remove the free-form dispatch entirely: a bridge should forward mint/unlock on a fixed contract, not arbitrary calls.`,
       exploitSolidity: `// The attacker supplies BOTH the target and the selector.\nbytes memory payload = abi.encodeWithSelector(PRIVILEGED_SELECTOR, attackerKey);\nIVictim(target).${fn.name}(address(privilegedContract), payload);`,
       remediationSolidity: `mapping(address => bool) public allowedTarget;\nfunction ${fn.name}(address target, bytes calldata data) external {\n    require(allowedTarget[target], "target not allowed");\n    (bool ok,) = target.call(data);\n    require(ok, "dispatch failed");\n}`,
