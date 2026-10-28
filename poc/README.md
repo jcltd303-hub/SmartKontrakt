@@ -82,6 +82,37 @@ at the **tip** returns HTTP 500 "Internal server error" while a window two block
 back is fine, so the walk stops two blocks short of the head. Those two blocks are
 not indexed yet; for a historical audit they cost nothing.
 
+## refund-only.sh — the house's edge is unenforceable
+
+`placeBet` and `refundBet` only. `settleBet` appears as the house's *defence*, never as
+part of the attack.
+
+```bash
+CASINO_SRC=/path/to/BlockChainCasino.sol ./poc/refund-only.sh
+```
+
+Two identical 1 ETH bets on a mock that always pays 2×:
+
+| branch | action | house free bankroll |
+| --- | --- | --- |
+| A (control) | settled at N+1 | drops 0.979 ETH |
+| B (attack) | left alone, refunded at N+251 | **unchanged** |
+
+Free bankroll is `balance − jackpotSize − lockedInBets`, so it measures what the house
+can actually spend. The script asserts: settling costs the house, refunding leaves it
+exactly where it started, the casino balance returns to its pre-bet level, `refundBet`
+reverts at N+250, `settleBet` reverts at N+251 even holding the reveal and the block
+hash, and a second `refundBet` reverts.
+
+The claim it supports: the house collects **only** what it settles inside 250 blocks.
+A missed settlement is unrecoverable, and `refundBet` pays `totalAmount` — the stake
+including the 1% edge and the jackpot fee — so on a refunded bet the house earns
+nothing and the gambler breaks exactly even. Eleven reverted `settleBet` calls on
+0x6eb0…5f0be are eleven missed defences.
+
+> Untested here: no anvil in this sandbox. Written and syntax-checked only; the
+> assertions exit non-zero with the step name on any surprise.
+
 ## leak-check.mjs — did a failed settle publish a live reveal?
 
 A reverted transaction still publishes its calldata, and `settleBet(reveal, blockHash)`
