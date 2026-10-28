@@ -1,4 +1,5 @@
 import type { Sql } from "../sql-client.ts";
+import { codeHashOf } from "./code-reuse.server.ts";
 import type { ComprehensiveRecordInput } from "./persist.server.ts";
 import { analyzerStamp } from "./analyzer-version.ts";
 import { buildReportRagChunks } from "./rag-chunks.ts";
@@ -58,6 +59,10 @@ export async function writeAuditBatch(
       ai_review_json: r.aiReview ? JSON.stringify(r.aiReview) : null,
       triage_states_json: r.triageStates ? JSON.stringify(r.triageStates) : null,
       cert_hash: r.certHash ?? null, source_origin: r.sourceOrigin ?? "pipeline",
+      // Identical runtime code is analysed once (migration 0022). Null when the scan
+      // never had bytecode — a source-only paste, or a failed fetch — so a row never
+      // pretends to be dedupeable when it is not.
+      code_hash: codeHashOf(r.report.runtimeBytecode?.code ?? null),
       // RAG eliminated 2026-10-21 (storage): new saves are never RAG-indexed.
       risk_score: r.report.riskScore,
       critical_count: counts.critical, high_count: counts.high, medium_count: counts.medium,
@@ -127,7 +132,7 @@ export async function writeAuditBatch(
         source_origin, risk_score, critical_count, high_count, medium_count,
         low_count, info_count, summary, inventory_json, ai_narrative, ai_status, unparsed,
         balance_wei, value_usd, value_json, abi_json, abi_source, analyzer_version,
-        poc_status, poc_logs, poc_duration_ms, poc_run_at, resnet_json
+        poc_status, poc_logs, poc_duration_ms, poc_run_at, resnet_json, code_hash
       ) select * from jsonb_to_recordset($1::jsonb) as r(
         id text, label text, input_kind text, contract_name text, target_address text,
         chain_id text, compiler_version text, proxy_info_json text, probes_json text,
@@ -138,7 +143,7 @@ export async function writeAuditBatch(
         balance_wei text, value_usd numeric, value_json text, abi_json text, abi_source text,
         analyzer_version text,
         poc_status text, poc_logs text, poc_duration_ms integer, poc_run_at timestamptz,
-        resnet_json text
+        resnet_json text, code_hash text
       ) on conflict (id) do update set
         label=excluded.label, input_kind=excluded.input_kind, contract_name=excluded.contract_name,
         target_address=excluded.target_address, chain_id=excluded.chain_id,
@@ -161,7 +166,7 @@ export async function writeAuditBatch(
         poc_logs=coalesce(excluded.poc_logs, contract_scans.poc_logs),
         poc_duration_ms=coalesce(excluded.poc_duration_ms, contract_scans.poc_duration_ms),
         poc_run_at=coalesce(excluded.poc_run_at, contract_scans.poc_run_at),
-        resnet_json=excluded.resnet_json`, [JSON.stringify(scans)]);
+        resnet_json=excluded.resnet_json, code_hash=excluded.code_hash`, [JSON.stringify(scans)]);
     await tx.query(`insert into scan_payloads (scan_id, body)
       select scan_id, body from jsonb_to_recordset($1::jsonb) as r(scan_id text, body text)
       on conflict (scan_id) do update set body=excluded.body`,
