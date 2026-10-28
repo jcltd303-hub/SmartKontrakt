@@ -102,6 +102,32 @@ served a 26,262,495-block window on a narrow filter in 305 ms, keyless.
 Needs `node >= 18`; `js-sha3` is already a repo dependency (`npm ci`). Read-only:
 nothing is signed or sent. Output JSON lands in `poc/out/`.
 
+### Measuring the settled outcomes (`--outcomes`)
+
+Expiry alone does not tell you whether the operator declined a winner. This does:
+
+```bash
+SOURCE=rpc RPC_URL=https://api.blockscout.com/1/json-rpc \
+RPC_HEADERS="Authorization: Bearer $BS_TOKEN" \
+./poc/run-refund-option.sh 0x6eb0…5f0be --outcomes
+```
+
+For each settled bet it recomputes the game result instead of inferring it:
+`blockhash(placeBlockNumber)` is the block's own hash, so
+`entropy = keccak256(reveal ‖ blockHash)` is reproducible off-chain, and
+`gameAddress(gameId).game(mask, modulo, entropy, amount − edge − fee)` returns the
+win as a view call. It also **self-checks**: the recomputed total must equal the
+`totalWin` the `Game` event reported. A mismatch means the derivation is wrong and
+nothing downstream should be believed — that is printed, not swallowed.
+
+Output:
+
+| Line | Meaning |
+| --- | --- |
+| `gambler won` / `gambler lost` | across settled bets, recomputed |
+| `self-check N/M` | recomputed totals that match the event |
+| `mismatches` | bets where they did not, with both numbers |
+
 ### Reading the output
 
 | Line | Meaning |

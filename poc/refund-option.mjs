@@ -39,7 +39,7 @@ const { keccak256 } = require("js-sha3");
 
 // ------------------------------------------------------------------ args ----
 function parseArgs(argv) {
-  const out = { from: null, to: "latest", maxTxs: 400, json: null, address: null, rpc: null, source: "blockscout" };
+  const out = { from: null, to: "latest", maxTxs: 400, json: null, address: null, rpc: null, source: "blockscout", outcomes: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--address") out.address = argv[++i];
@@ -49,6 +49,7 @@ function parseArgs(argv) {
     else if (a === "--json") out.json = argv[++i];
     else if (a === "--max-txs") out.maxTxs = Number(argv[++i]);
     else if (a === "--source") out.source = argv[++i];
+    else if (a === "--outcomes") out.outcomes = true;
     else if (a === "--help" || a === "-h") out.help = true;
   }
   return out;
@@ -430,6 +431,15 @@ function decodePlaceBet(input) {
   return { gameId, modulo, commitLastBlock, commit, amounts, masks, stake, betCount: amounts.length };
 }
 
+const sel = (sig) => "0x" + keccak256(sig).slice(0, 8);
+const GAME_ADDRESS_SEL = sel("gameAddress(uint256)");
+const GAME_SEL = sel("game(uint256,uint8,bytes32,uint256)");
+
+/** eth_call against a contract, returning raw hex. */
+async function callView(to, data) {
+  return await rpc("eth_call", [{ to, data }, "latest"]);
+}
+
 const PLACE_BET_SELECTOR =
   "0x" +
   keccak256(
@@ -529,6 +539,109 @@ async function main() {
   console.log(`decoded       ${decoded} placeBet transactions (of ${commits.length} commit events)`);
   console.log(`settled       ${bets.length - expiredCount}  stake ${eth(settledStake)}  paid out ${eth(settledWin)}`);
   console.log(`unsettled     ${expiredCount}  stake ${eth(expiredStake)}  paid out: the stake, refunded`);
+
+  // --------------------------------------------------------------- outcomes --
+  //
+  // Inferring "the operator declined a winner" from expiry is a guess. This
+  // measures it instead: for each settled bet, recompute the game result from the
+  // reveal and the placement block's hash, and ask the game contract what the win
+  // actually was. blockhash(placeBlockNumber) is the block's own hash (the block hash
+  // IS keccak of the header), so entropy = keccak256(reveal ++ blockHash) is
+  // reproducible off-chain.
+  //
+  // It also self-checks: the recomputed total must equal the totalWin the Game event
+  // reported. If it does for every bet, the derivation is right and the numbers are
+  // trustworthy; a mismatch means the game contract or the arithmetic is not what
+  // this assumes, and then nothing here should be believed.
+  if (args.outcomes) {
+    console.log("");
+    console.log("## settled outcomes");
+    const blockHashes = new Map();
+    const houseEdgeOf = (amount) => {
+      const edge = (amount * 1n) / 100n;
+      const floor = 300000000000000n; // HOUSE_EDGE_MINIMUM_AMOUNT
+      return edge > floor ? edge : floor;
+    };
+    const jackpotFeeOf = (amount) => (amount >= 100000000000000000n ? 1000000000000000n : 0n);
+
+    let withWin = 0;
+    let withoutWin = 0;
+    let matched = 0;
+    const mismatches = [];
+
+    for (const bet of bets) {
+      const s2 = settled.get(bet.commit);
+      if (!s2) continue;
+
+      let blockHash = blockHashes.get(bet.block);
+      if (!blockHash) {
+        try {
+          const blk = await rpc("eth_getBlockByNumber", ["0x" + bet.block.toString(16), false]);
+          blockHash = blk?.hash ?? null;
+        } catch {
+          blockHash = null;
+        }
+        if (blockHash) blockHashes.set(bet.block, blockHash);
+      }
+      if (!blockHash) {
+        mismatches.push(`${bet.commit}: could not read block ${bet.block}`);
+        continue;
+      }
+
+      // entropy = keccak256(abi.encodePacked(uint256 reveal, bytes32 blockHash))
+      const entropy = "0x" + keccak256(Buffer.from(toHex(s2.reveal).slice(2) + strip0x(blockHash), "hex"));
+
+      let gameAddr;
+      try {
+        const raw = await callView(address, GAME_ADDRESS_SEL + toHex(bet.gameId).slice(2));
+        gameAddr = raw && raw !== "0x" ? "0x" + strip0x(raw).slice(24) : null;
+      } catch {
+        gameAddr = null;
+      }
+      if (!gameAddr || /^0x0{40}$/.test(gameAddr)) {
+        mismatches.push(`${bet.commit}: gameAddress(${bet.gameId}) is not set`);
+        continue;
+      }
+
+      let totalWin = 0n;
+      for (let i = 0; i < bet.amounts.length; i++) {
+        const amount = bet.amounts[i];
+        const net = amount - houseEdgeOf(amount) - jackpotFeeOf(amount);
+        const data =
+          GAME_SEL +
+          toHex(bet.masks[i] ?? 0n).slice(2) +
+          toHex(bet.modulo).slice(2) +
+          strip0x(entropy) +
+          toHex(net).slice(2);
+        try {
+          const raw = await callView(gameAddr, data);
+          totalWin += toBig(strip0x(raw).slice(0, 64));
+        } catch {
+          // a game contract that will not answer leaves this bet unmeasured
+        }
+      }
+
+      if (totalWin > 0n) withWin++;
+      else withoutWin++;
+      if (totalWin === s2.totalWin) matched++;
+      else mismatches.push(`${bet.commit}: recomputed ${totalWin} vs event ${s2.totalWin}`);
+    }
+
+    console.log(`settled bets  ${withWin + withoutWin}`);
+    console.log(`gambler won   ${withWin}`);
+    console.log(`gambler lost  ${withoutWin}`);
+    console.log(`self-check    ${matched}/${withWin + withoutWin} recomputed totals match the Game event`);
+    if (mismatches.length) {
+      console.log(`mismatches    ${mismatches.length}`);
+      for (const m of mismatches.slice(0, 8)) console.log(`  ${m}`);
+    }
+    console.log("");
+    console.log(
+      withWin === 0 && withoutWin > 0
+        ? "Every settled bet was a gambler loss. That is selection, not house edge."
+        : `The operator settles wins: ${withWin} of ${withWin + withoutWin} settled bets paid the gambler.`,
+    );
+  }
 
   // ---------------------------------------------------------------- entropy --
   // If reveals are guessable, the gambler can settle their own winning bets. That

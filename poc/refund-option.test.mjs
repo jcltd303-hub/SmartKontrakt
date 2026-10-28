@@ -26,6 +26,9 @@ const commitOf = (reveal) => keccak256(Buffer.from(word(reveal), "hex"));
 const SELECTOR = "0x" + keccak256("placeBet(uint8,uint256[],uint256[],uint8,uint256,uint256,uint8,bytes32,bytes32)").slice(0, 8);
 const T_COMMIT = "0x" + keccak256("Commit(uint256)");
 const T_GAME = "0x" + keccak256("Game(uint256,uint256[10],uint256,uint256)");
+const sel = (sig) => "0x" + keccak256(sig).slice(0, 8);
+const GAME_ADDRESS_SEL = sel("gameAddress(uint256)");
+const GAME_SEL = sel("game(uint256,uint8,bytes32,uint256)");
 
 /** placeBet calldata for one bet. */
 function placeBetCalldata({ gameId = 0, mask = [7], amount = [10n ** 16n], modulo = 6, commitLastBlock = 99999999, commit }) {
@@ -324,6 +327,94 @@ test("a 500 at the tip is retried two blocks short, not treated as a failure", a
       "--rpc", `http://127.0.0.1:${port}`, "--from", "0",
     ]);
     assert.match(stdout, /commit events 1/, "the run survived the lagging tip");
+  } finally {
+    server.close();
+  }
+});
+
+test("--outcomes recomputes each settled result and self-checks against the event", async () => {
+  // The decisive measurement: was the gambler's win actually zero on every settled
+  // bet, or does the operator pay wins? Recomputed from reveal + block hash, and
+  // compared against the totalWin the Game event reported.
+  const ADDRESS = "0x6eb0e558140025cb740f99979613a0876685f0be";
+  const GAME_ADDR = "0x00000000000000000000000000000000000000aa";
+  const REVEAL = 12345678901234567890n;
+  const commit = "0x" + commitOf(REVEAL);
+  const PLACE_BLOCK = 0x2bc; // 700
+  const BLOCK_HASH = "0x" + "11".repeat(32);
+  const WIN = 10n ** 16n; // 0.01 ETH win
+
+  const entropy = "0x" + keccak256(Buffer.from(word(REVEAL).slice(0, 64) + BLOCK_HASH.slice(2), "hex"));
+  const server = await serve({
+    eth_blockNumber: () => "0x1000",
+    eth_getCode: () => "0x6080",
+    eth_getBlockByNumber: (params) => (Number(params[0]) === PLACE_BLOCK ? { hash: BLOCK_HASH } : null),
+    eth_getLogs: (params) => {
+      const t = params[0].topics[0];
+      if (t === T_COMMIT) return [{ blockNumber: "0x" + PLACE_BLOCK.toString(16), transactionHash: "0xaa", topics: [T_COMMIT], data: "0x" + commit.slice(2) }];
+      if (t === T_GAME) return [{ blockNumber: "0x2bd", transactionHash: "0xcc", topics: [T_GAME], data: gameLogData(REVEAL, WIN, 0n) }];
+      return [];
+    },
+    eth_getTransactionByHash: () => ({ input: placeBetCalldata({ commit: commit.slice(2), amount: [10n ** 16n] }) }),
+    eth_call: (params) => {
+      const data = params[0].data;
+      if (data.startsWith(GAME_ADDRESS_SEL)) return "0x" + "0".repeat(24) + GAME_ADDR.slice(2);
+      if (data.startsWith(GAME_SEL)) {
+        // The entropy the script derived must be the one the contract used.
+        // data = selector(4) + mask(32) + modulo(32) + entropy(32) + net(32)
+        assert.equal("0x" + data.slice(10 + 128, 10 + 192), entropy, "entropy derivation");
+        return "0x" + word(WIN) + "0".repeat(64 * 10);
+      }
+      throw new Error("unexpected call");
+    },
+  });
+  const port = server.address().port;
+  try {
+    const { stdout } = await run(process.execPath, [
+      "poc/refund-option.mjs", "--address", ADDRESS, "--source", "rpc",
+      "--rpc", `http://127.0.0.1:${port}`, "--from", "0", "--outcomes",
+    ]);
+    assert.match(stdout, /gambler won\s+1/);
+    assert.match(stdout, /gambler lost\s+0/);
+    assert.match(stdout, /self-check\s+1\/1 recomputed totals match/);
+    assert.match(stdout, /settles wins: 1 of 1/);
+  } finally {
+    server.close();
+  }
+});
+
+test("a mismatch between recomputed and reported totals is surfaced, not hidden", async () => {
+  const ADDRESS = "0x6eb0e558140025cb740f99979613a0876685f0be";
+  const GAME_ADDR = "0x00000000000000000000000000000000000000aa";
+  const REVEAL = 987654321n;
+  const commit = "0x" + commitOf(REVEAL);
+  const BLOCK_HASH = "0x" + "22".repeat(32);
+  const server = await serve({
+    eth_blockNumber: () => "0x1000",
+    eth_getCode: () => "0x6080",
+    eth_getBlockByNumber: () => ({ hash: BLOCK_HASH }),
+    eth_getLogs: (params) => {
+      const t = params[0].topics[0];
+      if (t === T_COMMIT) return [{ blockNumber: "0x2bc", transactionHash: "0xaa", topics: [T_COMMIT], data: "0x" + commit.slice(2) }];
+      // the event claims 0.05 ETH, the recomputation will say 0.01
+      if (t === T_GAME) return [{ blockNumber: "0x2bd", transactionHash: "0xcc", topics: [T_GAME], data: gameLogData(REVEAL, 5n * 10n ** 16n, 0n) }];
+      return [];
+    },
+    eth_getTransactionByHash: () => ({ input: placeBetCalldata({ commit: commit.slice(2), amount: [10n ** 16n] }) }),
+    eth_call: (params) =>
+      params[0].data.startsWith(GAME_ADDRESS_SEL)
+        ? "0x" + "0".repeat(24) + GAME_ADDR.slice(2)
+        : "0x" + word(10n ** 16n) + "0".repeat(640),
+  });
+  const port = server.address().port;
+  try {
+    const { stdout } = await run(process.execPath, [
+      "poc/refund-option.mjs", "--address", ADDRESS, "--source", "rpc",
+      "--rpc", `http://127.0.0.1:${port}`, "--from", "0", "--outcomes",
+    ]);
+    assert.match(stdout, /mismatches\s+1/);
+    assert.match(stdout, /recomputed 10000000000000000 vs event 50000000000000000/);
+    assert.match(stdout, /self-check\s+0\/1/);
   } finally {
     server.close();
   }
