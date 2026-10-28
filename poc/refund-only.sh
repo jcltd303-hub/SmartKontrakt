@@ -96,15 +96,34 @@ place_bet() {
   reveal_word=$(printf '0x%064x' "$reveal")
   commit=$(cast keccak "$reveal_word")
   last_block=$(( $(cast block-number --rpc-url "$RPC") + 100 ))
-  digest=$(cast keccak "$(printf '0x%064x' "$last_block")${commit#0x}")
+  # abi.encodePacked(uint40 commitLastBlock, uint256 commit) is 5 + 32 = 37 bytes.
+  # Padding commitLastBlock to a 32-byte word (as I first did) hashes a different
+  # message and every signature fails ecrecover with "ECDSA signature is not valid".
+  digest=$(cast keccak "$(printf '0x%010x' "$last_block")${commit#0x}")
   sig=$(cast wallet sign --no-hash --private-key "$SIGNER_KEY" "$digest"); sig=${sig#0x}
   r=0x${sig:0:64}; s=0x${sig:64:64}; v=$(cast to-dec 0x${sig:128:2})
   [ "$v" -ge 27 ] || v=$(( v + 27 ))
+  # `|| return 1`: without it the trailing echo makes the function succeed even when
+  # cast send failed, and the run continues against a bet that was never placed.
   cast send --rpc-url "$RPC" --private-key "$OWNER_KEY" "$CASINO" \
     "placeBet(uint8,uint256[],uint256[],uint8,uint256,uint256,uint8,bytes32,bytes32)" \
     0 "[1]" "[1000000000000000000]" 2 "$last_block" "$commit" "$v" "$r" "$s" \
-    --value 1ether >/dev/null
+    --value 1ether >/dev/null || return 1
   echo "$commit"
+}
+
+# Confirm the bet exists before relying on it. Without this, a failed placeBet shows up
+# much later as "Wrong blockHash" from settleBet, because bet.placeBlockNumber is 0.
+assert_bet_active() {
+  local commit=$1 label=$2
+  local n
+  n=$(cast call --rpc-url "$RPC" "$CASINO" \
+      "getBet(uint256)(uint256,uint256[],uint256,uint8,uint40,uint40[],uint8,address)" "$commit" \
+      2>/dev/null | head -1)
+  case "$n" in
+    ""|0) fail "$label: no bet exists for commit $commit — placeBet did not land" ;;
+  esac
+  echo "  bet active: $n leg(s)"
 }
 
 start_free=$(free_bankroll)
@@ -112,14 +131,15 @@ echo "  free bankroll before any bet: $(eth "$start_free") ETH"
 
 # ---------------------------------------------------------------- branch A ----
 step "branch A (control): settle at N+1"
-COMMIT_A=$(place_bet 111111)
+COMMIT_A=$(place_bet 111111) || fail "branch A: placeBet failed"
+assert_bet_active "$COMMIT_A" "branch A"
 PLACED_A=$(cast block-number --rpc-url "$RPC")
 HASH_A=$(cast block "$PLACED_A" --field hash --rpc-url "$RPC")
 after_place_free=$(free_bankroll)
 echo "  placed in block $PLACED_A; free bankroll now $(eth "$after_place_free") ETH"
 cast rpc --rpc-url "$RPC" anvil_mine 0x1 >/dev/null
-cast send --rpc-url "$RPC" --private-key "$OWNER_KEY" "$CASINO" \
-  "settleBet(uint256,bytes32)" 111111 "$HASH_A" >/dev/null
+settle_out=$(cast send --rpc-url "$RPC" --private-key "$OWNER_KEY" "$CASINO" \
+  "settleBet(uint256,bytes32)" 111111 "$HASH_A" 2>&1) || { echo "$settle_out" >&2; fail "settleBet failed in branch A"; }
 free_A=$(free_bankroll)
 gambler_A=$(wei "$(cast balance "$OWNER" --rpc-url "$RPC")")
 echo "  settled: free bankroll $(eth "$free_A") ETH"
@@ -135,7 +155,8 @@ step "branch B (attack): placeBet, then refundBet. No settleBet."
 base_B=$(free_bankroll)
 base_bal_B=$(wei "$(cast balance "$CASINO" --rpc-url "$RPC")")
 echo "  free bankroll before this bet: $(eth "$base_B") ETH"
-COMMIT_B=$(place_bet 222222)
+COMMIT_B=$(place_bet 222222) || fail "branch B: placeBet failed"
+assert_bet_active "$COMMIT_B" "branch B"
 PLACED_B=$(cast block-number --rpc-url "$RPC")
 HASH_B=$(cast block "$PLACED_B" --field hash --rpc-url "$RPC")
 free_before_B=$(free_bankroll)

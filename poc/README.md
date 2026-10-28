@@ -110,6 +110,18 @@ including the 1% edge and the jackpot fee — so on a refunded bet the house ear
 nothing and the gambler breaks exactly even. Eleven reverted `settleBet` calls on
 0x6eb0…5f0be are eleven missed defences.
 
+Two bugs this PoC had, both worth knowing if you write another one against this
+contract:
+
+- `abi.encodePacked(uint40 commitLastBlock, uint256 commit)` is **5 + 32 = 37 bytes**.
+  Padding `commitLastBlock` to a 32-byte word hashes a different message, and every
+  signature fails `ecrecover` with "ECDSA signature is not valid".
+- A shell function ending in `echo` returns success even when the command before it
+  failed. `cast send` failing inside `place_bet` was masked, the run continued against
+  a bet that was never created, and it surfaced later as "Wrong blockHash" — because
+  `bet.placeBlockNumber` was 0. The function now returns 1 on failure, and
+  `assert_bet_active` checks `getBet` before anything relies on the bet.
+
 > Untested here: no anvil in this sandbox. Written and syntax-checked only; the
 > assertions exit non-zero with the step name on any surprise.
 

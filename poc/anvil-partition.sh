@@ -111,8 +111,10 @@ REVEAL=12345678901234567890
 REVEAL_WORD=$(printf '0x%064x' "$REVEAL")
 COMMIT=$(cast keccak "$REVEAL_WORD")
 COMMIT_LAST_BLOCK=$(( $(cast block-number --rpc-url "$RPC") + 100 ))
-LAST_WORD=$(printf '0x%064x' "$COMMIT_LAST_BLOCK")
-DIGEST=$(cast keccak "${LAST_WORD}${COMMIT#0x}")
+# abi.encodePacked(uint40 commitLastBlock, uint256 commit) is 5 + 32 = 37 bytes.
+# A 32-byte word here hashes a different message and every signature fails ecrecover.
+LAST_PACKED=$(printf '0x%010x' "$COMMIT_LAST_BLOCK")
+DIGEST=$(cast keccak "${LAST_PACKED}${COMMIT#0x}")
 SIG=$(cast wallet sign --no-hash --private-key "$SIGNER_KEY" "$DIGEST")
 SIG=${SIG#0x}
 R=0x${SIG:0:64}
