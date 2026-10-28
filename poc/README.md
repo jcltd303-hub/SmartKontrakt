@@ -82,6 +82,35 @@ at the **tip** returns HTTP 500 "Internal server error" while a window two block
 back is fine, so the walk stops two blocks short of the head. Those two blocks are
 not indexed yet; for a historical audit they cost nothing.
 
+## leak-check.mjs — did a failed settle publish a live reveal?
+
+A reverted transaction still publishes its calldata, and `settleBet(reveal, blockHash)`
+carries the reveal in the clear. So a settlement that **fails** hands the preimage to
+anyone reading the chain. That is only a vulnerability if the bet was still inside its
+250-block window at that moment; a retry against an already-settled bet leaks nothing
+of value.
+
+```bash
+node poc/leak-check.mjs --address 0x6eb0…5f0be \
+  --rpc https://api.blockscout.com/1/json-rpc \
+  --headers "Authorization: Bearer $BS_TOKEN" \
+  --txs 0x38b8…,0x7c7c…,0x3fd2…
+```
+
+or `--txlist` to pull the failed transactions from the explorer itself.
+
+Each failed call is classified, not counted:
+
+| verdict | meaning |
+| --- | --- |
+| `never placed` | the reveal matches no bet — a typo, or a commit never placed |
+| `already processed` | `totalAmount == 0`: settled or refunded before this attempt |
+| `expired` | past `placeBlock + 250` when it failed |
+| **`LIVE`** | inside the window and still unprocessed — **the reveal leaked while the bet was claimable** |
+
+Only `LIVE` is a finding. The script says which case it found in plain words, so it
+cannot be quoted as the stronger claim when the answer is the weaker one.
+
 ## anvil-partition.sh — the settle/refund window, on a local chain
 
 Foundry only: `anvil`, `cast`, `forge`. No Node, no RPC keys, nothing live.
