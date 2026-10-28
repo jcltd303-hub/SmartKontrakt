@@ -82,6 +82,35 @@ at the **tip** returns HTTP 500 "Internal server error" while a window two block
 back is fine, so the walk stops two blocks short of the head. Those two blocks are
 not indexed yet; for a historical audit they cost nothing.
 
+## anvil-partition.sh — the settle/refund window, on a local chain
+
+Foundry only: `anvil`, `cast`, `forge`. No Node, no RPC keys, nothing live.
+
+```bash
+CASINO_SRC=/path/to/BlockChainCasino.sol ./poc/anvil-partition.sh
+```
+
+It deploys the casino and a `MockGame`, sets `secretSigner` to anvil's second key,
+signs a commit, places one 0.01 ETH bet, then walks the window and asserts:
+
+| block | expected |
+| --- | --- |
+| B+250 | `settleBet` **succeeds**, `refundBet` reverts "Blockhash can't be queried by EVM" |
+| B+251 | `settleBet` reverts with the same message, `refundBet` **succeeds** and pays `bet.totalAmount` |
+
+**What that proves:** after 250 blocks an unsettled bet can never be collected by the
+house — the settle path is closed permanently and the only terminal outcome is the
+stake going back to the gambler.
+
+**What it does not prove, and what is not true:** that a gambler can *force* that.
+`settleBet` has no access control and no caller check, so the operator settles its own
+wins inside the window whatever the gambler waits for. The window is a property of the
+code; who wins is a property of who holds the `reveal`.
+
+> Note: this script was written without an anvil available to run it against. Every
+> assertion is explicit and exits non-zero on a surprise, but treat the first run as a
+> test of the script itself. If a step fails, the message says which.
+
 ### Probe an endpoint before trusting it
 
 ```bash
