@@ -60,3 +60,18 @@ test("/status advertises the behaviours that changed observable output", () => {
   }
   assert.match(SRC, /features: FEATURES/, "and it is returned by /status");
 });
+
+test("the run loop tries code dedupe, and fails open when it cannot", () => {
+  // 2026-10-28: 1595 scans over 375 distinct bodies. The lookup must be attempted,
+  // must pass the body through, and must never be able to fail an item.
+  const src = readFileSync("pipeline-worker/worker.ts", "utf8");
+  assert.match(src, /findSiblingScan\(dedupeSql/, "the sibling lookup is wired");
+  assert.match(src, /codeHashOf\(code\)/, "the hash is computed from fetched bytecode");
+  assert.match(src, /bodyOverride/, "the override reaches analyzeAddress");
+  assert.match(
+    src,
+    /catch \{\s*\n\s*\/\/ no dedupe for this item; the normal path is unchanged/,
+    "the lookup is fail-open: a failure degrades to the normal path",
+  );
+  assert.match(src, /reused an earlier scan of identical code/, "the run summary reports reuse");
+});

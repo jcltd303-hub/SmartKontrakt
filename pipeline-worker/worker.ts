@@ -134,7 +134,9 @@ function databaseUrlProblem(value: string | undefined): string | null {
 }
 
 // ------------------------------------------------- lib imports (dynamic) ----
-const { analyzeAddress, parseAddressList, RpcUnavailableError } = await import("../src/lib/audit/address-fetcher.ts");
+const { analyzeAddress, parseAddressList, RpcUnavailableError, getRpcsForChain, fetchBytecodeRpc } = await import(
+  "../src/lib/audit/address-fetcher.ts",
+);
 const { detectProxyArchitecture } = await import("../src/lib/audit/proxy-resolver.ts");
 const { probeContractInterfaces } = await import("../src/lib/audit/simulator.ts");
 const { withRetry } = await import("../src/lib/audit/rate-limit.ts");
@@ -142,6 +144,7 @@ const { secondPass } = await import("../src/lib/audit/persist.server.ts");
 const { newLlmHealth, recordLlm, llmVerdict } = await import("./llm-health.ts");
 const { implementationItems, dedupeKey } = await import("./proxy-follow.ts");
 const { applyShard, parseShard } = await import("./shard.ts");
+const { codeHashOf, findSiblingScan } = await import("../src/lib/audit/code-reuse.server.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
 const { getSql, getDbConnectionState } = await import("../src/lib/db.ts");
@@ -402,6 +405,8 @@ async function runLoop(): Promise<void> {
   // Every (chain, address) the queue already holds, so a proxy implementation
   // discovered mid-run is not queued twice and a clone is not re-queued.
   const queuedKeys = new Set(ctx.items.map((i) => dedupeKey(i.chainId, i.address)));
+  /** Items whose body came from an earlier scan of identical code. */
+  let reusedFrom = 0;
   let dedupeSql: Awaited<ReturnType<typeof getSql>> | null = null;
   try {
     dedupeSql = await getSql();
@@ -476,12 +481,44 @@ async function runLoop(): Promise<void> {
         (reason: unknown) => ({ status: "rejected" as const, reason }),
       );
 
+      // Identical runtime code is analysed once (2026-10-28). The archive measured
+      // 1595 scans over 375 distinct bodies — 4.25 copies each, one body accounting
+      // for 341 of them. One eth_getCode plus a hash lookup decides whether the
+      // registry fetch and the source analysis can be skipped; the value, ABI and
+      // probes still run, because those describe THIS deployment.
+      //
+      // Fail-open throughout: any problem here degrades to the normal path, never
+      // to a skipped or failed item.
+      let bodyOverride: { body: string; inputKind: "source" | "bytecode" } | undefined;
+      if (dedupeSql) {
+        try {
+          const code = await fetchBytecodeRpc(item.address, getRpcsForChain(item.chainId));
+          const hash = codeHashOf(code);
+          if (hash) {
+            const sibling = await findSiblingScan(dedupeSql, item.chainId, hash, item.address);
+            if (sibling?.body) {
+              bodyOverride = {
+                body: sibling.body,
+                inputKind: /^0x[0-9a-fA-F]+$/.test(sibling.body.trim()) ? "bytecode" : "source",
+              };
+            }
+          }
+        } catch {
+          // no dedupe for this item; the normal path is unchanged
+        }
+      }
+
       // Analyze with retries: every queued address is a contract, so a
       // failure here is a transient provider hiccup, not a dead address.
       let result: Awaited<ReturnType<typeof analyzeAddress>>;
       try {
         result = await withRetry(
-          () => analyzeAddress(item.address, item.chainId, item.label, { fourbyte, resnetRunner: runResnetNode }),
+          () =>
+            analyzeAddress(item.address, item.chainId, item.label, {
+              fourbyte,
+              resnetRunner: runResnetNode,
+              ...(bodyOverride ? { bodyOverride } : {}),
+            }),
           {
             retries: 2,
             baseDelayMs: 2000,
@@ -681,6 +718,7 @@ async function runLoop(): Promise<void> {
       item.status = "completed";
       runSeen.add(itemKey);
       status.completed++;
+      if (bodyOverride) reusedFrom++;
       ctx.index++;
       if (status.completed % 100 === 0) {
         console.log(
@@ -728,7 +766,7 @@ async function runLoop(): Promise<void> {
       runCtx = null;
       status.state = "idle";
       console.log(
-        `[worker] run finished: ${status.completed} completed, ${status.failed} failed, ${status.skipped} skipped (${status.skippedDupes} in-run duplicates)`,
+        `[worker] run finished: ${status.completed} completed, ${status.failed} failed, ${status.skipped} skipped (${status.skippedDupes} in-run duplicates, ${reusedFrom} reused an earlier scan of identical code)`,
       );
     }
     pauseRequested = false;

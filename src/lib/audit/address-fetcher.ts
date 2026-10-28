@@ -668,7 +668,7 @@ export class RpcUnavailableError extends Error {
 /**
  * Fetch deployed runtime bytecode via eth_getCode over public EVM JSON-RPC
  */
-async function fetchBytecodeRpc(address: string, rpcUrls: string[]): Promise<string | null> {
+export async function fetchBytecodeRpc(address: string, rpcUrls: string[]): Promise<string | null> {
   // sawResult = at least one RPC answered with a usable result (even 0x).
   // Only then does "no bytecode" mean the address genuinely has no code.
   // If every RPC errored, the outage must surface as RpcUnavailableError.
@@ -742,6 +742,16 @@ export async function analyzeAddress(
      * audit is exactly the pre-ResNet one. Always fail-soft.
      */
     resnetRunner?: ResnetRunner;
+    /**
+     * Skip source/bytecode acquisition and analyse this body instead (2026-10-28).
+     *
+     * Supplied when the same runtime code has already been scanned on this chain: the
+     * archive measured 1595 scans over 375 distinct bodies, 4.25 copies each, one body
+     * accounting for 341 of them. Everything else still runs per address — value, ABI,
+     * probes, ResNet — because those describe THIS deployment even when the code is
+     * identical. Only the registry lookups and the bytecode read are skipped.
+     */
+    bodyOverride?: { body: string; inputKind: "source" | "bytecode" };
   },
 ): Promise<{ report: Report; rawBody: string; inputKind: "source" | "bytecode" }> {
   if (!isValidEvmAddress(address)) {
@@ -787,6 +797,31 @@ export async function analyzeAddress(
   // 1. Try verified source: Sourcify first, then Blockscout (C1). A single
   //    registry is not a verdict on an address — the engagement's 19-of-21
   //    "unverified" contracts were all verified on the second one.
+  // A sibling scan of identical code already fetched this body.
+  if (opts?.bodyOverride) {
+    const override = opts.bodyOverride;
+    const label = customLabel || `Reused (${address.slice(0, 6)}...)`;
+    const report = analyzeInput(override.body, label, null, {
+      selectMainContract: true,
+      deployedName: opts?.deployedName ?? null,
+    });
+    report.inputKind = override.inputKind;
+    report.inventory.notes = [
+      ...(report.inventory.notes ?? []),
+      "Body reused from an earlier scan of identical runtime code: registry lookups and the bytecode read were skipped, the analysis is local.",
+    ];
+    await attachValueAndAbi(report);
+    if (opts?.resnetRunner) {
+      try {
+        const screening = await opts.resnetRunner(override.body);
+        if (screening) report.resnet = screening;
+      } catch {
+        // fail-soft, exactly as the normal path
+      }
+    }
+    return { report, rawBody: override.body, inputKind: override.inputKind };
+  }
+
   const sourcifyMatch =
     (await fetchSourcifySource(address, chain.chainId)) ??
     (await fetchBlockscoutSource(address, chain.chainId));
