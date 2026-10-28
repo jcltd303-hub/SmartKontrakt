@@ -1,0 +1,15 @@
+# A separate forge root for the PoCs.
+#
+# Without this, `forge build` walks the repository and tries to compile
+# test/fixtures/**, which vendors exploit reproductions needing solc 0.4.9 through
+# 0.8.30 plus forge-std remappings this repo does not have — so the build fails with a
+# wall of "No compiler version exists that matches" before it ever reaches the PoC.
+#
+# `--root poc/forge` isolates it: one compiler, one src directory, nothing else.
+[profile.default]
+src = "src"
+out = "out"
+libs = []
+solc_version = "0.4.26"
+optimizer = true
+optimizer_runs = 200

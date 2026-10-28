@@ -51,17 +51,21 @@ echo "  signer $SIGNER"
 echo "  third $THIRD  (refunds branch B, unrelated to the bet)"
 
 step "build"
-CASINO_SRC=${CASINO_SRC:-poc/src/BlockChainCasino.sol}
-[ -f "$CASINO_SRC" ] || fail "set CASINO_SRC=/path/to/BlockChainCasino.sol"
-mkdir -p poc/src
-cp "$CASINO_SRC" poc/src/BlockChainCasino.sol
-forge build --use 0.4.26 --contracts poc/src >/dev/null || fail "forge build failed"
+CASINO_SRC=${CASINO_SRC:-poc/forge/src/BlockChainCasino.sol}
+[ -f "$CASINO_SRC" ] || fail "set CASINO_SRC=/path/to/BlockChainCasino.sol (the verified source)"
+# Own forge root: building from the repo root walks test/fixtures/**, which needs solc
+# 0.4.9-0.8.30 and forge-std remappings this repo does not have, and the build dies
+# before reaching the PoC.
+mkdir -p poc/forge/src
+cp "$CASINO_SRC" poc/forge/src/BlockChainCasino.sol
+cp poc/mocks/*.sol poc/forge/src/ 2>/dev/null || true
+forge build --root poc/forge >/dev/null || fail "forge build --root poc/forge failed"
 
 deploy() {
   local name=$1; shift
   local out
-  out=$(forge create --use 0.4.26 --broadcast --rpc-url "$RPC" --private-key "$OWNER_KEY" \
-        --contracts poc/src "$name" "$@" 2>&1) || { echo "$out" >&2; fail "deploy $name"; }
+  out=$(forge create --root poc/forge --broadcast --rpc-url "$RPC" --private-key "$OWNER_KEY" \
+        "$name" "$@" 2>&1) || { echo "$out" >&2; fail "deploy $name"; }
   echo "$out" | grep -oE 'Deployed to: 0x[a-fA-F0-9]{40}' | awk '{print $3}'
 }
 

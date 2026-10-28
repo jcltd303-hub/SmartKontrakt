@@ -151,7 +151,13 @@ the 401 in the first place.
 
 ## anvil-partition.sh — the settle/refund window, on a local chain
 
-Foundry only: `anvil`, `cast`, `forge`. No Node, no RPC keys, nothing live.
+Foundry only: `anvil`, `cast`, `forge`. No RPC keys, nothing live.
+
+Both scripts build from `poc/forge/`, which has its own `foundry.toml` pinning solc
+0.4.26. Building from the repo root walks `test/fixtures/**` — exploit reproductions
+that need solc 0.4.9 through 0.8.30 plus `forge-std` remappings this repo does not
+carry — and the build dies on a wall of "No compiler version exists that matches"
+before it reaches the PoC. `forge build --root poc/forge` keeps it isolated.
 
 ```bash
 CASINO_SRC=/path/to/BlockChainCasino.sol ./poc/anvil-partition.sh
