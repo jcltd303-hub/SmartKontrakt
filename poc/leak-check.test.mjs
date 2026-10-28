@@ -48,7 +48,9 @@ function serve(cases) {
       };
       if (method === "eth_getTransactionByHash") {
         const c = cases[params[0]];
-        return send(c ? { input: SETTLE_SEL + word(c.reveal) + word(0), blockNumber: "0x" + c.failedAt.toString(16) } : null);
+        if (!c) return send(null);
+        const input = c.otherSelector ? "0x12345678" + word(c.reveal) : SETTLE_SEL + word(c.reveal) + word(0);
+        return send({ input, blockNumber: "0x" + c.failedAt.toString(16) });
       }
       if (method === "eth_call") {
         const commit = "0x" + params[0].data.slice(10);
@@ -107,7 +109,7 @@ test("no live leak says so plainly, rather than implying an exploit", async () =
 });
 
 test("a tx that is not a settleBet is reported as such, not classified", async () => {
-  const server = await serve({});
+  const server = await serve({ "0xdead": { reveal: 1n, placeBlock: 0, failedAt: 1, totalAmount: 0n, otherSelector: true } });
   const port = server.address().port;
   try {
     const { stdout } = await run(process.execPath, [
@@ -118,4 +120,33 @@ test("a tx that is not a settleBet is reported as such, not classified", async (
   } finally {
     server.close();
   }
+});
+
+test("an unreadable transaction is INCONCLUSIVE, never 'no reveal leaked'", async () => {
+  // The exact failure that shipped: every eth_getTransactionByHash returned
+  // Unauthorized, and the summary said "No reveal leaked while a bet was live".
+  // A read that failed is not evidence of absence.
+  const server = await serve({}); // every lookup returns null -> classify errors
+  const port = server.address().port;
+  try {
+    const err = await run(process.execPath, [
+      "poc/leak-check.mjs", "--address", "0x6eb0e558140025cb740f99979613a0876685f0be",
+      "--rpc", `http://127.0.0.1:${port}`, "--txs", "0xaa,0xbb",
+    ]).then(() => null, (e) => e);
+    assert.ok(err, "must exit non-zero when it could not read");
+    const out = String(err.stdout ?? "");
+    assert.match(out, /INCONCLUSIVE: 2 of 2/);
+    assert.doesNotMatch(out, /No reveal leaked while a bet was live/);
+  } finally {
+    server.close();
+  }
+});
+
+test("a Bearer header with an empty token is caught before any request", async () => {
+  const err = await run(process.execPath, [
+    "poc/leak-check.mjs", "--address", "0x6eb0e558140025cb740f99979613a0876685f0be",
+    "--rpc", "http://127.0.0.1:1", "--txs", "0xaa", "--headers", "Authorization: Bearer ",
+  ]).then(() => null, (e) => e);
+  assert.ok(err, "must refuse to run");
+  assert.match(String(err.stderr ?? ""), /"Bearer" with no token/);
 });

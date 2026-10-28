@@ -60,6 +60,23 @@ const toBig = (hexWord) => BigInt("0x" + (hexWord || "0"));
 const toHexWord = (n) => BigInt(n).toString(16).padStart(64, "0");
 const commitOf = (reveal) => "0x" + keccak256(Buffer.from(toHexWord(reveal), "hex"));
 
+function checkToken() {
+  const raw = HEADERS ?? process.env.RPC_HEADERS ?? "";
+  for (const part of raw.split(",")) {
+    const i = part.indexOf(":");
+    if (i <= 0) continue;
+    const name = part.slice(0, i).trim().toLowerCase();
+    const value = part.slice(i + 1).trim();
+    if (name === "authorization" && /^bearer$/i.test(value)) {
+      console.error(
+        `the Authorization header is "Bearer" with no token — the variable it reads is empty.\n` +
+          `  export BS_TOKEN=… then re-run, or check that $BS_TOKEN is set in this shell.`,
+      );
+      process.exit(2);
+    }
+  }
+}
+
 function headers() {
   const out = { "content-type": "application/json" };
   for (const part of (HEADERS ?? process.env.RPC_HEADERS ?? "").split(",")) {
@@ -144,7 +161,11 @@ async function failedSettleTxs() {
 
 async function classify(txHash) {
   const tx = await rpc("eth_getTransactionByHash", [txHash]);
-  if (!tx || !tx.input || !tx.input.toLowerCase().startsWith(SETTLE_SEL)) {
+  // A hash that exists on chain but could not be fetched is a FAILED READ, not a
+  // transaction that is not a settlement. Collapsing the two is how "I could not
+  // look" turns into "I looked and found nothing".
+  if (!tx) return { tx: txHash, verdict: "error: transaction not found" };
+  if (!tx.input || !tx.input.toLowerCase().startsWith(SETTLE_SEL)) {
     return { tx: txHash, verdict: "not a settleBet" };
   }
   // Drop the 4-byte selector before indexing words: `word()` counts 32-byte slots
@@ -178,6 +199,7 @@ async function classify(txHash) {
 }
 
 async function main() {
+  checkToken();
   const txs = await failedSettleTxs();
   console.log(`contract      ${ADDRESS}`);
   console.log(`failed settle ${txs.length} transaction(s)`);
@@ -196,15 +218,25 @@ async function main() {
     if (r.commit) console.log(`  commit ${r.commit}  reveal ${r.reveal}  placed ${r.placeBlock}  failed ${r.failedAt}`);
   }
   const live = rows.filter((r) => r.verdict === "LIVE");
+  const errored = rows.filter((r) => String(r.verdict).startsWith("error"));
+  const classified = rows.length - errored.length;
   console.log("");
+  if (errored.length > 0) {
+    // This is the whole point of the tool: a read that failed is not evidence of
+    // absence. Saying "no reveal leaked" when nothing could be read is exactly the
+    // hollow-run failure this session has been fixing.
+    console.log(`INCONCLUSIVE: ${errored.length} of ${rows.length} transaction(s) could not be read.`);
+    console.log("Nothing can be concluded about those reveals. Fix the access problem and re-run.");
+    process.exit(1);
+  }
   if (live.length > 0) {
     console.log(`${live.length} settlement(s) FAILED WHILE THE BET WAS STILL LIVE.`);
     console.log("Those reveals were public and the bets were still settleable by anyone who read");
     console.log("the failed transaction — the operator's option, handed to the gambler.");
   } else {
-    console.log("No reveal leaked while a bet was live. Every failed settle was against a bet");
-    console.log("that was already processed, expired, or never placed — so those reveals were");
-    console.log("worthless and this is not an exploit path.");
+    console.log(`No reveal leaked while a bet was live (${classified}/${rows.length} classified).`);
+    console.log("Every failed settle was against a bet that was already processed, expired, or");
+    console.log("never placed — so those reveals were worthless and this is not an exploit path.");
   }
 }
 

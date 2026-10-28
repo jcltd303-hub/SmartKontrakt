@@ -111,6 +111,13 @@ Each failed call is classified, not counted:
 Only `LIVE` is a finding. The script says which case it found in plain words, so it
 cannot be quoted as the stronger claim when the answer is the weaker one.
 
+**A failed read is never reported as an absence.** If any transaction cannot be read,
+the run prints `INCONCLUSIVE: N of M` and exits non-zero — it does not say "no reveal
+leaked". The first version of this script did exactly that: every lookup returned
+`Unauthorized` and it announced a clean result. An empty `Authorization: Bearer` (the
+variable was unset) is caught before the first request, because that is what produced
+the 401 in the first place.
+
 ## anvil-partition.sh — the settle/refund window, on a local chain
 
 Foundry only: `anvil`, `cast`, `forge`. No Node, no RPC keys, nothing live.
