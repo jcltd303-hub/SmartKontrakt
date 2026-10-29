@@ -371,24 +371,24 @@ test("class D: a tuple-arg per-pool initialize cannot even be simulated into evi
   const report = analyzeInput(POOL_MANAGER, "pm");
   assert.equal(initializerFindings(report).length, 1);
   report.inventory.abi = [
-    {
+      {
       type: "function",
       name: "initialize",
       inputs: [
-        {
-          name: "key",
-          type: "tuple",
-          components: [
-            { name: "currency0", type: "address" },
-            { name: "currency1", type: "address" },
-            { name: "fee", type: "uint24" },
-          ],
-        },
-        { name: "sqrtPrice", type: "uint160" },
+      {
+      name: "key",
+      type: "tuple",
+      components: [
+      { name: "currency0", type: "address" },
+      { name: "currency1", type: "address" },
+      { name: "fee", type: "uint24" },
+      ],
+      },
+      { name: "sqrtPrice", type: "uint160" },
       ],
       outputs: [{ name: "", type: "int24" }],
       stateMutability: "nonpayable",
-    },
+      },
   ];
   report.inventory.abiSource = "sourcify";
   let calls = 0;
@@ -419,12 +419,12 @@ test("class C: a candidate missing from the deployed ABI is dropped (ABI members
   const outcome = await applyInitializerGate(
     report,
     { address: ADDR, chainId: "ethereum", source: SIBLINGS },
-    {
+      {
       callFn: async () => {
-        throw new Error("probe must not run when every candidate is dropped");
+      throw new Error("probe must not run when every candidate is dropped");
       },
       storageFn: noStorage,
-    },
+      },
   );
   assert.equal(outcome.dropped, 1);
   assert.equal(initializerFindings(report).length, 0);
@@ -556,15 +556,20 @@ const finding = (): any => ({
 
 test("a successful call against an address with no code does NOT corroborate", async () => {
   const report: any = { findings: [finding()] };
-  await applyInitializerGate(report, {
-    address: "0x000000000000000000000000000000000000dEaD",
-    chainId: "ethereum",
-    source: SOURCE,
-    // every eth_call "succeeds" — which is exactly what a codeless target does
-    callFn: async () => ({ success: true }),
-    storageFn: async () => ({ value: null }),
-    codeFn: async () => "0x",
-  });
+  await applyInitializerGate(
+    report,
+    {
+      address: "0x000000000000000000000000000000000000dEaD",
+      chainId: "ethereum",
+      source: SOURCE,
+      // every eth_call "succeeds" — which is exactly what a codeless target does
+    },
+    {
+      callFn: async () => ({ success: true }),
+      storageFn: async () => ({ value: null }),
+      codeFn: async () => "0x",
+    },
+  );
   const f = report.findings[0];
   assert.notEqual(f.severity, "critical", "must not restore critical without code");
   assert.notEqual(f.corroborated, true, "must not be marked corroborated");
@@ -572,14 +577,19 @@ test("a successful call against an address with no code does NOT corroborate", a
 
 test("an unreadable code answer fails open, not closed", async () => {
   const report: any = { findings: [finding()] };
-  await applyInitializerGate(report, {
-    address: "0x000000000000000000000000000000000000dEaD",
-    chainId: "ethereum",
-    source: SOURCE,
-    callFn: async () => ({ success: true }),
-    storageFn: async () => ({ value: null }),
-    codeFn: async () => null, // could not read — must not suppress
-  });
+  await applyInitializerGate(
+    report,
+      {
+      address: "0x000000000000000000000000000000000000dEaD",
+      chainId: "ethereum",
+      source: SOURCE
+      },
+      {
+      callFn: async () => ({ success: true }),
+      storageFn: async () => ({ value: null }),
+      codeFn: async () => null, // could not read — must not suppress
+      },
+  );
   // With real code unknown the gate behaves as before; the point is only that a null
   // read does not silently downgrade.
   assert.ok(report.findings[0]);
@@ -593,15 +603,20 @@ test("a payable fallback makes every unknown selector succeed — that is not ev
   // and returned success. A critical was restored and marked corroborated on a function
   // the contract does not have.
   const report: any = { findings: [finding()] };
-  await applyInitializerGate(report, {
-    address: "0xa7d9e842efb252389d613da88eda3731512e40bd",
-    chainId: "ethereum",
-    source: SOURCE,
-    callFn: async () => ({ success: true }), // the fallback accepts everything
-    storageFn: async () => ({ value: null }),
-    // real-looking runtime code that dispatches a DIFFERENT selector
-    codeFn: async () => "0x60806040523661001357610011610017565b005b" + "a9059cbb".repeat(20) + "00",
-  });
+  await applyInitializerGate(
+    report,
+      {
+      address: "0xa7d9e842efb252389d613da88eda3731512e40bd",
+      chainId: "ethereum",
+      source: SOURCE
+      },
+      {
+      callFn: async () => ({ success: true }), // the fallback accepts everything
+      storageFn: async () => ({ value: null }),
+        // real-looking runtime code that dispatches a DIFFERENT selector
+      codeFn: async () => "0x60806040523661001357610011610017565b005b" + "a9059cbb".repeat(20) + "00",
+      },
+  );
   const f = report.findings[0];
   assert.notEqual(f.severity, "critical", "no dispatcher entry, no corroboration");
   assert.notEqual(f.corroborated, true);
@@ -613,14 +628,19 @@ test("a selector that IS dispatched still counts", async () => {
   const { keccak256 } = await import("js-sha3");
   const sel = keccak256("initialize(address,uint256)").slice(0, 8);
   const report: any = { findings: [finding()] };
-  await applyInitializerGate(report, {
-    address: "0x0000000000000000000000000000000000000001",
-    chainId: "ethereum",
-    source: SOURCE,
-    callFn: async () => ({ success: true }),
-    storageFn: async () => ({ value: null }),
-    codeFn: async () => "0x6080604052" + sel + "1461000f57" + "00".repeat(30),
-  });
+  await applyInitializerGate(
+    report,
+      {
+      address: "0x0000000000000000000000000000000000000001",
+      chainId: "ethereum",
+      source: SOURCE
+      },
+      {
+      callFn: async () => ({ success: true }),
+      storageFn: async () => ({ value: null }),
+      codeFn: async () => "0x6080604052" + sel + "1461000f57" + "00".repeat(30),
+      },
+  );
   // The point is only that the selector check does not block a real dispatch.
   assert.ok(report.findings[0]);
 });

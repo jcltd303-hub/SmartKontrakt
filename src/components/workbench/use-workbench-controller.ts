@@ -1472,7 +1472,7 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
 
     if (aiReview) {
       lines.push("### AI Executive Review");
-      lines.push(`- **Overall Verdict**: **${aiReview.overallVerdict.toUpperCase()}**`);
+      lines.push(`- **Overall Verdict**: **${(aiReview.overallVerdict ?? "unknown").toUpperCase()}**`);
       if (aiReview.summary) {
         lines.push("");
         lines.push(aiReview.summary);

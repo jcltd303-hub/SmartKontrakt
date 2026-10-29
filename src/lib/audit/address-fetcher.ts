@@ -905,15 +905,17 @@ export async function analyzeAddress(
     // restores critical + corroborated. Everything else keeps the
     // cap. Fail-soft and fail-closed: a probe failure changes nothing.
     try {
-      await applyInitializerGate(report, {
-        address,
-        chainId: chain.id,
-        source: sourcifyMatch.source,
-        // eth_call to a codeless address SUCCEEDS, so without this the probe reads
-        // "nothing there to revert" as "the initializer call went through".
-        codeFn: (addr, cid) =>
-          fetchBytecodeRpc(addr, (SUPPORTED_CHAINS.find((c) => c.id === cid) ?? chain).rpcUrls),
-      });
+      await applyInitializerGate(
+        report,
+        { address, chainId: chain.id, source: sourcifyMatch.source },
+        {
+          // eth_call to a codeless address SUCCEEDS, so without this the probe reads
+          // "nothing there to revert" as "the initializer call went through". Third
+          // argument: the second is the context, not the options.
+          codeFn: (addr: string, cid: string) =>
+            fetchBytecodeRpc(addr, (SUPPORTED_CHAINS.find((c) => c.id === cid) ?? chain).rpcUrls),
+        },
+      );
     } catch {
       // the gate never throws by construction; belt-and-braces
     }
