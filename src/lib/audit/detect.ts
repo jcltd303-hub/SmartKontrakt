@@ -4874,7 +4874,20 @@ function scanSimple(
     }));
   }
 
-  if (/\bselfdestruct\s*\(|\bsuicide\s*\(/.test(src)) {
+  // Match on the comment/string-stripped view, not the raw source.
+  //
+  // Measured 2026-10-29: this rule fired FIVE criticals on a UUPS implementation and
+  // five more on an OpenZeppelin ERC1967Proxy, neither of which contains a
+  // selfdestruct call. The proxy's whole source is a constructor and one internal view
+  // function. The rule was testing `src`, which still holds comments and string
+  // literals, so a NatSpec line or a doc comment mentioning `selfdestruct(` produced a
+  // critical. Every other rule in this file tests `clean`.
+  //
+  // `stripCommentsAndStringsKeepLines` blanks comments and string bodies in place, so
+  // offsets stay aligned and the paren-depth scan below can still slice the REAL source
+  // to recover the beneficiary argument.
+  const sdScan = stripCommentsAndStringsKeepLines(src);
+  if (/\bselfdestruct\s*\(|\bsuicide\s*\(/.test(sdScan)) {
     // "Attacker-chosen address" is only true when the caller controls the
     // beneficiary: a param, msg.sender, or storage this function writes.
     // selfdestruct(burn) with burn a constant sends to a fixed address —
@@ -4883,7 +4896,7 @@ function scanSimple(
     // [^)]* regex: selfdestruct(payable(address(this))) has nested
     // parens, and a naive capture truncates to `payable(address(this`
     // (which Fix 13's address(this) check would never match).
-    const sdCall = src.match(/\b(?:selfdestruct|suicide)\s*\(/);
+    const sdCall = sdScan.match(/\b(?:selfdestruct|suicide)\s*\(/);
     let sdArg = "";
     if (sdCall && sdCall.index !== undefined) {
       let depth = 1;
