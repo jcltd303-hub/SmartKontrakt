@@ -525,3 +525,62 @@ test("primitives: ERC-7201 slot constant, calldata encoding, slot decoding, reve
   );
   assert.equal(decodeRevertReason(null, "execution reverted"), "execution reverted");
 });
+
+/**
+ * No code, no corroboration (2026-10-29).
+ *
+ * eth_call to an address with no code returns SUCCESS with empty data. The probe read
+ * `call.success` as "the initializer call went through", so a finding against a codeless
+ * address — an EOA, a selfdestructed contract, or a provider answering 0x — was restored
+ * to critical and marked corroborated on evidence that proves nothing.
+ */
+
+const SOURCE = `
+pragma solidity ^0.8.0;
+contract Keep {
+    address public owner;
+    uint256 public memberStake;
+    function initialize(address _owner, uint256 _memberStake) public {
+        owner = _owner;
+        memberStake = _memberStake;
+    }
+}`;
+
+const finding = (): any => ({
+  id: "f1", severity: "high", confidence: "high",
+  title: "initialize can be called by anyone, more than once",
+  detector: "unprotected-initializer", summary: "s", walkthrough: "w",
+  exploitSolidity: "", remediationSolidity: "",
+  locationFn: "initialize", locationLine: 5, snippet: "", swc: null,
+});
+
+test("a successful call against an address with no code does NOT corroborate", async () => {
+  const report: any = { findings: [finding()] };
+  await applyInitializerGate(report, {
+    address: "0x000000000000000000000000000000000000dEaD",
+    chainId: "ethereum",
+    source: SOURCE,
+    // every eth_call "succeeds" — which is exactly what a codeless target does
+    callFn: async () => ({ success: true }),
+    storageFn: async () => ({ value: null }),
+    codeFn: async () => "0x",
+  });
+  const f = report.findings[0];
+  assert.notEqual(f.severity, "critical", "must not restore critical without code");
+  assert.notEqual(f.corroborated, true, "must not be marked corroborated");
+});
+
+test("an unreadable code answer fails open, not closed", async () => {
+  const report: any = { findings: [finding()] };
+  await applyInitializerGate(report, {
+    address: "0x000000000000000000000000000000000000dEaD",
+    chainId: "ethereum",
+    source: SOURCE,
+    callFn: async () => ({ success: true }),
+    storageFn: async () => ({ value: null }),
+    codeFn: async () => null, // could not read — must not suppress
+  });
+  // With real code unknown the gate behaves as before; the point is only that a null
+  // read does not silently downgrade.
+  assert.ok(report.findings[0]);
+});

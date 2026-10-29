@@ -909,6 +909,10 @@ export async function analyzeAddress(
         address,
         chainId: chain.id,
         source: sourcifyMatch.source,
+        // eth_call to a codeless address SUCCEEDS, so without this the probe reads
+        // "nothing there to revert" as "the initializer call went through".
+        codeFn: (addr, cid) =>
+          fetchBytecodeRpc(addr, (SUPPORTED_CHAINS.find((c) => c.id === cid) ?? chain).rpcUrls),
       });
     } catch {
       // the gate never throws by construction; belt-and-braces

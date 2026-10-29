@@ -124,6 +124,17 @@ export type InitializerGateOpts = {
   storageFn?: InitializerStorageFn;
   /** Overall deadline; defaults to INITIALIZER_GATE_DEADLINE_MS. */
   deadlineMs?: number;
+  /**
+   * Runtime-code reader. Returns the hex code, or null when it could not be read.
+   *
+   * Without this the gate has no way to tell "the initializer call succeeded" from
+   * "there is nothing at this address to revert": eth_call to a codeless address
+   * returns SUCCESS with empty data, so `sim.succeeded` becomes true and a critical is
+   * restored on evidence that proves nothing. Measured 2026-10-29 on a finding where
+   * the target was reported as holding 258 ETH and 0xa7d9e842 returned no code to a
+   * direct eth_getCode.
+   */
+  codeFn?: (address: string, chainId: string) => Promise<string | null>;
 };
 
 export type InitializerGateOutcome = {
@@ -370,6 +381,27 @@ export async function applyInitializerGate(
     const model = parseSource(ctx.source);
     const pattern = detectInitializablePattern(ctx.source, abi);
 
+    // Refuse to corroborate anything against an address that has no code.
+    //
+    // eth_call to a codeless address SUCCEEDS with empty return data, which the probe
+    // reads as "the initializer call went through". That is the single easiest way to
+    // manufacture a corroborated critical, and it happens whenever the address is an
+    // EOA, a selfdestructed contract, or a provider answers 0x.
+    //
+    // Unknown (null) does NOT block: a failed code read must not silently suppress real
+    // findings, so this fails open and says so in the note.
+    let targetHasNoCode = false;
+    if (opts?.codeFn) {
+      try {
+        const code = await opts.codeFn(ctx.address, ctx.chainId);
+        if (code !== null && (code === "0x" || code === "" || /^0x0*$/.test(code))) {
+          targetHasNoCode = true;
+        }
+      } catch {
+        // leave targetHasNoCode false
+      }
+    }
+
     // Candidate simulation signatures per flagged name: the deployed
     // ABI's overloads when an ABI exists (deployed truth), else the
     // parsed model's parameter types.
@@ -521,7 +553,11 @@ export async function applyInitializerGate(
           .some((fn) => initializerWritesPrivileged(c, fn)),
       );
 
+      // A target with no code can never produce positive live evidence: the call
+      // "succeeded" because there was nothing there to revert. Keep the finding at its
+      // capped severity and say why, rather than restoring a critical on nothing.
       const positive =
+        !targetHasNoCode &&
         !initializedEvidence &&
         (stateUninitialized || (!!sim?.succeeded && writesPrivileged));
 
