@@ -132,7 +132,17 @@ function tailCap(text) {
 function candidateRpcs(preferred, userList) {
   const out = [];
   const supplied = [preferred, ...(Array.isArray(userList) ? userList : [])].filter(Boolean);
-  const list = supplied.length ? supplied : RPC_PROVIDERS;
+  // ALWAYS append the built-in list as fallbacks; a supplied URL is a preference, not
+  // the whole candidate set.
+  //
+  // Measured 2026-10-29 from a live backend log: the worker sends rpcUrl=<one provider>,
+  // which made `supplied` non-empty and replaced RPC_PROVIDERS entirely, so
+  // `candidates.length` was 1. Every failure was then fatal to that request — the log
+  // printed "rotating to next provider" and returned "All RPC providers failed (tried
+  // 1)" — and the rotation only happened on the NEXT request, one provider per round
+  // trip. publicnode and drpc were both failing with transport errors, so two of every
+  // three PoC attempts were spent proving an RPC was down instead of running a test.
+  const list = [...supplied, ...RPC_PROVIDERS];
   for (const u of list) {
     if (typeof u === "string") {
       const trimmed = u.trim();
