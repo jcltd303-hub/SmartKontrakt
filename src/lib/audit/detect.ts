@@ -2264,7 +2264,16 @@ function scanModernClasses(
     /(signatures?|sigs?)\s*\[\s*\w+\s*\]/.test(clean) ||
     /for\s*\([^)]*(signatures?|sigs?)\.length/i.test(clean);
   const countsApprovals = /(valid|count|approved|verified|signers)\w*\s*(\+\+|\+=|=\s*\w+\s*\+\s*1)/i.test(clean);
-  const comparesThreshold = /(>=|==)\s*(threshold|required|_required|quorum|minSigs|minSignatures|requiredSignatures|_threshold)/i.test(clean);
+  // The threshold is usually a PREFIXED identifier — validatorThreshold,
+  // requiredSignatures, _threshold, sigThreshold, MIN_SIGNATURES — so the name must be
+  // matched anywhere inside the identifier, not at its start.
+  //
+  // Measured 2026-10-29: the first version required the identifier to begin with
+  // "threshold", so a textbook multisig (`validSignatures >= validatorThreshold`) was
+  // silently missed. My own test passed because it used the one spelling real code
+  // rarely uses. Testing against realistic shapes is what caught it.
+  const comparesThreshold =
+    /(>=|==)\s*\w*(threshold|required|quorum|min_?sigs?|min_?signatures|signatures_?required)\w*/i.test(clean);
   const rejectsDuplicates =
     /(seen|used|already|duplicate|signed)\s*\[/i.test(clean) ||
     /require\s*\(\s*!\s*\w+\s*\[/.test(clean) ||

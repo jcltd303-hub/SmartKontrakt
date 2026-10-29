@@ -150,3 +150,74 @@ contract Token {
 }`;
   assert.equal(hits(src, "unbacked-mint").length, 0);
 });
+
+/**
+ * Realistic shapes (2026-10-29).
+ *
+ * The archive reported zero findings for all three of these detectors, and my original
+ * tests passed while one of the rules was dead — because the tests used the exact
+ * spellings I had written the regexes against. These use what real code looks like.
+ */
+
+test("a textbook multisig with validatorThreshold is detected", () => {
+  // The first version of the rule required the identifier to BEGIN with "threshold",
+  // so `validSignatures >= validatorThreshold` was silently missed.
+  const src = `
+pragma solidity ^0.8.0;
+contract MultiSigBridge {
+    mapping(address => bool) public isValidator;
+    uint256 public validatorThreshold;
+    function recoverSigner(bytes32 d, bytes memory s) internal pure returns (address) { return address(0); }
+    function verifySignatures(bytes32 digest, bytes[] memory signatures) public view returns (bool) {
+        uint256 validSignatures = 0;
+        for (uint256 i = 0; i < signatures.length; i++) {
+            address signer = recoverSigner(digest, signatures[i]);
+            if (isValidator[signer]) { validSignatures += 1; }
+        }
+        return validSignatures >= validatorThreshold;
+    }
+}`;
+  const found = hits(src, "signature-threshold-no-dedupe");
+  assert.equal(found.length, 1, "validatorThreshold must be recognised");
+  assert.equal(found[0]!.severity, "critical");
+});
+
+test("other real threshold spellings are detected", () => {
+  for (const t of ["requiredSignatures", "_threshold", "sigThreshold", "MIN_SIGNATURES", "quorum"]) {
+    const src = `
+pragma solidity ^0.8.0;
+contract B {
+    uint256 public ${t};
+    function recoverSigner(bytes32 d, bytes memory s) internal pure returns (address) { return address(0); }
+    function verify(bytes32 digest, bytes[] memory signatures) public view returns (bool) {
+        uint256 valid = 0;
+        for (uint256 i = 0; i < signatures.length; i++) {
+            valid += 1;
+            recoverSigner(digest, signatures[i]);
+        }
+        return valid >= ${t};
+    }
+}`;
+    assert.equal(hits(src, "signature-threshold-no-dedupe").length, 1, `missed: ${t}`);
+  }
+});
+
+test("a Solmate-style vault reading asset.balanceOf(this) is detected", () => {
+  const src = `
+pragma solidity ^0.8.0;
+abstract contract ERC4626 {
+    ERC20 public immutable asset;
+    uint256 public totalSupply;
+    function totalAssets() public view virtual returns (uint256);
+    function convertToShares(uint256 assets) public view virtual returns (uint256) {
+        uint256 supply = totalSupply;
+        return supply == 0 ? assets : assets * supply / totalAssets();
+    }
+}
+contract Vault is ERC4626 {
+    function totalAssets() public view override returns (uint256) {
+        return asset.balanceOf(address(this));
+    }
+}`;
+  assert.ok(hits(src, "vault-inflation-donation").length >= 1);
+});
