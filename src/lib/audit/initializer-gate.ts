@@ -391,16 +391,39 @@ export async function applyInitializerGate(
     // Unknown (null) does NOT block: a failed code read must not silently suppress real
     // findings, so this fails open and says so in the note.
     let targetHasNoCode = false;
+    /** Runtime code, lowercased without 0x — used for selector presence. */
+    let targetCode: string | null = null;
     if (opts?.codeFn) {
       try {
         const code = await opts.codeFn(ctx.address, ctx.chainId);
-        if (code !== null && (code === "0x" || code === "" || /^0x0*$/.test(code))) {
-          targetHasNoCode = true;
+        if (code !== null) {
+          targetCode = code.toLowerCase().replace(/^0x/, "");
+          if (targetCode === "" || /^0*$/.test(targetCode)) targetHasNoCode = true;
         }
       } catch {
-        // leave targetHasNoCode false
+        // leave both unset
       }
     }
+
+    /**
+     * Does the deployed code actually DISPATCH this selector?
+     *
+     * A contract with a payable fallback returns SUCCESS for any selector it does not
+     * implement. Measured 2026-10-29 on BondedECDSAKeepFactory (0xa7d9e842): its
+     * dispatcher default is `fallback() { slot5 += msg.value; }`, so an eth_call carrying
+     * `initialize(address,address[],uint256,uint256,uint256,address,address,address)`
+     * — 0x79a80491, a selector the factory never implements, only CALLS on the keep it
+     * deploys — accepted the call and reported success. That restored a critical and
+     * marked it corroborated, on a function the contract does not have.
+     *
+     * The selector appears verbatim in the dispatcher as a PUSH4, so its absence from
+     * the runtime code is proof the function does not exist. Absence is conclusive;
+     * presence is not (it could be data), which is why this only ever SUPPRESSES.
+     */
+    const dispatchesSelector = (selector: string): boolean => {
+      if (!targetCode) return true; // unknown code: fail open
+      return targetCode.includes(selector);
+    };
 
     // Candidate simulation signatures per flagged name: the deployed
     // ABI's overloads when an ABI exists (deployed truth), else the
@@ -482,9 +505,13 @@ export async function applyInitializerGate(
         const sim: SimOutcome = { attempted: false, succeeded: false, reverted: false, revertReasons: [] };
         evidence.sims.set(name, sim);
         const encoded = overloads
-          .map((types) => ({ types, data: encodeInitializerCalldata(name, types) }))
+          .map((types) => ({
+            types,
+            data: encodeInitializerCalldata(name, types),
+            selector: keccak256(`${name}(${types.join(",")})`).slice(0, 8),
+          }))
           .filter((e) => e.data !== null);
-        for (const { data } of encoded) {
+        for (const { data, selector } of encoded) {
           evidence.attempted += 1;
           jobs.push(
             (async () => {
@@ -493,7 +520,9 @@ export async function applyInitializerGate(
                 const call = await callFn(ctx.address, data!, ctx.chainId, PROBE_CALLER);
                 if (call.success) {
                   evidence.rpcAnswered = true;
-                  sim.succeeded = true;
+                  // A fallback makes every unknown selector "succeed". Only count it
+                  // when the code actually dispatches that selector.
+                  sim.succeeded = dispatchesSelector(selector);
                 } else {
                   // A revert means the chain answered; a transport
                   // failure (RPC unreachable / timeout, no revert

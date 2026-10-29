@@ -584,3 +584,43 @@ test("an unreadable code answer fails open, not closed", async () => {
   // read does not silently downgrade.
   assert.ok(report.findings[0]);
 });
+
+test("a payable fallback makes every unknown selector succeed — that is not evidence", async () => {
+  // Measured 2026-10-29 on BondedECDSAKeepFactory 0xa7d9e842. Its dispatcher default is
+  // `fallback() { slot5 += msg.value; }`, so an eth_call carrying 0x79a80491 —
+  // initialize(address,address[],uint256,uint256,uint256,address,address,address), a
+  // selector the factory never implements, only CALLS on the keep it deploys — accepted
+  // and returned success. A critical was restored and marked corroborated on a function
+  // the contract does not have.
+  const report: any = { findings: [finding()] };
+  await applyInitializerGate(report, {
+    address: "0xa7d9e842efb252389d613da88eda3731512e40bd",
+    chainId: "ethereum",
+    source: SOURCE,
+    callFn: async () => ({ success: true }), // the fallback accepts everything
+    storageFn: async () => ({ value: null }),
+    // real-looking runtime code that dispatches a DIFFERENT selector
+    codeFn: async () => "0x60806040523661001357610011610017565b005b" + "a9059cbb".repeat(20) + "00",
+  });
+  const f = report.findings[0];
+  assert.notEqual(f.severity, "critical", "no dispatcher entry, no corroboration");
+  assert.notEqual(f.corroborated, true);
+});
+
+test("a selector that IS dispatched still counts", async () => {
+  // initialize(address,uint256) — the shape in SOURCE. If the code dispatches it, a
+  // successful call is genuine evidence and the old behaviour must be preserved.
+  const { keccak256 } = await import("js-sha3");
+  const sel = keccak256("initialize(address,uint256)").slice(0, 8);
+  const report: any = { findings: [finding()] };
+  await applyInitializerGate(report, {
+    address: "0x0000000000000000000000000000000000000001",
+    chainId: "ethereum",
+    source: SOURCE,
+    callFn: async () => ({ success: true }),
+    storageFn: async () => ({ value: null }),
+    codeFn: async () => "0x6080604052" + sel + "1461000f57" + "00".repeat(30),
+  });
+  // The point is only that the selector check does not block a real dispatch.
+  assert.ok(report.findings[0]);
+});
