@@ -5152,7 +5152,29 @@ contract MalleabilityAttack {
     // shape of every EIP-1271 helper, and at 79 findings this detector was the most
     // common in the archive.
     const cannotAct = /\bview\b|\bpure\b/.test(fn.mutability ?? "");
-    if (!cannotAct && !/nonce|deadline|chainid|chain\.id|domainSeparator|used\[/i.test(src)) {
+    // A RECOVERY PRIMITIVE is not a replay surface.
+    //
+    // Measured 2026-10-29 from the archive's own 79 findings: nearly every one is a
+    // function that RECEIVES a digest and returns a signer —
+    // recoverAddressFromSignature, tryRecover, ecrecovery, safer_ecrecover,
+    // getSignerOfHash, isValidSignature, checkNSignatures, recoverAddress,
+    // _ecmulVerify, _verifyLinearCombinationWithGenerator. The digest is built by the
+    // caller; whether it contains a nonce is the digest-builder's business, in another
+    // function. Flagging the primitive is like flagging keccak256 for having no nonce.
+    //
+    // The discriminator is what the function does with its input, not its name: if it
+    // takes a bytes32 digest parameter and ecrecovers THAT parameter, it did not build
+    // the digest and cannot be the thing that should have added a nonce.
+    const digestParam = fn.params.find(
+      (p) => /^bytes32$/.test(p.typeName.trim()) && p.name && /hash|digest|message/i.test(p.name),
+    );
+    // A local stripped view: `clean` is declared LATER in this function, so referring
+    // to it here is a TDZ error at runtime that TypeScript does not catch.
+    const sigScan = stripCommentsAndStringsKeepLines(src);
+    const recoversFromDigest =
+      !!digestParam &&
+      new RegExp(`ecrecover\\s*\\(\\s*${escapeRegExp(digestParam.name!)}`).test(sigScan);
+    if (!cannotAct && !recoversFromDigest && !/nonce|deadline|chainid|chain\.id|domainSeparator|used\[/i.test(src)) {
       push(make({
         severity: "medium",
         swc: "SWC-121",
