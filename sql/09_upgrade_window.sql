@@ -80,11 +80,60 @@ codes as (
      or address in (select proxy from latest)
 ),
 
+-- VALUE. Native ETH is the wrong measure for DeFi: measured on the first live run
+-- 2026-10-28, 166 established-and-upgraded proxies held 2.05 ETH BETWEEN THEM, and 154
+-- of them held none. A lending pool holds USDC and WETH tokens, not raw ETH, so
+-- `crypto_ethereum.balances` could never see it.
+--
+-- There is no public "current token balance" table, so this uses 30-day token FLOW as
+-- the value proxy: how much recognised value moved through the contract. It
+-- under-counts idle holdings and over-counts high-turnover routers, and it is an
+-- estimate — but it is the right order of magnitude, which native ETH is not.
+--
+-- Prices are the approximate 2026 majors; they only need to rank, not to account.
+flows as (
+  select
+    to_address as address,
+    sum(
+      safe_cast(value as bignumeric) / pow(10, decimals) *
+      case lower(token_address)
+        when '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' then 1.0      -- USDC
+        when '0xdac17f958d2ee523a2206206994597c13d831ec7' then 1.0      -- USDT
+        when '0x6b175474e89094c44da98b954eedeac495271d0f' then 1.0      -- DAI
+        when '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2' then 2330.0   -- WETH
+        when '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599' then 60000.0  -- WBTC
+        when '0xae7ab96520de3a18e5e111b5eaab095312d7fe84' then 2330.0   -- stETH
+        when '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0' then 2600.0   -- wstETH
+        else 0.0
+      end
+    ) as usd_flow
+  from `bigquery-public-data.crypto_ethereum.token_transfers`
+  where block_timestamp >= timestamp_sub(current_timestamp(), interval 30 day)
+    and lower(token_address) in (
+      '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+      '0xdac17f958d2ee523a2206206994597c13d831ec7',
+      '0x6b175474e89094c44da98b954eedeac495271d0f',
+      '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+      '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599',
+      '0xae7ab96520de3a18e5e111b5eaab095312d7fe84',
+      '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0'
+    )
+  group by to_address
+),
+
 balances as (
   select address, safe_cast(eth_balance as bignumeric) as wei
   from `bigquery-public-data.crypto_ethereum.balances`
   where block_timestamp >= timestamp_sub(current_timestamp(), interval 2 day)
   qualify row_number() over (partition by address order by block_timestamp desc) = 1
+),
+
+-- How many proxies share this implementation. Measured: 71 of 166 rows were TWO
+-- implementations, so one audit target can carry 38 deployments' worth of exposure.
+impl_share as (
+  select impl, count(*) as proxies_sharing
+  from latest
+  group by impl
 )
 
 select
@@ -93,6 +142,8 @@ select
   l.upgraded_at,
   l.upgrades_in_window,
   round(coalesce(b.wei, 0) / 1e18, 4)                     as proxy_eth,
+  round(coalesce(f.usd_flow, 0), 0)                       as usd_flow_30d,
+  s.proxies_sharing,
   i.runtime_bytes                                          as impl_bytes,
   i.deployed_at                                            as impl_deployed,
   timestamp_diff(l.upgraded_at, i.deployed_at, hour)       as impl_age_hours_at_upgrade,
@@ -109,7 +160,8 @@ select
     + least(l.upgrades_in_window / 5.0, 1)                      * 0.20   -- active dev
   , 3)                                                          as upgrade_score,
   concat(
-    if(coalesce(b.wei, 0) > 0, 'funded ', ''),
+    if(coalesce(f.usd_flow, 0) > 1e5, 'value flowing ', ''),
+    if(s.proxies_sharing > 1, concat('shared impl x', cast(s.proxies_sharing as string), ' '), ''),
     if(timestamp_diff(l.upgraded_at, p.deployed_at, day) >= 180, 'established ', ''),
     if(coalesce(i.runtime_bytes, 0) > 1000, 'real logic ', ''),
     if(l.upgrades_in_window > 1, 'active dev', '')
@@ -117,7 +169,9 @@ select
 from latest l
 left join codes    i on i.address = l.impl
 left join codes    p on p.address = l.proxy
-left join balances b on b.address = l.proxy
+left join flows      f on f.address = l.proxy
+left join impl_share s on s.impl = l.impl
+left join balances   b on b.address = l.proxy
 where coalesce(i.runtime_bytes, 0) > 1000        -- the new code must be more than a forwarder
   -- An established proxy gaining new code. 90 days is the floor from the maturity
   -- tiers (the documented loss record concentrates in 0-6 months); 180 scores higher.
