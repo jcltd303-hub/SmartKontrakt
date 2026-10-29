@@ -62,13 +62,22 @@ latest as (
   qualify row_number() over (partition by proxy order by block_timestamp desc) = 1
 ),
 
-impl_code as (
+-- Both sides of the pair: the implementation's size, and — the column the first
+-- version of this query was missing — the PROXY's own deployment date.
+--
+-- Without it the query returns brand-new proxies: a transparent proxy's constructor
+-- calls _upgradeToAndCall, which emits Upgraded in the same block the proxy is
+-- created, so implementation age 0 means "fresh deployment", not "upgrade". Measured
+-- on a live run 2026-10-28: every row came back with impl_age_hours = 0 and
+-- proxy_eth ~ 0, i.e. the fresh-deployment window this whole exercise avoids.
+codes as (
   select
     address,
-    div(length(regexp_replace(bytecode, r'^0[xX]', '')), 2) as impl_bytes,
-    block_timestamp                                          as impl_deployed
+    div(length(regexp_replace(bytecode, r'^0[xX]', '')), 2) as runtime_bytes,
+    block_timestamp                                          as deployed_at
   from `bigquery-public-data.crypto_ethereum.contracts`
   where address in (select impl from latest)
+     or address in (select proxy from latest)
 ),
 
 balances as (
@@ -84,27 +93,34 @@ select
   l.upgraded_at,
   l.upgrades_in_window,
   round(coalesce(b.wei, 0) / 1e18, 4)                     as proxy_eth,
-  i.impl_bytes,
-  i.impl_deployed,
-  timestamp_diff(l.upgraded_at, i.impl_deployed, hour)    as impl_age_hours_at_upgrade,
+  i.runtime_bytes                                          as impl_bytes,
+  i.deployed_at                                            as impl_deployed,
+  timestamp_diff(l.upgraded_at, i.deployed_at, hour)       as impl_age_hours_at_upgrade,
+  -- THE discriminator: how old the proxy itself was when it was upgraded. A number in
+  -- the hundreds is an established contract gaining new code; a zero is a new deploy.
+  timestamp_diff(l.upgraded_at, p.deployed_at, day)        as proxy_age_days_at_upgrade,
   -- Score what the research says predicts loss: money at risk, real logic in the new
   -- implementation, and fresh code. Money alone does not create a row — a funded
   -- proxy that upgraded to a 200-byte forwarder is another shell.
   round(
-      least(coalesce(b.wei, 0) / 1e21, 1)                       * 0.45   -- >= 1000 ETH
-    + least(coalesce(i.impl_bytes, 0) / 12000.0, 1)             * 0.30   -- real logic
-    + least(l.upgrades_in_window / 5.0, 1)                      * 0.15   -- active dev
-    + if(timestamp_diff(l.upgraded_at, i.impl_deployed, hour) <= 24, 1, 0) * 0.10
+      least(coalesce(b.wei, 0) / 1e21, 1)                       * 0.35   -- >= 1000 ETH
+    + least(timestamp_diff(l.upgraded_at, p.deployed_at, day) / 365.0, 1) * 0.25 -- established
+    + least(coalesce(i.runtime_bytes, 0) / 12000.0, 1)          * 0.20   -- real logic
+    + least(l.upgrades_in_window / 5.0, 1)                      * 0.20   -- active dev
   , 3)                                                          as upgrade_score,
   concat(
     if(coalesce(b.wei, 0) > 0, 'funded ', ''),
-    if(coalesce(i.impl_bytes, 0) > 1000, 'real logic ', ''),
-    if(l.upgrades_in_window > 1, 'active ', ''),
-    if(timestamp_diff(l.upgraded_at, i.impl_deployed, hour) <= 24, 'impl deployed with the upgrade', '')
+    if(timestamp_diff(l.upgraded_at, p.deployed_at, day) >= 180, 'established ', ''),
+    if(coalesce(i.runtime_bytes, 0) > 1000, 'real logic ', ''),
+    if(l.upgrades_in_window > 1, 'active dev', '')
   )                                                             as why
 from latest l
-left join impl_code i on i.address = l.impl
-left join balances  b on b.address = l.proxy
-where coalesce(i.impl_bytes, 0) > 1000          -- the new code must be more than a forwarder
+left join codes    i on i.address = l.impl
+left join codes    p on p.address = l.proxy
+left join balances b on b.address = l.proxy
+where coalesce(i.runtime_bytes, 0) > 1000        -- the new code must be more than a forwarder
+  -- An established proxy gaining new code. 90 days is the floor from the maturity
+  -- tiers (the documented loss record concentrates in 0-6 months); 180 scores higher.
+  and timestamp_diff(l.upgraded_at, p.deployed_at, day) >= 90
 order by upgrade_score desc, coalesce(b.wei, 0) desc
 limit 500;
