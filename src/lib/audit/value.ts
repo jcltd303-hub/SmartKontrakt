@@ -84,6 +84,33 @@ export function tokenAmount(raw: string, decimals: number): number {
   }
 }
 
+/**
+ * A single ERC-20 holding worth more than this, or holding more whole tokens than any
+ * real token has, is a misread — not a whale.
+ *
+ * Measured 2026-10-27 on TheDAO (0xbf4ed7b2…a754): its holding came back with
+ * `decimals: 1` where the token has 16, so `amount` was inflated by 10^15 and a
+ * price of 2.3e-14 turned a dead 2016 token into $26.7B — 99% of that contract's
+ * totalUsd, and 26% of the whole archive's reported value. With the correct decimals
+ * the holding is worth $0.00003.
+ *
+ * The valuation has no way to know which of the three inputs (decimals, amount,
+ * price) is wrong, so the safe move is to stop trusting the holding: it becomes
+ * unpriced, which already marks the total incomplete. A total that is quietly wrong
+ * by 10^15 is worse than a total that says "incomplete".
+ */
+const IMPLAUSIBLE_HOLDING_USD = 1e10;
+/** No ERC-20 has this many whole tokens. Beyond it, the decimals read is wrong. */
+const IMPLAUSIBLE_AMOUNT = 1e18;
+
+/** True when a holding's size or value cannot be real. */
+export function isImplausibleHolding(amount: number, valueUsd: number | null): boolean {
+  if (!Number.isFinite(amount)) return true;
+  if (amount > IMPLAUSIBLE_AMOUNT) return true;
+  if (valueUsd !== null && Number.isFinite(valueUsd) && valueUsd > IMPLAUSIBLE_HOLDING_USD) return true;
+  return false;
+}
+
 /** USD value of `amount` whole tokens at `priceUsd`; null when either is unknown. */
 export function usdValue(amount: number, priceUsd: number | null): number | null {
   if (priceUsd === null || !Number.isFinite(priceUsd)) return null;
@@ -178,6 +205,7 @@ export async function fetchBlockscoutTokens(
     if (amount === 0) continue; // a zero holding adds nothing
     const rate = t?.exchange_rate ? Number(t.exchange_rate) : NaN;
     const priceUsd = Number.isFinite(rate) && rate > 0 ? rate : null;
+    const holdingUsd = usdValue(amount, priceUsd);
     holdings.push({
       kind: "erc20",
       address: tokenAddress.toLowerCase(),
@@ -187,7 +215,9 @@ export async function fetchBlockscoutTokens(
       raw: valueRaw,
       amount,
       priceUsd,
-      valueUsd: usdValue(amount, priceUsd),
+      // An implausible holding is reported unpriced rather than with a fabricated
+      // value: decimals, amount or price is wrong and we cannot tell which.
+      valueUsd: isImplausibleHolding(amount, holdingUsd) ? null : holdingUsd,
       priceSource: priceUsd !== null ? "blockscout" : null,
     });
   }

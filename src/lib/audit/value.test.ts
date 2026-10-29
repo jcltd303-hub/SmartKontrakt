@@ -1,15 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  BoundedCache,
-  tokenAmount,
-  usdValue,
-  formatUsd,
-  totalUsdOf,
-  isZeroValue,
-  type AddressValue,
-  type TokenHolding,
-} from "./value.ts";
+import { BoundedCache, tokenAmount, usdValue, formatUsd, totalUsdOf, isZeroValue, type AddressValue, type TokenHolding, isImplausibleHolding } from "./value.ts";
 
 function holding(over: Partial<TokenHolding> = {}): TokenHolding {
   return {
@@ -97,4 +88,42 @@ test("BoundedCache.get refreshes recency, so hot entries survive", () => {
   c.set("c", 3);
   assert.equal(c.get("a"), 1, "recently used entry must survive");
   assert.equal(c.get("b"), undefined, "least recently used entry is evicted");
+});
+
+/**
+ * Implausible holdings (2026-10-28).
+ *
+ * TheDAO 0xbf4ed7b2…a754 came back with `decimals: 1` where the token has 16, so the
+ * amount was inflated by 10^15 and a 2.3e-14 price produced $26.7B — 99% of that
+ * contract's totalUsd. With correct decimals it is worth $0.00003.
+ */
+test("the exact TheDAO row is rejected", () => {
+  // raw 11456878859115020498998415, decimals read as 1, price 2.332824525832443e-14
+  const amount = tokenAmount("11456878859115020498998415", 1);
+  const value = usdValue(amount, 2.332824525832443e-14);
+  assert.ok(amount > 1e24, `amount inflated to ${amount}`);
+  assert.ok((value ?? 0) > 2.6e10, `value inflated to ${value}`);
+  assert.equal(isImplausibleHolding(amount, value), true, "must be rejected");
+});
+
+test("with the correct 16 decimals the same holding is worth nothing", () => {
+  const amount = tokenAmount("11456878859115020498998415", 16);
+  const value = usdValue(amount, 2.332824525832443e-14);
+  assert.ok(amount < 1e10, `amount ${amount}`);
+  assert.ok((value ?? 1) < 0.01, `value ${value}`);
+  assert.equal(isImplausibleHolding(amount, value), false, "a real token is kept");
+});
+
+test("ordinary holdings and real whales are not rejected", () => {
+  assert.equal(isImplausibleHolding(1_145_687_885, 26.7), false, "a normal balance");
+  assert.equal(isImplausibleHolding(2_234_886, 5.2e9), false, "WETH at 2.2M tokens, $5.2B");
+  assert.equal(isImplausibleHolding(589_000_000_000_000, 5.8e6), false, "SHIB-scale supply");
+  assert.equal(isImplausibleHolding(7112095738234, 1.04e5), false, "Pikaboss at 7.1e12 tokens");
+});
+
+test("beyond the whole-token bound, and beyond the value bound, is rejected", () => {
+  assert.equal(isImplausibleHolding(1e19, 1), true, "more whole tokens than any token has");
+  assert.equal(isImplausibleHolding(1e6, 2e10), true, "a $20B single holding");
+  assert.equal(isImplausibleHolding(Number.NaN, 1), true, "NaN is not a holding");
+  assert.equal(isImplausibleHolding(1e6, null), false, "unpriced stays unpriced, not rejected");
 });
