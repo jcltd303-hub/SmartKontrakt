@@ -121,3 +121,91 @@ rarely shows up as a contract defect on its own.
 - **Nothing here is run in CI.** These queries need a BigQuery project and
   credentials; they are reviewed SQL, not executed SQL. Check
   `scripts/benchmark-smartbugs.ts` for the part that *is* measured.
+
+---
+
+# 08 and 09: choosing the window
+
+Files 00–06 answer "which contracts look vulnerable". 08 and 09 answer the question
+before it: **which contracts are worth the analysis at all.** That question turned out
+to be where the pipeline was losing, so the reasoning is recorded here rather than in
+a commit message.
+
+## What went wrong first
+
+The archive was built from "addresses holding ETH". Measured on 2026-10-28:
+
+| observation | value |
+| --- | --- |
+| scans | 1,613 |
+| distinct analysed bodies | 375 (4.25 copies each) |
+| largest single body | a GnosisSafeProxy, 343 scans — 21% of the archive |
+| proxy shells by name | 55% of all scans |
+| scans carrying any critical | 29 — and they held all 177 criticals |
+| ETH in the 1,596 zero-critical scans | 99.97% of the archive's total |
+
+The contracts holding the money were wallets, shells and the beacon deposit contract.
+The contracts holding the findings were 2% of the archive with a rounding error of the
+value. Sorted by balance, the queue put the audit budget in exactly the place where no
+finding can exist. That is the GIGO failure, and no detector change fixes it.
+
+## Which window, and why not "the last 30 days"
+
+Three independent datasets agree:
+
+- **Time-to-hack** (Decurity, 2020–2025): the **>90-day** bucket holds the *most*
+  exploits — vulnerabilities sit untouched for months or years; 1inch's Settlement
+  contract was dormant 2+ years before its $5M loss. The ≤7-day bucket is second, and
+  is unwinnable for this pipeline: the fastest 2025 exploit landed 52 minutes after
+  deployment, while a scan here costs ~20s/address before any PoC mining.
+- **Decurity's proxy analysis**: implementations are exploited much faster than fresh
+  deployments, concentrating in the days after an update.
+- **CoinGecko 2026**: 147 of 245 exploited protocols had been audited, and most attacks
+  landed on newly introduced code outside the audit's scope.
+
+So the target is not a new contract. It is **an old proxy holding real money whose
+implementation changed recently** — new code, established liquidity, and none of the
+fresh-deployment attention that makes bots swarm. `09_upgrade_window.sql` builds that
+list from the ERC-1967 `Upgraded(address)` event, topic0
+`0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b` — the same
+constant solc bakes into `ERC1967Upgrade`, so transparent, UUPS and beacon upgrades all
+match. `08_fodder.sql` is the alternative: behavioural candidates (callers, selectors,
+multi-entry transactions) for contracts with no upgrade to key on.
+
+## Two corrections that only a live run could produce
+
+Both were caught by running the query, not by reading it.
+
+1. **Implementation age zero is not an upgrade.** A transparent proxy's constructor
+   calls `_upgradeToAndCall`, which emits `Upgraded` in the block the proxy is created.
+   The first version filtered on implementation freshness and returned brand-new
+   proxies — the exact window the research says to avoid. The discriminator is the
+   **proxy's own age**: `proxy_age_days_at_upgrade >= 90`.
+2. **Native ETH is the wrong value column.** The corrected run returned 166 genuine
+   upgrades — median proxy age 278 days, median implementation age at upgrade 311
+   hours — and **2.05 ETH between all of them**, with 154 holding none. DeFi value sits
+   in ERC-20s. `crypto_ethereum.balances` only carries the native balance, so the value
+   term now uses 30-day token flow over the seven majors. It is an estimate: it
+   under-counts idle holdings and over-counts high-turnover routers.
+
+The same run showed **166 proxies resolving to 88 implementations**, with 71 of the 166
+being just two implementations (38 and 33 proxies). `proxies_sharing` scores an
+implementation by how many deployments it carries — one audit target, 38× the exposure.
+
+## Feed the pipeline implementations, not proxies
+
+The last block of `09` returns one cell: implementation addresses newline-separated,
+best first, ready for `POST /start`. The proxy is a forwarder; the implementation is
+where the source and the logic are, and the worker follows proxy → implementation on
+its own when handed a proxy.
+
+If the newlines arrive as a literal `\n`, use `chr(10)` as the delimiter — it does not
+depend on how the client parses escapes.
+
+## What to measure afterwards
+
+`sql/ops/after-run.sql`. The question is not how many findings came back, it is whether
+the newer families fire at all on a cohort of established, audited implementations —
+and whether the analyser stays quiet on the ones that are genuinely clean. Eighty known
+-good protocol implementations scoring zero is the precision evidence this corpus has
+never had.
