@@ -5145,7 +5145,14 @@ contract MalleabilityAttack {
         snippet: snippet(parsed, fn.line + delta, delta),
       }));
     }
-    if (!/nonce|deadline|chainid|chain\.id|domainSeparator|used\[/i.test(src)) {
+    // A view/pure function cannot be replayed: it changes no state, so re-submitting the
+    // same signature achieves nothing. Measured 2026-10-29 against realistic code — a
+    // plain `isValidSignature(hash,v,r,s) external view returns (bool)` that only ANSWERS
+    // whether a signature belongs to the owner was reported as a replay risk. That is the
+    // shape of every EIP-1271 helper, and at 79 findings this detector was the most
+    // common in the archive.
+    const cannotAct = /\bview\b|\bpure\b/.test(fn.mutability ?? "");
+    if (!cannotAct && !/nonce|deadline|chainid|chain\.id|domainSeparator|used\[/i.test(src)) {
       push(make({
         severity: "medium",
         swc: "SWC-121",
