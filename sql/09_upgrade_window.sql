@@ -181,16 +181,80 @@ limit 500;
 
 
 -- ===========================================================================
--- THE PASTE-READY LIST
+-- THE PASTE-READY LIST — self-contained, run this whole block in BigQuery.
 --
--- Same query, reduced to what POST /start wants: one implementation address per
--- line, best first, deduped. Feed implementations, not proxies — the proxy is a
--- forwarder, the implementation is where the source and the logic are, and the
--- pipeline already follows proxy -> implementation on its own when given a proxy.
+-- Not the Supabase editor: this reads bigquery-public-data.crypto_ethereum, and
+-- Postgres answers `relation "latest" does not exist` because the CTEs below do not
+-- exist there. One statement, all CTEs included, so it can be pasted on its own.
 --
--- Measured 2026-10-28: 166 proxies resolve to 88 implementations. At ~20s per
--- address that is roughly half an hour of pipeline time.
+-- Implementations, not proxies: the proxy is a forwarder, the implementation is where
+-- the source and the logic are, and the pipeline follows proxy -> implementation by
+-- itself when handed a proxy. Measured 2026-10-28: 166 proxies -> 88 implementations,
+-- ~30 minutes at 20s/address.
+--
+-- Returns ONE cell: addresses newline-separated, best first. Paste into POST /start.
 -- ===========================================================================
+with upgrades as (
+  select
+    address                                     as proxy,
+    lower(concat('0x', right(coalesce(
+      nullif(topics[SAFE_OFFSET(1)], ''),
+      data
+    ), 40)))                                   as impl,
+    block_timestamp
+  from `bigquery-public-data.crypto_ethereum.logs`
+  where block_timestamp >= timestamp_sub(current_timestamp(), interval 7 day)
+    and topics[SAFE_OFFSET(0)] = '0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b'
+),
+
+latest as (
+  select proxy, impl, block_timestamp as upgraded_at
+  from upgrades
+  where impl is not null
+    and impl != '0x0000000000000000000000000000000000000000'
+  qualify row_number() over (partition by proxy order by block_timestamp desc) = 1
+),
+
+codes as (
+  select
+    address,
+    div(length(regexp_replace(bytecode, r'^0[xX]', '')), 2) as runtime_bytes,
+    block_timestamp                                          as deployed_at
+  from `bigquery-public-data.crypto_ethereum.contracts`
+  where address in (select impl from latest)
+     or address in (select proxy from latest)
+),
+
+flows as (
+  select
+    to_address as address,
+    sum(
+      safe_cast(value as bignumeric) / pow(10, decimals) *
+      case lower(token_address)
+        when '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' then 1.0
+        when '0xdac17f958d2ee523a2206206994597c13d831ec7' then 1.0
+        when '0x6b175474e89094c44da98b954eedeac495271d0f' then 1.0
+        when '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2' then 2330.0
+        when '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599' then 60000.0
+        when '0xae7ab96520de3a18e5e111b5eaab095312d7fe84' then 2330.0
+        when '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0' then 2600.0
+        else 0.0
+      end
+    ) as usd_flow
+  from `bigquery-public-data.crypto_ethereum.token_transfers`
+  where block_timestamp >= timestamp_sub(current_timestamp(), interval 30 day)
+    and lower(token_address) in (
+      '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+      '0xdac17f958d2ee523a2206206994597c13d831ec7',
+      '0x6b175474e89094c44da98b954eedeac495271d0f',
+      '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+      '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599',
+      '0xae7ab96520de3a18e5e111b5eaab095312d7fe84',
+      '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0'
+    )
+  group by to_address
+)
+
 select string_agg(impl, '\n' order by score desc, usd_flow_30d desc) as addresses
 from (
   select
@@ -199,14 +263,14 @@ from (
       least(coalesce(f.usd_flow, 0) / 1e7, 1)                              * 0.30
     + least(timestamp_diff(l.upgraded_at, p.deployed_at, day) / 365.0, 1)  * 0.25
     + least(coalesce(i.runtime_bytes, 0) / 12000.0, 1)                     * 0.20
-    + least(count(*) / 5.0, 1)                                             * 0.20
+    + least(least(count(*), 5) / 5.0, 1)                                   * 0.20
     )                                        as score,
     sum(coalesce(f.usd_flow, 0))             as usd_flow_30d,
     count(*)                                 as proxies
   from latest l
-  left join codes      i on i.address = l.impl
-  left join codes      p on p.address = l.proxy
-  left join flows      f on f.address = l.proxy
+  left join codes i on i.address = l.impl
+  left join codes p on p.address = l.proxy
+  left join flows f on f.address = l.proxy
   where coalesce(i.runtime_bytes, 0) > 1000
     and timestamp_diff(l.upgraded_at, p.deployed_at, day) >= 90
   group by l.impl, i.runtime_bytes
