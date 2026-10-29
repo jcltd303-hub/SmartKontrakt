@@ -566,7 +566,7 @@ test("a successful call against an address with no code does NOT corroborate", a
     },
     {
       callFn: async () => ({ success: true }),
-      storageFn: async () => ({ value: null }),
+      storageFn: async () => ({ success: false }),
       codeFn: async () => "0x",
     },
   );
@@ -586,7 +586,7 @@ test("an unreadable code answer fails open, not closed", async () => {
       },
       {
       callFn: async () => ({ success: true }),
-      storageFn: async () => ({ value: null }),
+      storageFn: async () => ({ success: false }),
       codeFn: async () => null, // could not read — must not suppress
       },
   );
@@ -612,7 +612,7 @@ test("a payable fallback makes every unknown selector succeed — that is not ev
       },
       {
       callFn: async () => ({ success: true }), // the fallback accepts everything
-      storageFn: async () => ({ value: null }),
+      storageFn: async () => ({ success: false }),
         // real-looking runtime code that dispatches a DIFFERENT selector
       codeFn: async () => "0x60806040523661001357610011610017565b005b" + "a9059cbb".repeat(20) + "00",
       },
@@ -637,7 +637,7 @@ test("a selector that IS dispatched still counts", async () => {
       },
       {
       callFn: async () => ({ success: true }),
-      storageFn: async () => ({ value: null }),
+      storageFn: async () => ({ success: false }),
       codeFn: async () => "0x6080604052" + sel + "1461000f57" + "00".repeat(30),
       },
   );
