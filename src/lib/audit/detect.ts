@@ -2170,6 +2170,152 @@ const SNAPSHOT_EVIDENCE = /getPriorVotes|checkpoints?|_snapshot|snapshotBlock|ER
 /**
  * 2021-2025 classes, per function.
  */
+
+/**
+ * 2022-2026 loss categories the corpus was thin on (2026-10-29).
+ *
+ * Added after measuring the incident record against our 60 detectors. Reentrancy —
+ * the flagship of the SmartBugs-era corpus — fell from 23 incidents in 2023 to ONE in
+ * 2026, while three categories kept producing eight-figure losses that no existing
+ * rule addressed:
+ *
+ *   * Token & share accounting / vault inflation — the single most common classification
+ *     in the current DeFiLlama record. `totalAssets()` read from `balanceOf(this)` lets
+ *     anyone inflate the share price by transferring in directly (the ERC-4626 donation
+ *     attack), and a `convertToShares` with no virtual offset rounds the first
+ *     depositor's way.
+ *   * Signature threshold bypass — Wormhole, $326M: the loop counts valid signatures
+ *     but never rejects a duplicate, so one key meets a multisig threshold.
+ *   * Unbacked mint — an externally callable mint whose amount comes from a parameter
+ *     with nothing checking it against assets actually held.
+ *
+ * All three are source-shape detectable, which is why they are here rather than
+ * deferred to a different analyser.
+ */
+function scanModernClasses(
+  fn: FnModel,
+  contract: ContractModel,
+  parsed: string,
+  delta: number,
+  authed: boolean,
+  push: (f: Finding) => void,
+) {
+  const src = fn.source;
+  if (!src) return;
+  const clean = stripCommentsAndStrings(src);
+  const external = isExternallyCallable(fn);
+
+  // --- vault-inflation-donation (ERC-4626 first-depositor / donation) ---------
+  // totalAssets() measured as the contract's own token balance is inflatable by a
+  // direct transfer: shares are priced off a number anyone can raise.
+  const readsOwnBalance = /balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)/.test(clean) ||
+    /balanceOf\s*\(\s*this\s*\)/.test(clean);
+  if (/^(totalAssets|totalUnderlying|totalHoldings|underlyingBalance)$/i.test(fn.name) && readsOwnBalance) {
+    push(make({
+      severity: "high",
+      swc: "SWC-105",
+      title: `${fn.name} prices shares off a balance anyone can inflate`,
+      confidence: "high",
+      detector: "vault-inflation-donation",
+      summary: `${fn.name} reports the vault's assets as its own token balance. That number is not controlled by the vault: anyone can transfer the underlying token in directly and raise it, which raises the share price without minting a share. The first-depositor variant of this drains a fresh vault with two transactions — deposit 1 wei, donate a large amount, then redeem the inflated share. This is the ERC-4626 donation class, and it is the most common classification in the current loss record.`,
+      walkthrough: `1. ${fn.name} returns balanceOf(address(this)) as the vault's total assets.\n2. An attacker transfers the asset in directly; no shares are minted, so every existing share is now worth more.\n3. With one share, the attacker redeems at the inflated price. On a fresh vault with one depositor, they take the next depositor's deposit.\n4. Track assets in a storage counter the deposit/withdraw paths maintain, or apply the ERC-4626 virtual offset (virtual shares and assets) so a donation cannot move the price by more than rounding.`,
+      exploitSolidity: `// Two transactions against a vault with one depositor:\nIERC20(asset).transfer(vault, 1);                       // 1 wei in, 1 share out\nIERC20(asset).transfer(vault, 10_000 ether);            // donation: no shares minted\nvault.redeem(1, attacker, attacker);                    // one share now redeems ~10k`,
+      remediationSolidity: `// Track assets internally instead of reading the balance, and apply the virtual offset.\nuint256 private _totalAssets;\nfunction totalAssets() public view returns (uint256) {\n    return _totalAssets; // maintained by deposit/withdraw, immune to direct transfers\n}\n// or, for a plain 4626: return super.totalAssets() + 1; and totalSupply() + 10 ** decimals;`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+    return;
+  }
+
+  // A convertToShares that divides by totalAssets with no virtual offset rounds the
+  // first depositor's way and is the same attack from the other side.
+  if (
+    /^convertTo(Shares|Assets)$/i.test(fn.name) &&
+    /totalAssets\s*\(/.test(clean) &&
+    // totalSupply is a public variable in most ERC-20/4626 implementations, so it
+    // appears bare; ERC-4626's own interface has it as a function. Match both.
+    /totalSupply\b/.test(clean)
+  ) {
+    const hasOffset = /\+\s*1\b|10\s*\*\*\s*decimals|virtual/i.test(clean);
+    if (!hasOffset) {
+      push(make({
+        severity: "high",
+        swc: "SWC-105",
+        title: `${fn.name} converts with no virtual offset`,
+        confidence: "medium",
+        detector: "vault-inflation-donation",
+        summary: `${fn.name} divides by totalAssets() and totalSupply() with no virtual shares or assets added. When totalSupply is zero or tiny the conversion is undefined or attacker-favourable, which is the arithmetic half of the ERC-4626 inflation attack: a first depositor can pick the ratio.`,
+        walkthrough: `1. ${fn.name} computes a ratio of assets to supply with no offset.\n2. With one share outstanding, an attacker controls both sides of that ratio by transferring assets in.\n3. They redeem at the ratio they chose.\n4. Add the ERC-4626 virtual offset (or mint dead shares on the first deposit) so the ratio cannot be set by a donation.`,
+        exploitSolidity: `// The attacker sets the ratio the next depositor converts at.\nIERC20(asset).transfer(address(vault), 1);            // 1 wei, 1 share\nIERC20(asset).transfer(address(vault), 5_000 ether);  // ratio now 5000:1`,
+        remediationSolidity: `function convertToShares(uint256 assets) public view returns (uint256) {\n    uint256 supply = totalSupply();\n    return supply == 0 ? assets : assets * (supply + 10 ** decimals) / (totalAssets() + 1);\n}`,
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+    return;
+  }
+
+  // --- signature-threshold-no-dedupe (Wormhole 2022, $326M) -----------------
+  // A loop over signatures that counts approvals and compares the count to a
+  // threshold, with no set that records which signers were already seen.
+  const loopsSignatures =
+    /(signatures?|sigs?)\s*\[\s*\w+\s*\]/.test(clean) ||
+    /for\s*\([^)]*(signatures?|sigs?)\.length/i.test(clean);
+  const countsApprovals = /(valid|count|approved|verified|signers)\w*\s*(\+\+|\+=|=\s*\w+\s*\+\s*1)/i.test(clean);
+  const comparesThreshold = /(>=|==)\s*(threshold|required|_required|quorum|minSigs|minSignatures|requiredSignatures|_threshold)/i.test(clean);
+  const rejectsDuplicates =
+    /(seen|used|already|duplicate|signed)\s*\[/i.test(clean) ||
+    /require\s*\(\s*!\s*\w+\s*\[/.test(clean) ||
+    /recovered\s*>\s*\w+/i.test(clean);
+  if (loopsSignatures && countsApprovals && comparesThreshold && !rejectsDuplicates) {
+    push(make({
+      severity: "critical",
+      swc: "SWC-107",
+      title: `${fn.name} counts signatures without rejecting duplicates`,
+      confidence: "high",
+      detector: "signature-threshold-no-dedupe",
+      summary: `${fn.name} loops over a signature array, counts the ones that verify, and accepts the message once the count reaches a threshold — but nothing records which signer was already counted. The same valid signature can be supplied N times to satisfy an N-of-M multisig with a single key. This is Wormhole (February 2022, $326M): the guardian signature was verified, and repeated.`,
+      walkthrough: `1. ${fn.name} verifies each signature in turn and increments a counter.\n2. The threshold check compares the counter, not the set of distinct signers.\n3. An attacker repeats one valid signature to reach the threshold with a single compromised or malicious key.\n4. Record each recovered signer and reject a repeat (a mapping, or require strictly increasing signer addresses), then compare distinct signers to the threshold.`,
+      exploitSolidity: `bytes[] memory sigs = new bytes[](required);\nfor (uint i = 0; i < required; i++) sigs[i] = oneValidSignature;\nIVictim(bridge).${fn.name}(message, sigs); // one key satisfies an N-of-M threshold`,
+      remediationSolidity: `address last = address(0);\nfor (uint i = 0; i < signatures.length; i++) {\n    address signer = recover(message, signatures[i]);\n    require(signer > last, "duplicate or unordered signer");\n    last = signer;\n    if (isGuardian[signer]) valid++;\n}\nrequire(valid >= threshold, "threshold not met");`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+    return;
+  }
+
+  // --- unbacked-mint ---------------------------------------------------------
+  // An externally callable mint whose amount is a caller parameter, with no check
+  // against assets actually held. Gated mints are the norm and are skipped: the
+  // finding is a permissionless one.
+  if (
+    external &&
+    !authed &&
+    /(_mint|\.mint)\s*\(/.test(clean) &&
+    fn.params.some((p) => /^uint/.test(p.typeName) && p.name) &&
+    !/(deposit|collateral|backing|reserve|locked|deposited|supplied)\s*(\(|\[)/i.test(clean) &&
+    !/require\s*\([^)]*(<=|>=)[^)]*(deposit|collateral|reserve|backing)/i.test(clean)
+  ) {
+    push(make({
+      severity: "high",
+      swc: "SWC-105",
+      title: `${fn.name} mints an amount the caller chooses, backed by nothing`,
+      confidence: "medium",
+      detector: "unbacked-mint",
+      summary: `${fn.name} is externally callable, takes an amount from its caller, and mints it without checking the caller supplied or locked any asset first. Nothing in the function ties the minted quantity to backing, so the supply is whatever the caller says. Unbacked and infinite mints are one of the most frequent classifications in the current loss record.`,
+      walkthrough: `1. ${fn.name} mints a caller-supplied amount.\n2. No deposit, collateral or reserve check appears in the function.\n3. An attacker mints to themselves and redeems against whatever the token is accepted for.\n4. Mint only against a measured deposit, and gate the function if it is meant to be privileged.`,
+      exploitSolidity: `IVictim(vault).${fn.name}(attacker, type(uint256).max);`,
+      remediationSolidity: `function ${fn.name}(uint256 amount) external {\n    uint256 received = IERC20(asset).transferFrom(msg.sender, address(this), amount);\n    require(received == amount, "short transfer");\n    _mint(msg.sender, amount); // 1:1 with assets actually received\n}`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+}
+
 function scanHistoricalFn(
   fn: FnModel,
   contract: ContractModel,
@@ -2708,6 +2854,8 @@ function scanContract(
     scanIncidentClasses(fn, contract, parsed, delta, authed, push);
     // 2021-2025 classes: dispatch, bridge handlers, ecrecover, oracle feeds.
     scanHistoricalFn(fn, contract, parsed, delta, authed, push);
+    // 2022-2026 loss categories the corpus was thin on.
+    scanModernClasses(fn, contract, parsed, delta, authed, push);
   }
 
   // Fix 12: read-only reentrancy fires ONLY on a demonstrated

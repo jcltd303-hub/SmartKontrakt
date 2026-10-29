@@ -159,6 +159,12 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   "private-secret": "token-accounting",
   "signature-malleability": "token-accounting",
   "signature-replay": "token-accounting",
+  // 2026-10-29: three families the corpus was thin on, added after measuring the
+  // incident record. Vault inflation is token accounting; the threshold bypass is
+  // caller identity; an unbacked mint is value creation.
+  "vault-inflation-donation": "token-accounting",
+  "signature-threshold-no-dedupe": "caller-identity",
+  "unbacked-mint": "value-and-settlement",
   "storage-gap": "token-accounting",
   // evm-and-bytecode
   "bytecode-create2": "evm-and-bytecode",
