@@ -106,3 +106,28 @@ test("a second /start cannot slip past the idle guard", () => {
   const releases = (afterClaim.match(/status\.state = "idle";/g) ?? []).length;
   assert.ok(releases >= returns, `every early return releases the claim (${returns} returns, ${releases} releases)`);
 });
+
+test("the Status literal initialises every required field", () => {
+  // 2026-10-29: `llm` and `llmVerdict` were declared required on `Status` but missing
+  // from the literal. At runtime the second pass read `status.llmVerdict.state` on
+  // undefined, the catch handler then called `recordLlm(status.llm, ...)` which threw
+  // `reading 'calls'`, and that throw escaped the catch and PARKED the run.
+  //
+  // Nothing caught it because tsconfig's include is ["src", "server"] — pipeline-worker
+  // has never been type-checked. This test is a stand-in until it is.
+  const src = readFileSync("pipeline-worker/worker.ts", "utf8");
+  const start = src.indexOf("let status: Status = {");
+  assert.ok(start > 0, "the Status literal exists");
+  const end = src.indexOf("\n};", start);
+  assert.ok(end > start, "the literal terminates");
+  const literal = src.slice(start, end);
+
+  // Every field named on the Status type must appear in the literal.
+  const typeStart = src.indexOf("type Status = {");
+  const typeEnd = src.indexOf("\n};", typeStart);
+  const typeBody = src.slice(typeStart, typeEnd);
+  const fields = [...typeBody.matchAll(/^\s{2}([A-Za-z_][\w]*)\??:/gm)].map((m) => m[1]!);
+  assert.ok(fields.length > 10, `parsed ${fields.length} fields from Status`);
+  const missing = fields.filter((f) => !new RegExp(`\\b${f}\\s*:`).test(literal));
+  assert.deepEqual(missing, [], `missing from the Status literal: ${missing.join(", ")}`);
+});

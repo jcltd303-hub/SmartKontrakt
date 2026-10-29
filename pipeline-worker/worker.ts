@@ -258,8 +258,18 @@ type Status = {
   llmVerdict: ReturnType<typeof llmVerdict>;
 };
 
+// One health object, shared by the tally and the verdict derived from it. Both were
+// declared required on `Status` but missing from this literal, and pipeline-worker/ was
+// not in tsconfig's include, so nothing caught it. At runtime the second pass read
+// `status.llmVerdict.state` on undefined, the catch handler then called
+// `recordLlm(status.llm, ...)` which threw `reading 'calls'`, and that throw escaped the
+// catch and parked the run.
+const initialLlmHealth = newLlmHealth();
+
 let status: Status = {
   state: "idle",
+  llm: initialLlmHealth,
+  llmVerdict: llmVerdict(initialLlmHealth),
   total: 0,
   completed: 0,
   failed: 0,
