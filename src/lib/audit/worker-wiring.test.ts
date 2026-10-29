@@ -75,3 +75,34 @@ test("the run loop tries code dedupe, and fails open when it cannot", () => {
   );
   assert.match(src, /reused an earlier scan of identical code/, "the run summary reports reuse");
 });
+
+test("a second /start cannot slip past the idle guard", () => {
+  // 2026-10-28: two /start calls seconds apart both announced "started:", because
+  // handleStart is invoked as `void handleStart(...)` and awaited readJsonBody and the
+  // address-file read before `status.state` became "running". Two live run loops then
+  // share runCtx, runSeen, the batch buffer and the auto-PoC state, and the second
+  // run's item list replaces the first mid-flight.
+  const src = readFileSync("pipeline-worker/worker.ts", "utf8");
+  const start = src.indexOf("async function handleStart");
+  assert.ok(start > 0, "handleStart exists");
+  const body = src.slice(start, start + 3000);
+
+  // The claim must come before the first await, so the check and the assignment are
+  // atomic under Node's single thread.
+  const claimAt = body.indexOf('status.state = "running";');
+  // indexOf("await ") matches the word inside the comment above, so target the
+  // statement itself.
+  const firstAwait = body.indexOf("await readJsonBody(req)");
+  assert.ok(claimAt > 0, "handleStart claims the run");
+  assert.ok(firstAwait > 0, "handleStart awaits something");
+  assert.ok(
+    claimAt < firstAwait,
+    "the state must be claimed BEFORE the first await, or two starts both pass the guard",
+  );
+  assert.match(body, /if \(status\.state !== "idle"\)/, "the idle guard is still there");
+  // And every early return after the claim must release it, or the worker wedges.
+  const afterClaim = body.slice(claimAt);
+  const returns = (afterClaim.match(/\breturn;/g) ?? []).length;
+  const releases = (afterClaim.match(/status\.state = "idle";/g) ?? []).length;
+  assert.ok(releases >= returns, `every early return releases the claim (${returns} returns, ${releases} releases)`);
+});

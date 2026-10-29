@@ -815,10 +815,26 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     sendJson(res, 409, { error: `a run is already ${status.state} — pause or stop it first` });
     return;
   }
+  // Claim the run SYNCHRONOUSLY, before any await.
+  //
+  // Measured 2026-10-28: two /start calls a few seconds apart both announced
+  // "started:", which the guard above should have prevented. handleStart is invoked
+  // as `void handleStart(...)`, and it awaits readJsonBody and the address-list read
+  // before the loop starts and before `status.state` is set to "running" — so two
+  // requests could both pass the idle check. Two live run loops then share `runCtx`,
+  // `runSeen`, the batch buffer and the auto-PoC state, and the second run's item list
+  // silently replaces the first one's mid-flight.
+  //
+  // Setting the state here, with no await between the check and the assignment, makes
+  // the claim atomic under Node's single thread. Every early return below puts it back.
+  status.state = "running";
+  writeStatusFile();
   let body: Record<string, unknown>;
   try {
     body = (await readJsonBody(req)) as Record<string, unknown>;
   } catch (err) {
+    status.state = "idle";
+    writeStatusFile();
     sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
     return;
   }
@@ -828,6 +844,8 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   })();
   const addressesFile = typeof body.addressesFile === "string" ? body.addressesFile.trim() : "";
   if (!addressesFile) {
+    status.state = "idle";
+    writeStatusFile();
     sendJson(res, 400, { error: "addressesFile is required (path on this machine, e.g. ~/addresses.csv)" });
     return;
   }
@@ -837,9 +855,13 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   // instead of the driver's opaque "Invalid URL" from the skip check.
   const dbProblem = databaseUrlProblem(process.env.DATABASE_URL);
   if (dbProblem) {
+    status.state = "idle";
+    writeStatusFile();
     sendJson(res, 400, {
       error: `DATABASE_URL in pipeline-worker/.env is not a valid Supabase pooler URL: ${dbProblem}. Fix: use the Connection string → URI (pooler mode, port 6543) from Supabase Settings → Database, keep exactly one DATABASE_URL line. (Credentials are percent-encoded automatically — @ # / : ? and spaces in the password are handled, so do not pre-encode them by hand.)`,
     });
+    status.state = "idle";
+    writeStatusFile();
     return;
   }
   const chainId = typeof body.chainId === "string" && body.chainId.trim() ? body.chainId.trim() : "ethereum";
@@ -849,7 +871,11 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   // aiSecondPass — the agent loop is LLM-driven.
   const deepAgent = body.deepAgent === true;
   if ((aiSecondPass || deepAgent) && !process.env.OPENROUTER_API_KEY?.trim()) {
+    status.state = "idle";
+    writeStatusFile();
     sendJson(res, 400, { error: "aiSecondPass / deepAgent needs OPENROUTER_API_KEY in pipeline-worker/.env" });
+    status.state = "idle";
+    writeStatusFile();
     return;
   }
   // Budget guard: each flagged address costs up to 3 LLM calls + up to 6
@@ -876,7 +902,11 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   try {
     text = await fsp.readFile(addressesFile, "utf8");
   } catch {
+    status.state = "idle";
+    writeStatusFile();
     sendJson(res, 400, { error: `cannot read addresses file: ${addressesFile}` });
+    status.state = "idle";
+    writeStatusFile();
     return;
   }
   // Sharding: N processes, one flag each, disjoint by hash of address. Parsed
@@ -885,13 +915,21 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   try {
     shard = parseShard(body.shard);
   } catch (err) {
+    status.state = "idle";
+    writeStatusFile();
     sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    status.state = "idle";
+    writeStatusFile();
     return;
   }
   const allItems = parseAddressList(text, chainId);
   const items = applyShard(allItems, shard);
   if (items.length === 0) {
+    status.state = "idle";
+    writeStatusFile();
     sendJson(res, 400, { error: "no valid addresses in file" });
+    status.state = "idle";
+    writeStatusFile();
     return;
   }
 
@@ -932,6 +970,8 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     sendJson(res, 500, {
       error: `could not check Supabase for already-saved addresses: ${err instanceof Error ? err.message : String(err)}`,
     });
+    status.state = "idle";
+    writeStatusFile();
     return;
   }
 
