@@ -178,3 +178,36 @@ where coalesce(i.runtime_bytes, 0) > 1000        -- the new code must be more th
   and timestamp_diff(l.upgraded_at, p.deployed_at, day) >= 90
 order by upgrade_score desc, coalesce(b.wei, 0) desc
 limit 500;
+
+
+-- ===========================================================================
+-- THE PASTE-READY LIST
+--
+-- Same query, reduced to what POST /start wants: one implementation address per
+-- line, best first, deduped. Feed implementations, not proxies — the proxy is a
+-- forwarder, the implementation is where the source and the logic are, and the
+-- pipeline already follows proxy -> implementation on its own when given a proxy.
+--
+-- Measured 2026-10-28: 166 proxies resolve to 88 implementations. At ~20s per
+-- address that is roughly half an hour of pipeline time.
+-- ===========================================================================
+select string_agg(impl, '\n' order by score desc, usd_flow_30d desc) as addresses
+from (
+  select
+    l.impl,
+    max(
+      least(coalesce(f.usd_flow, 0) / 1e7, 1)                              * 0.30
+    + least(timestamp_diff(l.upgraded_at, p.deployed_at, day) / 365.0, 1)  * 0.25
+    + least(coalesce(i.runtime_bytes, 0) / 12000.0, 1)                     * 0.20
+    + least(count(*) / 5.0, 1)                                             * 0.20
+    )                                        as score,
+    sum(coalesce(f.usd_flow, 0))             as usd_flow_30d,
+    count(*)                                 as proxies
+  from latest l
+  left join codes      i on i.address = l.impl
+  left join codes      p on p.address = l.proxy
+  left join flows      f on f.address = l.proxy
+  where coalesce(i.runtime_bytes, 0) > 1000
+    and timestamp_diff(l.upgraded_at, p.deployed_at, day) >= 90
+  group by l.impl, i.runtime_bytes
+);
