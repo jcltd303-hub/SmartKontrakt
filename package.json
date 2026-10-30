@@ -18,6 +18,7 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
     "check:detectors": "node --experimental-strip-types src/lib/audit/selfcheck.ts",
+    "check:defihacklabs": "node --experimental-strip-types scripts/dhl-benchmark.ts",
     "generate:fallbacks": "node scripts/generate-poc-fallbacks-ts.mjs",
     "check:fallbacks": "node scripts/compile-poc-fallbacks.mjs",
     "check:fixtures": "node scripts/run-poc-fixtures.mjs",
