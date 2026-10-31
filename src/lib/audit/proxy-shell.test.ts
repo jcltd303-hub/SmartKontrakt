@@ -126,3 +126,34 @@ test("the real OZ proxy source produces no criticals end to end", () => {
   assert.equal(deleg!.severity, "info");
   assert.match(deleg!.summary, /proxy's own delegation mechanism/);
 });
+
+test("a doc comment mentioning selfdestruct cannot switch the gate off", () => {
+  // Measured 2026-10-31: 0x0c0388e4 kept all 29 criticals on a fresh run while its
+  // sibling went to 0, because its flattened body mentions `selfdestruct(` in a comment.
+  // looksLikeProxyShell tested the RAW source for that, so a comment disabled the gate
+  // and 17 delegatecall + 6 arbitrary-dispatch findings stayed critical.
+  const withComment = `
+pragma solidity ^0.8.0;
+/// @dev This proxy never calls selfdestruct(payable(owner)). See audit 2026.
+contract Shell {
+    // the old implementation had selfdestruct(burn); removed.
+    function _implementation() internal view returns (address) { return address(0); }
+    fallback() external payable { address(0).delegatecall(msg.data); }
+}`;
+  assert.equal(looksLikeProxyShell(withComment), true, "a comment is not behaviour");
+
+  // And the same source WITHOUT the comment must behave identically.
+  const withoutComment = withComment.replace(/\/\/\/.*|\/\/.*/g, "");
+  assert.equal(looksLikeProxyShell(withoutComment), true);
+});
+
+test("a real selfdestruct call still disqualifies a shell", () => {
+  const real = `
+pragma solidity ^0.8.0;
+contract Shell {
+    function _implementation() internal view returns (address) { return address(0); }
+    fallback() external payable { address(0).delegatecall(msg.data); }
+    function kill() external { selfdestruct(payable(msg.sender)); }
+}`;
+  assert.equal(looksLikeProxyShell(real), false, "real behaviour means not a shell");
+});

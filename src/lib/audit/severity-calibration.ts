@@ -1,4 +1,5 @@
 import type { Finding } from "./types.ts";
+import { stripCommentsAndStringsKeepLines } from "./strip-source.ts";
 
 /**
  * Severity calibration — a "critical" must be earned, not assumed.
@@ -151,15 +152,23 @@ export const CALIBRATION_NOTE_PROXY_GUARD =
  * treated as one: that is a different contract with real behaviour.
  */
 export function looksLikeProxyShell(source: string): boolean {
-  if (!source || !/delegatecall/i.test(source)) return false;
-  if (/selfdestruct\s*\(/i.test(source)) return false;
+  if (!source) return false;
+  // Judge the COMMENT- AND STRING-STRIPPED view, for the same reason the selfdestruct
+  // detector had to. Measured 2026-10-31: 0x0c0388e4 kept all 29 of its criticals on a
+  // fresh 2026-10-30.12 run while its sibling went to 0, because its flattened body
+  // mentions `selfdestruct(` in a doc comment. That comment disabled this gate, so the
+  // 17 delegatecall and 6 arbitrary-dispatch findings stayed critical. A comment is not
+  // behaviour, and it must not be able to switch a gate off.
+  const view = stripCommentsAndStringsKeepLines(source);
+  if (!/delegatecall/i.test(view)) return false;
+  if (/selfdestruct\s*\(/i.test(view)) return false;
 
   const hasFallbackDelegation =
-    /function\s+(fallback|receive|_fallback|_delegate)\s*\(/i.test(source) ||
-    /\bfallback\s*\(\s*\)\s*external/i.test(source) ||
-    /\breceive\s*\(\s*\)\s*external/i.test(source);
+    /function\s+(fallback|receive|_fallback|_delegate)\s*\(/i.test(view) ||
+    /\bfallback\s*\(\s*\)\s*external/i.test(view) ||
+    /\breceive\s*\(\s*\)\s*external/i.test(view);
   const hasImplementationAccessor =
-    /function\s+(_implementation|_getImplementation|getImplementation|implementation|_logic)\s*\(/i.test(source) ||
+    /function\s+(_implementation|_getImplementation|getImplementation|implementation|_logic)\s*\(/i.test(view) ||
     /360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc/i.test(source); // EIP-1967 slot
 
   return hasFallbackDelegation && hasImplementationAccessor;

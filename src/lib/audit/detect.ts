@@ -1,4 +1,5 @@
 import type { AstNode, Finding, Severity } from "./types.ts";
+import { stripCommentsAndStringsKeepLines } from "./strip-source.ts";
 import type { ContractModel, FnModel, ModModel, SourceModel, StateVar } from "./model.ts";
 import { classifyFunction, isExplicitGuardModifierName } from "./reachability.ts";
 import type { GateKind } from "./reachability.ts";
@@ -4562,34 +4563,6 @@ function stripCommentsAndStrings(src: string): string {
 // computed from the result match the original source. Used by Fix 30
 // so a commented-out or string-literal encodePacked/hash cannot flag
 // (the F3Dx Fix 1c class: a comment containing the pattern).
-function stripCommentsAndStringsKeepLines(src: string): string {
-  let out = "";
-  let i = 0;
-  while (i < src.length) {
-    const c = src[i];
-    const n = src[i + 1];
-    if (c === "/" && n === "/") {
-      while (i < src.length && src[i] !== "\n") { out += " "; i += 1; }
-    } else if (c === "/" && n === "*") {
-      out += "  "; i += 2;
-      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) {
-        out += src[i] === "\n" ? "\n" : " "; i += 1;
-      }
-      out += "  "; i += 2;
-    } else if (c === '"' || c === "'") {
-      const q = c;
-      out += " "; i += 1;
-      while (i < src.length && src[i] !== q) {
-        if (src[i] === "\\") { out += "  "; i += 2; continue; }
-        out += src[i] === "\n" ? "\n" : " "; i += 1;
-      }
-      out += " "; i += 1;
-    } else {
-      out += c; i += 1;
-    }
-  }
-  return out;
-}
 
 /** Block data that can act as entropy: clock fields plus beacon/hash sources. */
 const BLOCK_DATA = /block\.timestamp|\bnow\b|block\.number|block\.coinbase|blockhash\s*\(|block\.prevrandao|block\.difficulty/;

@@ -206,6 +206,19 @@ import {
  *                accepts a refund-with-timeout plus any unguarded payout;
  *                registry-dispatched-logic accepts a non-parameter index. Same
  *                inputs now produce different records, so the archive refreshes.
+ * 2026-10-31.13 — The proxy-shell gate judged the RAW source, so a doc comment could
+ *                switch it off. Measured on a fresh 2026-10-30.12 run: 0x38872fad went
+ *                29 -> 0 while 0x0c0388e4 stayed at 29, because its flattened body
+ *                mentions `selfdestruct(` in a comment and `looksLikeProxyShell`
+ *                returned false on that alone — leaving 17 delegatecall and 6
+ *                arbitrary-dispatch findings critical on a contract that is a shell.
+ *                The gate now judges the comment/string-stripped view, the same one the
+ *                selfdestruct detector had to adopt for the identical reason. The
+ *                stripper moved to strip-source.ts so both consumers share one copy
+ *                instead of two that drift.
+ *
+ *                Same inputs now produce different records, so the archive refreshes.
+ *
  * 2026-10-30.12 — Seven semantic fixes, none of which changed the detector NAME list,
  *                which is why the fingerprint below did not move and why `refresh:
  *                "stale"` kept skipping rows written by the previous build. The
@@ -236,7 +249,7 @@ import {
  *
  *                Same inputs now produce different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-10-30.12";
+export const ANALYZER_BASELINE = "2026-10-31.13";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {
