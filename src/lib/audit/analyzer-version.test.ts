@@ -89,7 +89,10 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // And to 2026-10-27.9 with the 2026-era corpus and the two bugs it found.
   // And to 2026-10-27.10 with the recall-first loosening.
   // And to 2026-10-27.11 with the edge-coverage pass (117 -> 131 of 143).
-  assert.equal(ANALYZER_BASELINE, "2026-10-27.11");
+  // And to 2026-10-30.12 with the seven semantic fixes — none of which changed the
+  // detector NAME list, which is why the fingerprint stayed put and `refresh: "stale"`
+  // kept skipping 88 phantom criticals. See the changelog entry in analyzer-version.ts.
+  assert.equal(ANALYZER_BASELINE, "2026-10-30.12");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });
@@ -100,4 +103,39 @@ test("the current stamp is current; anything else is stale", () => {
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+0000000000000000`), true);
   // Same baseline, older fingerprint: a detector or weight changed.
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+${"0".repeat(16)}`), true);
+});
+
+/**
+ * The canary that would have caught 2026-10-30.
+ *
+ * The fingerprint hashes detector NAMES, categories and scoring constants — never the
+ * rule bodies. So a day of semantic fixes moved nothing, `isStampOutOfDate` judged 88
+ * phantom criticals current, and `refresh: "stale"` skipped them forever.
+ *
+ * This test hashes the detector sources. If you change a rule, it fails and tells you to
+ * bump ANALYZER_BASELINE — which is the only thing that makes the archive refresh.
+ */
+test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
+  const { createHash } = await import("node:crypto");
+  const { readFileSync } = await import("node:fs");
+  const files = ["src/lib/audit/detect.ts", "src/lib/audit/bytecode.ts", "src/lib/audit/smartbugs.ts"];
+  const h = createHash("sha256");
+  for (const f of files) h.update(readFileSync(f));
+  const digest = h.digest("hex").slice(0, 12);
+
+  // Update this constant ONLY together with ANALYZER_BASELINE. Both move, or neither.
+  const DETECTOR_SOURCE_DIGEST = "d899946b95cb";
+
+  if (DETECTOR_SOURCE_DIGEST === "__PLACEHOLDER__") {
+    assert.fail(
+      `detector source digest is ${digest} — set DETECTOR_SOURCE_DIGEST to it in the same ` +
+        `commit that bumps ANALYZER_BASELINE`,
+    );
+  }
+  assert.equal(
+    digest,
+    DETECTOR_SOURCE_DIGEST,
+    "detect.ts/bytecode.ts/smartbugs.ts changed: bump ANALYZER_BASELINE and update " +
+      "DETECTOR_SOURCE_DIGEST together, or the archive will keep serving stale findings",
+  );
 });

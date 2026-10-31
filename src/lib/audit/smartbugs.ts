@@ -110,6 +110,11 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "bytecode-reentrancy-shape": "reentrancy",
   // access_control
   "tx-origin": "access_control",
+  // added 2026-10-30 with the 2022-2026 loss classes; registered so the analyzer
+  // fingerprint moves when they are added or removed.
+  "signature-threshold-no-dedupe": "access_control",
+  "unbacked-mint": "arithmetic",
+  "vault-inflation-donation": "arithmetic",
   "bytecode-origin": "access_control",
   "unprotected-admin": "access_control",
   "unprotected-ether": "access_control",

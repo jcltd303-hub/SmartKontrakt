@@ -206,9 +206,37 @@ import {
  *                accepts a refund-with-timeout plus any unguarded payout;
  *                registry-dispatched-logic accepts a non-parameter index. Same
  *                inputs now produce different records, so the archive refreshes.
+ * 2026-10-30.12 — Seven semantic fixes, none of which changed the detector NAME list,
+ *                which is why the fingerprint below did not move and why `refresh:
+ *                "stale"` kept skipping rows written by the previous build. The
+ *                archive held 88 criticals from 2026-10-27.11 that a fresh run no
+ *                longer produces:
+ *
+ *                  selfdestruct        matched `src`, so a COMMENT mentioning
+ *                                      selfdestruct( produced a critical — five per
+ *                                      contract on an OZ proxy that has none.
+ *                  signature-replay    fired on recovery primitives (recoverAddress…
+ *                                      tryRecover, checkNSignatures) and on view
+ *                                      helpers, which cannot be replayed.
+ *                  bridge-message-auth fired on self-service claims paying the caller
+ *                                      their own accrued balance.
+ *                  delegatecall /      the proxy mechanism itself, now discounted by
+ *                  unprotected-admin   the proxy-shell gate.
+ *                  arbitrary-dispatch  ignored proven access control; a fixed-caller
+ *                                      `if (msg.sender != X) revert` now caps it.
+ *                  initializer gate    corroborated criticals against an address with
+ *                                      no code, and against a payable fallback that
+ *                                      accepts every unknown selector.
+ *                  value               a misread token `decimals` of 1 inflated one
+ *                                      holding to $26.7B.
+ *
+ *                Three detectors were also added (vault-inflation-donation,
+ *                signature-threshold-no-dedupe, unbacked-mint) and are now registered
+ *                in SMARTBUGS_BY_DETECTOR so the fingerprint tracks them.
+ *
+ *                Same inputs now produce different records, so the archive refreshes.
  */
-// Full-byte windows, explicit missing evidence and finding-specific prompt fixes.
-export const ANALYZER_BASELINE = "2026-10-27.11";
+export const ANALYZER_BASELINE = "2026-10-30.12";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {
