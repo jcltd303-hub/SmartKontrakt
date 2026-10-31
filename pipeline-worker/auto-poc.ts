@@ -540,6 +540,20 @@ export async function runAutoPocForEntry(
                 `[auto-poc] ${address} ${finding.detector}: generated code has NO test* function ` +
                   `(${testCode.length}b, contracts: ${contractNames.join(",") || "none"}) — forge will run zero tests`,
               );
+            } else {
+              // The other way forge runs zero tests: the file HAS tests, but the backend
+              // cannot derive a --match-contract name from it. Its regex needs
+              // `contract X is ... Test`; without that declaration it falls back to the
+              // literal "PoC", which matches nothing when the contract is called something
+              // else. Silent on both sides until now.
+              const inheritsTest = /contract\s+([A-Za-z0-9_]+)\s+is\s+[^{]*\bTest\b/.test(testCode);
+              if (!inheritsTest) {
+                console.log(
+                  `[auto-poc] ${address} ${finding.detector}: ${testFns.length} test function(s) but NO ` +
+                    `'contract X is ... Test' declaration (contracts: ${contractNames.join(",") || "none"}) — ` +
+                    `the backend will fall back to --match-contract PoC and match nothing`,
+                );
+              }
             }
             const r = await deps.runBackend(opts.backendUrl, {
               address,
