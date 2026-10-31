@@ -524,6 +524,23 @@ export async function runAutoPocForEntry(
               lastRun = { status: shared.status, logs: shared.logs };
               return shared;
             }
+            // Say what is being sent. 2026-10-31: every attempt came back no_tests and
+            // neither side could say why — the backend runs forge with
+            // --match-contract, and a file whose contract has no test* function produces
+            // exactly this, silently. Two facts per call settle it: the size, and whether
+            // any function is actually named test*.
+            const testFns = (testCode.match(/\bfunction\s+(test[A-Za-z0-9_]*)\s*\(/g) ?? []).map((m) =>
+              m.replace(/\bfunction\s+/, "").replace(/\s*\($/, ""),
+            );
+            const contractNames = (testCode.match(/\bcontract\s+([A-Za-z0-9_]+)/g) ?? []).map((m) =>
+              m.replace(/\bcontract\s+/, ""),
+            );
+            if (testFns.length === 0) {
+              console.log(
+                `[auto-poc] ${address} ${finding.detector}: generated code has NO test* function ` +
+                  `(${testCode.length}b, contracts: ${contractNames.join(",") || "none"}) — forge will run zero tests`,
+              );
+            }
             const r = await deps.runBackend(opts.backendUrl, {
               address,
               chainId: chainId ?? input.chainId,
