@@ -1,4 +1,4 @@
-import { sha3_256 } from "js-sha3";
+import { keccak256, sha3_256 } from "js-sha3";
 import type { Report } from "./types.ts";
 import { analyzeInput } from "./engine.ts";
 import { analyzeBytecode } from "./bytecode.ts";
@@ -1011,11 +1011,20 @@ export async function analyzeAddress(
     // when the contract exposes no decisive getters.
     if (report.findings.some((f) => f.severity === "critical" || f.severity === "high")) {
       try {
-        const liveState = await gatherLiveState(address, chain.id, {
-          source: sourcifyMatch.source,
-          abi: report.inventory.abi,
-        });
-        if (liveState) report.inventory.liveState = liveState;
+        // Bind the reads to the code they describe. No runtime code means nothing was
+        // deployed to read, and a getter "failure" there is not evidence of anything —
+        // it is the same mistake as corroborating an initializer against a codeless
+        // address. The hash goes on the report so a saved record says which code its
+        // live evidence belongs to.
+        const liveCode = runtimeCodeForReport(report, sourcifyMatch.source);
+        const liveCodeHash = liveCode ? keccak256(liveCode.toLowerCase().replace(/^0x/, "")) : null;
+        if (liveCode) {
+          const liveState = await gatherLiveState(address, chain.id, {
+            source: sourcifyMatch.source,
+            abi: report.inventory.abi,
+          }, { codeHash: liveCodeHash });
+          if (liveState) report.inventory.liveState = liveState;
+        }
       } catch {
         // evidence is best-effort — the audit stands without it
       }

@@ -219,3 +219,24 @@ test("a hung RPC lands in failures at the deadline instead of stalling", async (
   assert.equal(report.failures.length, 1);
   assert.match(report.failures[0]!.error, /deadline/);
 });
+
+test("the live-state report records the code hash it describes", async () => {
+  // Ported from the Perplexity incident harness: a probe answer must bind to the runtime
+  // code it was produced against. Without the hash, a saved "paused() == false" says
+  // nothing about which contract it describes.
+  const r = await gatherLiveState("0x1111111111111111111111111111111111111111", "ethereum",
+    { abi: [{ type: "function", name: "paused", inputs: [], outputs: [{ type: "bool" }], stateMutability: "view" }] as any },
+    { codeHash: "abc123", callFn: async () => ({ success: true, result: "0x" + "0".repeat(64) }) } as any);
+  assert.equal(r.codeHash, "abc123");
+});
+
+test("no code hash is recorded as null, not invented", async () => {
+  // With a getter present but no codeHash supplied, the field is null — never a guess.
+  // (With no decisive getters at all the whole probe returns null, which is a different
+  // and already-covered behaviour.)
+  const r = await gatherLiveState("0x1111111111111111111111111111111111111111", "ethereum",
+    { abi: [{ type: "function", name: "paused", inputs: [], outputs: [{ type: "bool" }], stateMutability: "view" }] as any },
+    { callFn: async () => ({ success: true, result: "0x" + "0".repeat(64) }) } as any);
+  assert.ok(r, "the probe ran");
+  assert.equal(r!.codeHash, null);
+});

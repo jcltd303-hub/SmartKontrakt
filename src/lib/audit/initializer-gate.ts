@@ -144,6 +144,18 @@ export type InitializerGateOutcome = {
   upgraded: number;
   /** Findings dropped by the ABI membership check. */
   dropped: number;
+  /**
+   * keccak256 of the runtime code the probes ran against, when codeFn was supplied.
+   * Recorded so a saved record can say WHICH code its evidence describes — without it a
+   * corroborated critical is unbound and cannot be re-checked after an upgrade.
+   */
+  codeHash: string | null;
+  /**
+   * True when the runtime code changed between the start and the end of the probe. Every
+   * corroboration made in that window is withdrawn, because the answers describe a
+   * contract that is no longer deployed.
+   */
+  codeChanged: boolean;
 };
 
 const word = (v: bigint): string => v.toString(16).padStart(64, "0");
@@ -337,7 +349,11 @@ export async function applyInitializerGate(
   ctx: { address: string; chainId: string; source: string },
   opts?: InitializerGateOpts,
 ): Promise<InitializerGateOutcome> {
-  const outcome: InitializerGateOutcome = { probed: false, upgraded: 0, dropped: 0 };
+  const outcome: InitializerGateOutcome = {
+    probed: false, upgraded: 0, dropped: 0, codeHash: null, codeChanged: false,
+  };
+  /** Findings this call corroborated, so a mid-probe upgrade can withdraw them. */
+  const corroboratedHere: Finding[] = [];
   try {
     const targets = report.findings.filter(
       (f) => f.detector === "unprotected-initializer" && f.severity === "high" && !!f.locationFn,
@@ -399,6 +415,7 @@ export async function applyInitializerGate(
         if (code !== null) {
           targetCode = code.toLowerCase().replace(/^0x/, "");
           if (targetCode === "" || /^0*$/.test(targetCode)) targetHasNoCode = true;
+          else outcome.codeHash = keccak256(targetCode);
         }
       } catch {
         // leave both unset
@@ -611,6 +628,7 @@ export async function applyInitializerGate(
         }
         f.severity = "critical";
         f.corroborated = true;
+        corroboratedHere.push(f);
         f.summary += `\n\n[Initializer gate: LIVE evidence — ${parts.join("; ")}. Critical restored; finding marked corroborated.]`;
         outcome.upgraded += 1;
         continue;
@@ -631,6 +649,38 @@ export async function applyInitializerGate(
         f.summary += `\n\n[Initializer gate: live probe unavailable (no RPC answer) — live initialized state not confirmed. Kept at high, uncorroborated.]`;
       } else {
         f.summary += `\n\n[Initializer gate: live probe ran but produced no decisive evidence — no uninitialized state read, and no simulation that both succeeds and moves privileged state (a successful call alone is not evidence: per-pool initializers succeed by design). Kept at high, uncorroborated.]`;
+      }
+    }
+
+    // --- Binding: the answers must describe the code that is still deployed. ---
+    //
+    // Every probe above reads a live contract. If the contract is upgraded mid-probe,
+    // each answer describes code that no longer exists, and a corroborated critical is
+    // then a claim about a contract nobody can find. Ported from the Perplexity incident
+    // harness, which refuses any probe result whose runtimeSha256 does not match the one
+    // it recorded. We can only compare start against end (the analysis has no stored
+    // hash to match), which is enough to catch a change inside the probe window.
+    if (opts?.codeFn && outcome.codeHash) {
+      try {
+        const after = await opts.codeFn(ctx.address, ctx.chainId);
+        if (after !== null) {
+          const afterHash = keccak256(after.toLowerCase().replace(/^0x/, ""));
+          if (afterHash !== outcome.codeHash) {
+            outcome.codeChanged = true;
+            for (const f of corroboratedHere) {
+              f.severity = "high";
+              f.corroborated = false;
+              f.summary +=
+                "\n\n[Initializer gate: WITHDRAWN — the runtime code changed while the probe ran " +
+                `(${outcome.codeHash.slice(0, 8)}… -> ${afterHash.slice(0, 8)}…). The evidence ` +
+                "describes a contract that is no longer deployed. Kept at high, uncorroborated.]";
+            }
+            outcome.upgraded = 0;
+          }
+        }
+      } catch {
+        // Unreadable second read: keep the corroboration, but the record carries the
+        // start hash so a later re-check can tell whether the code moved.
       }
     }
 

@@ -206,6 +206,23 @@ import {
  *                accepts a refund-with-timeout plus any unguarded payout;
  *                registry-dispatched-logic accepts a non-parameter index. Same
  *                inputs now produce different records, so the archive refreshes.
+ * 2026-10-31.15 — Probe answers are now bound to the code they describe. Ported from the
+ *                Perplexity incident harness (createIncidentModule), whose detect() refuses
+ *                any probe result whose runtimeSha256 does not match the one it recorded.
+ *
+ *                initializer-gate: the runtime code is hashed before probing and re-read
+ *                after. If it changed, every corroboration made in that window is
+ *                withdrawn and the finding returns to high, uncorroborated, with a note.
+ *                InitializerGateOutcome now carries codeHash and codeChanged.
+ *
+ *                live-state: the probe refuses to run when there is no runtime code (a
+ *                getter "failure" against a codeless address is not evidence — the same
+ *                mistake as corroborating an initializer against one), and
+ *                LiveStateReport.codeHash records which code its reads belong to.
+ *
+ *                Neither change alters what the detectors match, but both alter which
+ *                records carry live evidence, so the archive refreshes.
+ *
  * 2026-10-31.14 — The analysis was not scoped to the deployed contract. Sourcify returns
  *                every file in the COMPILATION UNIT, and `fetchSourcifySource` joined
  *                them all. 0x0c0388e4 is an ERC1967Proxy — a few hundred bytes — whose
@@ -266,7 +283,7 @@ import {
  *
  *                Same inputs now produce different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-10-31.14";
+export const ANALYZER_BASELINE = "2026-10-31.15";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

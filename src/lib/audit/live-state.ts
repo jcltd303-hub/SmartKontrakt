@@ -79,6 +79,15 @@ export type LiveStateReport = {
   blockNumber: number | null;
   reads: LiveStateRead[];
   failures: LiveStateFailure[];
+  /**
+   * keccak256 of the runtime code the reads describe, when the caller could supply it.
+   *
+   * Without this the reads are unbound: they say what `paused()` returned at some block,
+   * on some contract, with nothing tying them to the code that was audited. Ported from
+   * the Perplexity incident harness, which refuses any probe result whose runtimeSha256
+   * does not match the one it recorded.
+   */
+  codeHash?: string | null;
 };
 
 /**
@@ -235,6 +244,8 @@ export type LiveStateProbeOpts = {
   blockNumberFn?: (chainId: string) => Promise<number | null>;
   /** Overall deadline; defaults to LIVE_STATE_DEADLINE_MS. */
   deadlineMs?: number;
+  /** keccak256 of the runtime code being probed, recorded on the report. */
+  codeHash?: string | null;
 };
 
 /**
@@ -256,6 +267,7 @@ export async function probeLiveState(
     blockNumber: null,
     reads: [],
     failures: [],
+    codeHash: opts?.codeHash ?? null,
   };
   const capped = getters.slice(0, MAX_LIVE_GETTERS);
   if (capped.length === 0) return report;

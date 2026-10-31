@@ -644,3 +644,56 @@ test("a selector that IS dispatched still counts", async () => {
   // The point is only that the selector check does not block a real dispatch.
   assert.ok(report.findings[0]);
 });
+
+test("a mid-probe upgrade withdraws every corroboration", async () => {
+  // Ported from the Perplexity incident harness: a probe answer that does not bind to the
+  // runtime code it was produced against is discarded. We cannot match a stored hash (the
+  // analysis has none), so we compare the code at the start of the probe with the code at
+  // the end. If it moved, every corroborated critical is withdrawn.
+  const report = analyzeInput(VAULT_BARE, "vault");
+  const initCalldata = encodeInitializerCalldata("initialize", ["address"])!;
+  const okCall: InitializerCallFn = async (_a, calldata) =>
+    calldata === initCalldata ? { success: true, result: "0x" } : { success: false, error: "no getter" };
+  // The code must DISPATCH the initializer selector, or the gate suppresses the finding
+  // before any corroboration happens and there is nothing to withdraw. Two versions that
+  // both dispatch but differ in the tail: same behaviour, different runtime code.
+  const sel = selectorOf("initialize(address)").slice(2);
+  const codeA = `0x6080604052${sel}aaaaaaaa`;
+  const codeB = `0x6080604052${sel}bbbbbbbb`;
+  let reads = 0;
+  const outcome = await applyInitializerGate(
+    report,
+    { address: ADDR, chainId: "ethereum", source: VAULT_BARE },
+    {
+      callFn: okCall,
+      storageFn: noStorage,
+      codeFn: async () => {
+        reads += 1;
+        return reads === 1 ? codeA : codeB;   // upgraded between the two reads
+      },
+    },
+  );
+  assert.equal(outcome.codeChanged, true, "the change must be detected");
+  assert.equal(outcome.upgraded, 0, "nothing stays corroborated");
+  const f = initializerFindings(report)[0]!;
+  assert.notEqual(f.severity, "critical");
+  assert.notEqual(f.corroborated, true);
+  assert.match(f.summary, /WITHDRAWN/);
+});
+
+test("stable code keeps the corroboration and records its hash", async () => {
+  const report = analyzeInput(VAULT_BARE, "vault");
+  const initCalldata = encodeInitializerCalldata("initialize", ["address"])!;
+  const okCall: InitializerCallFn = async (_a, calldata) =>
+    calldata === initCalldata ? { success: true, result: "0x" } : { success: false, error: "no getter" };
+  const sel = selectorOf("initialize(address)").slice(2);
+  const code = `0x6080604052${sel}aaaaaaaa`;
+  const outcome = await applyInitializerGate(
+    report,
+    { address: ADDR, chainId: "ethereum", source: VAULT_BARE },
+    { callFn: okCall, storageFn: noStorage, codeFn: async () => code },
+  );
+  assert.equal(outcome.codeChanged, false);
+  assert.ok(outcome.codeHash, "the hash of the probed code is recorded");
+  assert.equal(outcome.codeHash!.length, 64, "keccak256 hex");
+});

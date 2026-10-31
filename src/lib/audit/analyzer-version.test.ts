@@ -92,7 +92,7 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // And to 2026-10-30.12 with the seven semantic fixes — none of which changed the
   // detector NAME list, which is why the fingerprint stayed put and `refresh: "stale"`
   // kept skipping 88 phantom criticals. See the changelog entry in analyzer-version.ts.
-  assert.equal(ANALYZER_BASELINE, "2026-10-31.14");
+  assert.equal(ANALYZER_BASELINE, "2026-10-31.15");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });
@@ -132,7 +132,7 @@ test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
   const digest = h.digest("hex").slice(0, 12);
 
   // Update this constant ONLY together with ANALYZER_BASELINE. Both move, or neither.
-  const DETECTOR_SOURCE_DIGEST = "bc838b15663c";
+  const DETECTOR_SOURCE_DIGEST = "baf0c56b23a6";
 
   if (DETECTOR_SOURCE_DIGEST === "__PLACEHOLDER__") {
     assert.fail(
