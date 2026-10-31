@@ -79,11 +79,11 @@ export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions
  * `OPENROUTER_MODEL` overrides every purpose; `OPENROUTER_MODEL_<PURPOSE>`
  * overrides one (e.g. OPENROUTER_MODEL_CODE). Free-tier ids churn — re-check
  * the live catalog before relying on one; the fallback chain below
- * (openrouter/free) absorbs an id that gets withdrawn or gated.
+ * (nvidia/nemotron-3-ultra-550b-a55b:free) absorbs an id that gets withdrawn or gated.
  */
 export const OPENROUTER_MODELS = {
   review: "nvidia/nemotron-3-ultra-550b-a55b:free",
-  code: "poolside/laguna-s-2.1:free",
+  code: "cohere/north-mini-code:free",
   json: "nvidia/nemotron-3-ultra-550b-a55b:free",
 } as const;
 
@@ -97,10 +97,20 @@ export const DEFAULT_OPENROUTER_MODEL = OPENROUTER_MODELS.review;
  * all — gated to specific apps, retired, or misspelled. Free-tier ids churn and
  * gating appears without notice, so the pipeline must degrade rather than stop.
  *
- * `openrouter/free` is OpenRouter's own router to whichever free model is
- * currently available, so it cannot itself be gated to an app.
+ * The fallback must be a REAL id from the catalog. The previous value,
+ * "openrouter/free", was not: OpenRouter's router is `openrouter/auto`, which is paid.
+ * A nonexistent fallback is worse than none, because the 404 then reads as a fallback
+ * failure rather than "your primary model id is wrong" — which is what it actually was
+ * on 2026-10-31, when every code generation died and the PoC path produced test files
+ * with no test* function for a full sweep.
  */
-export const OPENROUTER_FALLBACK_MODELS: readonly string[] = ["openrouter/free"];
+export const OPENROUTER_FALLBACK_MODELS: readonly string[] = [
+  // A real id. The previous value, "openrouter/free", is not in the catalog: OpenRouter's
+  // router is `openrouter/auto` and it is paid. A fallback that does not exist is worse
+  // than no fallback, because the failure surfaces as a 404 on the fallback rather than
+  // as "your primary model is wrong".
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+];
 
 /** Models to try for a purpose, most preferred first, de-duplicated. */
 export function modelCandidates(
@@ -592,7 +602,7 @@ Format your response as ONLY the complete Solidity test file inside exactly one 
  *   test code — a complete template-adapted Foundry test file,
  *     observed at ~3–7k tokens. 16000 is 2x the old SHARED budget
  *     now spent on code alone, and half the code model's catalog
- *     max completion (32,768 for poolside/laguna-s-2.1:free), so
+ *     max completion (a small cap on the mini code model), so
  *     the provider ceiling is never the binding constraint.
  *
  * max_tokens is a cap, not a target — a reply that completes

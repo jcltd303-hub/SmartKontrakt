@@ -48,15 +48,15 @@ test("resolveOpenRouterModel picks the per-purpose free model, overridable by en
   assert.equal(resolveOpenRouterModel("json", {}), OPENROUTER_MODELS.json);
   // Per-purpose override wins over the default but not the global override.
   assert.equal(
-    resolveOpenRouterModel("code", { OPENROUTER_MODEL_CODE: "poolside/laguna-s-2.1:free" }),
-    "poolside/laguna-s-2.1:free",
+    resolveOpenRouterModel("code", { OPENROUTER_MODEL_CODE: "cohere/north-mini-code:free" }),
+    "cohere/north-mini-code:free",
   );
   assert.equal(
     resolveOpenRouterModel("code", {
-      OPENROUTER_MODEL: "openrouter/free",
-      OPENROUTER_MODEL_CODE: "poolside/laguna-s-2.1:free",
+      OPENROUTER_MODEL: "nvidia/nemotron-3-ultra-550b-a55b:free",
+      OPENROUTER_MODEL_CODE: "cohere/north-mini-code:free",
     }),
-    "openrouter/free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
   );
 });
 
@@ -70,7 +70,7 @@ test("per-purpose defaults are the 2026-10-25 live-catalog picks", () => {
   // the schema-native json candidate — was passed over because its single
   // endpoint was flagged (status -5) while both picked models sat at 0.
   assert.equal(OPENROUTER_MODELS.review, "nvidia/nemotron-3-ultra-550b-a55b:free");
-  assert.equal(OPENROUTER_MODELS.code, "poolside/laguna-s-2.1:free");
+  assert.equal(OPENROUTER_MODELS.code, "cohere/north-mini-code:free");
   assert.equal(OPENROUTER_MODELS.json, "nvidia/nemotron-3-ultra-550b-a55b:free");
   assert.equal(DEFAULT_OPENROUTER_MODEL, OPENROUTER_MODELS.review);
   for (const model of Object.values(OPENROUTER_MODELS)) {
@@ -185,16 +185,17 @@ test("no configured model is one that a plain API call cannot use", () => {
 test("modelCandidates puts the preferred model first and the router last", () => {
   const candidates = modelCandidates("code", {});
   assert.equal(candidates[0], OPENROUTER_MODELS.code);
-  assert.equal(candidates.at(-1), "openrouter/free");
-  assert.ok(OPENROUTER_FALLBACK_MODELS.includes("openrouter/free"));
+  assert.equal(candidates.at(-1), "nvidia/nemotron-3-ultra-550b-a55b:free");
+  assert.ok(OPENROUTER_FALLBACK_MODELS.includes("nvidia/nemotron-3-ultra-550b-a55b:free"));
   // An explicit override still leads, and the fallback is still available.
   const overridden = modelCandidates("code", { OPENROUTER_MODEL_CODE: "vendor/model:free" });
   assert.equal(overridden[0], "vendor/model:free");
-  assert.equal(overridden.at(-1), "openrouter/free");
+  assert.equal(overridden.at(-1), "nvidia/nemotron-3-ultra-550b-a55b:free");
 });
 
 test("modelCandidates de-duplicates when the preferred model is the fallback", () => {
-  assert.deepEqual(modelCandidates("code", { OPENROUTER_MODEL: "openrouter/free" }), ["openrouter/free"]);
+  const fb = "nvidia/nemotron-3-ultra-550b-a55b:free";
+  assert.deepEqual(modelCandidates("code", { OPENROUTER_MODEL: fb }), [fb]);
 });
 
 test("a harness-gated 403 is recognised as model-unavailable", () => {
