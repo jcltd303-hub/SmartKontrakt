@@ -92,7 +92,7 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // And to 2026-10-30.12 with the seven semantic fixes — none of which changed the
   // detector NAME list, which is why the fingerprint stayed put and `refresh: "stale"`
   // kept skipping 88 phantom criticals. See the changelog entry in analyzer-version.ts.
-  assert.equal(ANALYZER_BASELINE, "2026-10-31.13");
+  assert.equal(ANALYZER_BASELINE, "2026-10-31.14");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });
@@ -118,13 +118,21 @@ test("the current stamp is current; anything else is stale", () => {
 test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
   const { createHash } = await import("node:crypto");
   const { readFileSync } = await import("node:fs");
-  const files = ["src/lib/audit/detect.ts", "src/lib/audit/bytecode.ts", "src/lib/audit/smartbugs.ts"];
+  // address-fetcher.ts decides WHAT gets analysed (Sourcify scoping, dedupe, bytecode
+  // fallback), which is as semantic as a rule change: scoping the bundle to the verified
+  // contract's import closure removed 29 criticals without touching a single detector.
+  const files = [
+    "src/lib/audit/detect.ts",
+    "src/lib/audit/bytecode.ts",
+    "src/lib/audit/smartbugs.ts",
+    "src/lib/audit/address-fetcher.ts",
+  ];
   const h = createHash("sha256");
   for (const f of files) h.update(readFileSync(f));
   const digest = h.digest("hex").slice(0, 12);
 
   // Update this constant ONLY together with ANALYZER_BASELINE. Both move, or neither.
-  const DETECTOR_SOURCE_DIGEST = "ee1af219ffe2";
+  const DETECTOR_SOURCE_DIGEST = "bc838b15663c";
 
   if (DETECTOR_SOURCE_DIGEST === "__PLACEHOLDER__") {
     assert.fail(

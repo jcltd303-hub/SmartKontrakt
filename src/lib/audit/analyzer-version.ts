@@ -206,6 +206,23 @@ import {
  *                accepts a refund-with-timeout plus any unguarded payout;
  *                registry-dispatched-logic accepts a non-parameter index. Same
  *                inputs now produce different records, so the archive refreshes.
+ * 2026-10-31.14 — The analysis was not scoped to the deployed contract. Sourcify returns
+ *                every file in the COMPILATION UNIT, and `fetchSourcifySource` joined
+ *                them all. 0x0c0388e4 is an ERC1967Proxy — a few hundred bytes — whose
+ *                bundle is 91,621 characters, because that unit also contained
+ *                @openzeppelin/upgrades-core's deliberately-unsafe TEST FIXTURES:
+ *                HasSelfDestructNatspec1/2/3 (function d), explode, extremelyUnsafe,
+ *                publicDelegateCall, externalDelegateCall, internalDelegateCall,
+ *                privateDelegateCall, _functionDelegateCall. All 29 of its criticals
+ *                were fixtures; the deployed contract was not among them.
+ *
+ *                The fetch now reads `compilation.fullyQualifiedName` — Sourcify's own
+ *                statement of which contract it verified — and analyses only that
+ *                contract's import closure. This also explains the earlier finding that
+ *                landed on a contract which did not contain the function.
+ *
+ *                Same inputs now produce different records, so the archive refreshes.
+ *
  * 2026-10-31.13 — The proxy-shell gate judged the RAW source, so a doc comment could
  *                switch it off. Measured on a fresh 2026-10-30.12 run: 0x38872fad went
  *                29 -> 0 while 0x0c0388e4 stayed at 29, because its flattened body
@@ -249,7 +266,7 @@ import {
  *
  *                Same inputs now produce different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-10-31.13";
+export const ANALYZER_BASELINE = "2026-10-31.14";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

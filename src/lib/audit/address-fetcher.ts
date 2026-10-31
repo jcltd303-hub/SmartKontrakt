@@ -592,13 +592,76 @@ export function bytecodeAnalysedNote(identity?: BlockscoutIdentity | null): stri
 /**
  * Fetch verified source code from Sourcify public API
  */
+
+/** Collapse `.` and `..` segments in a Sourcify source path. */
+export function normalizeSourcePath(p: string): string {
+  const out: string[] = [];
+  for (const seg of p.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") { out.pop(); continue; }
+    out.push(seg);
+  }
+  return out.join("/");
+}
+
+/** Every `import "x";` / `import {..} from "x";` specifier in a source file. */
+export function importSpecifiers(content: string): string[] {
+  const found: string[] = [];
+  const re = /^\s*import\s+(?:[^;]*?\sfrom\s+)?["']([^"']+)["']/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) if (m[1]) found.push(m[1]);
+  return found;
+}
+
+/** Resolve one import specifier against the files Sourcify returned. */
+export function resolveImport(fromFile: string, spec: string, keys: Set<string>): string | null {
+  if (spec.startsWith(".")) {
+    const dir = fromFile.includes("/") ? fromFile.slice(0, fromFile.lastIndexOf("/")) : "";
+    const joined = normalizeSourcePath(dir ? `${dir}/${spec}` : spec);
+    if (keys.has(joined)) return joined;
+    if (keys.has(`${joined}.sol`)) return `${joined}.sol`;
+    return null;
+  }
+  if (keys.has(spec)) return spec;
+  for (const k of keys) if (k.endsWith(`/${spec}`)) return k;
+  return null;
+}
+
+/**
+ * The files reachable from `entry` by following imports, dependencies first.
+ *
+ * WHY THIS EXISTS (2026-10-31): Sourcify returns every file in the COMPILATION UNIT,
+ * not just the ones the verified contract needs. 0x0c0388e4 is an ERC1967Proxy — a few
+ * hundred bytes — but its bundle is 91,621 characters because that unit also contained
+ * @openzeppelin/upgrades-core's deliberately-unsafe TEST FIXTURES
+ * (HasSelfDestructNatspec1/2/3, explode, extremelyUnsafe, publicDelegateCall, …).
+ * Concatenating the bundle and analysing all of it produced 29 criticals on a shell,
+ * every one of them a fixture. Scoping to the import closure is the fix.
+ */
+export function importClosure(entry: string, sources: Map<string, string>): string[] {
+  const keys = new Set(sources.keys());
+  const seen = new Set<string>();
+  const order: string[] = [];
+  const visit = (file: string): void => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    for (const spec of importSpecifiers(sources.get(file) ?? "")) {
+      const resolved = resolveImport(file, spec, keys);
+      if (resolved) visit(resolved);
+    }
+    order.push(file);
+  };
+  visit(entry);
+  return order;
+}
+
 async function fetchSourcifySource(address: string, chainIdNumber: number): Promise<VerifiedSourceMatch | null> {
   try {
     // Sourcify v2. The v1 path this used (`/server/files/any/...`) was turned off
     // on 2026-07-07 — for four months every Sourcify lookup here failed, so every
     // verified contract silently fell through to Blockscout or to bytecode-only
     // analysis. v2 returns { sources: { "<path>": { content } } }.
-    const url = `https://sourcify.dev/server/v2/contract/${chainIdNumber}/${address}?fields=sources`;
+    const url = `https://sourcify.dev/server/v2/contract/${chainIdNumber}/${address}?fields=sources,compilation`;
     const res = await withRetry(async () => {
       await sourcifyLimiter.acquire();
       const controller = new AbortController();
@@ -613,6 +676,9 @@ async function fetchSourcifySource(address: string, chainIdNumber: number): Prom
 
     const data = (await res.json()) as {
       sources?: Record<string, { content?: string }>;
+      // Sourcify states WHICH contract it verified. This is the only reliable
+      // scoping signal for a multi-file match.
+      compilation?: { fullyQualifiedName?: string; name?: string };
       // The v1 shape, kept only so an old mirror or a cached proxy response still
       // parses; v2 never sends it.
       files?: { name: string; content: string }[];
@@ -633,18 +699,34 @@ async function fetchSourcifySource(address: string, chainIdNumber: number): Prom
     const solFiles = files.filter((f) => f.name.endsWith(".sol"));
     if (solFiles.length === 0) return null;
 
-    // Combine or pick primary
-    const mainFile = solFiles.find((f) => !f.name.includes("/") && !f.name.toLowerCase().includes("interface")) ?? solFiles[0];
-    const ordered = mainFile ? [mainFile, ...solFiles.filter((f) => f !== mainFile)] : solFiles;
+    // Scope to the contract Sourcify actually verified, via its own statement of which
+    // one that is. Without this, a multi-file match concatenates the whole compilation
+    // unit — including whatever test fixtures or unrelated contracts shared it.
+    const fqn = data.compilation?.fullyQualifiedName;
+    let scoped = solFiles;
+    let scopedName: string | null = null;
+    if (fqn && fqn.includes(":")) {
+      const cut = fqn.lastIndexOf(":");
+      const entryFile = fqn.slice(0, cut);
+      const entryName = fqn.slice(cut + 1);
+      const byPath = new Map(solFiles.map((f) => [f.name, f.content]));
+      if (byPath.has(entryFile)) {
+        scoped = importClosure(entryFile, byPath).map((n) => ({ name: n, content: byPath.get(n) ?? "" }));
+        scopedName = entryName;
+      }
+    }
+
+    const mainFile =
+      scoped.find((f) => f.name === solFiles.find((g) => g.name.endsWith(`${scopedName}.sol`))?.name) ??
+      scoped.find((f) => !f.name.includes("/") && !f.name.toLowerCase().includes("interface")) ??
+      scoped[0];
+    const ordered = mainFile ? [mainFile, ...scoped.filter((f) => f !== mainFile)] : scoped;
     const source = ordered.map((f) => `// File: ${f.name}\n${f.content}`).join("\n\n");
 
-    const name = mainFile?.name.replace(/\.sol$/, "") ?? "VerifiedContract";
-    // Scope detection to the deployed contract only when the match is a
-    // single file: the filename (Deed.sol) names the deployed contract
-    // (Deed). For multi-file matches the filename is a dependency as often
-    // as the main contract, so no scoping — detectSource falls back to all
-    // contracts when the name matches nothing.
-    const contractName = solFiles.length === 1 ? name : null;
+    const name = scopedName ?? mainFile?.name.replace(/\.sol$/, "") ?? "VerifiedContract";
+    // With a Sourcify-declared contract name, scope detection to it always. Without
+    // one, only a single-file match can be scoped safely.
+    const contractName = scopedName ?? (solFiles.length === 1 ? name : null);
     return { source, name, contractName, registry: "sourcify" as const };
   } catch {
     return null;
