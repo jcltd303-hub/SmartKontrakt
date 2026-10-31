@@ -114,6 +114,7 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   // fingerprint moves when they are added or removed.
   "signature-threshold-no-dedupe": "access_control",
   "unbacked-mint": "arithmetic",
+  "liquidation-without-health-check": "access_control",
   "vault-inflation-donation": "arithmetic",
   "bytecode-origin": "access_control",
   "unprotected-admin": "access_control",

@@ -2297,6 +2297,46 @@ function scanModernClasses(
     return;
   }
 
+  // --- liquidation-without-health-check --------------------------------------
+  //
+  // Encodes the INVARIANT from soda-2020 ("collateral seized exceeds amount authorized by
+  // an independent position-health model"), not the incident's mechanism — the source
+  // material itself marks that mechanism provisional and asks for primary-code
+  // verification, so a detector built on it would be inventing.
+  //
+  // The property checked is real and recurring: a function that seizes collateral must
+  // consult a health model first. Absence is only conclusive when the contract defines no
+  // such helper at all, because a check can live in an internal function or a modifier
+  // from a parent — and since the fetch now scopes to the import closure, parents are
+  // present when they are imported.
+  if (
+    external &&
+    /(liquidat|seize|absorb|auction|forceClos)/i.test(fn.name) &&
+    /(transfer|transferFrom|safeTransfer|call\s*\{value)/i.test(clean) &&
+    // Any modifier at all suppresses this. A modifier can gate anything, including a
+    // health model whose name gives no hint — `onlyUnderwater` and `isUnderwater` were
+    // the pair that proved it. Chasing synonyms produces false positives; refusing to
+    // reason about code we cannot see produces fewer findings and no wrong ones.
+    fn.modifiers.length === 0 &&
+    !/health|solven|underwater|healthy|eligib|collateralRatio|getAccountLiquidity|\bltv\b|threshold|oracle|price/i.test(clean) &&
+    !contract.functions.some((g) => /health|solven|underwater|healthy|collateralRatio|getAccountLiquidity/i.test(g.name))
+  ) {
+    push(make({
+      severity: "medium",
+      swc: "SWC-105",
+      title: `${fn.name} seizes collateral without consulting a health model`,
+      confidence: "medium",
+      detector: "liquidation-without-health-check",
+      summary: `${fn.name} is externally callable, moves collateral, and neither calls nor inherits anything that measures position health. A liquidation path with no solvency input seizes whatever the caller names: either the caller supplies the amount unchecked, or the contract trusts a stale or caller-derived value.`,
+      walkthrough: `1. ${fn.name} transfers collateral out to its caller.\n2. No health, solvency or oracle read appears in the function, its modifiers, or the contract.\n3. A caller liquidates a position that was never underwater and keeps the seized collateral.\n4. Derive eligibility from an independent health model inside the function, and never from a parameter the caller supplies.`,
+      exploitSolidity: `IVictim(victim).${fn.name}(attacker, type(uint256).max); // position was never underwater`,
+      remediationSolidity: `function ${fn.name}(address user, uint256 amount) external {\n    uint256 health = healthOf(user);\n    require(health < MIN_HEALTH, "position healthy");\n    require(amount <= maxSeizable(user, health), "seizes more than allowed");\n    _seize(user, amount);\n}`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
   // --- unbacked-mint ---------------------------------------------------------
   // An externally callable mint whose amount is a caller parameter, with no check
   // against assets actually held. Gated mints are the norm and are skipped: the

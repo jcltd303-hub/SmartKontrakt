@@ -206,6 +206,24 @@ import {
  *                accepts a refund-with-timeout plus any unguarded payout;
  *                registry-dispatched-logic accepts a non-parameter index. Same
  *                inputs now produce different records, so the archive refreshes.
+ * 2026-10-31.16 — New detector: liquidation-without-health-check.
+ *
+ *                It encodes the soda-2020 INVARIANT ("collateral seized exceeds amount
+ *                authorized by an independent position-health model"), not that incident's
+ *                mechanism — the source material marks the mechanism provisional and asks
+ *                for primary-code verification, so a detector built on it would be
+ *                inventing. sushiswap-2020 is not implemented at all: its cited source
+ *                describes an exploit that was FOILED, and the class it names is already
+ *                covered by fee-on-transfer and strict-balance.
+ *
+ *                The rule is deliberately narrow: an externally callable liquidation-style
+ *                function that moves collateral, carries NO modifier, calls nothing
+ *                health-shaped, and sits in a contract with no health helper either.
+ *                `onlyUnderwater` / `isUnderwater` proved that chasing synonyms produces
+ *                false positives, so any modifier suppresses the finding instead.
+ *
+ *                Same inputs now produce different records, so the archive refreshes.
+ *
  * 2026-10-31.15 — Probe answers are now bound to the code they describe. Ported from the
  *                Perplexity incident harness (createIncidentModule), whose detect() refuses
  *                any probe result whose runtimeSha256 does not match the one it recorded.
@@ -283,7 +301,7 @@ import {
  *
  *                Same inputs now produce different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-10-31.15";
+export const ANALYZER_BASELINE = "2026-10-31.16";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

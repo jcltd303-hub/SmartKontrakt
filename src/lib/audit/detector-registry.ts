@@ -143,6 +143,7 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   "shared-unlock-delta-netting": "value-and-settlement",
   "gas-estimator-dos": "value-and-settlement",
   "hardcoded-gas": "value-and-settlement",
+  "liquidation-without-health-check": "value-and-settlement",
   "locked-ether": "value-and-settlement",
   "msg-value-loop": "value-and-settlement",
   "registry-dispatched-logic": "value-and-settlement",
