@@ -369,6 +369,15 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls, t
           // --match-contract matched no contract, or the contract has
           // no test functions). Never claim passed for zero evidence —
           // flag it so clients classify the run no_tests.
+          //
+          // SAY WHY. 2026-10-31: every run returned ok=true passed=false in 46-204 ms and
+          // the worker logged no_tests with no further detail, so the cause was invisible
+          // from both sides. Forge prints "No tests match the provided pattern" or a
+          // compile summary here; the filter and the tail are both worth seeing.
+          console.log(
+            `[poc] zero tests — match=${args[args.indexOf("--match-contract") + 1] ?? "<none>"} ` +
+              `durationMs=${durationMs}\n${tailCap(result.output).slice(-600)}`,
+          );
           return {
             ok: true, // forge ran to completion; it simply ran no tests
             passed: false,
