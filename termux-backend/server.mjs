@@ -417,7 +417,16 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls, t
       error: `All RPC providers failed (tried ${candidates.length}) — last: ${lastRpc}`,
     };
   } finally {
-    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    // SK_POC_KEEP=1 keeps the generated project so a zero-test run can be inspected.
+    // Measured 2026-10-31: every /run-poc returned ok=true passed=false in 46-204 ms —
+    // forge exited 0 having matched no test. That is either a generated function not
+    // named test*, or a --match-contract name that does not exist. Neither is visible
+    // from the logs, and the directory is deleted before anyone can look. Keep it.
+    if (process.env.SK_POC_KEEP) {
+      console.log(`[poc] kept ${tmp} (SK_POC_KEEP=1)`);
+    } else {
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 
