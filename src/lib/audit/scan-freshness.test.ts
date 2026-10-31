@@ -334,3 +334,25 @@ test("loop: cross-chain twins are independent — neither dedupes the other", as
   assert.equal(analyzed, 2);
   assert.equal(dupes, 0);
 });
+
+test("the freshness check batches its query instead of sending one huge array", async () => {
+  // 2026-10-31: a 100,000-address queue OOM'd the worker at 3 GB within 35 seconds,
+  // before the first analysis, with the GC trace showing retained data (3057 -> 3031 MB).
+  // The freshness check passed every address as a single text[] parameter and held every
+  // matching row. This asserts it now issues several bounded queries instead.
+  const calls: number[] = [];
+  const sql = (async (strings: TemplateStringsArray, ...params: unknown[]) => {
+    const arr = params.find((p) => Array.isArray(p)) as string[] | undefined;
+    calls.push(arr ? arr.length : 0);
+    // Answer with one current row per address so the Sets are exercised.
+    return (arr ?? []).map((a) => ({ chain_id: "ethereum", addr: a, analyzer_version: STAMP }));
+  }) as unknown as Sql;
+  const wanted = Array.from({ length: 12_000 }, (_, i) => ({
+    chainId: "ethereum",
+    address: "0x" + i.toString(16).padStart(40, "0"),
+  }));
+  const { current } = await savedScanVersions(sql, wanted, STAMP);
+  assert.ok(calls.length >= 3, `expected several bounded queries, got ${calls.length}`);
+  assert.ok(Math.max(...calls) <= 5000, `a batch exceeded 5000: ${Math.max(...calls)}`);
+  assert.equal(current.size, 12_000, "every address still classified");
+});

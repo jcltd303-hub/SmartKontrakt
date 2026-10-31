@@ -956,6 +956,14 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   //                             skipped): use when you want the NEW addresses in
   //                             a file and are not ready to pay for a re-analysis
   //                             of rows an older analyzer already wrote
+  // Stage logging. The 2026-10-31 OOM died 35 s in with nothing but a V8 trace, and
+  // "which stage" cost three rounds of inference. These lines are cheap and answer it
+  // directly next time: rss/heap per stage, and the queue size.
+  const mem = (): string => {
+    const m = process.memoryUsage();
+    return `heap ${Math.round(m.heapUsed / 1048576)}MB rss ${Math.round(m.rss / 1048576)}MB`;
+  };
+  console.log(`[mem] start: ${items.length} items, ${mem()}`);
   let skipped = 0;
   let stale = 0;
   try {
@@ -985,6 +993,7 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     return;
   }
 
+  console.log(`[mem] classified (${skipped} current, ${stale} stale): ${mem()}`);
   status = {
     ...status,
     state: "running",
