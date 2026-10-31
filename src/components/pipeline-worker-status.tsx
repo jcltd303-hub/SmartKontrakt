@@ -35,6 +35,12 @@ type WorkerStatus = {
   deepAgentRuns?: number;
   deepAgentConfirmed?: number;
   deepAgentBackendDown?: boolean;
+  /** Skip policy for the run: current rows skipped, stale rows re-analysed, etc. */
+  refresh?: "stale" | "all" | "none";
+  /** Whether the Foundry PoC stage runs. The worker defaults it to true. */
+  autoPoc?: boolean;
+  /** "2/4" style shard label, when the run is one slice of a split queue. */
+  shard?: string | null;
   db?: { host: string; port: string; user: string; database: string } | null;
   dbScans?: number | null;
   dbError?: string | null;
@@ -59,6 +65,9 @@ export function PipelineWorkerStatus({ active = true }: { active?: boolean }) {
   const [deepAgent, setDeepAgent] = useState(false);
   const [deepAgentMaxItems, setDeepAgentMaxItems] = useState(250);
   const [deepAgentMinSeverity, setDeepAgentMinSeverity] = useState("high");
+  const [refresh, setRefresh] = useState<"stale" | "all" | "none">("stale");
+  const [autoPoc, setAutoPoc] = useState(true);
+  const [shard, setShard] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -109,6 +118,9 @@ export function PipelineWorkerStatus({ active = true }: { active?: boolean }) {
     setDeepAgent(status.deepAgent ?? false);
     setDeepAgentMaxItems(status.deepAgentMaxItems ?? 250);
     setDeepAgentMinSeverity(status.deepAgentMinSeverity ?? "high");
+    setRefresh(status.refresh ?? "stale");
+    setAutoPoc(status.autoPoc ?? true);
+    setShard(status.shard ?? "");
   }, [status]);
 
   const saveWorkerUrl = (v: string) => {
@@ -210,6 +222,20 @@ export function PipelineWorkerStatus({ active = true }: { active?: boolean }) {
                 Deep Agent: <span className="text-[#f4efe6]">{status.deepAgentRuns ?? 0} runs, {status.deepAgentConfirmed ?? 0} confirmed</span>
               </span>
             )}
+            {/* The run's actual shape, not the form's. A sweep that was started with
+                autoPoc on and refresh=stale looks identical to one that wasn't, and the
+                only place to see the difference was the worker's stdout. */}
+            <span title="Skip policy this run is using">
+              Refresh: <span className="text-[#f4efe6]">{status.refresh ?? "stale"}</span>
+            </span>
+            <span title="Whether the Foundry PoC stage is running">
+              Auto PoC: <span className="text-[#f4efe6]">{status.autoPoc === false ? "off" : "on"}</span>
+            </span>
+            {status.shard && (
+              <span title="This run is one slice of a split queue">
+                Shard: <span className="text-[#f4efe6]">{status.shard}</span>
+              </span>
+            )}
           </div>
           <div className="h-2 bg-[#12110e] border border-[#3a3428] rounded overflow-hidden">
             <div
@@ -298,6 +324,26 @@ export function PipelineWorkerStatus({ active = true }: { active?: boolean }) {
           disabled={state !== "idle"}
           className="w-20 bg-[#12110e] border border-[#3a3428] rounded px-2 py-1 text-xs text-[#f4efe6] focus:outline-none focus:border-[#e8a54b] disabled:opacity-50"
         />
+        <select
+          title="Which saved rows this run re-analyses. stale = skip rows the current analyser wrote, re-run the rest; all = re-run everything; none = any saved row counts as done."
+          value={refresh}
+          onChange={(e) => setRefresh(e.target.value as "stale" | "all" | "none")}
+          disabled={state !== "idle"}
+          className="bg-[#12110e] border border-[#3a3428] rounded px-2 py-1 text-xs text-[#f4efe6] focus:outline-none focus:border-[#e8a54b] disabled:opacity-50"
+        >
+          <option value="stale">refresh: stale</option>
+          <option value="all">refresh: all</option>
+          <option value="none">refresh: none</option>
+        </select>
+        <input
+          type="text"
+          placeholder="shard 2/4"
+          title='Optional. Run only one slice of the queue, e.g. "2/4". Leave blank for the whole file.'
+          value={shard}
+          onChange={(e) => setShard(e.target.value)}
+          disabled={state !== "idle"}
+          className="w-24 bg-[#12110e] border border-[#3a3428] rounded px-2 py-1 text-xs text-[#f4efe6] focus:outline-none focus:border-[#e8a54b] disabled:opacity-50"
+        />
         <label className="flex items-center gap-1.5 text-[11px] text-[#a39886]">
           <input
             type="checkbox"
@@ -306,6 +352,18 @@ export function PipelineWorkerStatus({ active = true }: { active?: boolean }) {
             disabled={state !== "idle"}
           />
           AI 2nd pass
+        </label>
+        <label
+          className="flex items-center gap-1.5 text-[11px] text-[#a39886]"
+          title="Generate and run a Foundry PoC for each high/critical finding. Costs a forge run per finding; with autoPoc off the run finishes far faster and the findings are unchanged."
+        >
+          <input
+            type="checkbox"
+            checked={autoPoc}
+            onChange={(e) => setAutoPoc(e.target.checked)}
+            disabled={state !== "idle"}
+          />
+          Auto PoC
         </label>
         <label className="flex items-center gap-1.5 text-[11px] text-[#a39886]" title="Agentic exploit search on flagged addresses (propose → fork-PoC → reward → deeper). Needs OPENROUTER_API_KEY in pipeline-worker/.env.">
           <input
@@ -344,7 +402,20 @@ export function PipelineWorkerStatus({ active = true }: { active?: boolean }) {
 
       <div className="flex flex-wrap gap-2">
         <button
-          onClick={() => post("/start", { addressesFile: addressesFile.trim(), chainId: chainId.trim() || "ethereum", aiSecondPass, delayMs, deepAgent, deepAgentMaxItems, deepAgentMinSeverity })}
+          onClick={() =>
+            post("/start", {
+              addressesFile: addressesFile.trim(),
+              chainId: chainId.trim() || "ethereum",
+              aiSecondPass,
+              delayMs,
+              deepAgent,
+              deepAgentMaxItems,
+              deepAgentMinSeverity,
+              refresh,
+              autoPoc,
+              ...(shard.trim() ? { shard: shard.trim() } : {}),
+            })
+          }
           disabled={busy || state !== "idle" || !addressesFile.trim()}
           className="text-xs px-3 py-1.5 rounded bg-[#e8a54b] text-[#12110e] font-bold flex items-center gap-1.5 hover:bg-[#f0b25e] disabled:opacity-50"
         >

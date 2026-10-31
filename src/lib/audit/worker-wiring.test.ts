@@ -131,3 +131,41 @@ test("the Status literal initialises every required field", () => {
   const missing = fields.filter((f) => !new RegExp(`\\b${f}\\s*:`).test(literal));
   assert.deepEqual(missing, [], `missing from the Status literal: ${missing.join(", ")}`);
 });
+
+test("every /start option the UI sends is one the worker reads", () => {
+  // The panel used to expose only file/chain/delay/AI/DeepAgent, so autoPoc, refresh and
+  // shard could only be set by curl. They are now controls — and a control that posts a
+  // key the worker ignores is worse than no control, because it looks like it worked.
+  const ui = readFileSync("src/components/pipeline-worker-status.tsx", "utf8");
+  const worker = readFileSync("pipeline-worker/worker.ts", "utf8");
+
+  const startCall = ui.slice(ui.indexOf('post("/start"'), ui.indexOf("disabled={busy || state !== \"idle\" || !addressesFile.trim()}"));
+  assert.ok(startCall.length > 0, "the /start call site is found");
+
+  // Keys are posted both directly and via a conditional spread (`...(shard ? {shard} : {})`),
+  // so match on the call text rather than on indentation.
+  const keys = ["addressesFile", "chainId", "aiSecondPass", "delayMs", "deepAgent",
+                "deepAgentMaxItems", "deepAgentMinSeverity", "refresh", "autoPoc", "shard"];
+  for (const key of keys) {
+    assert.ok(
+      new RegExp(`\\b${key}\\b`).test(startCall),
+      `the /start call must post ${key}`,
+    );
+    assert.match(
+      worker,
+      new RegExp(`body\\.${key}\\b`),
+      `the worker never reads body.${key} — the control would silently do nothing`,
+    );
+  }
+});
+
+test("/status reports the run shape the panel renders", () => {
+  const worker = readFileSync("pipeline-worker/worker.ts", "utf8");
+  for (const field of ["refresh", "autoPoc", "shard"]) {
+    assert.match(
+      worker,
+      new RegExp(`^\\s{4}${field}[:,]`, "m"),
+      `/status must carry ${field} — the panel displays it and would otherwise show a default`,
+    );
+  }
+});

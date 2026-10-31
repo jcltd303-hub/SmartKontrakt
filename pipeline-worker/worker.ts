@@ -1004,6 +1004,7 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     skippedDupes: 0,
     stale,
     refresh,
+    shard: shard ? `${shard.index}/${shard.of}` : null,
     current: null,
     startedAt: new Date().toISOString(),
     lastFlushAt: null,
