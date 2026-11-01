@@ -360,3 +360,48 @@ contract Vault {
   assert.ok(found.length >= 1, "a post-call write must still be reported");
   assert.ok(found.some((f) => f.severity === "critical"), "and at critical");
 });
+
+test("authorization via a predicate helper is credited", () => {
+  // Kyber TreasuryPool.withdrawFunds, 0x0e590bb5…0bda, measured 2026-11-01: reported high
+  // by arbitrary-dispatch-call on a body that opens with an authorization require. There
+  // is no `msg.sender ==` and no modifier — the gate is a set-membership predicate.
+  const src = `
+pragma solidity ^0.8.0;
+contract TreasuryPool {
+    bool private _isPaused;
+    mapping(address => bool) private _authorizedStrategies;
+    function isAuthorizedStrategy(address strategy) public view returns (bool) {
+        return _authorizedStrategies[strategy];
+    }
+    function _transferToken(address token, uint256 amount, address payable recipient) internal {}
+    function withdrawFunds(
+        address[] calldata tokens,
+        uint256[] calldata amounts,
+        address payable recipient
+    ) external {
+        require(!_isPaused, 'only when not paused');
+        require(isAuthorizedStrategy(msg.sender), 'not authorized');
+        require(tokens.length == amounts.length, 'invalid lengths');
+        for(uint256 i = 0; i < tokens.length; i++) {
+            _transferToken(tokens[i], amounts[i], recipient);
+        }
+    }
+}`;
+  const found = analyzeInput(src, "kyber").findings.filter((f) => f.detector === "arbitrary-dispatch-call");
+  assert.equal(found.length, 0, "an authorized-strategy gate is an access check");
+});
+
+test("a value predicate is not mistaken for authorization", () => {
+  // The control: balanceOf(msg.sender) is a balance test, not a caller gate.
+  const src = `
+pragma solidity ^0.8.0;
+contract Vault {
+    mapping(address => uint256) public balanceOf;
+    function drain(address target, bytes calldata data) external returns (bool, bytes memory) {
+        require(balanceOf(msg.sender) > 0, "no balance");
+        return target.call(data);
+    }
+}`;
+  const found = analyzeInput(src, "vault").findings.filter((f) => f.detector === "arbitrary-dispatch-call");
+  assert.ok(found.length >= 1, "a balance check must not suppress an open dispatcher");
+});

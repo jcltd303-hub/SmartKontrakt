@@ -469,6 +469,25 @@ function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel, sk
   ) {
     return true;
   }
+  // Authorization delegated to a predicate helper:
+  //   require(isAuthorizedStrategy(msg.sender), "not authorized");
+  //
+  // There is no `msg.sender ==` here and no modifier — the check is a set-membership test
+  // behind a function call, which is how Kyber and most DAO treasuries gate operators.
+  // Measured 2026-11-01: Kyber TreasuryPool.withdrawFunds (0x0e590bb5…0bda) was reported
+  // high by arbitrary-dispatch-call on a function whose body opens with exactly that
+  // require.
+  //
+  // Restricted to predicate-shaped names (is* / has* / check*) so a value test such as
+  // `require(balanceOf(msg.sender) > 0)` is not mistaken for an authorization check — the
+  // trailing [,)] also rejects a comparison after the call.
+  if (
+    !/tx\.origin/.test(src) &&
+    /require\s*\(\s*(?:is[A-Z]\w*|has[A-Z]\w*|_?check[A-Z]\w*)\s*\([^)]*msg\.sender[^)]*\)\s*[,)]/.test(src)
+  ) {
+    return true;
+  }
+
   // Per-asset ownership: items[_itemId].owner == msg.sender or
   // ownerOf(_itemId) == msg.sender. The asset's owner is the only party
   // who may act on that asset — ERC-721 approve and marketplace
