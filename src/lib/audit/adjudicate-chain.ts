@@ -38,7 +38,6 @@ import {
   savedStatusFromRun,
   unadaptedTemplateCheck,
   unadaptedTemplateOutput,
-  pocSelfCheck,
 } from "./poc-outcome.ts";
 import type { AiSecurityReview } from "./ai-review.server.ts";
 import type { PocOrigin } from "./poc-evidence.ts";
@@ -94,6 +93,16 @@ export type AdjudicationDeps = {
    *  a persist failure is reported in the outcome message, never fatal). */
   persistAiReview: (review: AiSecurityReview) => Promise<void>;
   listRuns: (findingId: string) => Promise<AdjudicationRunRecord[]>;
+  /** Draft-hash dedupe across findings (improvement #9): the newest
+   *  stored run of the identical PoC source against the identical
+   *  target, executed for a different finding (a re-scan mints new
+   *  finding ids for the same address, so the per-finding reuse above
+   *  cannot see it). Optional — chains without archive access simply
+   *  never share. */
+  findSharedRun?: (input: {
+    digest: string;
+    targetAddress: string;
+  }) => Promise<(AdjudicationRunRecord & { findingId: string }) | null>;
   runPoc: (input: {
     address: string;
     chainId?: string;
@@ -203,8 +212,8 @@ export function failedAdjudicationOutcome(message: string, stoppedAt: ChainStep)
 // (compile, backend, RPC/fork, timeout) map to "error". The chain used
 // to fold everything non-verdict into "error" — that conflation is
 // what polluted the Errors bucket with skips and zero-test runs.
-function verdictFromRunStatus(status: string, logs: string, pocSource?: string): PocVerdict {
-  return savedStatusFromRun({ status, logs, pocSource });
+function verdictFromRunStatus(status: string, logs: string): PocVerdict {
+  return savedStatusFromRun({ status, logs });
 }
 
 function verdictFromStoredStatus(status: string, output?: string | null): PocVerdict {
@@ -387,6 +396,80 @@ export async function runAdjudicationChain(
     });
   }
 
+  // --- Shared-verdict step (improvement #9) ------------------------------
+  // The same draft, byte for byte, already executed against the SAME
+  // target for a different finding (a re-scan of this address under a
+  // new scan id): the stored verdict is a determination about this code
+  // on this target, and re-executing proves nothing — it only burns a
+  // backend slot. Sharing follows auto-poc's rule: code-determined
+  // outcomes only (the verdicts, no_tests, skipped, unadapted, and
+  // compile errors); an infra error is never shared. A redo (force)
+  // bypasses sharing like it bypasses the per-finding reuse.
+  if (!ctx.force && candidateDigest && ctx.targetAddress && deps.findSharedRun) {
+    let shared: (AdjudicationRunRecord & { findingId: string }) | null = null;
+    try {
+      shared = await deps.findSharedRun({
+        digest: candidateDigest,
+        targetAddress: ctx.targetAddress,
+      });
+    } catch {
+      shared = null; // a failed lookup degrades to a normal run
+    }
+    if (shared && shared.findingId !== finding.id) {
+      const shareable =
+        shared.status === "passed" ||
+        shared.status === "failed" ||
+        shared.status === "no_tests" ||
+        shared.status === "skipped" ||
+        shared.status === "unadapted" ||
+        (shared.status === "error" && deps.isCompileError(shared.output));
+      if (shareable) {
+        const verdict = verdictFromStoredStatus(shared.status, shared.output);
+        const sharedOutput =
+          `Shared verdict — identical PoC (digest ${candidateDigest.slice(0, 12)}…) already executed ` +
+          `for finding ${shared.findingId} against this target; not re-executed.\n\n${shared.output}`;
+        steps.harness = "reused";
+        step("harness", "reused");
+        progress("Reusing the identical PoC's verdict from an earlier scan of this target…");
+        let saveError: string | null = null;
+        try {
+          await deps.saveRun({
+            findingId: finding.id,
+            scanId: ctx.scanId,
+            status: verdict,
+            source: prepared.testCode,
+            output: sharedOutput,
+            durationMs: 0,
+            chainId: ctx.chainId,
+            targetAddress: ctx.targetAddress,
+          });
+          steps.saved = "done";
+        } catch (err) {
+          saveError = err instanceof Error ? err.message : String(err);
+          steps.saved = "failed";
+        }
+        step("saved", steps.saved);
+        const outcome = finish({
+          kind: "suggested",
+          verdict,
+          suggestion: suggestDispositionForVerdict(verdict, {
+            origin: prepared.origin,
+            output: shared.output,
+          }),
+          output: sharedOutput,
+          testCode: prepared.testCode,
+          reviewStep,
+          runStep: "reused",
+          saveError,
+          message:
+            `Shared verdict — this exact PoC was already executed against this target ` +
+            `(finding ${shared.findingId}) with verdict ${verdict}; not re-executed.`,
+        });
+        return saveError ? outcome : asTerminal(outcome);
+      }
+    }
+  }
+
   if (!ctx.targetAddress) {
     steps.harness = "failed";
     step("harness", "failed");
@@ -463,13 +546,6 @@ export async function runAdjudicationChain(
   // as 'no_tests' WITHOUT calling the backend (no wasted fork run). The
   // shared gate lives in poc-outcome.ts; the PoC Audits page's Run path
   // applies the identical gate.
-  // The repair's failure reason is captured, not swallowed. `ensureExecutablePocTests`
-  // treats a throw as "attempted, still none", which is correct for control flow but
-  // discards the only evidence of WHY: a provider error, a reply the output contract
-  // rejected (no Test contract / over 40k / no pragma), or a model that answered in
-  // prose. 209 no_tests rows on one run all read "generation attempt returned no
-  // source", which is not a diagnosis.
-  let repairError: string | null = null;
   const gate = await ensureExecutablePocTests(prepared.testCode, async (instruction) => {
     try {
       return await deps.repairPoc({
@@ -478,8 +554,7 @@ export async function runAdjudicationChain(
         errorLogs: instruction,
         body: ctx.body,
       });
-    } catch (err) {
-      repairError = err instanceof Error ? err.message : String(err);
+    } catch {
       return null;
     }
   });
@@ -487,12 +562,10 @@ export async function runAdjudicationChain(
     steps.harness = "skipped"; // deliberately not executed — nothing to execute
     step("harness", "skipped");
     const gateLogs = `Finding input SHA3-256: ${sha3_256(finding.exploitSolidity ?? "")}\n${
-      prepared.note ? `Preparation note: ${prepared.note}\n` : ""
+      prepared.note ? `${prepared.note}\n` : ""
     }[SmartPoC] Not run — the prepared PoC contains no executable test function, so forge would run 0 tests. ${
       gate.generationNote ?? ""
-    }${repairError ? `Repair call failed: ${repairError}\n` : ""}${
-      prepared.testCode.trim() ? "" : "The prepared code is EMPTY — the finding carries no exploit snippet.\n"
-    }${pocSelfCheck(gate.testCode)}\n Saved as no_tests: a generation gap, not an error and not a verdict on the finding.`;
+    } Saved as no_tests: a generation gap, not an error and not a verdict on the finding.`;
     let saveError: string | null = null;
     try {
       await deps.saveRun({
@@ -551,7 +624,7 @@ export async function runAdjudicationChain(
       testCode,
       ...(ctx.pocToken ? { tokenAddress: ctx.pocToken } : {}),
     });
-    verdict = verdictFromRunStatus(poc.status, poc.logs ?? "", testCode);
+    verdict = verdictFromRunStatus(poc.status, poc.logs ?? "");
     logs = poc.logs ?? "";
     durationMs = poc.durationMs ?? 0;
     if (poc.status === "backend_unreachable") harnessState = "failed";
@@ -574,7 +647,7 @@ export async function runAdjudicationChain(
             testCode,
             ...(ctx.pocToken ? { tokenAddress: ctx.pocToken } : {}),
           });
-          verdict = verdictFromRunStatus(poc.status, poc.logs ?? "", testCode);
+          verdict = verdictFromRunStatus(poc.status, poc.logs ?? "");
           logs = poc.logs ?? "";
           durationMs = poc.durationMs ?? 0;
           testCode = poc.executedSource ?? testCode;

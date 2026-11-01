@@ -710,6 +710,66 @@ export const setFpSignatureDecisionFn = createServerFn({ method: "POST" })
     return setFpSignatureDecision(data);
   });
 
+export type DetectorScoreboardRow = import("./audit/detector-scoreboard").DetectorStats & {
+  /** FP-dispositioned findings still carrying a real severity. */
+  rectifiable: number;
+  /** True when the class is auto-demoted at analysis time. */
+  demoted: boolean;
+};
+
+/**
+ * The detector scoreboard for the Records panel: per-class verdict
+ * counts from auditor dispositions, the auto-demotion flag, and how
+ * many proven-FP findings a rectification would move to info.
+ * Fail-soft like the other Records reads.
+ */
+export const getDetectorScoreboardFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<{ rows: DetectorScoreboardRow[]; error: string | null }> => {
+    try {
+      const { getSql } = await import("./db");
+      const sql = await getSql();
+      const { isDemotionFlagged } = await import("./audit/detector-scoreboard");
+      const { detectorScoreboard } = await import("./audit/detector-scoreboard.server");
+      const { rectifiableCounts } = await import("./audit/rectification.server");
+      const [board, rectifiable] = await Promise.all([detectorScoreboard(sql), rectifiableCounts(sql)]);
+      const rectByDetector = new Map(rectifiable.map((r) => [r.detector, r.rectifiable]));
+      return {
+        rows: board.map((s) => ({
+          ...s,
+          rectifiable: rectByDetector.get(s.detector) ?? 0,
+          demoted: isDemotionFlagged(s),
+        })),
+        error: null,
+      };
+    } catch (err) {
+      return { rows: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+);
+
+/**
+ * One-click rectification (improvement #7): set every
+ * false_positive-dispositioned finding of one detector to severity
+ * 'info'. A human write, like setFindingDispositionFn — the preview
+ * count the panel showed is the scope; the return is the count moved.
+ */
+export const applyRectificationFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => {
+    if (!input || typeof input !== "object") throw new Error("Invalid payload");
+    const val = input as { detector?: string };
+    if (!val.detector || typeof val.detector !== "string" || !val.detector.trim()) {
+      throw new Error("Missing detector");
+    }
+    return { detector: val.detector.trim() };
+  })
+  .handler(async ({ data }) => {
+    const { getSql } = await import("./db");
+    const sql = await getSql();
+    const { rectifyFalsePositives } = await import("./audit/rectification.server");
+    const moved = await rectifyFalsePositives(sql, data.detector);
+    return { detector: data.detector, moved };
+  });
+
 /** Stored PoC runs for a finding (newest first, digest-bearing rows
  *  only) — the adjudication chain's reuse lookup. */
 export const getFindingPocRunsFn = createServerFn({ method: "GET" })
@@ -718,5 +778,17 @@ export const getFindingPocRunsFn = createServerFn({ method: "GET" })
     if (!data?.findingId) throw new Error("Missing findingId");
     const { listFindingPocRuns } = await import("./audit/persist.server");
     return listFindingPocRuns(data.findingId);
+  });
+
+/** Draft-hash dedupe across findings (improvement #9): the newest run
+ *  of the identical PoC source against the identical target, executed
+ *  for a different finding — the adjudication chain's shared-verdict
+ *  lookup. Null when nothing shareable exists. */
+export const getSharedPocRunFn = createServerFn({ method: "GET" })
+  .validator((input?: { digest?: string; targetAddress?: string; excludeFindingId?: string }) => input)
+  .handler(async ({ data }) => {
+    if (!data?.digest || !data?.targetAddress || !data?.excludeFindingId) return null;
+    const { findSharedPocRun } = await import("./audit/persist.server");
+    return findSharedPocRun(data.digest, data.targetAddress, data.excludeFindingId);
   });
 

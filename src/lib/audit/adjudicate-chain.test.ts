@@ -555,3 +555,84 @@ describe("runAdjudicationChain — pocToken forwarding (audit class E1)", () => 
     assert.equal(seenToken, undefined);
   });
 });
+
+describe("shared-verdict dedupe (improvement #9)", () => {
+  it("reuses an identical draft's verdict from another finding on the same target", async () => {
+    const finding = makeFinding();
+    const digest = pocRunKey(finding.id!, TEST_SNIPPET).digest;
+    const { deps, calls, saved } = makeDeps({
+      findSharedRun: async ({ digest: d, targetAddress }) => {
+        assert.equal(d, digest);
+        assert.equal(targetAddress, "0x3dfd23a6c5e8bbcfc9581d2e864a68feb6a076d3");
+        return {
+          id: "poc:scan-0:0:abc",
+          findingId: "scan-0:0",
+          status: "passed",
+          sourceDigest: digest,
+          output: "1 passed; 0 failed",
+          durationMs: 99,
+          createdAt: "2026-10-31T00:00:00Z",
+        };
+      },
+    });
+    const outcome = await runAdjudicationChain(baseCtx(), deps);
+    assert.equal(calls.run, 0, "the backend is never called");
+    assert.equal(outcome.verdict, "passed");
+    assert.equal(outcome.runStep, "reused");
+    assert.equal(calls.save, 1, "the shared verdict is saved for THIS finding");
+    assert.match(saved[0]!.output, /Shared verdict — identical PoC/);
+    assert.equal(saved[0]!.status, "passed");
+    assert.equal(outcome.complete, true);
+  });
+
+  it("never shares an infra error, and force bypasses sharing", async () => {
+    const digest = pocRunKey("scan-1:0", TEST_SNIPPET).digest;
+    const infra = makeDeps({
+      findSharedRun: async () => ({
+        id: "poc:scan-0:0:def",
+        findingId: "scan-0:0",
+        status: "error",
+        sourceDigest: digest,
+        output: "backend unreachable: connect ECONNREFUSED",
+        durationMs: 5,
+        createdAt: "2026-10-31T00:00:00Z",
+      }),
+    });
+    const outcome = await runAdjudicationChain(baseCtx(), infra.deps);
+    assert.equal(infra.calls.run, 1, "an infra error is not a verdict about the code — the chain runs its own PoC");
+    assert.equal(outcome.verdict, "passed");
+
+    const forced = makeDeps({
+      findSharedRun: async () => ({
+        id: "poc:scan-0:0:abc",
+        findingId: "scan-0:0",
+        status: "passed",
+        sourceDigest: digest,
+        output: "1 passed; 0 failed",
+        durationMs: 99,
+        createdAt: "2026-10-31T00:00:00Z",
+      }),
+    });
+    const forcedOutcome = await runAdjudicationChain(baseCtx({ force: true }), forced.deps);
+    assert.equal(forced.calls.run, 1, "force (redo) re-executes instead of sharing");
+    assert.equal(forcedOutcome.verdict, "passed");
+  });
+
+  it("shares a compile error — a property of the source alone", async () => {
+    const digest = pocRunKey("scan-1:0", TEST_SNIPPET).digest;
+    const { deps, calls } = makeDeps({
+      findSharedRun: async () => ({
+        id: "poc:scan-0:0:ghi",
+        findingId: "scan-0:0",
+        status: "error",
+        sourceDigest: digest,
+        output: "Compiler run failed. Error (7576): Undeclared identifier.",
+        durationMs: 12,
+        createdAt: "2026-10-31T00:00:00Z",
+      }),
+    });
+    const outcome = await runAdjudicationChain(baseCtx(), deps);
+    assert.equal(calls.run, 0);
+    assert.equal(outcome.runStep, "reused");
+  });
+});

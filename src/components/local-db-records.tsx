@@ -9,8 +9,11 @@ import {
   getScansStatsFn,
   getDatabaseSizeFn,
   getWorkerStatusFn,
+  getDetectorScoreboardFn,
+  applyRectificationFn,
   type ScansListPayload,
   type WorkerStatusPayload,
+  type DetectorScoreboardRow,
 } from "@/lib/scans.functions";
 import { DB_FREE_TIER_CAP_BYTES, dbSizeLevel, dbSizePercentOfCap, formatDbBytes } from "@/lib/db-size";
 import type { ScanSummary, StoredScan } from "@/lib/audit/persist.server";
@@ -77,6 +80,12 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
   // which machines run the pipeline, what analyzer each carries, and
   // how much of the archive predates the current analyzer.
   const [workerStatus, setWorkerStatus] = useState<WorkerStatusPayload | null>(null);
+  // Detector scoreboard + rectification (improvements #6/#7): per-class
+  // verdict counts, the auto-demotion flag, and the one-click move of
+  // proven-FP findings to info.
+  const [scoreboard, setScoreboard] = useState<DetectorScoreboardRow[] | null>(null);
+  const [rectifyConfirm, setRectifyConfirm] = useState<string | null>(null);
+  const [rectifying, setRectifying] = useState<boolean>(false);
   // Effective connection state, from getDatabaseStatusFn's dbInfo — the
   // same getDbConnectionState() resolution the queries use. The badge and
   // the header pill render THIS, never a hardcoded "Connected"/"Live":
@@ -137,6 +146,12 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
         setWorkerStatus(ws.error ? null : ws);
       } catch {
         setWorkerStatus(null); // banner is observability; absence is not an error state
+      }
+      try {
+        const board = await getDetectorScoreboardFn();
+        setScoreboard(board.error ? null : board.rows);
+      } catch {
+        setScoreboard(null);
       }
       try {
         const status = await getDatabaseStatusFn();
@@ -200,6 +215,22 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
       console.warn("[kiln] Failed to fetch more Supabase DB records:", err);
     } finally {
       setIsLoadingMore(false);
+    }
+  };
+
+  const applyRectification = async (detector: string) => {
+    setRectifying(true);
+    try {
+      const res = await applyRectificationFn({ data: { detector } });
+      setActionNotice(
+        `Rectified ${res.moved} ${detector} finding${res.moved === 1 ? "" : "s"} — proven false positives now read as info.`,
+      );
+      setRectifyConfirm(null);
+      await fetchRecords();
+    } catch (err) {
+      setActionNotice(`Rectification failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setRectifying(false);
     }
   };
 
@@ -559,6 +590,60 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
                   </span>
                 )}
                 {w.note && <span className="opacity-75"> · {w.note}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {scoreboard && scoreboard.length > 0 && (
+        <div className="p-3 bg-[#1c1a16] border border-[#3a3428] text-xs font-mono rounded-xl animate-fadeIn">
+          <div className="font-bold text-[#f4efe6] mb-2">
+            Detector scoreboard — verdicts of record (auto-demotion at ≥90% FP over ≥20)
+          </div>
+          <div className="space-y-1.5">
+            {scoreboard.map((row) => (
+              <div key={row.detector} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[#a39886]">
+                <span className="text-[#f4efe6] min-w-44">{row.detector}</span>
+                <span>
+                  {row.confirmed} confirmed · {row.falsePositive} FP · {row.needsMoreInfo} needs info ·{" "}
+                  {Math.round(row.fpRate * 100)}% FP
+                </span>
+                {row.demoted && (
+                  <span className="px-1.5 py-0.5 rounded bg-amber-900 text-amber-200 font-bold">DEMOTED</span>
+                )}
+                {row.rectifiable > 0 &&
+                  (rectifyConfirm === row.detector ? (
+                    <span className="inline-flex items-center gap-2">
+                      <span className="text-red-300">
+                        Set {row.rectifiable} proven-FP finding{row.rectifiable === 1 ? "" : "s"} to info?
+                      </span>
+                      <button
+                        type="button"
+                        disabled={rectifying}
+                        onClick={() => void applyRectification(row.detector)}
+                        className="px-2 py-0.5 rounded bg-red-900 text-red-100 font-bold disabled:opacity-50"
+                      >
+                        {rectifying ? "Working…" : "Confirm"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={rectifying}
+                        onClick={() => setRectifyConfirm(null)}
+                        className="px-2 py-0.5 rounded bg-[#3a3428] text-[#f4efe6] disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setRectifyConfirm(row.detector)}
+                      className="px-2 py-0.5 rounded bg-[#3a3428] text-[#f4efe6]"
+                    >
+                      Rectify {row.rectifiable} FP → info
+                    </button>
+                  ))}
               </div>
             ))}
           </div>

@@ -235,6 +235,12 @@ export type AutoPocDeps = {
     targetAddress: string | null;
   }) => Promise<void>;
   listRuns: (findingId: string) => Promise<AdjudicationRunRecord[]>;
+  /** Cross-finding draft-hash lookup (the chain's shared-verdict dep). */
+  findSharedRun?: (input: {
+    digest: string;
+    targetAddress: string;
+    excludeFindingId: string;
+  }) => Promise<(AdjudicationRunRecord & { findingId: string }) | null>;
   log: (line: string) => void;
 };
 
@@ -278,6 +284,10 @@ export const defaultAutoPocDeps: AutoPocDeps = {
   listRuns: async (findingId) => {
     const { listFindingPocRuns } = await import("../src/lib/audit/persist.server.ts");
     return listFindingPocRuns(findingId);
+  },
+  findSharedRun: async ({ digest, targetAddress, excludeFindingId }) => {
+    const { findSharedPocRun } = await import("../src/lib/audit/persist.server.ts");
+    return findSharedPocRun(digest, targetAddress, excludeFindingId);
   },
   log: (line) => console.log(line),
 };
@@ -496,6 +506,9 @@ export async function runAutoPocForEntry(
             await deps.persistReview(input.scanId, r);
           },
           listRuns: deps.listRuns,
+          findSharedRun: deps.findSharedRun
+            ? async ({ digest, targetAddress }) => deps.findSharedRun!({ digest, targetAddress, excludeFindingId: finding.id ?? "" })
+            : undefined,
           runPoc: async ({ address, chainId, testCode, tokenAddress }) => {
             // Identical-draft dedupe: the hash covers the exact code
             // that would be sent (post gate/repair), keyed with the

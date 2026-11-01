@@ -206,23 +206,6 @@ import {
  *                accepts a refund-with-timeout plus any unguarded payout;
  *                registry-dispatched-logic accepts a non-parameter index. Same
  *                inputs now produce different records, so the archive refreshes.
- * 2026-11-01.19 — reentrancy scored a CRITICAL on a reserve-then-rollback accumulator.
- *
- *                Measured from the archive: Halo3D.payCharity, E25_Booster.payCharity and
- *                DailyDivs.payFund — one template in three contracts — all stored critical.
- *                Each increments its accumulator BEFORE the external call and decrements
- *                it only in the failure branch, so a reentrant call observes the reserved
- *                value and the entry require(amount > 1) fails.
- *
- *                rollbackSettledVar already described this exact pattern in its own
- *                summary, but both of its loops gated on `creditVars` — per-user credit —
- *                so an aggregate accumulator was skipped and the rule fell through to the
- *                generic call-then-write branch at critical.
- *
- *                Now every post-call write must be a failure-only decrement, and the
- *                rolled-back variable is any variable reserved before the call, whatever
- *                it is named. Critical -> low on all three.
- *
  * 2026-11-01.18 — bridge-message-auth, the three escapes the .17 shape gate left,
  *                measured on a hand-vetted archive pull (10 of 10 stored criticals
  *                in the class were false positives; 1 of the 10 still fired after
@@ -245,6 +228,53 @@ import {
  *                bytes parameter is not context: every ERC721 safeTransferFrom
  *                override carries one. Five regression fixtures pin each escape
  *                and the surviving Nomad positive. Same inputs now produce
+ *                different records, so the archive refreshes.
+ * 2026-11-01.19 — Live gates + the detector scoreboard (the improvement batch
+ *                Jer approved in full). Every address analysis path in the
+ *                fetcher now runs post-passes after value/ABI attachment:
+ *                (1) value exposure — unprotected-ether, selfdestruct and
+ *                token-drain findings carry the address's LIVE value as
+ *                their economicClaim (basis "live"), replacing the
+ *                text-figure assumption; a completely-read $0 is stated
+ *                as $0, an incomplete $0 is never stated. (2) Live-state
+ *                annotations — the decisive reads already probed (owner,
+ *                paused) are written into the confidenceBasis of the
+ *                findings they bear on; annotation only, no re-scoring.
+ *                (3) Scoreboard demotions, when the caller supplies the
+ *                archive's track record: a detector running ≥90%
+ *                false-positive over ≥20 dispositioned findings has its
+ *                criticals capped at high and its high confidence dropped
+ *                to medium, with the scoreboard line in confidenceBasis.
+ *                Same inputs now produce different records, so the archive
+ *                refreshes.
+ * 2026-11-01.19 — (2b86fdbf, the parallel claim) reentrancy scored a CRITICAL
+ *                on a reserve-then-rollback accumulator. Measured from the
+ *                archive: Halo3D.payCharity, E25_Booster.payCharity and
+ *                DailyDivs.payFund — one template in three contracts — all
+ *                stored critical. Each increments its accumulator BEFORE
+ *                the external call and decrements it only in the failure
+ *                branch, so a reentrant call observes the reserved value
+ *                and the entry require(amount > 1) fails.
+ *                rollbackSettledVar already described this exact pattern
+ *                in its own summary, but both of its loops gated on
+ *                `creditVars` — per-user credit — so an aggregate
+ *                accumulator was skipped and the rule fell through to the
+ *                generic call-then-write branch at critical. Now every
+ *                post-call write must be a failure-only decrement, and the
+ *                rolled-back variable is any variable reserved before the
+ *                call, whatever it is named. Critical -> low on all three.
+ * 2026-11-01.20 — The two .19s above shipped from parallel bases on two
+ *                machines (7dd0223b and 2b86fdbf); the second push's copy
+ *                of this file also dropped the baseline-ordering helpers
+ *                (baselineOf / compareBaselines / isBaselineOlder) that
+ *                the stale-worker gate builds on — restored here from
+ *                7dd0223b. .20 supersedes both .19 flavors: every .19
+ *                stamp reads stale, so the archive refreshes past the
+ *                collision. Also in this push: the Sourcify scoping
+ *                block is extracted verbatim into the exported pure
+ *                scopeSourcifyFiles so the frozen bundle regression
+ *                corpus (bundle-scope.test.ts, improvement #10) tests
+ *                the exact production scoping. Same inputs now produce
  *                different records, so the archive refreshes.
  *
  * 2026-11-01.17 — bridge-message-auth fired on the NAME `claim`. Measured on a real
@@ -359,7 +389,7 @@ import {
  *
  *                Same inputs now produce different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-11-01.19";
+export const ANALYZER_BASELINE = "2026-11-01.20";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {
@@ -384,4 +414,42 @@ export function analyzerStamp(): string {
  */
 export function isStaleVersion(saved?: string | null): boolean {
   return !saved || saved !== analyzerStamp();
+}
+
+/** The baseline part of a stamp (or a bare baseline): text before \"+\". */
+export function baselineOf(stamp?: string | null): string | null {
+  if (!stamp) return null;
+  const base = stamp.split("+")[0]?.trim();
+  return base ? base : null;
+}
+
+/**
+ * Order two baselines (\"2026-11-01.18\"). The date part is zero-padded ISO,
+ * so it compares lexicographically; the counter after the last dot compares
+ * numerically (\".9\" < \".10\"). Returns -1 / 0 / 1, or null when either side
+ * is not a recognizable baseline — callers treat null as \"cannot judge\",
+ * never as \"older\".
+ */
+export function compareBaselines(a?: string | null, b?: string | null): number | null {
+  const parse = (s?: string | null): { date: string; n: number } | null => {
+    const base = baselineOf(s);
+    if (!base) return null;
+    const dot = base.lastIndexOf(".");
+    if (dot < 0) return null;
+    const n = Number.parseInt(base.slice(dot + 1), 10);
+    if (!Number.isFinite(n)) return null;
+    return { date: base.slice(0, dot), n };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb) return null;
+  if (pa.date !== pb.date) return pa.date < pb.date ? -1 : 1;
+  if (pa.n !== pb.n) return pa.n < pb.n ? -1 : 1;
+  return 0;
+}
+
+/** True when baseline `own` is strictly older than baseline `other`. */
+export function isBaselineOlder(own?: string | null, other?: string | null): boolean {
+  const cmp = compareBaselines(own, other);
+  return cmp !== null && cmp < 0;
 }

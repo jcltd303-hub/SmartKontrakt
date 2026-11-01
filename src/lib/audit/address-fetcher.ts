@@ -697,42 +697,59 @@ async function fetchSourcifySource(address: string, chainIdNumber: number): Prom
     }
     if (files.length === 0) return null;
 
-    // Look for solidity files
-    const solFiles = files.filter((f) => f.name.endsWith(".sol"));
-    if (solFiles.length === 0) return null;
-
-    // Scope to the contract Sourcify actually verified, via its own statement of which
-    // one that is. Without this, a multi-file match concatenates the whole compilation
-    // unit — including whatever test fixtures or unrelated contracts shared it.
-    const fqn = data.compilation?.fullyQualifiedName;
-    let scoped = solFiles;
-    let scopedName: string | null = null;
-    if (fqn && fqn.includes(":")) {
-      const cut = fqn.lastIndexOf(":");
-      const entryFile = fqn.slice(0, cut);
-      const entryName = fqn.slice(cut + 1);
-      const byPath = new Map(solFiles.map((f) => [f.name, f.content]));
-      if (byPath.has(entryFile)) {
-        scoped = importClosure(entryFile, byPath).map((n) => ({ name: n, content: byPath.get(n) ?? "" }));
-        scopedName = entryName;
-      }
-    }
-
-    const mainFile =
-      scoped.find((f) => f.name === solFiles.find((g) => g.name.endsWith(`${scopedName}.sol`))?.name) ??
-      scoped.find((f) => !f.name.includes("/") && !f.name.toLowerCase().includes("interface")) ??
-      scoped[0];
-    const ordered = mainFile ? [mainFile, ...scoped.filter((f) => f !== mainFile)] : scoped;
-    const source = ordered.map((f) => `// File: ${f.name}\n${f.content}`).join("\n\n");
-
-    const name = scopedName ?? mainFile?.name.replace(/\.sol$/, "") ?? "VerifiedContract";
-    // With a Sourcify-declared contract name, scope detection to it always. Without
-    // one, only a single-file match can be scoped safely.
-    const contractName = scopedName ?? (solFiles.length === 1 ? name : null);
-    return { source, name, contractName, registry: "sourcify" as const };
+    const scopedResult = scopeSourcifyFiles(files, data.compilation?.fullyQualifiedName);
+    if (!scopedResult) return null;
+    return { ...scopedResult, registry: "sourcify" as const };
   } catch {
     return null;
   }
+}
+
+/**
+ * Scope a Sourcify file set to the contract Sourcify actually verified:
+ * the import closure of the fully-qualified name's entry file, main file
+ * first, joined in the `// File:` format the analysis consumes. Without
+ * scoping, a multi-file match concatenates the whole compilation unit —
+ * including whatever test fixtures or unrelated contracts shared it
+ * (the 0x0c0388e4 ERC1967Proxy bundle carried OpenZeppelin's deliberately
+ * unsafe test fixtures, and all 29 of its stored criticals were theirs).
+ *
+ * Pure and exported so the frozen real-world bundles in
+ * fixtures/ can regression-test the exact production scoping
+ * (bundle-scope.test.ts). Returns null when no Solidity files exist.
+ */
+export function scopeSourcifyFiles(
+  files: { name: string; content: string }[],
+  fqn: string | undefined | null,
+): { source: string; name: string; contractName: string | null } | null {
+  const solFiles = files.filter((f) => f.name.endsWith(".sol"));
+  if (solFiles.length === 0) return null;
+
+  let scoped = solFiles;
+  let scopedName: string | null = null;
+  if (fqn && fqn.includes(":")) {
+    const cut = fqn.lastIndexOf(":");
+    const entryFile = fqn.slice(0, cut);
+    const entryName = fqn.slice(cut + 1);
+    const byPath = new Map(solFiles.map((f) => [f.name, f.content]));
+    if (byPath.has(entryFile)) {
+      scoped = importClosure(entryFile, byPath).map((n) => ({ name: n, content: byPath.get(n) ?? "" }));
+      scopedName = entryName;
+    }
+  }
+
+  const mainFile =
+    scoped.find((f) => f.name === solFiles.find((g) => g.name.endsWith(`${scopedName}.sol`))?.name) ??
+    scoped.find((f) => !f.name.includes("/") && !f.name.toLowerCase().includes("interface")) ??
+    scoped[0];
+  const ordered = mainFile ? [mainFile, ...scoped.filter((f) => f !== mainFile)] : scoped;
+  const source = ordered.map((f) => `// File: ${f.name}\n${f.content}`).join("\n\n");
+
+  const name = scopedName ?? mainFile?.name.replace(/\.sol$/, "") ?? "VerifiedContract";
+  // With a Sourcify-declared contract name, scope detection to it always. Without
+  // one, only a single-file match can be scoped safely.
+  const contractName = scopedName ?? (solFiles.length === 1 ? name : null);
+  return { source, name, contractName };
 }
 
 /**

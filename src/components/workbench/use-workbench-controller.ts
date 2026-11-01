@@ -71,6 +71,7 @@ import {
   getDbInfo,
   getFindingDispositionsFn,
   getFindingPocRunsFn,
+  getSharedPocRunFn,
   getScan,
   queryRagKnowledgebaseFn,
   saveComprehensiveScanFn,
@@ -771,6 +772,15 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
             });
           },
           listRuns: async (findingId) => getFindingPocRunsFn({ data: { findingId } }),
+          findSharedRun: async ({ digest, targetAddress }) => {
+            try {
+              return await getSharedPocRunFn({
+                data: { digest, targetAddress, excludeFindingId: dbFinding.id },
+              });
+            } catch {
+              return null; // a failed lookup degrades to a normal run
+            }
+          },
           runPoc: async ({ address, chainId, testCode, tokenAddress }) => {
             const poc = await runPocWithRpcRetries(getBackendUrl(), {
               address,

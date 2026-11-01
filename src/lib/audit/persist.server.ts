@@ -1040,4 +1040,56 @@ export async function listFindingPocRuns(findingId: string): Promise<Adjudicatio
   }));
 }
 
+/**
+ * Draft-hash dedupe across findings (improvement #9): the newest stored
+ * run of the IDENTICAL PoC source (same source_digest) against the
+ * IDENTICAL target address, executed for a DIFFERENT finding — the
+ * re-scan shape the per-finding reuse cannot see, because every scan
+ * mints new finding ids for the same address. The verdict of an
+ * identical proof against an identical target is a determination about
+ * that code on that target; re-executing it proves nothing.
+ *
+ * Only code-determined outcomes are eligible — the verdicts, no_tests,
+ * skipped, unadapted, and error (the chain refines error to compile
+ * errors via its isCompileError dep, exactly as auto-poc's sharing
+ * rule does). Infra outcomes are never returned as verdicts of record
+ * for another finding. Returns the run plus its finding id, or null.
+ */
+export async function findSharedPocRun(
+  digest: string,
+  targetAddress: string,
+  excludeFindingId: string,
+): Promise<(AdjudicationRunRecord & { findingId: string }) | null> {
+  const a = await archiveSql();
+  if (!a.sql) throw new Error(a.error);
+  const rows = await a.sql<{
+    id: string;
+    finding_id: string;
+    status: string;
+    source_digest: string;
+    output: string;
+    duration_ms: number;
+    created_at: string;
+  }>`
+    select id, finding_id, status, source_digest, output, duration_ms, created_at::text as created_at
+    from finding_poc_runs
+    where source_digest = ${digest}
+      and lower(coalesce(target_address, '')) = ${targetAddress.toLowerCase()}
+      and finding_id <> ${excludeFindingId}
+      and status in ('passed', 'failed', 'no_tests', 'skipped', 'unadapted', 'error')
+    order by created_at desc
+    limit 1`;
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    id: r.id,
+    findingId: r.finding_id,
+    status: r.status,
+    sourceDigest: r.source_digest,
+    output: r.output,
+    durationMs: r.duration_ms,
+    createdAt: r.created_at,
+  };
+}
+
 
