@@ -1,0 +1,16 @@
+# Not part of the web app — excluded so Vercel's framework detector sees a Node project.
+#
+# ml/ holds the Python image-vulnerability pipeline. Its 38 .py files outweighed the app's
+# 44 .tsx in Vercel's detector, which then tried to build this as a Python project and
+# failed with:
+#
+#   No python entrypoint found. Set "tool.vercel.entrypoint" in pyproject.toml or define
+#   an entrypoint in one of: app.py, index.py, server.py, main.py, ...
+#
+# Nothing at runtime reads from ml/ — only src/lib/image-ml/parity.test.ts does, and tests
+# do not run on Vercel. If that ever changes, exclude a narrower path than the whole tree.
+ml/
+
+# Solidity workspaces: the Foundry harness and the PoC scripts. Neither is served.
+foundry/
+poc/
