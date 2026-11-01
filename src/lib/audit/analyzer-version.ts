@@ -206,6 +206,30 @@ import {
  *                accepts a refund-with-timeout plus any unguarded payout;
  *                registry-dispatched-logic accepts a non-parameter index. Same
  *                inputs now produce different records, so the archive refreshes.
+ * 2026-11-01.18 — bridge-message-auth, the three escapes the .17 shape gate left,
+ *                measured on a hand-vetted archive pull (10 of 10 stored criticals
+ *                in the class were false positives; 1 of the 10 still fired after
+ *                .17). (1) A message is DYNAMIC bytes: /^bytes/ also matched
+ *                bytes32, which was the whole case against
+ *                YieldContract.claimYieldContract(bytes32 _contractId) — a stored
+ *                record id, not a payload. (2) namesPeer is scoped to the
+ *                function's own contract (its declarations), not the whole
+ *                parsed unit — a sibling file's trustedRemote is not this
+ *                contract's peer. (3) payoutIsSelfService credits the bound
+ *                payee: a require equating a stored owner field with msg.sender,
+ *                where every value-out leg pays that same field, is self-service
+ *                even though the payee is not textually msg.sender. And the
+ *                zero-root half now requires bridge context — a handler-named
+ *                function taking a message, a message-taking function consuming
+ *                the root, or cross-chain vocabulary in the contract's own
+ *                declarations — after MondaiAnimeGirls' whitelist root
+ *                (merkleRoot_WL, leaf = keccak(msg.sender)) scored high as a
+ *                Nomad shape with no bridge anywhere in the contract. A bare
+ *                bytes parameter is not context: every ERC721 safeTransferFrom
+ *                override carries one. Five regression fixtures pin each escape
+ *                and the surviving Nomad positive. Same inputs now produce
+ *                different records, so the archive refreshes.
+ *
  * 2026-11-01.17 — bridge-message-auth fired on the NAME `claim`. Measured on a real
  *                archive pull: LootChubby.claim(uint256 tokenId) — an NFT claim bounded
  *                by a supply cap and an id range — scored the only CRITICAL in 136
@@ -318,7 +342,7 @@ import {
  *
  *                Same inputs now produce different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-11-01.17";
+export const ANALYZER_BASELINE = "2026-11-01.18";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

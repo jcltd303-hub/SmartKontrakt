@@ -2158,7 +2158,35 @@ function payoutIsSelfService(clean: string): boolean {
   const paysCaller = /\.(?:transfer|safeTransfer\w*)\s*\(\s*(?:payable\s*\(\s*)?(?:msg\.sender|_msgSender\s*\(\s*\))/.test(clean);
   const amountKeyedToCaller = /\[\s*(?:msg\.sender|_msgSender\s*\(\s*\))\s*\]/.test(clean);
   const mintsToCaller = /(?:_mint|\.mint)\s*\(\s*(?:payable\s*\(\s*)?(?:msg\.sender|_msgSender\s*\(\s*\))/.test(clean);
-  return paysCaller && amountKeyedToCaller && !mintsToCaller;
+  if (paysCaller && amountKeyedToCaller && !mintsToCaller) return true;
+
+  // Bound payee (measured 2026-11-01, YieldContract.claimYieldContract): the
+  // payout goes to a STORED owner field, and a require binds that exact
+  // expression to msg.sender — `require(contractMap[id].contractOwner ==
+  // msg.sender)`. Only the recorded owner can trigger the function, and every
+  // value-out leg pays that same expression, so value can only ever reach the
+  // caller. Textually the payee is not msg.sender, so the shape above misses
+  // it; the binding is the same self-service fact, proven by identity rather
+  // than by an amount keyed to the caller.
+  const chain = String.raw`[A-Za-z_$][\w$]*(?:\s*\[[^\]]*\]|\s*\.\s*[A-Za-z_$][\w$]*)*`;
+  const bound =
+    new RegExp(String.raw`require\s*\(\s*(${chain})\s*==\s*(?:msg\.sender|_msgSender\s*\(\s*\))`).exec(clean) ??
+    new RegExp(String.raw`require\s*\(\s*(?:msg\.sender|_msgSender\s*\(\s*\))\s*==\s*(${chain})`).exec(clean);
+  if (!bound || !bound[1]) return false;
+  const payee = bound[1].replace(/\s+/g, "");
+  if (payee === "msg.sender") return false;
+  const recipients: string[] = [];
+  for (const m of clean.matchAll(/(?:\.transfer|\.safeTransfer|_mint|\.mint)\s*\(\s*([^,)]+)/g)) {
+    if (m[1]) recipients.push(m[1]);
+  }
+  for (const m of clean.matchAll(new RegExp(String.raw`(${chain})\s*\.\s*call\s*\{`, "g"))) {
+    if (m[1]) recipients.push(m[1]);
+  }
+  if (recipients.length === 0) return false;
+  return recipients.every((r) => {
+    const n = r.replace(/\s+/g, "").replace(/^payable\(/, "").replace(/\)$/, "");
+    return n === payee || n === "msg.sender" || n === "_msgSender()";
+  });
 }
 
 /** Governance functions that execute a decision. */
@@ -2435,9 +2463,28 @@ function scanHistoricalFn(
   // A cross-chain handler by definition receives a message, so require one: a bytes /
   // bytes32 parameter, or a contract that names a peer/remote/endpoint. Nomad, Qubit and
   // KelpDAO all take a payload; an NFT claim does not.
-  const takesMessage = fn.params.some((p) => /^bytes/.test(p.typeName));
+  // A message is DYNAMIC bytes. /^bytes/ also matched bytes32 — an id, a
+  // hash, a proof — and measured 2026-11-01 that was the whole case against
+  // YieldContract.claimYieldContract(bytes32 _contractId): a collateral claim
+  // keyed by a stored record id scored critical as an "unverified cross-chain
+  // message". Nomad, Qubit and KelpDAO handlers all take `bytes`.
+  const takesMessage = fn.params.some((p) => p.typeName === "bytes");
+  // Peer vocabulary counts only when THIS contract names it. The analysed
+  // unit is the deployed contract's import closure, so the old test against
+  // the whole parsed unit let a sibling file's endpoint or trustedRemote
+  // stand in as this contract's peer. Declarations only: the contract's own
+  // state vars, function and modifier names, bases, and this function's text.
   const namesPeer =
-    /trustedRemote|srcChainId|sourceChainId|lzReceive|onMessage|executeMessage|\b_peer\b/i.test(parsed);
+    /trustedRemote|srcChainId|sourceChainId|lzReceive|onMessage|executeMessage|\b_peer\b/i.test(
+      [
+        contract.name,
+        ...contract.bases,
+        ...contract.stateVars.map((v) => `${v.name} ${v.typeName}`),
+        ...contract.functions.map((f) => f.name),
+        ...contract.modifiers.map((m) => m.name),
+        src,
+      ].join("\n"),
+    );
   if (
     external &&
     BRIDGE_HANDLER.test(fn.name) &&
@@ -2599,7 +2646,41 @@ function scanHistoricalContract(
   const requiresNonZeroRoot = contract.functions.some((f) =>
     new RegExp(`require\\s*\\(\\s*${rootVar ? escapeRegExp(rootVar.name) : "\\w*[Rr]oot"}\\s*!=\\s*(?:bytes32\\s*\\(\\s*0\\s*\\)|0x0*|0)\\s*[,)]`).test(f.source),
   );
-  if (verifies && rootVar && !requiresNonZeroRoot) {
+  // The Nomad flaw is a BRIDGE root. A merkle root with no non-zero requirement
+  // is also the exact shape of every whitelist mint and allowlist claim —
+  // measured 2026-11-01 on MondaiAnimeGirls: `merkleRoot_WL` gates a whitelist
+  // mint (leaf = keccak(msg.sender)); no message, no peer, no bridge anywhere
+  // in the contract, and this half scored it high. Require bridge context, and
+  // define it tightly: a bare dynamic-bytes parameter is NOT one — every
+  // ERC721 safeTransferFrom override carries one (Mondai has exactly that,
+  // which is why the first cut of this gate still fired). The context is a
+  // handler-named function taking a message, a message-taking function that
+  // consumes this root (or verifies), or cross-chain vocabulary in the
+  // contract's own declarations.
+  const rootName = rootVar ? escapeRegExp(rootVar.name) : "";
+  const consumesRootForMessage = contract.functions.some(
+    (f) =>
+      f.params.some((p) => p.typeName === "bytes") &&
+      (new RegExp(`\\b${rootName}\\b`).test(f.source) || /\bverify|prove|MerkleProof/i.test(f.source)),
+  );
+  const handlerTakesMessage = contract.functions.some(
+    (f) =>
+      /^(?:process|receive|execute|handle|onMessage|lzReceive|consume|finalize|complete|deliver|relay)/i.test(f.name) &&
+      f.params.some((p) => p.typeName === "bytes"),
+  );
+  const bridgeContext =
+    consumesRootForMessage ||
+    handlerTakesMessage ||
+    /trustedRemote|srcChainId|sourceChainId|lzReceive|onMessage|executeMessage|endpoint|messenger|relayer|\bbridge\b/i.test(
+      [
+        contract.name,
+        ...contract.bases,
+        ...contract.stateVars.map((v) => `${v.name} ${v.typeName}`),
+        ...contract.functions.map((f) => f.name),
+        ...contract.modifiers.map((m) => m.name),
+      ].join("\n"),
+    );
+  if (verifies && rootVar && !requiresNonZeroRoot && bridgeContext) {
     push(make({
       severity: "critical",
       swc: null,

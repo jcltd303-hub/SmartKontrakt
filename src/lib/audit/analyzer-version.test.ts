@@ -92,7 +92,10 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // And to 2026-10-30.12 with the seven semantic fixes — none of which changed the
   // detector NAME list, which is why the fingerprint stayed put and `refresh: "stale"`
   // kept skipping 88 phantom criticals. See the changelog entry in analyzer-version.ts.
-  assert.equal(ANALYZER_BASELINE, "2026-11-01.17");
+  // And to 2026-11-01.18 with the bridge-message-auth escapes: dynamic-bytes
+  // messages only, contract-scoped peer vocabulary, the bound-payee
+  // self-service shape, and bridge context for the zero-root half.
+  assert.equal(ANALYZER_BASELINE, "2026-11-01.18");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });
@@ -132,7 +135,7 @@ test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
   const digest = h.digest("hex").slice(0, 12);
 
   // Update this constant ONLY together with ANALYZER_BASELINE. Both move, or neither.
-  const DETECTOR_SOURCE_DIGEST = "bb0d4833364f";
+  const DETECTOR_SOURCE_DIGEST = "cf54f75a7f37";
 
   // No placeholder branch: the digest is pinned, so a comparison against a sentinel is
   // dead code and TS rightly calls it unintentional. When the sources change, the
