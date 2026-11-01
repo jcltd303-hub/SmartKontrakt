@@ -123,6 +123,67 @@ export const getScansStatsFn = createServerFn({ method: "GET" }).handler(async (
  */
 export const getDbInfo = createServerFn({ method: "GET" }).handler(async () => loadDbIdentity());
 
+export type WorkerStatusPayload = {
+  /** Workers judged against this app's analyzer baseline, freshest first. */
+  workers: import("./audit/worker-heartbeat.server").WorkerStaleness[];
+  /** Per-baseline scan counts in the archive (oldest first). */
+  census: { baseline: string; scans: number; lastSavedAt: string | null }[];
+  /** This app's analyzer baseline. */
+  currentBaseline: string | null;
+  /** The newest baseline any writer has stamped into the archive. */
+  archiveNewest: string | null;
+  /** Scans whose stamp is not this app's current stamp. */
+  staleScanCount: number;
+  error: string | null;
+};
+
+/**
+ * Worker + analyzer-version status for the Records banner: which
+ * pipeline workers exist (migration 0020 heartbeats), what analyzer
+ * each carries, and how much of the archive predates the current
+ * analyzer. Fail-soft like the stats fn — an error here must never
+ * take the records list down with it.
+ */
+export const getWorkerStatusFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<WorkerStatusPayload> => {
+    const { analyzerStamp, baselineOf } = await import("./audit/analyzer-version");
+    const empty: WorkerStatusPayload = {
+      workers: [],
+      census: [],
+      currentBaseline: baselineOf(analyzerStamp()),
+      archiveNewest: null,
+      staleScanCount: 0,
+      error: null,
+    };
+    try {
+      const { getSql } = await import("./db");
+      const sql = await getSql();
+      const { listWorkerHeartbeats, judgeWorkerStaleness } = await import(
+        "./audit/worker-heartbeat.server"
+      );
+      const { archiveAnalyzerCensus, newestArchiveBaseline, scanFreshness } = await import(
+        "./audit/scan-freshness.server"
+      );
+      const [heartbeats, census, newest, freshness] = await Promise.all([
+        listWorkerHeartbeats(sql),
+        archiveAnalyzerCensus(sql),
+        newestArchiveBaseline(sql),
+        scanFreshness(sql),
+      ]);
+      return {
+        workers: judgeWorkerStaleness(heartbeats, analyzerStamp()),
+        census,
+        currentBaseline: baselineOf(analyzerStamp()),
+        archiveNewest: newest,
+        staleScanCount: freshness.stale,
+        error: null,
+      };
+    } catch (err) {
+      return { ...empty, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+);
+
 /**
  * Database size guardrail (improvement #3): total size + largest tables.
  * Fails soft by contract — { totalBytes: null, error } on any failure —

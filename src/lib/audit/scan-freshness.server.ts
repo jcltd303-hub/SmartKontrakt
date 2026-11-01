@@ -11,7 +11,7 @@
  * supplies it, so there is no hidden dependency on the app's global connection.
  */
 import type { Sql } from "../sql-client.ts";
-import { analyzerStamp } from "./analyzer-version.ts";
+import { analyzerStamp, compareBaselines } from "./analyzer-version.ts";
 
 /**
  * Of the requested (chain, address) pairs, which are already saved by the
@@ -32,32 +32,22 @@ export async function savedScanVersions(
   const staleSet = new Set<string>();
   const addrs = [...new Set(wanted.map((w) => w.address.toLowerCase()))];
   if (addrs.length === 0) return { current: currentSet, stale: staleSet };
-
-  // Chunked. Measured 2026-10-31: a 100,000-address queue OOM'd the worker at 3 GB
-  // within 35 seconds, before the first analysis, and the GC trace showed retained data
-  // (3057 MB -> 3031 MB). One `text[]` parameter of 100k elements plus every matching
-  // scan row held at once is the largest allocation in the start path. Batching bounds
-  // both, and the Sets are the only thing that grows — which is the whole point of them.
-  const BATCH = 5000;
-  for (let i = 0; i < addrs.length; i += BATCH) {
-    const slice = addrs.slice(i, i + BATCH);
-    const rows = await sql<{ chain_id: string; addr: string; analyzer_version: string | null }>`
-      select chain_id, lower(target_address) as addr, analyzer_version
-      from contract_scans
-      where lower(target_address) = any(${slice}::text[])
-    `;
-    // Folded straight into the Sets: the chunk's rows go out of scope when this
-    // iteration ends, so peak is one batch, not the whole archive.
-    for (const r of rows) {
-      // Keys are (chain, lower-address) in the canonical chain spelling. The chain is
-      // lowercased on BOTH sides of every comparison: a row saved under a case variant
-      // ("Ethereum") is the same chain as "ethereum", and keying on the raw stored
-      // spelling would make that row invisible to the skip check forever. A missing
-      // chain reads as "ethereum", the same default scan-archive uses.
-      const key = `${(r.chain_id || "ethereum").toLowerCase()}:${r.addr}`;
-      if (r.analyzer_version === current) currentSet.add(key);
-      else if (!currentSet.has(key)) staleSet.add(key);
-    }
+  const rows = await sql<{ chain_id: string; addr: string; analyzer_version: string | null }>`
+    select chain_id, lower(target_address) as addr, analyzer_version
+    from contract_scans
+    where lower(target_address) = any(${addrs}::text[])
+  `;
+  for (const r of rows) {
+    // Keys are (chain, lower-address) in the canonical chain spelling.
+    // The chain is lowercased on BOTH sides of every comparison (here
+    // for stored rows, in shouldSkipInRun and the worker for wanted
+    // items): a row saved under a case variant ("Ethereum") is the same
+    // chain as "ethereum", and keying on the raw stored spelling would
+    // make that row invisible to the skip check forever. A missing
+    // chain reads as "ethereum", the same default scan-archive uses.
+    const key = `${(r.chain_id || "ethereum").toLowerCase()}:${r.addr}`;
+    if (r.analyzer_version === current) currentSet.add(key);
+    else if (!currentSet.has(key)) staleSet.add(key);
   }
   // A key with a current row is never stale, whatever else the archive holds.
   for (const key of currentSet) staleSet.delete(key);
@@ -132,31 +122,18 @@ const REQUIRED_SCHEMA_COLUMNS: { table: string; column: string; migration: strin
   { table: "contract_scans", column: "analyzer_version", migration: "0014" },
   { table: "findings", column: "corroborated", migration: "0016" },
   { table: "contract_scans", column: "resnet_json", migration: "0018" },
-  // 0012_finding_triage: bulk-persist writes all seven on every save, so a
-  // database without them fails the FIRST flush of a run rather than degrading.
-  // That is the worst possible moment to find out — 50,000 findings into a queue
-  // with nothing saved — so /start refuses up front and names the migration.
-  { table: "findings", column: "family", migration: "0012_finding_triage" },
-  { table: "findings", column: "reachability", migration: "0012_finding_triage" },
-  { table: "findings", column: "gate", migration: "0012_finding_triage" },
-  { table: "findings", column: "preconditions", migration: "0012_finding_triage" },
-  { table: "findings", column: "confidence_basis", migration: "0012_finding_triage" },
-  { table: "findings", column: "economic_figure", migration: "0012_finding_triage" },
-  { table: "findings", column: "economic_basis", migration: "0012_finding_triage" },
 ];
 
 export async function assertFreshnessSchema(sql: Sql): Promise<void> {
   const rows = await sql<{ table_name: string; column_name: string }>`
     select table_name, column_name from information_schema.columns
     where (table_name = 'contract_scans' and column_name in ('analyzer_version', 'resnet_json'))
-       or (table_name = 'findings' and column_name in ('corroborated', 'family', 'reachability',
-                                                       'gate', 'preconditions', 'confidence_basis',
-                                                       'economic_figure', 'economic_basis'))`;
+       or (table_name = 'findings' and column_name = 'corroborated')`;
   const present = new Set(rows.map((r) => `${r.table_name}.${r.column_name}`));
   const missing = REQUIRED_SCHEMA_COLUMNS.filter((c) => !present.has(`${c.table}.${c.column}`));
   if (missing.length > 0) {
     const list = missing
-      .map((c) => `${c.table}.${c.column} (migration ${c.migration} not applied)` )
+      .map((c) => `${c.table}.${c.column} (migration ${c.migration} not applied)`)
       .join(", ");
     throw new Error(
       `Required schema column(s) missing: ${list}. ` +
@@ -164,4 +141,46 @@ export async function assertFreshnessSchema(sql: Sql): Promise<void> {
       "(Connect to Supabase), then start the run again.",
     );
   }
+}
+
+/**
+ * The archive's analyzer census: how many scans each BASELINE produced and
+ * when that baseline last wrote. The stale-worker gate reads this: if the
+ * archive already holds rows from a NEWER baseline than the worker asking
+ * to start, that worker is provably behind (some other writer — the twin
+ * machine, the web app — has pulled newer code), and letting it run would
+ * refill the archive with findings in classes the newer analyzer fixed.
+ * NULL stamps (pre-0014 rows) are excluded: ancient, never "newest".
+ */
+export async function archiveAnalyzerCensus(
+  sql: Sql,
+): Promise<{ baseline: string; scans: number; lastSavedAt: string | null }[]> {
+  const rows = await sql<{ baseline: string; scans: string; last_saved_at: string | null }>`
+    select split_part(analyzer_version, '+', 1) as baseline,
+           count(*) as scans,
+           max(created_at) as last_saved_at
+    from contract_scans
+    where analyzer_version is not null
+    group by 1
+    order by 1`;
+  return rows.map((r) => ({
+    baseline: r.baseline,
+    scans: Number.parseInt(r.scans, 10) || 0,
+    lastSavedAt: r.last_saved_at,
+  }));
+}
+
+/** The newest baseline present in the archive, or null when none is stamped. */
+export async function newestArchiveBaseline(sql: Sql): Promise<string | null> {
+  const census = await archiveAnalyzerCensus(sql);
+  let newest: string | null = null;
+  for (const row of census) {
+    if (newest === null) {
+      newest = row.baseline;
+      continue;
+    }
+    const cmp = compareBaselines(row.baseline, newest);
+    if (cmp !== null && cmp > 0) newest = row.baseline;
+  }
+  return newest;
 }

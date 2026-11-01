@@ -368,3 +368,41 @@ export function analyzerStamp(): string {
 export function isStaleVersion(saved?: string | null): boolean {
   return !saved || saved !== analyzerStamp();
 }
+
+/** The baseline part of a stamp (or a bare baseline): text before \"+\". */
+export function baselineOf(stamp?: string | null): string | null {
+  if (!stamp) return null;
+  const base = stamp.split("+")[0]?.trim();
+  return base ? base : null;
+}
+
+/**
+ * Order two baselines (\"2026-11-01.18\"). The date part is zero-padded ISO,
+ * so it compares lexicographically; the counter after the last dot compares
+ * numerically (\".9\" < \".10\"). Returns -1 / 0 / 1, or null when either side
+ * is not a recognizable baseline — callers treat null as \"cannot judge\",
+ * never as \"older\".
+ */
+export function compareBaselines(a?: string | null, b?: string | null): number | null {
+  const parse = (s?: string | null): { date: string; n: number } | null => {
+    const base = baselineOf(s);
+    if (!base) return null;
+    const dot = base.lastIndexOf(".");
+    if (dot < 0) return null;
+    const n = Number.parseInt(base.slice(dot + 1), 10);
+    if (!Number.isFinite(n)) return null;
+    return { date: base.slice(0, dot), n };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb) return null;
+  if (pa.date !== pb.date) return pa.date < pb.date ? -1 : 1;
+  if (pa.n !== pb.n) return pa.n < pb.n ? -1 : 1;
+  return 0;
+}
+
+/** True when baseline `own` is strictly older than baseline `other`. */
+export function isBaselineOlder(own?: string | null, other?: string | null): boolean {
+  const cmp = compareBaselines(own, other);
+  return cmp !== null && cmp < 0;
+}

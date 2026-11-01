@@ -44,6 +44,7 @@
  */
 
 import http from "node:http";
+import os from "node:os";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -54,8 +55,9 @@ import v8 from "node:v8";
 import type { BatchItem } from "../src/lib/audit/address-fetcher.ts";
 import { valueCacheStats } from "../src/lib/audit/value.ts";
 import { encodePostgresCredentials } from "../src/lib/pg-url.ts";
-import { analyzerStamp } from "../src/lib/audit/analyzer-version.ts";
-import { assertFreshnessSchema, savedScanVersions, scanFreshness, shouldSkipInRun } from "../src/lib/audit/scan-freshness.server.ts";
+import { analyzerStamp, baselineOf, isBaselineOlder } from "../src/lib/audit/analyzer-version.ts";
+import { assertFreshnessSchema, newestArchiveBaseline, savedScanVersions, scanFreshness, shouldSkipInRun } from "../src/lib/audit/scan-freshness.server.ts";
+import { recordWorkerHeartbeat } from "../src/lib/audit/worker-heartbeat.server.ts";
 import type { ComprehensiveRecordInput } from "../src/lib/audit/persist.server.ts";
 
 // ---------------------------------------------------------------- .env ----
@@ -148,6 +150,7 @@ const { codeHashOf, findSiblingScan } = await import("../src/lib/audit/code-reus
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
 const { getSql, getDbConnectionState } = await import("../src/lib/db.ts");
+const { getOpenRouterUsage } = await import("../src/lib/audit/openrouter-usage.server.ts");
 const { createOnDemandFourbyteLookup, fourbyteResultsFromReport } = await import("../src/lib/audit/fourbyte.ts");
 // Deep Agent loop (pipeline-worker/deep-agent.ts) — same propose ->
 // fork-PoC -> reward -> deeper loop as the workbench, gated to flagged
@@ -323,6 +326,60 @@ let pendingBytes = 0;
 let pendingSince: number | null = null;
 let shuttingDown = false;
 
+// ------------------------------------------------- version gate + heartbeat --
+// This worker's identity in the archive (migration 0020): the machine's
+// hostname — one worker per machine (phone + laptop) is the deployment.
+const WORKER_ID = os.hostname() || "unknown-worker";
+/** The newest analyzer baseline the archive is known to hold (boot + /start checks). */
+let archiveNewestBaseline: string | null = null;
+
+/**
+ * Best-effort heartbeat: boot, run start, run end. Never throws — a
+ * heartbeat failure (DB down, migration not yet applied) must not cost
+ * a run; the boot probe already reports DB health loudly.
+ */
+function beat(state: string, note?: string): void {
+  void (async () => {
+    try {
+      const sql = await getSql();
+      await recordWorkerHeartbeat(sql, {
+        workerId: WORKER_ID,
+        analyzerVersion: analyzerStamp(),
+        state,
+        note: note ?? null,
+      });
+    } catch {
+      // Deliberately silent: heartbeats are observability, not function.
+    }
+  })();
+}
+
+/**
+ * OpenRouter budget guard: a message when the configured key's remaining
+ * credit is under the floor (WORKER_MIN_OPENROUTER_CREDIT_USD, default
+ * $0.50), null when the run may proceed. Unconfigured keys, free-tier
+ * keys (no credit limit), and unreadable usage all return null — the
+ * guard only stops a run it can PROVE would burn money it doesn't have.
+ */
+async function openRouterBudgetBlock(): Promise<string | null> {
+  try {
+    const usage = await getOpenRouterUsage(process.env);
+    if (!usage.configured || !usage.key) return null;
+    const remaining = usage.key.limitRemaining;
+    if (remaining === null) return null;
+    const floorRaw = Number.parseFloat(process.env.WORKER_MIN_OPENROUTER_CREDIT_USD ?? "");
+    const floor = Number.isFinite(floorRaw) && floorRaw >= 0 ? floorRaw : 0.5;
+    if (remaining >= floor) return null;
+    return (
+      `OpenRouter credit $${remaining.toFixed(2)} is below the worker floor $${floor.toFixed(2)} ` +
+      `(key usage $${usage.key.usage.toFixed(2)} of $${(usage.key.limit ?? 0).toFixed(2)}). ` +
+      `Top up the key or lower WORKER_MIN_OPENROUTER_CREDIT_USD in pipeline-worker/.env.`
+    );
+  } catch {
+    return null;
+  }
+}
+
 /** Node's old-space limit, so the watchdog can express pressure as a percentage. */
 function heapLimitMb(): number {
   try {
@@ -429,6 +486,19 @@ async function runLoop(): Promise<void> {
   try {
     while (ctx.index < ctx.items.length) {
       if (stopRequested || pauseRequested) break;
+      // Budget guard re-check (every 25 items): park — resumable, the
+      // current item untouched — when the OpenRouter credit runs under
+      // the floor mid-run, instead of failing every remaining AI pass.
+      if (status.aiSecondPass && ctx.index > 0 && ctx.index % 25 === 0) {
+        const block = await openRouterBudgetBlock();
+        if (block) {
+          status.lastError = `OpenRouter budget: ${block} — run parked, top up and resume`;
+          console.warn("[worker] run parked (OpenRouter budget):", status.lastError);
+          pauseRequested = true;
+          writeStatusFile();
+          break;
+        }
+      }
       const item = ctx.items[ctx.index]!;
       if (item.status === "skipped") {
         ctx.index++;
@@ -791,6 +861,10 @@ async function runLoop(): Promise<void> {
     pauseRequested = false;
     stopRequested = false;
     writeStatusFile();
+    beat(
+      status.state,
+      `run ${status.state}: ${status.completed} completed, ${status.failed} failed, ${status.skipped} skipped`,
+    );
   }
 }
 
@@ -896,6 +970,48 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     status.state = "idle";
     writeStatusFile();
     return;
+  }
+  // Stale-worker gate: if the archive already holds scans from a NEWER
+  // analyzer baseline than this worker's code carries, this worker is
+  // provably behind (the twin machine or the web app pulled newer code)
+  // and a run would refill the archive with findings in classes the
+  // newer analyzer already fixed — the failure mode that produced 223
+  // stale rows in the 2026-11-01 vet before anyone noticed. Refuse
+  // loudly with the fix. Fail-open on any census error: the freshness
+  // check below hits the same DB and reports its own failure.
+  try {
+    const newest = await newestArchiveBaseline(await getSql());
+    if (newest) {
+      archiveNewestBaseline = newest;
+      if (isBaselineOlder(analyzerStamp(), newest)) {
+        status.state = "idle";
+        writeStatusFile();
+        sendJson(res, 409, {
+          error:
+            `this worker's analyzer is ${baselineOf(analyzerStamp())} but the archive already holds scans ` +
+            `stamped ${newest} — this machine is behind. Pull before running: cd ~/SmartKontrakt && ` +
+            `git stash push -m pre-pull && git pull && npm install && pkill -f "pipeline-worker/worker.ts" && ` +
+            `bash scripts/termux-start-all.sh`,
+        });
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[worker] stale-gate census unavailable (continuing): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  // Budget guard (credit): an AI run must not discover an empty
+  // OpenRouter balance mid-queue. Checked again every 25 items in the
+  // loop, which parks the run instead of burning the remaining items.
+  if (aiSecondPass || deepAgent) {
+    const block = await openRouterBudgetBlock();
+    if (block) {
+      status.state = "idle";
+      writeStatusFile();
+      sendJson(res, 400, { error: block });
+      return;
+    }
   }
   // Budget guard: each flagged address costs up to 3 LLM calls + up to 6
   // fork PoCs. 0 = unlimited (not recommended on a 43k run).
@@ -1038,6 +1154,7 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     autoPocBackendDown: false,
   };
   runCtx = { items, index: 0 };
+  beat("running", `run started: ${items.length} addresses from ${addressesFile}`);
   runSeen.clear();
   autoPocState = newAutoPocRunState();
   pauseRequested = false;
@@ -1132,6 +1249,12 @@ async function handleStatus(req: http.IncomingMessage, res: http.ServerResponse)
     dbState,
     dbStateError,
     features: FEATURES,
+    versionGate: {
+      workerId: WORKER_ID,
+      own: analyzerStamp(),
+      archiveNewest: archiveNewestBaseline,
+      stale: isBaselineOlder(analyzerStamp(), archiveNewestBaseline),
+    },
   });
 }
 
@@ -1291,6 +1414,25 @@ server.listen(PORT, HOST, () => {
     .then((conn) => {
       if (conn.state === "remote") {
         console.log("[worker] database connection: OK (remote)");
+        beat("idle", "worker booted");
+        // Boot self-check: name staleness in the log the moment it is
+        // true, not at the next /start refusal.
+        void (async () => {
+          try {
+            const newest = await newestArchiveBaseline(await getSql());
+            if (newest) {
+              archiveNewestBaseline = newest;
+              if (isBaselineOlder(analyzerStamp(), newest)) {
+                console.warn(
+                  `[worker] STALE WORKER: this machine's analyzer is ${baselineOf(analyzerStamp())}, ` +
+                    `the archive already holds ${newest}. /start will refuse until this machine pulls.`,
+                );
+              }
+            }
+          } catch {
+            // Census is observability; the /start gate re-checks.
+          }
+        })();
       } else if (conn.state === "failed") {
         console.warn(`[worker] database connection: FAILED — ${conn.error ?? "unknown error"} No fallback is in use; fix DATABASE_URL in pipeline-worker/.env.`);
       } else {

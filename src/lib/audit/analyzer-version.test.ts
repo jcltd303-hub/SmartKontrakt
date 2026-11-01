@@ -5,6 +5,9 @@ import {
   ANALYZER_BASELINE,
   analyzerFingerprint,
   analyzerStamp,
+  baselineOf,
+  compareBaselines,
+  isBaselineOlder,
   isStaleVersion,
 } from "./analyzer-version.ts";
 import { SMARTBUGS_BY_DETECTOR } from "./smartbugs.ts";
@@ -146,4 +149,26 @@ test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
     "detect.ts/bytecode.ts/smartbugs.ts changed: bump ANALYZER_BASELINE and update " +
       "DETECTOR_SOURCE_DIGEST together, or the archive will keep serving stale findings",
   );
+});
+
+test("baselineOf strips the fingerprint and tolerates bare baselines", () => {
+  assert.equal(baselineOf("2026-11-01.18+cf54f75a7f37abcd"), "2026-11-01.18");
+  assert.equal(baselineOf("2026-11-01.18"), "2026-11-01.18");
+  assert.equal(baselineOf(null), null);
+  assert.equal(baselineOf(""), null);
+});
+
+test("compareBaselines orders by date, then numerically by counter", () => {
+  assert.equal(compareBaselines("2026-11-01.18", "2026-11-01.18"), 0);
+  assert.equal(compareBaselines("2026-11-01.9", "2026-11-01.10"), -1);
+  assert.equal(compareBaselines("2026-11-01.10", "2026-11-01.9"), 1);
+  assert.equal(compareBaselines("2026-10-31.16", "2026-11-01.1"), -1);
+  // Stamps compare by their baseline part.
+  assert.equal(compareBaselines("2026-11-01.16+aaaa", "2026-11-01.18+bbbb"), -1);
+  // Unrecognizable input cannot be judged — never "older".
+  assert.equal(compareBaselines("garbage", "2026-11-01.18"), null);
+  assert.equal(compareBaselines(null, "2026-11-01.18"), null);
+  assert.equal(isBaselineOlder("2026-11-01.16", "2026-11-01.18"), true);
+  assert.equal(isBaselineOlder("2026-11-01.18", "2026-11-01.16"), false);
+  assert.equal(isBaselineOlder("garbage", "2026-11-01.18"), false);
 });

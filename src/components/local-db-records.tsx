@@ -8,7 +8,9 @@ import {
   getDatabaseStatusFn,
   getScansStatsFn,
   getDatabaseSizeFn,
+  getWorkerStatusFn,
   type ScansListPayload,
+  type WorkerStatusPayload,
 } from "@/lib/scans.functions";
 import { DB_FREE_TIER_CAP_BYTES, dbSizeLevel, dbSizePercentOfCap, formatDbBytes } from "@/lib/db-size";
 import type { ScanSummary, StoredScan } from "@/lib/audit/persist.server";
@@ -71,6 +73,10 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
   // Database size guardrail (#3). Null = not loaded yet / fn unreachable;
   // totalBytes null inside = the read itself failed (fail soft).
   const [dbSize, setDbSize] = useState<Awaited<ReturnType<typeof getDatabaseSizeFn>> | null>(null);
+  // Pipeline workers + archive analyzer census (getWorkerStatusFn):
+  // which machines run the pipeline, what analyzer each carries, and
+  // how much of the archive predates the current analyzer.
+  const [workerStatus, setWorkerStatus] = useState<WorkerStatusPayload | null>(null);
   // Effective connection state, from getDatabaseStatusFn's dbInfo — the
   // same getDbConnectionState() resolution the queries use. The badge and
   // the header pill render THIS, never a hardcoded "Connected"/"Live":
@@ -125,6 +131,12 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
         setDbSize(await getDatabaseSizeFn());
       } catch {
         setDbSize(null); // guardrail is best-effort; renders "size unavailable"
+      }
+      try {
+        const ws = await getWorkerStatusFn();
+        setWorkerStatus(ws.error ? null : ws);
+      } catch {
+        setWorkerStatus(null); // banner is observability; absence is not an error state
       }
       try {
         const status = await getDatabaseStatusFn();
@@ -514,6 +526,42 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
       {actionNotice && (
         <div className="p-3 bg-emerald-950/70 border border-emerald-800 text-emerald-300 text-xs font-mono rounded-xl animate-fadeIn">
           {actionNotice}
+        </div>
+      )}
+
+      {workerStatus && (workerStatus.workers.length > 0 || workerStatus.archiveNewest) && (
+        <div
+          className={`p-3 border text-xs font-mono rounded-xl flex items-start gap-2 animate-fadeIn ${
+            workerStatus.workers.some((w) => w.stale)
+              ? "bg-red-950/70 border-red-800 text-red-300"
+              : "bg-[#1c1a16] border-[#3a3428] text-[#a39886]"
+          }`}
+        >
+          <Activity className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="min-w-0 space-y-1">
+            <div className="font-bold text-[#f4efe6]">
+              Pipeline workers — app analyzer {workerStatus.currentBaseline ?? "?"}
+              {workerStatus.archiveNewest && <> · archive newest {workerStatus.archiveNewest}</>}
+              {workerStatus.staleScanCount > 0 && (
+                <> · {workerStatus.staleScanCount.toLocaleString()} scans stamped by older analyzers</>
+              )}
+            </div>
+            {workerStatus.workers.length === 0 && (
+              <div>No worker heartbeats yet — workers report in once they run code with migration 0020.</div>
+            )}
+            {workerStatus.workers.map((w) => (
+              <div key={w.workerId} className="break-words">
+                <span className="text-[#f4efe6]">{w.workerId}</span> — analyzer {w.baseline ?? w.analyzerVersion} ·{" "}
+                {w.state} · last seen {new Date(w.lastSeenAt).toLocaleString()}
+                {w.stale && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded bg-red-900 text-red-200 font-bold">
+                    STALE — pull before running
+                  </span>
+                )}
+                {w.note && <span className="opacity-75"> · {w.note}</span>}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
