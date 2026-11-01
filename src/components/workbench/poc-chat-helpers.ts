@@ -36,3 +36,91 @@ export function splitChatSegments(content: string): PocChatSegment[] {
 export function chatCodeIsRunnable(code: string): boolean {
   return /\bcontract\s+\w+\s+is\s+[^{]*\bTest\b/.test(code) && countExecutableTestFunctions(code) > 0;
 }
+
+export type PocChatContextEstimate = {
+  /** Approximate tokens the next send will carry (system + history). */
+  tokens: number;
+  /** Conversation turns the next send will include (after the cap). */
+  turns: number;
+};
+
+/**
+ * Estimate the context window the next chat send will occupy: the
+ * system prompt (the template prose is roughly constant; the context
+ * fields enter at their prompt caps, mirroring poc-chat.server.ts)
+ * plus the last 40 conversation turns at their wire caps, attachments
+ * included. Chars/4 is the standard rough token ratio — this is a
+ * gauge for the panel, not a billing number, and the UI labels it ≈.
+ */
+export function estimatePocChatContext(args: {
+  messages: Array<{
+    role: string;
+    content: string;
+    attachments?: Array<{ content: string }>;
+  }>;
+  sourceChars: number;
+  findingsChars: number;
+  draftChars: number;
+  lastRunChars: number;
+}): PocChatContextEstimate {
+  const SYSTEM_TEMPLATE_CHARS = 2600;
+  const systemChars =
+    SYSTEM_TEMPLATE_CHARS +
+    Math.min(args.sourceChars, 12000) +
+    Math.min(args.findingsChars, 6000) +
+    Math.min(args.draftChars, 30000) +
+    Math.min(args.lastRunChars, 6000);
+  const turns = args.messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .slice(-40);
+  let historyChars = 0;
+  for (const m of turns) {
+    historyChars += Math.min(m.content.length, 8000);
+    for (const att of (m.attachments ?? []).slice(0, 4)) {
+      historyChars += Math.min(att.content.length, 12000);
+    }
+  }
+  return {
+    tokens: Math.ceil((systemChars + historyChars) / 4),
+    turns: turns.length,
+  };
+}
+
+/**
+ * Render a conversation as a Markdown document for the panel's
+ * Export button — the whole visible record: turns, run results,
+ * attachment contents and the replying model per assistant turn.
+ */
+export function buildPocChatExport(args: {
+  title: string;
+  address: string;
+  chainId: string;
+  contractName: string;
+  exportedAt: string;
+  messages: Array<{
+    role: string;
+    content: string;
+    model?: string;
+    attachments?: Array<{ name: string; content: string }>;
+  }>;
+}): string {
+  const lines: string[] = [
+    `# ${args.title || "PoC chat"}`,
+    "",
+    `Target: ${args.address || "(none)"} (${args.chainId}) · Contract: ${args.contractName || "(unknown)"}`,
+    `Exported: ${args.exportedAt}`,
+    "",
+  ];
+  for (const m of args.messages) {
+    if (m.role === "run") {
+      lines.push("## Run result", "", "```", m.content, "```", "");
+      continue;
+    }
+    const who = m.role === "user" ? "You" : "PoC assistant";
+    lines.push(`## ${who}${m.role === "assistant" && m.model ? ` (via ${m.model})` : ""}`, "", m.content, "");
+    for (const att of m.attachments ?? []) {
+      lines.push(`### Attached file: ${att.name}`, "", "```", att.content, "```", "");
+    }
+  }
+  return lines.join("\n");
+}

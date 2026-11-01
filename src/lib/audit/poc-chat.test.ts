@@ -6,7 +6,14 @@ import {
   modelCandidates,
   resolveOpenRouterModel,
 } from "./ai-review.server.ts";
-import { cleanPocChatInput, POC_CHAT_MAX_TURNS } from "./poc-chat-clean.ts";
+import {
+  cleanPocChatId,
+  cleanPocChatInput,
+  cleanPocChatListInput,
+  cleanPocChatSaveInput,
+  POC_CHAT_MAX_ATTACHMENT_CHARS,
+  POC_CHAT_MAX_TURNS,
+} from "./poc-chat-clean.ts";
 import {
   buildPocChatMessages,
   buildPocChatSystemPrompt,
@@ -341,8 +348,10 @@ test("wiring: controller owns the chat state, the mode, and the canonical run pa
   assert.match(controller, /const runChatCode = /);
   assert.match(controller, /runSinglePocWithRepair\(addr, code\)/);
   assert.match(controller, /setInteractiveTestCode\(code\)/);
-  // Session-only: the chat state must not reach any persistence fn.
+  // The chat state must never reach a SCAN persistence fn — saved
+  // chats live in their own table via savePocChatFn only.
   assert.ok(!/saveComprehensiveScanFn\([\s\S]{0,400}pocChatMessages/.test(controller));
+  assert.match(controller, /savePocChatFn\(/);
 });
 
 test("wiring: the Interactive editor consumes the lifted test-code state", () => {
@@ -359,4 +368,136 @@ test("wiring: the chat server fn exists with the admin guard and dynamic import"
   assert.match(fns, /export const requestPocChat = createServerFn/);
   assert.match(fns, /cleanPocChatInput\(input\)/);
   assert.match(fns, /await import\("\.\/poc-chat\.server"\)/);
+});
+
+// ------------------------------------------------------- purpose + attachments + saving
+
+test("cleanPocChatInput coerces the purpose: code passes, anything else is chat", () => {
+  const base = { messages: [{ role: "user", content: "hi" }] };
+  assert.equal(cleanPocChatInput(base).purpose, "chat");
+  assert.equal(cleanPocChatInput({ ...base, purpose: "code" }).purpose, "code");
+  assert.equal(cleanPocChatInput({ ...base, purpose: "review" }).purpose, "chat");
+  assert.equal(cleanPocChatInput({ ...base, purpose: 42 }).purpose, "chat");
+});
+
+test("cleanPocChatInput cleans attachments: max 4, capped content, junk dropped", () => {
+  const big = "x".repeat(POC_CHAT_MAX_ATTACHMENT_CHARS + 500);
+  const out = cleanPocChatInput({
+    messages: [
+      {
+        role: "user",
+        content: "see attached",
+        attachments: [
+          { name: "Vault.sol", content: "contract Vault {}" },
+          { name: "big.sol", content: big },
+          { name: "no-content.sol", content: "" },
+          { name: 42, content: "name coerced" },
+          { name: "extra1.sol", content: "1" },
+          { name: "extra2.sol", content: "2" },
+        ],
+      },
+    ],
+  });
+  const atts = out.messages[0]?.attachments ?? [];
+  assert.equal(atts.length, 4);
+  assert.equal(atts[0]?.name, "Vault.sol");
+  assert.equal(atts[1]?.content.length, POC_CHAT_MAX_ATTACHMENT_CHARS);
+  assert.equal(atts[2]?.name, "attachment");
+  // A message with no usable attachments carries no attachments key.
+  const plain = cleanPocChatInput({ messages: [{ role: "user", content: "hi" }] });
+  assert.equal(plain.messages[0]?.attachments, undefined);
+});
+
+test("buildPocChatMessages embeds attachments inside their user turn, capped", () => {
+  const wire = buildPocChatMessages(
+    [
+      {
+        role: "user",
+        content: "review this",
+        attachments: [{ name: "Token.sol", content: "y".repeat(20000) }],
+      },
+    ],
+    CTX,
+  );
+  const turn = wire[wire.length - 1];
+  assert.equal(turn?.role, "user");
+  assert.match(turn?.content ?? "", /--- Attached file: Token\.sol ---/);
+  assert.ok(
+    (turn?.content.length ?? 0) <= 8000 + 40 + POC_CHAT_PROMPT_CAPS.attachment,
+    "attachment enters at the prompt cap, not the wire cap",
+  );
+});
+
+test("chatAboutPoc with purpose code sends the code model and reports the answering model", async () => {
+  const savedCode = process.env.OPENROUTER_MODEL_CODE;
+  delete process.env.OPENROUTER_MODEL_CODE;
+  const stub = stubFetch(
+    () =>
+      new Response(
+        JSON.stringify({
+          model: "cohere/north-mini-code:free",
+          choices: [{ message: { content: "```solidity\ncontract PoC is Test {}\n```" } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+  );
+  try {
+    const res = await chatAboutPoc({
+      messages: [{ role: "user", content: "Write the PoC" }],
+      context: CTX,
+      purpose: "code",
+    });
+    const body = stub.bodies[0] as { model: string };
+    assert.equal(body.model, OPENROUTER_MODELS.code);
+    assert.equal(res.model, "cohere/north-mini-code:free");
+  } finally {
+    stub.restore();
+    if (savedCode === undefined) delete process.env.OPENROUTER_MODEL_CODE;
+    else process.env.OPENROUTER_MODEL_CODE = savedCode;
+  }
+});
+
+test("cleanPocChatSaveInput keeps run turns, models and attachments; title falls back", () => {
+  const saved = cleanPocChatSaveInput({
+    id: "123e4567-e89b-12d3-a456-426614174000",
+    messages: [
+      { role: "user", content: "Prove the drain", attachments: [{ name: "a.sol", content: "c" }] },
+      { role: "run", content: "PoC run finished: PASSED" },
+      { role: "assistant", content: "Done", model: "some/model:free" },
+      { role: "system", content: "smuggled" },
+    ],
+  });
+  assert.equal(saved.messages.length, 3);
+  assert.equal(saved.messages[1]?.role, "run");
+  assert.equal(saved.messages[2]?.model, "some/model:free");
+  assert.equal(saved.messages[0]?.attachments?.[0]?.name, "a.sol");
+  assert.equal(saved.title, "Prove the drain");
+  assert.throws(
+    () => cleanPocChatSaveInput({ id: "123e4567-e89b-12d3-a456-426614174000", messages: [] }),
+    /Nothing to save/,
+  );
+});
+
+test("cleanPocChatId validates the id shape; list input clamps the limit", () => {
+  assert.equal(cleanPocChatId({ id: "123e4567-e89b-12d3-a456-426614174000" }).id.length, 36);
+  assert.throws(() => cleanPocChatId({ id: "x" }), /malformed/);
+  assert.throws(() => cleanPocChatId({ id: "drop table;--" }), /malformed/);
+  assert.equal(cleanPocChatListInput({}).limit, 30);
+  assert.equal(cleanPocChatListInput({ limit: 500 }).limit, 50);
+  assert.equal(cleanPocChatListInput({ limit: 0 }).limit, 1);
+});
+
+test("wiring: save/list/get/delete fns and the panel's upload + save controls exist", () => {
+  const fns = readSrc("./ai.functions.ts");
+  assert.match(fns, /export const savePocChatFn = createServerFn/);
+  assert.match(fns, /export const listPocChatsFn = createServerFn/);
+  assert.match(fns, /export const getPocChatFn = createServerFn/);
+  assert.match(fns, /export const deletePocChatFn = createServerFn/);
+  assert.match(fns, /export const getPocChatModels = createServerFn/);
+  const tab = readSrc("../../components/workbench/poc-chat-tab.tsx");
+  assert.match(tab, /Attach file/);
+  assert.match(tab, /type="file"/);
+  assert.match(tab, /Saved \(/);
+  assert.match(tab, /context window:/);
+  assert.match(tab, /"code"/);
 });

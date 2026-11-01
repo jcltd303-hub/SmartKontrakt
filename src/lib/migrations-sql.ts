@@ -392,36 +392,31 @@ create table if not exists fp_signatures (
 
 create index if not exists fp_signatures_status_idx
   on fp_signatures (status);`,
-  "0022_code_hash.sql": `-- Migration 0022: the runtime code hash, so identical bytecode is analysed once.
---
--- Measured 2026-10-28 on a 24-contract sample and again on a 40-title PoC census:
--- 543 findings across 393 contract-instances, where \`execTransaction sends ether with
--- no access check\` alone appeared on 27 contracts (27 Gnosis Safe proxies, one
--- implementation) and \`fallback ignores the delegatecall result\` on 59. Those are
--- deployments, not distinct code. Every duplicate pays the full fetch cost again —
--- Sourcify, the RPC probe, 4byte lookups, ResNet — for a contract whose analysis is
--- already in the archive.
---
--- code_hash is sha3-256 of the runtime bytecode (the same bytes eth_getCode returns),
--- lowercased and 0x-prefixed, or NULL when the scan never had bytecode. Indexed with
--- chain_id because the same code on a different chain is a different analysis (the
--- probes and balances differ even when the code does not).
---
--- Nullable on purpose: existing rows have no hash, and a scan whose bytecode fetch
--- failed must not pretend to be dedupeable.
-
-alter table contract_scans
-  add column if not exists code_hash text;
-
-comment on column contract_scans.code_hash is
-  'sha3-256 of runtime bytecode (0x-prefixed, lowercase), NULL when unavailable. Identical code on the same chain needs one analysis, not one per deployment.';
-
-create index if not exists contract_scans_chain_code_hash_idx
-  on contract_scans (chain_id, code_hash)
-  where code_hash is not null;
-`,
-  "0021_fourbyte_miss_reason.sql": `-- Migration 0021: distinguish "4byte does not know this" from "we could not ask".\n--\n-- 0020 recorded a miss whenever an upstream lookup produced nothing, with one\n-- 7-day TTL, which conflated a real absence (200 + empty result) with a timeout or\n-- 429 (we learned nothing). A transient outage could therefore poison the cache for\n-- a week.\nalter table fourbyte_misses\n  add column if not exists reason text not null default 'unknown';\n\ndo $$\nbegin\n  if not exists (\n    select 1 from pg_constraint where conname = 'fourbyte_misses_reason_check'\n  ) then\n    alter table fourbyte_misses\n      add constraint fourbyte_misses_reason_check\n      check (reason in ('unknown', 'unreachable'));\n  end if;\nend $$;\n`,
-  "0020_fourbyte_misses.sql": `-- Migration 0020: remember which selectors/topics 4byte.directory does NOT know.\n--\n-- A bytecode-only contract has no ABI, so every selector is unknown and goes\n-- upstream: N selectors / 8 lanes x the per-request timeout. Only FOUND\n-- signatures were cached, so the same misses were re-fetched for every contract\n-- in a run (measured: 20 s per address, 23 days for 100k). A miss is now\n-- recorded with a 7-day TTL, because 4byte does gain signatures over time.\ncreate table if not exists fourbyte_misses (\n  kind       text        not null check (kind in ('signatures', 'event-signatures')),\n  key        text        not null,\n  checked_at timestamptz not null default now(),\n  primary key (kind, key)\n);\n\ncreate index if not exists fourbyte_misses_checked_idx on fourbyte_misses (checked_at);\n`,
-  "0019_drop_rag.sql": `-- Migration 0019: drop the RAG knowledge base.\n--\n-- RAG was eliminated 2026-10-21 (chunks stopped being written); this removes\n-- the table, its full-text index, and the is_rag_indexed column nothing reads.\n-- Idempotent: safe where the table was already dropped by hand.\ndrop table if exists rag_knowledge_chunks cascade;\nalter table contract_scans drop column if exists is_rag_indexed;\n`,
   "0018_resnet_result.sql": `-- Migration 0018: ResNet1D screening result on contract_scans.\n--\n-- Every audit entry with runtime bytecode now gets a ResNet1D pass\n-- during the audit itself (analyzeAddress with an injected runner —\n-- the pipeline worker's Node runner, the browser worker for app\n-- flows — or runAndStore for pasted-bytecode saves), not only when a\n-- user opens the bytecode tab and clicks Run. The result is a small\n-- JSON verdict (model id, checkpoint hash, per-class scores against\n-- the manifest thresholds, input size, truncation flag, run time),\n-- stored here in the shape of src/lib/audit/resnet-result.ts.\n--\n-- The report's risk_score already includes the model's bounded score\n-- term (at most +6, findings required, severity floors untouched —\n-- see resnet-result.ts); this column is the durable evidence for\n-- that term, so a stored score can always be explained after the\n-- fact. Null = screening did not run for this record (no runtime\n-- bytecode, or the model was unavailable in that environment).\nalter table contract_scans add column if not exists resnet_json text;\n`,
+  "0019_poc_chats.sql": `-- Migration 0019: saved PoC chat conversations.
+--
+-- The workbench PoC chat started session-only; the auditor needs the
+-- conversation to survive the session (a PoC iteration can run across
+-- days and across the phone/laptop pair). One row per saved
+-- conversation: the display messages (user / assistant / run entries,
+-- with any file attachments and the replying model id) as one JSON
+-- document, plus the target snapshot the chat was about. Rows are
+-- unowned, like every table in this app (no accounts). Deleting is
+-- per-row by id from the chat panel — the user's own record, removed
+-- on their click; there is no bulk delete.
+
+create table if not exists poc_chats (
+  id text primary key,
+  title text not null,
+  address text not null default '',
+  chain_id text not null default '',
+  contract_name text not null default '',
+  message_count integer not null default 0,
+  messages_json text not null default '[]',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists poc_chats_updated_idx
+  on poc_chats (updated_at desc);`,
 };

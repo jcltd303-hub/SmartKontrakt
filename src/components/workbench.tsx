@@ -78,6 +78,19 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     setInteractiveTestCode,
     pocChatMessages,
     pocChatSending,
+    pocChatPendingAttachments,
+    addPocChatFiles,
+    removePocChatAttachment,
+    pocChatId,
+    pocChatSavedList,
+    pocChatModels,
+    pocChatSaving,
+    saveCurrentPocChat,
+    loadSavedPocChat,
+    deleteSavedPocChat,
+    newPocChat,
+    exportPocChat,
+    pocChatContextEstimate,
     pocChatRunning,
     sendPocChat,
     applyChatCode,
@@ -239,6 +252,19 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
               pocResult.status !== "passed" &&
               pocResult.status !== "skipped"
             }
+            pendingAttachments={pocChatPendingAttachments}
+            onAddFiles={addPocChatFiles}
+            onRemoveAttachment={removePocChatAttachment}
+            models={pocChatModels}
+            contextEstimate={pocChatContextEstimate}
+            savedChats={pocChatSavedList}
+            currentChatId={pocChatId}
+            saving={pocChatSaving}
+            onSave={saveCurrentPocChat}
+            onLoadChat={loadSavedPocChat}
+            onDeleteChat={deleteSavedPocChat}
+            onNewChat={newPocChat}
+            onExport={exportPocChat}
           />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

@@ -5,12 +5,20 @@ import { attachResnetToReport } from "@/lib/audit/resnet-attach";
 import { runResnetBrowser } from "@/lib/image-ml/run-resnet-browser";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
 import {
+  deletePocChatFn,
+  getPocChatFn,
+  getPocChatModels,
+  listPocChatsFn,
   requestAiReview,
   requestDeepAgentRound,
   requestPocChat,
   requestPocRepair,
+  savePocChatFn,
 } from "@/lib/audit/ai.functions";
 import type { PocChatContext } from "@/lib/audit/poc-chat.server";
+import type { PocChatPurpose } from "@/lib/audit/poc-chat-clean";
+import type { SavedPocChatSummary } from "@/lib/audit/poc-chat-store.server";
+import { buildPocChatExport, estimatePocChatContext } from "./poc-chat-helpers";
 import { fullDisassembly, looksLikeBytecode } from "@/lib/audit/bytecode";
 import type { DeepAgentHypothesis, DeepAgentPriorResult } from "@/lib/audit/deep-agent.server";
 import { analyzeInput } from "@/lib/audit/engine";
@@ -106,6 +114,18 @@ contract PoC is Test {
  *  context's lastRunSummary instead). */
 export type PocChatMessage = {
   role: "user" | "assistant" | "run";
+  content: string;
+  /** Files attached to this turn (user turns) — contents ride to
+   *  the model inside the turn and persist with a saved chat. */
+  attachments?: Array<{ name: string; content: string }>;
+  /** The model that produced this reply (assistant turns). */
+  model?: string;
+};
+
+/** A file staged in the composer, attached to the NEXT user turn. */
+export type PocChatPendingAttachment = {
+  id: string;
+  name: string;
   content: string;
 };
 
@@ -206,6 +226,15 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
   const [pocChatMessages, setPocChatMessages] = useState<PocChatMessage[]>([]);
   const [pocChatSending, setPocChatSending] = useState(false);
   const [pocChatRunning, setPocChatRunning] = useState(false);
+  const [pocChatPendingAttachments, setPocChatPendingAttachments] = useState<
+    PocChatPendingAttachment[]
+  >([]);
+  /** The saved-chat id this conversation lives under (null = not
+   *  saved yet); Save writes here, Load/New move it. */
+  const [pocChatId, setPocChatId] = useState<string | null>(null);
+  const [pocChatSavedList, setPocChatSavedList] = useState<SavedPocChatSummary[]>([]);
+  const [pocChatModels, setPocChatModels] = useState<{ chat: string; code: string } | null>(null);
+  const [pocChatSaving, setPocChatSaving] = useState(false);
   // Per-finding PoC runs (Run button on each finding's Attack Contract
   // block, under findings). One run at a time across all findings:
   // findingPocRunLockRef guards the race, and every Run button disables
@@ -987,7 +1016,88 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     return { poc, testCode: poc.executedSource ?? testCode };
   };
 
-  // --- PoC chat (OpenRouter, purpose "chat") -------------------------
+  // --- PoC chat (OpenRouter) ---------------------------------------
+  // Lane info + the saved-chat list are server-side state; load both
+  // once on mount, fail-soft (no DB / no key just means no list and
+  // no model labels — the conversation itself still works).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const models = await getPocChatModels();
+        if (!cancelled) setPocChatModels(models);
+      } catch {
+        /* labels are best-effort */
+      }
+      try {
+        const list = await listPocChatsFn({ data: { limit: 30 } });
+        if (!cancelled) setPocChatSavedList(list);
+      } catch {
+        /* no archive reachable — Save will surface the error then */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const refreshSavedPocChats = async () => {
+    try {
+      setPocChatSavedList(await listPocChatsFn({ data: { limit: 30 } }));
+    } catch {
+      /* keep the stale list rather than blanking it */
+    }
+  };
+
+  // Stage files for the next user turn. Text-shaped files only (the
+  // model reads contents, not binaries); oversized files are refused
+  // with a note in the chat instead of a silent truncation, and the
+  // per-turn cap is 4 (the wire cap in poc-chat-clean.ts).
+  const addPocChatFiles = async (files: FileList | File[]) => {
+    const accepted: PocChatPendingAttachment[] = [];
+    const refused: string[] = [];
+    for (const file of Array.from(files)) {
+      if (pocChatPendingAttachments.length + accepted.length >= 4) {
+        refused.push(`${file.name} (only 4 attachments per message)`);
+        continue;
+      }
+      if (file.size > 256 * 1024) {
+        refused.push(`${file.name} (over the 256 KB upload cap)`);
+        continue;
+      }
+      try {
+        const content = await file.text();
+        if (content.includes("�")) {
+          refused.push(`${file.name} (does not read as text)`);
+          continue;
+        }
+        accepted.push({
+          id:
+            typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+              ? crypto.randomUUID()
+              : `att-${Date.now()}-${accepted.length}`,
+          name: file.name || "attachment",
+          content,
+        });
+      } catch {
+        refused.push(`${file.name} (could not be read)`);
+      }
+    }
+    if (accepted.length > 0) {
+      setPocChatPendingAttachments((prev) => [...prev, ...accepted]);
+    }
+    if (refused.length > 0) {
+      setPocChatMessages((prev) => [
+        ...prev,
+        { role: "run", content: `Attachment refused: ${refused.join("; ")}` },
+      ]);
+    }
+  };
+
+  const removePocChatAttachment = (id: string) => {
+    setPocChatPendingAttachments((prev) => prev.filter((a) => a.id !== id));
+  };
+
   // The context snapshot the model sees alongside the conversation:
   // the workbench's current target, loaded body, findings, the
   // Interactive editor's draft, and the last run. Assembled fresh on
@@ -1007,12 +1117,22 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
       : "",
   });
 
-  const sendPocChat = async (text: string) => {
+  const sendPocChat = async (text: string, purpose: PocChatPurpose = "chat") => {
     const clean = text.trim();
     if (!clean || pocChatSending) return;
-    const userMessage: PocChatMessage = { role: "user", content: clean };
+    // Staged uploads ride THIS turn, then the composer clears.
+    const attachments = pocChatPendingAttachments.map((a) => ({
+      name: a.name,
+      content: a.content,
+    }));
+    const userMessage: PocChatMessage = {
+      role: "user",
+      content: clean,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
     const history = [...pocChatMessages, userMessage];
     setPocChatMessages(history);
+    setPocChatPendingAttachments([]);
     setPocChatSending(true);
     try {
       const res = await requestPocChat({
@@ -1021,11 +1141,21 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
           // conversation (the last run reaches it via the context).
           messages: history
             .filter((m) => m.role === "user" || m.role === "assistant")
-            .map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+            .map((m) => ({
+              role: m.role as "user" | "assistant",
+              content: m.content,
+              ...(m.attachments && m.attachments.length > 0
+                ? { attachments: m.attachments }
+                : {}),
+            })),
           context: buildPocChatContext(),
+          purpose,
         },
       });
-      setPocChatMessages((prev) => [...prev, { role: "assistant", content: res.reply }]);
+      setPocChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: res.reply, model: res.model },
+      ]);
     } catch (err) {
       setPocChatMessages((prev) => [
         ...prev,
@@ -1038,6 +1168,117 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
       setPocChatSending(false);
     }
   };
+
+  // --- Saved PoC chats (migration 0019) -----------------------------
+  // Save writes the visible conversation (run entries and
+  // attachments included — it is the record the user asked to keep)
+  // under pocChatId, minting one on first save. Load replaces the
+  // panel's conversation wholesale; New clears to a fresh, unsaved
+  // conversation. Failures surface as a run-style note in the chat —
+  // never a silent no-op.
+
+  const saveCurrentPocChat = async () => {
+    if (pocChatSaving || pocChatMessages.length === 0) return;
+    setPocChatSaving(true);
+    try {
+      const id =
+        pocChatId ??
+        (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `chat-${Date.now()}`);
+      const ctx = buildPocChatContext();
+      const saved = await savePocChatFn({
+        data: {
+          id,
+          title: "",
+          address: ctx.address,
+          chainId: ctx.chainId,
+          contractName: ctx.contractName,
+          messages: pocChatMessages,
+        },
+      });
+      setPocChatId(saved.id);
+      await refreshSavedPocChats();
+      setPocChatMessages((prev) => [
+        ...prev,
+        { role: "run", content: `Conversation saved — “${saved.title}” (${saved.messageCount} messages).` },
+      ]);
+    } catch (err) {
+      setPocChatMessages((prev) => [
+        ...prev,
+        {
+          role: "run",
+          content: `Save failed: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ]);
+    } finally {
+      setPocChatSaving(false);
+    }
+  };
+
+  const loadSavedPocChat = async (id: string) => {
+    try {
+      const chat = await getPocChatFn({ data: { id } });
+      setPocChatMessages(
+        chat.messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+          ...(m.attachments && m.attachments.length > 0 ? { attachments: m.attachments } : {}),
+          ...(m.model ? { model: m.model } : {}),
+        })),
+      );
+      setPocChatId(chat.id);
+      setPocChatPendingAttachments([]);
+    } catch (err) {
+      setPocChatMessages((prev) => [
+        ...prev,
+        {
+          role: "run",
+          content: `Load failed: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ]);
+    }
+  };
+
+  const deleteSavedPocChat = async (id: string) => {
+    try {
+      await deletePocChatFn({ data: { id } });
+      if (id === pocChatId) setPocChatId(null);
+      await refreshSavedPocChats();
+    } catch {
+      /* list refresh below shows the row is still there */
+      await refreshSavedPocChats();
+    }
+  };
+
+  const newPocChat = () => {
+    setPocChatMessages([]);
+    setPocChatId(null);
+    setPocChatPendingAttachments([]);
+  };
+
+  const exportPocChat = () => {
+    const ctx = buildPocChatContext();
+    const md = buildPocChatExport({
+      title: pocChatMessages.find((m) => m.role === "user")?.content.slice(0, 80) ?? "PoC chat",
+      address: ctx.address,
+      chainId: ctx.chainId,
+      contractName: ctx.contractName,
+      exportedAt: new Date().toISOString(),
+      messages: pocChatMessages,
+    });
+    downloadFile("poc-chat.md", md);
+  };
+
+  // The context-window gauge for the panel: what the NEXT send will
+  // carry (system context at its prompt caps + the capped history).
+  const pocChatContextEstimate = estimatePocChatContext({
+    messages: pocChatMessages,
+    sourceChars: contractBody.length,
+    findingsChars: buildPocChatContext().findingsSummary.length,
+    draftChars: interactiveTestCode.length,
+    lastRunChars: pocResult ? (pocResult.logs ?? "").length : 0,
+  });
 
   // Apply a chat-suggested draft: writes the Interactive editor's
   // state — the same state its Run button executes — so Apply here,
@@ -1926,6 +2167,19 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     sendPocChat,
     applyChatCode,
     runChatCode,
+    pocChatPendingAttachments,
+    addPocChatFiles,
+    removePocChatAttachment,
+    pocChatId,
+    pocChatSavedList,
+    pocChatModels,
+    pocChatSaving,
+    saveCurrentPocChat,
+    loadSavedPocChat,
+    deleteSavedPocChat,
+    newPocChat,
+    exportPocChat,
+    pocChatContextEstimate,
     handleRunDeepAgent,
     deepAgentRunning,
     deepAgentStatus,

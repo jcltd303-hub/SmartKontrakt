@@ -71,3 +71,10 @@ test("embedded 0018 adds the resnet_json verdict column to contract_scans", () =
   const sql = EMBEDDED_MIGRATIONS["0018_resnet_result.sql"];
   assert.match(sql, /alter table contract_scans add column if not exists resnet_json text/i);
 });
+
+test("embedded 0019 creates poc_chats for saved PoC chat conversations", () => {
+  const sql = EMBEDDED_MIGRATIONS["0019_poc_chats.sql"];
+  assert.match(sql, /create table if not exists poc_chats/i);
+  assert.match(sql, /messages_json text not null/i);
+  assert.match(sql, /message_count integer not null/i);
+});

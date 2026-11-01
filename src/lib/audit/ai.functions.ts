@@ -1,5 +1,10 @@
 import { cleanReviewEvidence } from "./audit-evidence.ts";
-import { cleanPocChatInput } from "./poc-chat-clean.ts";
+import {
+  cleanPocChatId,
+  cleanPocChatInput,
+  cleanPocChatListInput,
+  cleanPocChatSaveInput,
+} from "./poc-chat-clean.ts";
 import { createServerFn } from "@tanstack/react-start";
 import type { Finding, Report } from "./types";
 import type { DeepAgentPriorResult } from "./deep-agent.server";
@@ -154,13 +159,15 @@ export const requestPocRepair = createServerFn({ method: "POST" })
   });
 
 /**
- * PoC chat: ONE conversational OpenRouter round-trip (purpose "chat")
- * for the workbench's PoC chat panel — explain / suggest / write /
- * fix / audit PoC code against the loaded contract. The cleaning
- * (turn + char caps, context caps) lives in poc-chat-clean.ts so it
- * is unit-testable without the TanStack runtime; the handler follows
- * the same admin-token + dynamic-import shape as the repair fn. The
- * chat never executes anything — Apply/Run are UI actions.
+ * PoC chat: ONE conversational OpenRouter round-trip for the
+ * workbench's PoC chat panel — explain / suggest / write / fix /
+ * audit PoC code against the loaded contract. The lane is chosen per
+ * send (data.purpose): "chat" for conversation, "code" for exploit
+ * generation. The cleaning (turn + char + attachment caps, context
+ * caps) lives in poc-chat-clean.ts so it is unit-testable without
+ * the TanStack runtime; the handler follows the same admin-token +
+ * dynamic-import shape as the repair fn. The chat never executes
+ * anything — Apply/Run are UI actions.
  */
 export const requestPocChat = createServerFn({ method: "POST" })
   .validator((input: unknown) => cleanPocChatInput(input))
@@ -169,6 +176,64 @@ export const requestPocChat = createServerFn({ method: "POST" })
     assertAdminToken();
     const { chatAboutPoc } = await import("./poc-chat.server");
     return chatAboutPoc(data);
+  });
+
+/**
+ * The effective OpenRouter model per chat lane (after env overrides),
+ * so the panel can show which model converses and which generates
+ * exploits — the ids are server-side env state, the client cannot
+ * resolve them itself.
+ */
+export const getPocChatModels = createServerFn({ method: "POST" }).handler(async () => {
+  const { assertAdminToken } = await import("../admin-guard.server");
+  assertAdminToken();
+  const { resolveOpenRouterModel } = await import("./ai-review.server");
+  return {
+    chat: resolveOpenRouterModel("chat", process.env),
+    code: resolveOpenRouterModel("code", process.env),
+  };
+});
+
+/**
+ * Saved PoC chats (migration 0019). Save is an explicit click in the
+ * panel; load replaces the panel's conversation; delete removes one
+ * saved chat by id. Validators live in poc-chat-clean.ts; SQL lives
+ * in poc-chat-store.server.ts.
+ */
+export const savePocChatFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => cleanPocChatSaveInput(input))
+  .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("../admin-guard.server");
+    assertAdminToken();
+    const { savePocChat } = await import("./poc-chat-store.server");
+    return savePocChat(data);
+  });
+
+export const listPocChatsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => cleanPocChatListInput(input))
+  .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("../admin-guard.server");
+    assertAdminToken();
+    const { listPocChats } = await import("./poc-chat-store.server");
+    return listPocChats(data.limit);
+  });
+
+export const getPocChatFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => cleanPocChatId(input))
+  .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("../admin-guard.server");
+    assertAdminToken();
+    const { getPocChat } = await import("./poc-chat-store.server");
+    return getPocChat(data.id);
+  });
+
+export const deletePocChatFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => cleanPocChatId(input))
+  .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("../admin-guard.server");
+    assertAdminToken();
+    const { deletePocChat } = await import("./poc-chat-store.server");
+    return deletePocChat(data.id);
   });
 
 /**
