@@ -13,7 +13,9 @@ import {
   Bug,
   Check,
   Clock,
+  Code2,
   Copy,
+  Download,
   FileText,
   GitBranch,
   Info,
@@ -36,6 +38,7 @@ import { ReportTab } from "./workbench/report-tab";
 import { SurfaceTab } from "./workbench/surface-tab";
 import { useWorkbenchController } from "./workbench/use-workbench-controller";
 import { WalkthroughTab } from "./workbench/walkthrough-tab";
+import { SolidityGeneratorTab } from "./workbench/solidity-generator-tab";
 
 interface WorkbenchProps {
   initialScans?: ScanSummary[];
@@ -99,6 +102,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     handleRunManualProbe,
     scanHistory,
     generateMarkdownReport,
+    handleDownloadMarkdownReport,
     setSeverityFilter,
     severityFilter,
     findingSearch,
@@ -412,6 +416,18 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                   </button>
 
                   <button
+                    onClick={() => setActiveTab("solidity-generator")}
+                    className={`px-3 py-2 text-xs font-mono font-medium rounded-t-lg transition-colors flex items-center gap-1.5 ${
+                      activeTab === "solidity-generator"
+                        ? "bg-[#1c1a16] text-[#e8a54b] border-t-2 border-[#e8a54b] font-semibold"
+                        : "text-[#a39886] hover:text-[#f4efe6]"
+                    }`}
+                  >
+                    <Code2 className="w-3.5 h-3.5 text-[#e8a54b]" />
+                    <span>Foundry → Plain Solidity</span>
+                  </button>
+
+                  <button
                     onClick={() => {
                       setActiveTab("probe");
                       if (probes.length === 0 && singleAddress) handleRunManualProbe();
@@ -465,23 +481,33 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
 
                 {/* Quick Export Button */}
                 {report && (
-                  <button
-                    onClick={() => copyToClipboard(generateMarkdownReport(), "md-report")}
-                    className="text-xs px-2.5 py-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#a39886] hover:text-[#f4efe6] font-mono flex items-center gap-1 transition-colors"
-                    title="Copy Full Markdown Report"
-                  >
-                    {copiedKey === "md-report" ? (
-                      <>
-                        <Check className="w-3 h-3 text-emerald-400" />
-                        <span>Copied!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3 h-3 text-[#e8a54b]" />
-                        <span>Copy MD</span>
-                      </>
-                    )}
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => copyToClipboard(generateMarkdownReport(), "md-report")}
+                      className="text-xs px-2.5 py-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#a39886] hover:text-[#f4efe6] font-mono flex items-center gap-1 transition-colors"
+                      title="Copy Full Markdown Report"
+                    >
+                      {copiedKey === "md-report" ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          <span>Copied!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3 text-[#e8a54b]" />
+                          <span>Copy MD</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={handleDownloadMarkdownReport}
+                      className="text-xs px-2.5 py-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#a39886] hover:text-[#f4efe6] font-mono flex items-center gap-1 transition-colors"
+                      title="Download Markdown Report (.md)"
+                    >
+                      <Download className="w-3 h-3 text-[#e8a54b]" />
+                      <span>Download .md</span>
+                    </button>
+                  </div>
                 )}
               </div>
 
@@ -552,6 +578,8 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 deepAgentStatus={deepAgentStatus}
                 deepAgentError={deepAgentError}
                 deepAgentRounds={deepAgentRounds}
+                contractBody={contractBody}
+                setContractBody={setContractBody}
               />
 
               {/* ================= Tab: On-Chain State Probes ================= */}
@@ -567,6 +595,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 activeTab={activeTab}
                 copyToClipboard={copyToClipboard}
                 generateMarkdownReport={generateMarkdownReport}
+                handleDownloadMarkdownReport={handleDownloadMarkdownReport}
                 copiedKey={copiedKey}
               />
 
@@ -584,6 +613,17 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
               />
 
               <WalkthroughTab activeTab={activeTab} report={report} contractBody={contractBody} />
+
+              {/* ================= Tab: Foundry to Plain Solidity Generator ================= */}
+              <SolidityGeneratorTab
+                activeTab={activeTab}
+                report={report}
+                contractBody={contractBody}
+                setContractBody={setContractBody}
+                singleAddress={singleAddress}
+                singleAddressChain={singleAddressChain}
+                aiReview={aiReview}
+              />
             </section>
           </div>
         )}
