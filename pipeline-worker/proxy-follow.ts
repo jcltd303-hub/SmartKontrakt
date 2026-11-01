@@ -45,9 +45,15 @@ export function implementationItems(
   proxyInfo: { implementations?: unknown } | null | undefined,
   chainId: string,
   seen: ReadonlySet<string>,
+  runtimeBytecode?: string | null,
 ): FollowedItem[] {
-  const raw = proxyInfo?.implementations;
-  if (!Array.isArray(raw)) return [];
+  // Union of what the registry reports and what the code says. The registry is often
+  // empty for EIP-1167 clones; the bytecode never is.
+  const raw: unknown[] = Array.isArray(proxyInfo?.implementations)
+    ? [...(proxyInfo!.implementations as unknown[])]
+    : [];
+  for (const addr of implementationsFromBytecode(runtimeBytecode)) raw.push(addr);
+  if (raw.length === 0) return [];
   const out: FollowedItem[] = [];
   const local = new Set<string>();
   for (const entry of raw) {
@@ -67,4 +73,44 @@ export function implementationItems(
     });
   }
   return out;
+}
+
+/**
+ * Implementation addresses that are IN the runtime bytecode, independent of any registry.
+ *
+ * Why this exists (2026-10-31): 47.8 ETH sat behind MinimalProxies the pipeline had
+ * scored 2/100 "Clean". The shell is ~45 bytes of delegatecall, so "clean" is true and
+ * meaningless — the logic is in the implementation, and the implementation was never
+ * queued. `implementationItems` only followed `proxyInfo.implementations`, which
+ * Blockscout leaves empty for many EIP-1167 clones. The address is right there in the
+ * code, so read it from the code.
+ */
+export function implementationsFromBytecode(bytecode: string | null | undefined): string[] {
+  if (!bytecode) return [];
+  const code = bytecode.toLowerCase().replace(/^0x/, "");
+  const found: string[] = [];
+
+  // EIP-1167 minimal proxy, both the canonical and the 3d3d3d3d variant:
+  //   363d3d373d3d3d363d73 <address> 5af43d82803e903d91602b57fd5bf3
+  //   3d3d3d3d363d73       <address> 5af43d3d93803e602a57fd5bf3
+  for (const m of code.matchAll(/363d3d373d3d3d363d73([0-9a-f]{40})5af43d82803e903d91602b57fd5bf3/g)) {
+    found.push(`0x${m[1]}`);
+  }
+  for (const m of code.matchAll(/3d3d3d3d363d73([0-9a-f]{40})5af43d3d93803e602a57fd5bf3/g)) {
+    found.push(`0x${m[1]}`);
+  }
+  return [...new Set(found)];
+}
+
+/** EIP-1967 implementation slot, as the 32-byte key eth_getStorageAt expects. */
+export const EIP1967_IMPLEMENTATION_SLOT =
+  "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
+
+/** A 32-byte storage word holding an address -> that address, or null. */
+export function addressFromStorageWord(word: string | null | undefined): string | null {
+  if (!word) return null;
+  const hex = word.toLowerCase().replace(/^0x/, "");
+  if (hex.length < 40) return null;
+  const addr = `0x${hex.slice(-40)}`;
+  return /^0x0{40}$/.test(addr) ? null : addr;
 }

@@ -564,7 +564,16 @@ async function runLoop(): Promise<void> {
       // silent blind spot. Each implementation becomes its own queue entry with
       // its own source, findings and version stamp; the proxy's record keeps the
       // link through proxy_info_json.
-      const followed = implementationItems(proxyInfo, item.chainId, queuedKeys);
+      // Pass the runtime bytecode too: an EIP-1167 clone carries its implementation
+      // address in the code, and the registry often reports nothing for one. Without
+      // this, a MinimalProxy holding 32 ETH is analysed as a 45-byte shell and scored
+      // "Clean" — true, and useless.
+      const followed = implementationItems(
+        proxyInfo,
+        item.chainId,
+        queuedKeys,
+        report.runtimeBytecode?.code ?? null,
+      );
       if (followed.length > 0) {
         for (const impl of followed) {
           queuedKeys.add(dedupeKey(impl.chainId, impl.address));

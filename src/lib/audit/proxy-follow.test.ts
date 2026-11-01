@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { dedupeKey, implementationItems } from "../../../pipeline-worker/proxy-follow.ts";
+import {
+  addressFromStorageWord,
+  dedupeKey,
+  implementationItems,
+  implementationsFromBytecode,
+} from "../../../pipeline-worker/proxy-follow.ts";
 
 /**
  * Following a proxy to its implementation (2026-10-27).
@@ -60,4 +65,43 @@ test("junk shapes are ignored rather than thrown on", () => {
 
 test("a proxy with no implementations yields nothing", () => {
   assert.deepEqual(implementationItems({ implementations: [] }, "ethereum", new Set()), []);
+});
+
+test("an EIP-1167 clone's implementation is read from its bytecode", () => {
+  // 47.8 ETH sat behind MinimalProxies scored 2/100 "Clean" on 2026-10-31: the shell has
+  // nothing to flag, and the implementation was never queued because the registry
+  // reported none. The address is in the code.
+  const impl = "1234567890abcdef1234567890abcdef12345678";
+  const canonical = `0x363d3d373d3d3d363d73${impl}5af43d82803e903d91602b57fd5bf3`;
+  assert.deepEqual(implementationsFromBytecode(canonical), [`0x${impl}`]);
+
+  const oldVariant = `0x3d3d3d3d363d73${impl}5af43d3d93803e602a57fd5bf3`;
+  assert.deepEqual(implementationsFromBytecode(oldVariant), [`0x${impl}`]);
+});
+
+test("a real contract body yields no implementation", () => {
+  const body = "0x608060405234801561001057600080fd5b50" + "ab".repeat(400);
+  assert.deepEqual(implementationsFromBytecode(body), []);
+  assert.deepEqual(implementationsFromBytecode(null), []);
+  assert.deepEqual(implementationsFromBytecode(""), []);
+});
+
+test("bytecode-derived implementations are queued alongside registry ones", () => {
+  const impl = "1234567890abcdef1234567890abcdef12345678";
+  const clone = `0x363d3d373d3d3d363d73${impl}5af43d82803e903d91602b57fd5bf3`;
+  // Registry empty — the case that lost the 32 ETH.
+  const only = implementationItems({ implementations: [] }, "ethereum", new Set(), clone);
+  assert.equal(only.length, 1);
+  assert.equal(only[0]!.address, `0x${impl}`);
+
+  // Registry and bytecode agree — no duplicate queue entry.
+  const both = implementationItems({ implementations: [`0x${impl}`] }, "ethereum", new Set(), clone);
+  assert.equal(both.length, 1);
+});
+
+test("a storage word yields an address, and a zero word yields null", () => {
+  const impl = "1234567890abcdef1234567890abcdef12345678";
+  assert.equal(addressFromStorageWord(`0x${"0".repeat(24)}${impl}`), `0x${impl}`);
+  assert.equal(addressFromStorageWord(`0x${"0".repeat(64)}`), null);
+  assert.equal(addressFromStorageWord(null), null);
 });
