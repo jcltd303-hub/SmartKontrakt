@@ -2,8 +2,23 @@
 src = "src"
 out = "out"
 libs = ["lib"]
-solc = "0.8.24"
-auto_detect_solc = false
+# Solc is DETECTED, not pinned.
+#
+# The pin was `solc = "0.8.24"` with `auto_detect_solc = false`, and on Termux the
+# platform is linux-aarch64. Solidity publishes NO aarch64 Linux binaries, so forge's
+# download fails with:
+#
+#   Error: version not found in artifacts for this platform: 0.8.24
+#
+# Nothing compiles, so nothing runs, so every PoC reported no_tests — for hours, because
+# the failure arrived as a silent zero rather than an error. A pin buys reproducibility
+# that does not survive contact with this platform, and it fails in the one place that
+# matters.
+#
+# auto_detect_solc picks a version matching each test file's pragma. The generated PoCs
+# all declare ^0.8.24, so detection lands on a compatible compiler. To pin deliberately,
+# set FOUNDRY_SOLC in the environment — it overrides detection without editing this file.
+auto_detect_solc = true
 optimizer = false
 # PoC clarity over gas: unoptimized bytecode is easier to trace in -vvvv output.
 ffi = false
