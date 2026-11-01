@@ -229,6 +229,24 @@ import {
  *                override carries one. Five regression fixtures pin each escape
  *                and the surviving Nomad positive. Same inputs now produce
  *                different records, so the archive refreshes.
+ * 2026-11-01.19 — Live gates + the detector scoreboard (the improvement batch
+ *                Jer approved in full). Every address analysis path in the
+ *                fetcher now runs post-passes after value/ABI attachment:
+ *                (1) value exposure — unprotected-ether, selfdestruct and
+ *                token-drain findings carry the address's LIVE value as
+ *                their economicClaim (basis "live"), replacing the
+ *                text-figure assumption; a completely-read $0 is stated
+ *                as $0, an incomplete $0 is never stated. (2) Live-state
+ *                annotations — the decisive reads already probed (owner,
+ *                paused) are written into the confidenceBasis of the
+ *                findings they bear on; annotation only, no re-scoring.
+ *                (3) Scoreboard demotions, when the caller supplies the
+ *                archive's track record: a detector running ≥90%
+ *                false-positive over ≥20 dispositioned findings has its
+ *                criticals capped at high and its high confidence dropped
+ *                to medium, with the scoreboard line in confidenceBasis.
+ *                Same inputs now produce different records, so the archive
+ *                refreshes.
  *
  * 2026-11-01.17 — bridge-message-auth fired on the NAME `claim`. Measured on a real
  *                archive pull: LootChubby.claim(uint256 tokenId) — an NFT claim bounded
@@ -342,7 +360,7 @@ import {
  *
  *                Same inputs now produce different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-11-01.18";
+export const ANALYZER_BASELINE = "2026-11-01.19";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

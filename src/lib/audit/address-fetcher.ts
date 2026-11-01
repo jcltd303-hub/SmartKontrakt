@@ -8,6 +8,8 @@ import { fetchAddressValue } from "./value.ts";
 import { gatherAbi } from "./abi.ts";
 import { gatherLiveState } from "./live-state.ts";
 import { applyInitializerGate } from "./initializer-gate.ts";
+import { applyLiveGates } from "./live-gates.ts";
+import { applyScoreboardDemotions, type DetectorStats } from "./detector-scoreboard.ts";
 import { enrichReportFourbyte, type FourbyteLookup } from "./fourbyte.ts";
 import { attachResnetToReport, runtimeCodeForReport, type ResnetRunner } from "./resnet-attach.ts";
 
@@ -834,6 +836,15 @@ export async function analyzeAddress(
      * identical. Only the registry lookups and the bytecode read are skipped.
      */
     bodyOverride?: { body: string; inputKind: "source" | "bytecode" };
+    /**
+     * Detector scoreboard demotions (the caller's archive track record,
+     * keyed by detector). When supplied, findings from classes running
+     * ≥90% false-positive over ≥20 dispositioned findings are demoted
+     * before the report returns (detector-scoreboard.ts). Callers with
+     * database access supply it (the pipeline worker per run; persist
+     * applies the same pass at save time for the other flows).
+     */
+    detectorStats?: ReadonlyMap<string, DetectorStats>;
   },
 ): Promise<{ report: Report; rawBody: string; inputKind: "source" | "bytecode" }> {
   if (!isValidEvmAddress(address)) {
@@ -841,6 +852,17 @@ export async function analyzeAddress(
   }
 
   const chain = SUPPORTED_CHAINS.find((c) => c.id === chainId) ?? SUPPORTED_CHAINS[0]!;
+
+  // Live-gate post-passes, shared by every analysis path: value
+  // exposure + live-state annotations (live-gates.ts — evidence on the
+  // findings themselves, read at analysis time), then scoreboard
+  // demotions when the caller supplied the archive's track record.
+  // Runs before ResNet attachment so the risk-score recompute inside
+  // the demotion pass cannot drop the ML term (it has not landed yet).
+  const applyPostPasses = (r: Report): void => {
+    applyLiveGates(r);
+    if (opts?.detectorStats) applyScoreboardDemotions(r, opts.detectorStats);
+  };
 
   // Value at analysis time, attached to the inventory so it persists with the
   // record, renders in the UI, and drives the pre-run skip. Best-effort: a
@@ -893,6 +915,7 @@ export async function analyzeAddress(
       "Body reused from an earlier scan of identical runtime code: registry lookups and the bytecode read were skipped, the analysis is local.",
     ];
     await attachValueAndAbi(report);
+    applyPostPasses(report);
     if (opts?.resnetRunner) {
       try {
         const screening = await opts.resnetRunner(override.body);
@@ -1029,6 +1052,9 @@ export async function analyzeAddress(
         // evidence is best-effort — the audit stands without it
       }
     }
+    // Live gates run after the live-state probe so its reads can be
+    // annotated onto the findings they bear on (live-gates.ts).
+    applyPostPasses(report);
     // ResNet1D screening over the runtime bytecode fetched above — the
     // same code the Bytecode & CFG tab renders. Without the runtime
     // fetch this path would have nothing to classify: the screening
@@ -1066,6 +1092,7 @@ export async function analyzeAddress(
 
   if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
   await attachValueAndAbi(report);
+  applyPostPasses(report);
 
   // ResNet1D screening: this path's whole input IS the runtime code.
   if (opts?.resnetRunner) {

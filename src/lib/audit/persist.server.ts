@@ -1,5 +1,23 @@
 import { writeAuditBatch } from "./bulk-persist.server";
 import { inheritDispositionsForScans } from "./code-reuse.server.ts";
+import { applyScoreboardDemotions } from "./detector-scoreboard.ts";
+import { demotionMap } from "./detector-scoreboard.server.ts";
+
+/**
+ * Scoreboard demotions at save time, for the flows that analyze
+ * without the fetcher's detectorStats option (pasted source, workbench
+ * single-analyze): the same demotion pass the pipeline worker applies
+ * in the fetcher, run over the record's report before it is written.
+ * Idempotent (the pass skips findings it already marked) and fail-soft.
+ */
+async function demoteBeforeSave(sql: Sql, report: Report): Promise<void> {
+  try {
+    const stats = await demotionMap(sql);
+    if (stats.size > 0) applyScoreboardDemotions(report, stats);
+  } catch {
+    // an unreadable scoreboard means no demotions, never a failed save
+  }
+}
 
 /**
  * Codehash verdict cache, applied after a save: findings on a scan whose
@@ -530,6 +548,7 @@ export async function saveComprehensiveRecord(input: {
     pocResult: input.pocResult ?? null,
   };
   const sql = await getSql();
+  await demoteBeforeSave(sql, record.report);
   await writeAuditBatch(sql, [record], { maxBytes: Infinity });
   await inheritAfterSave(sql, [id]);
 
@@ -568,6 +587,7 @@ export async function saveBatchComprehensiveRecords(
   // AI would blow past the serverless function timeout and stall the flush at
   // 0 records. The pipeline runs the AI second pass per item (client-side,
   // via runSecondPassFn) before enqueue, so the bulk save stays fast.
+  for (const record of records) await demoteBeforeSave(sql, record.report);
   const result = await writeAuditBatch(sql, records);
   await inheritAfterSave(sql, result.ids);
   return result;

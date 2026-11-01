@@ -98,7 +98,9 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // And to 2026-11-01.18 with the bridge-message-auth escapes: dynamic-bytes
   // messages only, contract-scoped peer vocabulary, the bound-payee
   // self-service shape, and bridge context for the zero-root half.
-  assert.equal(ANALYZER_BASELINE, "2026-11-01.18");
+  // And to 2026-11-01.19 with the live gates (value exposure + live-state
+  // annotations on every fetcher path) and scoreboard demotions.
+  assert.equal(ANALYZER_BASELINE, "2026-11-01.19");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });
@@ -138,7 +140,7 @@ test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
   const digest = h.digest("hex").slice(0, 12);
 
   // Update this constant ONLY together with ANALYZER_BASELINE. Both move, or neither.
-  const DETECTOR_SOURCE_DIGEST = "cf54f75a7f37";
+  const DETECTOR_SOURCE_DIGEST = "649502568f9a";
 
   // No placeholder branch: the digest is pinned, so a comparison against a sentinel is
   // dead code and TS rightly calls it unintentional. When the sources change, the

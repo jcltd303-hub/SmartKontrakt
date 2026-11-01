@@ -147,6 +147,7 @@ const { newLlmHealth, recordLlm, llmVerdict } = await import("./llm-health.ts");
 const { implementationItems, dedupeKey } = await import("./proxy-follow.ts");
 const { applyShard, parseShard } = await import("./shard.ts");
 const { codeHashOf, findSiblingScan, inheritDispositionsForScans } = await import("../src/lib/audit/code-reuse.server.ts");
+const { demotionMap } = await import("../src/lib/audit/detector-scoreboard.server.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
 const { getSql, getDbConnectionState } = await import("../src/lib/db.ts");
@@ -497,6 +498,26 @@ async function runLoop(): Promise<void> {
     );
     dedupeSql = null;
   }
+  // Detector scoreboard for this run (loaded once): classes running
+  // ≥90% false-positive over ≥20 dispositioned findings get demoted at
+  // analysis time. Fail-soft — an unreadable scoreboard (pre-0015
+  // schema, DB hiccup) means no demotions this run, never a failed run.
+  let detectorStats: Awaited<ReturnType<typeof demotionMap>> | null = null;
+  if (dedupeSql) {
+    try {
+      detectorStats = await demotionMap(dedupeSql);
+      if (detectorStats.size > 0) {
+        console.log(
+          `[worker] scoreboard demotions active for: ${[...detectorStats.keys()].join(", ")}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[worker] detector scoreboard unavailable (no demotions this run): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      detectorStats = null;
+    }
+  }
   try {
     while (ctx.index < ctx.items.length) {
       if (stopRequested || pauseRequested) break;
@@ -611,6 +632,7 @@ async function runLoop(): Promise<void> {
             analyzeAddress(item.address, item.chainId, item.label, {
               fourbyte,
               resnetRunner: runResnetNode,
+              ...(detectorStats ? { detectorStats } : {}),
               ...(bodyOverride ? { bodyOverride } : {}),
             }),
           {
