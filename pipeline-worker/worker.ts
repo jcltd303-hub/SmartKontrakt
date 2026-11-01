@@ -1470,7 +1470,20 @@ server.listen(PORT, HOST, () => {
           }
         })();
       } else if (conn.state === "failed") {
-        console.warn(`[worker] database connection: FAILED — ${conn.error ?? "unknown error"} No fallback is in use; fix DATABASE_URL in pipeline-worker/.env.`);
+        // Say what is true and what follows from it. The old message asserted the URL was
+        // wrong and told the reader to fix it, which on a cold pooler was simply false —
+        // writes landed moments later. A probe that fails after retries means saves are
+        // UNPROVEN, not that the config is broken, and the two send you to different places.
+        const err = conn.error ?? "unknown error";
+        const timeoutish = /timeout|ETIMEDOUT|ECONNRESET|terminated|socket hang up/i.test(err);
+        console.warn(
+          timeoutish
+            ? `[worker] database probe: timed out after 3 attempts — ${err}\n` +
+              `[worker] This is usually a cold Supabase pooler, not a bad URL. Writes may still land; ` +
+              `watch for the first "flushed N records" line before treating it as broken.`
+            : `[worker] database connection: FAILED — ${err}\n` +
+              `[worker] No fallback is in use; the URL is in pipeline-worker/.env.`,
+        );
       } else {
         console.warn("[worker] database connection: NOT CONFIGURED — set DATABASE_URL in pipeline-worker/.env before starting a run.");
       }

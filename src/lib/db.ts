@@ -368,12 +368,28 @@ async function createSql(): Promise<Sql> {
 export async function getDbConnectionState(): Promise<DbConnectionState> {
   const url = getActiveDatabaseUrl();
   if (!url) return classifyDbState("", false, undefined);
-  try {
-    await getSql();
-    return classifyDbState(url, true, undefined);
-  } catch {
-    return classifyDbState(url, false, globalRef.__lastDbError__);
+
+  // A pooled Supabase connection (port 6543, transaction mode) drops idle sockets, and a
+  // cold pooler times out the FIRST attempt fairly often. One failed probe is not evidence
+  // the database is unreachable.
+  //
+  // Measured 2026-11-01: the worker booted, printed
+  //   "database connection: FAILED — ... No fallback is in use; fix DATABASE_URL"
+  // and then wrote a record successfully in the same run. The URL was correct; the probe
+  // was simply cold. Telling someone to fix a working config is worse than saying nothing,
+  // because it sends them to the wrong place while the thing they need to know — whether
+  // writes land — goes unanswered.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await getSql();
+      return classifyDbState(url, true, undefined);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+    }
   }
+  return classifyDbState(url, false, globalRef.__lastDbError__ ?? lastErr);
 }
 
 export async function getDatabaseInfo(): Promise<{
