@@ -469,6 +469,35 @@ function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel, sk
   ) {
     return true;
   }
+  // Authorization inside an INTERNAL HELPER.
+  //
+  //   function execute(address target, bytes calldata data) external returns (bool, bytes memory) {
+  //       return _execute(target, data);          // <- no modifier, no require, just a hop
+  //   }
+  //
+  // The guard lives one frame down. Curve's Treasury reverts "Core" from inside _execute
+  // (CoreOwnable: require(msg.sender == ICore(core).owner(), "Core")), and measured
+  // 2026-11-01 both arbitrary-dispatch-call and unprotected-admin fired on it — on a
+  // contract holding $2.87M. A fork probe calling execute() from a random address reverted
+  // "Core", so the finding was pure noise.
+  //
+  // One level only, internal/private callees only, and only from an entry point: following
+  // arbitrary call chains would credit auth that may not be on this path, which is how a
+  // suppression starts hiding real bugs.
+  if (isExternallyCallable(fn)) {
+    for (const helper of contract.functions) {
+      if (helper === fn || isExternallyCallable(helper)) continue;
+      const name = helper.name;
+      if (!name || !new RegExp(`\\b${name}\\s*\\(`).test(fn.source)) continue;
+      const h = helper.source ?? "";
+      if (!h || /tx\.origin/.test(h)) continue;
+      if (/msg\.sender\s*==\s*[A-Za-z_]/.test(h)) return true;
+      if (/require\s*\(\s*msg\.sender\s*==/.test(h)) return true;
+      if (/if\s*\(\s*msg\.sender\s*!=/.test(h)) return true;
+      if (/if\s*\(\s*[A-Za-z_][\w.]*\s*!=\s*msg\.sender\s*\)/.test(h)) return true;
+    }
+  }
+
   // Authorization delegated to a predicate helper:
   //   require(isAuthorizedStrategy(msg.sender), "not authorized");
   //

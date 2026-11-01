@@ -443,3 +443,47 @@ contract Bad {
   const found = analyzeInput(src, "bad").findings.filter((f) => f.detector === "delegatecall");
   assert.ok(found.some((f) => f.severity === "critical"), "a caller-chosen delegatecall target is critical");
 });
+
+test("authorization inside an internal helper is credited", () => {
+  // Curve's Treasury, 0x6508eF65…290B, measured 2026-11-01. `execute` has no modifier and
+  // no require — it hops to `_execute`, where CoreOwnable's guard lives. A fork probe
+  // calling execute() from a random address reverted "Core", so the finding was noise on a
+  // contract holding $2.87M.
+  const src = `
+pragma solidity ^0.8.0;
+interface ICore { function owner() external view returns (address); }
+contract Treasury {
+    ICore public core;
+    constructor(address _core) { core = ICore(_core); }
+    function owner() public view returns (address) { return core.owner(); }
+    function execute(address target, bytes calldata data) external returns (bool, bytes memory) {
+        return _execute(target, data);
+    }
+    function _execute(address target, bytes calldata data) internal returns (bool, bytes memory) {
+        require(msg.sender == owner(), "Core");
+        return target.call(data);
+    }
+}`;
+  const found = analyzeInput(src, "treasury").findings.filter(
+    (f) => f.detector === "arbitrary-dispatch-call" || f.detector === "unprotected-admin",
+  );
+  assert.equal(found.length, 0, "the guard is one frame down and must still count");
+});
+
+test("an unguarded helper is still reported", () => {
+  // The control: same shape, no require in the helper.
+  const src = `
+pragma solidity ^0.8.0;
+contract Treasury {
+    function execute(address target, bytes calldata data) external returns (bool, bytes memory) {
+        return _execute(target, data);
+    }
+    function _execute(address target, bytes calldata data) internal returns (bool, bytes memory) {
+        return target.call(data);
+    }
+}`;
+  const found = analyzeInput(src, "treasury").findings.filter(
+    (f) => f.detector === "arbitrary-dispatch-call" || f.detector === "unprotected-admin",
+  );
+  assert.ok(found.length >= 1, "a genuinely open dispatcher must still fire");
+});
