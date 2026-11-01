@@ -624,8 +624,16 @@ export async function runAutoPocForEntry(
       const savedStatus = outcome.saveError
         ? `error (save failed: ${outcome.saveError})`
         : (outcome.verdict ?? outcome.kind);
+      // no_tests is the one outcome where forge's own words are the whole diagnosis, and
+      // until now they only existed in the backend's terminal. Print them here too: "No
+      // tests match the provided pattern" and "(0 total tests)" are different bugs, and a
+      // 40-character tail distinguishes them without a second window.
+      const forgeWhy =
+        savedStatus === "no_tests" && lastRun?.logs
+          ? ` — forge: ${String(lastRun.logs).replace(/\s+/g, " ").slice(-220)}`
+          : "";
       deps.log(
-        `[worker] auto-poc ${input.address} ${finding.detector}: ${savedStatus}${sharedSave ? " (shared run)" : ""}`,
+        `[worker] auto-poc ${input.address} ${finding.detector}: ${savedStatus}${sharedSave ? " (shared run)" : ""}${forgeWhy}`,
       );
     }
   }
