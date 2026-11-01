@@ -83,13 +83,8 @@ export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions
  */
 export const OPENROUTER_MODELS = {
   review: "nvidia/nemotron-3-ultra-550b-a55b:free",
-  code: "cohere/north-mini-code:free",
+  code: "deepseek/deepseek-v4.1-flash",
   json: "nvidia/nemotron-3-ultra-550b-a55b:free",
-  // chat — the workbench PoC chat panel (poc-chat.server.ts): a
-  // conversation that explains, writes and fixes PoC code against the
-  // loaded contract. Prose + code in one reply, so it rides the
-  // reasoning model (Ultra, 1M ctx) rather than the code lane.
-  chat: "nvidia/nemotron-3-ultra-550b-a55b:free",
 } as const;
 
 export type OpenRouterPurpose = keyof typeof OPENROUTER_MODELS;
@@ -110,6 +105,9 @@ export const DEFAULT_OPENROUTER_MODEL = OPENROUTER_MODELS.review;
  * with no test* function for a full sweep.
  */
 export const OPENROUTER_FALLBACK_MODELS: readonly string[] = [
+  // A paid coder from a DIFFERENT provider: if DeepSeek is down, falling back to another
+  // DeepSeek model buys nothing. Qwen3-Coder-Flash is purpose-built for code.
+  "qwen/qwen3-coder-flash",
   // A real id. The previous value, "openrouter/free", is not in the catalog: OpenRouter's
   // router is `openrouter/auto` and it is paid. A fallback that does not exist is worse
   // than no fallback, because the failure surfaces as a 404 on the fallback rather than

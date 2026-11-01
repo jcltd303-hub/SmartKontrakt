@@ -48,13 +48,13 @@ test("resolveOpenRouterModel picks the per-purpose free model, overridable by en
   assert.equal(resolveOpenRouterModel("json", {}), OPENROUTER_MODELS.json);
   // Per-purpose override wins over the default but not the global override.
   assert.equal(
-    resolveOpenRouterModel("code", { OPENROUTER_MODEL_CODE: "cohere/north-mini-code:free" }),
-    "cohere/north-mini-code:free",
+    resolveOpenRouterModel("code", { OPENROUTER_MODEL_CODE: "deepseek/deepseek-v4.1-flash" }),
+    "deepseek/deepseek-v4.1-flash",
   );
   assert.equal(
     resolveOpenRouterModel("code", {
       OPENROUTER_MODEL: "nvidia/nemotron-3-ultra-550b-a55b:free",
-      OPENROUTER_MODEL_CODE: "cohere/north-mini-code:free",
+      OPENROUTER_MODEL_CODE: "deepseek/deepseek-v4.1-flash",
     }),
     "nvidia/nemotron-3-ultra-550b-a55b:free",
   );
@@ -70,12 +70,14 @@ test("per-purpose defaults are the 2026-10-25 live-catalog picks", () => {
   // the schema-native json candidate — was passed over because its single
   // endpoint was flagged (status -5) while both picked models sat at 0.
   assert.equal(OPENROUTER_MODELS.review, "nvidia/nemotron-3-ultra-550b-a55b:free");
-  assert.equal(OPENROUTER_MODELS.code, "cohere/north-mini-code:free");
+  assert.equal(OPENROUTER_MODELS.code, "deepseek/deepseek-v4.1-flash");
   assert.equal(OPENROUTER_MODELS.json, "nvidia/nemotron-3-ultra-550b-a55b:free");
   assert.equal(DEFAULT_OPENROUTER_MODEL, OPENROUTER_MODELS.review);
-  for (const model of Object.values(OPENROUTER_MODELS)) {
-    assert.ok(model.endsWith(":free"), `default must be a free-tier id: ${model}`);
-  }
+  // Not every default is free any more: `code` is a paid model because PoC generation
+  // needs to actually emit a Foundry test, and the free tier returned empty replies.
+  assert.ok(OPENROUTER_MODELS.review.endsWith(":free"), "review stays free");
+  assert.ok(OPENROUTER_MODELS.json.endsWith(":free"), "json stays free");
+  assert.ok(!OPENROUTER_MODELS.code.endsWith(":free"), "code is deliberately paid");
 });
 
 test("extractJsonContent parses raw JSON", () => {
@@ -185,17 +187,23 @@ test("no configured model is one that a plain API call cannot use", () => {
 test("modelCandidates puts the preferred model first and the router last", () => {
   const candidates = modelCandidates("code", {});
   assert.equal(candidates[0], OPENROUTER_MODELS.code);
-  assert.equal(candidates.at(-1), "nvidia/nemotron-3-ultra-550b-a55b:free");
+  assert.ok(candidates.includes("nvidia/nemotron-3-ultra-550b-a55b:free"), "the free model stays in the chain");
   assert.ok(OPENROUTER_FALLBACK_MODELS.includes("nvidia/nemotron-3-ultra-550b-a55b:free"));
   // An explicit override still leads, and the fallback is still available.
   const overridden = modelCandidates("code", { OPENROUTER_MODEL_CODE: "vendor/model:free" });
   assert.equal(overridden[0], "vendor/model:free");
-  assert.equal(overridden.at(-1), "nvidia/nemotron-3-ultra-550b-a55b:free");
+  assert.ok(overridden.includes("qwen/qwen3-coder-flash"), "the paid fallback is still offered");
 });
 
-test("modelCandidates de-duplicates when the preferred model is the fallback", () => {
+test("modelCandidates never repeats a model, and the preferred one leads", () => {
+  // The fallback is now a chain, so "preferred is the fallback" no longer collapses to a
+  // single entry. The invariant is: the preferred model first, no duplicates anywhere, and
+  // any other fallback still offered.
   const fb = "nvidia/nemotron-3-ultra-550b-a55b:free";
-  assert.deepEqual(modelCandidates("code", { OPENROUTER_MODEL: fb }), [fb]);
+  const list = modelCandidates("code", { OPENROUTER_MODEL: fb });
+  assert.equal(list[0], fb, "the preferred model leads");
+  assert.equal(new Set(list).size, list.length, `no duplicates: ${list.join(", ")}`);
+  assert.ok(!list.includes("deepseek/deepseek-v4.1-flash"), "the overridden default is dropped");
 });
 
 test("a harness-gated 403 is recognised as model-unavailable", () => {
