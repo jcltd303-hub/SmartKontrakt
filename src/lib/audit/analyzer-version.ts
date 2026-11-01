@@ -206,6 +206,23 @@ import {
  *                accepts a refund-with-timeout plus any unguarded payout;
  *                registry-dispatched-logic accepts a non-parameter index. Same
  *                inputs now produce different records, so the archive refreshes.
+ * 2026-11-01.17 — bridge-message-auth fired on the NAME `claim`. Measured on a real
+ *                archive pull: LootChubby.claim(uint256 tokenId) — an NFT claim bounded
+ *                by a supply cap and an id range — scored the only CRITICAL in 136
+ *                findings. It takes no message: no bytes, no chain id, no proof. The
+ *                name was in BRIDGE_HANDLER and `_mint` was in BRIDGE_EFFECT, which was
+ *                the entire case.
+ *
+ *                A cross-chain handler by definition receives a message, so the rule now
+ *                requires one: a bytes/bytes32 parameter, or a contract naming a
+ *                peer/remote/endpoint. Nomad, Qubit and KelpDAO all take a payload.
+ *
+ *                The old test asserted this false positive as correct behaviour
+ *                ("minting to the caller still fires"), so it was rewritten — a fixture
+ *                that encodes a bug keeps it alive.
+ *
+ *                Same inputs now produce different records, so the archive refreshes.
+ *
  * 2026-10-31.16 — New detector: liquidation-without-health-check.
  *
  *                It encodes the soda-2020 INVARIANT ("collateral seized exceeds amount
@@ -301,7 +318,7 @@ import {
  *
  *                Same inputs now produce different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-10-31.16";
+export const ANALYZER_BASELINE = "2026-11-01.17";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

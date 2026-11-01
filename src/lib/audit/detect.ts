@@ -2425,9 +2425,23 @@ function scanHistoricalFn(
   // deposit are the two 2022 cases; the zero-root half is checked at
   // contract level below, because the flaw there was the ROOT's value, not
   // the absence of a verify call.
+  //
+  // Shape requirement (2026-11-01). Measured: `LootChubby.claim(uint256 tokenId)` on an
+  // NFT contract scored a CRITICAL here. The function takes a token id — no message, no
+  // chain id, no proof, no bytes anywhere — because it is an NFT claim bounded by
+  // LOOT_RESERVED and MAX_LOOT_ID. The name `claim` is in BRIDGE_HANDLER and the mint is
+  // in BRIDGE_EFFECT, so the rule fired on the name alone.
+  //
+  // A cross-chain handler by definition receives a message, so require one: a bytes /
+  // bytes32 parameter, or a contract that names a peer/remote/endpoint. Nomad, Qubit and
+  // KelpDAO all take a payload; an NFT claim does not.
+  const takesMessage = fn.params.some((p) => /^bytes/.test(p.typeName));
+  const namesPeer =
+    /trustedRemote|srcChainId|sourceChainId|lzReceive|onMessage|executeMessage|\b_peer\b/i.test(parsed);
   if (
     external &&
     BRIDGE_HANDLER.test(fn.name) &&
+    (takesMessage || namesPeer) &&
     BRIDGE_EFFECT.test(clean) &&
     !BRIDGE_VERIFICATION.test(clean) &&
     !authed &&

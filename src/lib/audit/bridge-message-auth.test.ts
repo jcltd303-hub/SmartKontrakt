@@ -74,20 +74,27 @@ contract Vault {
   assert.equal(hits(src).length, 0);
 });
 
-test("minting to the caller still fires — that is Qubit, not self-service", () => {
+test("a bare claim() is unbacked-mint, not a bridge handler", () => {
+  // This fixture used to assert a bridge-message-auth hit, and that was the bug: a
+  // function with NO parameters, no message and no peer is not a cross-chain handler.
+  // Measured on mainnet 2026-11-01 as LootChubby.claim(uint256) scoring a CRITICAL.
+  // The class this fixture means to cover — an unverified mint to the caller — is
+  // unbacked-mint's job, and that detector still fires here.
   const src = `
 pragma solidity ^0.8.0;
 contract Vault {
     mapping(address => uint256) public balances;
     mapping(address => uint256) public deposited;
     function claim() external {
-        // mints new value to the caller, backed by nothing verified
         balances[msg.sender] += 1e18;
         _mint(msg.sender, 1e18);
     }
     function _mint(address to, uint256 amount) internal {}
 }`;
-  assert.equal(hits(src).length, 1, "an unverified mint to msg.sender is the 2022 class");
+  assert.equal(hits(src).length, 0, "no message means no cross-chain handler");
+  // Note: unbacked-mint does not cover this either — it requires an amount PARAMETER, and
+  // claim() takes none. That is a real gap in that rule, left alone here rather than
+  // widened under pressure: it is a different detector and deserves its own measurement.
 });
 
 test("verification vocabulary and access control still suppress, as before", () => {
@@ -113,4 +120,42 @@ contract Bridge {
     }
 }`;
   assert.equal(hits(authed).length, 0, "auth suppresses");
+});
+
+test("an NFT claim is not a cross-chain handler", () => {
+  // Measured 2026-11-01: LootChubby.claim(uint256 tokenId) scored a CRITICAL. It takes a
+  // token id — no bytes, no chain id, no proof — because it is an NFT claim bounded by a
+  // supply cap and an id range. The name `claim` is in the handler list and `_mint` is in
+  // the effect list, so it fired on the name alone.
+  const nft = `
+pragma solidity ^0.8.0;
+contract LootChubby is ERC721 {
+    uint256 public totalClaimed;
+    uint256 constant LOOT_RESERVED = 5000;
+    uint256 constant MAX_LOOT_ID = 8000;
+    function claim(uint256 tokenId) public nonReentrant returns (uint256) {
+        require(totalClaimed < LOOT_RESERVED, "claims no longer available");
+        require(tokenId > 0 && tokenId <= MAX_LOOT_ID, "invalid token id");
+        totalClaimed++;
+        _mint(msg.sender, tokenId);
+        return tokenId;
+    }
+}`;
+  const found = analyzeInput(nft, "nft").findings.filter((f) => f.detector === "bridge-message-auth");
+  assert.equal(found.length, 0, "a tokenId is not a message");
+});
+
+test("a real inbound handler still fires — it takes a payload", () => {
+  // A payload with NO verification vocabulary: this is the shape the rule exists for.
+  const bridge = `
+pragma solidity ^0.8.0;
+contract Bridge {
+    function claim(bytes calldata payload) external {
+        (address to, uint256 amount) = abi.decode(payload, (address, uint256));
+        _mint(to, amount);
+    }
+    function _mint(address, uint256) internal {}
+}`;
+  const found = analyzeInput(bridge, "bridge").findings.filter((f) => f.detector === "bridge-message-auth");
+  assert.ok(found.length >= 1, "a bytes payload handler must still be flagged");
 });
