@@ -21,6 +21,10 @@ export type InteractiveAuditTabProps = {
   onSourceChange: (code: string) => void;
   /** Fetch the selected address's source into the box. */
   onLoadSource: () => void;
+  /** The PoC test-code editor state (also lifted to the controller,
+   *  so the PoC chat's Apply writes the draft this tab runs). */
+  testCode: string;
+  onTestCodeChange: (code: string) => void;
 };
 
 export function InteractiveAuditTab({
@@ -31,6 +35,8 @@ export function InteractiveAuditTab({
   source,
   onSourceChange,
   onLoadSource,
+  testCode,
+  onTestCodeChange,
 }: InteractiveAuditTabProps) {
   // The box content and the PoC target come from the shared workbench
   // selection; everything below consumes them exactly as the old local
@@ -39,29 +45,7 @@ export function InteractiveAuditTab({
   const targetAddress = address;
   const selectedChainId = chainId;
   const mismatchNotice = interactiveBoxMismatch(source, address);
-
-  const [testCode, setTestCode] = useState<string>(
-    `// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
-
-import "forge-std/Test.sol";
-import "../src/Vault.sol";
-
-contract PoC is Test {
-    Vault vault;
-    
-    function setUp() public {
-        vault = new Vault();
-    }
-    
-    function test_reentrancy() public {
-        // Exploit logic here
-        vault.deposit{value: 1 ether}();
-        vault.withdraw(1 ether);
-    }
-}
-`
-  );
+  const setTestCode = onTestCodeChange;
 
   const [customRpcUrl, setCustomRpcUrl] = useState<string>("");
   const [autoRetryAllRpcs, setAutoRetryAllRpcs] = useState<boolean>(true);

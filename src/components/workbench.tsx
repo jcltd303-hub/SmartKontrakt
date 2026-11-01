@@ -13,9 +13,7 @@ import {
   Bug,
   Check,
   Clock,
-  Code2,
   Copy,
-  Download,
   FileText,
   GitBranch,
   Info,
@@ -32,12 +30,12 @@ import { FindingKnowledgeModal } from "./workbench/finding-knowledge-modal";
 import { FindingsTab } from "./workbench/findings-tab";
 import { WorkbenchHeader } from "./workbench/header";
 import { HistoryTab } from "./workbench/history-tab";
+import { PocChatTab } from "./workbench/poc-chat-tab";
 import { ProbeTab } from "./workbench/probe-tab";
 import { ReportTab } from "./workbench/report-tab";
 import { SurfaceTab } from "./workbench/surface-tab";
 import { useWorkbenchController } from "./workbench/use-workbench-controller";
 import { WalkthroughTab } from "./workbench/walkthrough-tab";
-import { SolidityGeneratorTab } from "./workbench/solidity-generator-tab";
 
 interface WorkbenchProps {
   initialScans?: ScanSummary[];
@@ -73,6 +71,14 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     interactiveSource,
     handleInteractiveSourceChange,
     handleLoadInteractiveSource,
+    interactiveTestCode,
+    setInteractiveTestCode,
+    pocChatMessages,
+    pocChatSending,
+    pocChatRunning,
+    sendPocChat,
+    applyChatCode,
+    runChatCode,
     proxyInfo,
     handleSelectSample,
     selectedSampleId,
@@ -93,7 +99,6 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     handleRunManualProbe,
     scanHistory,
     generateMarkdownReport,
-    handleDownloadMarkdownReport,
     setSeverityFilter,
     severityFilter,
     findingSearch,
@@ -196,9 +201,41 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
             source={interactiveSource}
             onSourceChange={handleInteractiveSourceChange}
             onLoadSource={handleLoadInteractiveSource}
+            testCode={interactiveTestCode}
+            onTestCodeChange={setInteractiveTestCode}
           />
         ) : workbenchMode === "poc-audits" ? (
           <RecentPocAudits onLoadScanInWorkbench={handleLoadStoredScanById} />
+        ) : workbenchMode === "poc-chat" ? (
+          <PocChatTab
+            messages={pocChatMessages}
+            sending={pocChatSending}
+            running={pocChatRunning}
+            onSend={sendPocChat}
+            onApplyCode={applyChatCode}
+            onRunCode={runChatCode}
+            onOpenInteractive={() => setWorkbenchMode("interactive")}
+            address={singleAddress}
+            chainId={singleAddressChain}
+            contractName={contractLabel}
+            findingCount={report.findings.length}
+            topFinding={(() => {
+              const rank = { critical: 0, high: 1, medium: 2, low: 3, info: 4 } as const;
+              const top = [...report.findings].sort(
+                (a, b) => rank[a.severity] - rank[b.severity],
+              )[0];
+              return top
+                ? { severity: top.severity, title: top.title, detector: top.detector }
+                : null;
+            })()}
+            hasDraft={interactiveTestCode.trim().length > 0}
+            lastRunStatus={pocResult?.status ?? null}
+            lastRunFailed={
+              pocResult !== null &&
+              pocResult.status !== "passed" &&
+              pocResult.status !== "skipped"
+            }
+          />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* ================= Left Column: Contract Editor & Input ================= */}
@@ -375,18 +412,6 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                   </button>
 
                   <button
-                    onClick={() => setActiveTab("solidity-generator")}
-                    className={`px-3 py-2 text-xs font-mono font-medium rounded-t-lg transition-colors flex items-center gap-1.5 ${
-                      activeTab === "solidity-generator"
-                        ? "bg-[#1c1a16] text-[#e8a54b] border-t-2 border-[#e8a54b] font-semibold"
-                        : "text-[#a39886] hover:text-[#f4efe6]"
-                    }`}
-                  >
-                    <Code2 className="w-3.5 h-3.5 text-[#e8a54b]" />
-                    <span>Foundry → Plain Solidity</span>
-                  </button>
-
-                  <button
                     onClick={() => {
                       setActiveTab("probe");
                       if (probes.length === 0 && singleAddress) handleRunManualProbe();
@@ -440,33 +465,23 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
 
                 {/* Quick Export Button */}
                 {report && (
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => copyToClipboard(generateMarkdownReport(), "md-report")}
-                      className="text-xs px-2.5 py-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#a39886] hover:text-[#f4efe6] font-mono flex items-center gap-1 transition-colors"
-                      title="Copy Full Markdown Report"
-                    >
-                      {copiedKey === "md-report" ? (
-                        <>
-                          <Check className="w-3 h-3 text-emerald-400" />
-                          <span>Copied!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3 h-3 text-[#e8a54b]" />
-                          <span>Copy MD</span>
-                        </>
-                      )}
-                    </button>
-                    <button
-                      onClick={handleDownloadMarkdownReport}
-                      className="text-xs px-2.5 py-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#a39886] hover:text-[#f4efe6] font-mono flex items-center gap-1 transition-colors"
-                      title="Download Markdown Report (.md)"
-                    >
-                      <Download className="w-3 h-3 text-[#e8a54b]" />
-                      <span>Download .md</span>
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => copyToClipboard(generateMarkdownReport(), "md-report")}
+                    className="text-xs px-2.5 py-1 rounded bg-[#26231c] hover:bg-[#3a3428] border border-[#3a3428] text-[#a39886] hover:text-[#f4efe6] font-mono flex items-center gap-1 transition-colors"
+                    title="Copy Full Markdown Report"
+                  >
+                    {copiedKey === "md-report" ? (
+                      <>
+                        <Check className="w-3 h-3 text-emerald-400" />
+                        <span>Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3 text-[#e8a54b]" />
+                        <span>Copy MD</span>
+                      </>
+                    )}
+                  </button>
                 )}
               </div>
 
@@ -537,8 +552,6 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 deepAgentStatus={deepAgentStatus}
                 deepAgentError={deepAgentError}
                 deepAgentRounds={deepAgentRounds}
-                contractBody={contractBody}
-                setContractBody={setContractBody}
               />
 
               {/* ================= Tab: On-Chain State Probes ================= */}
@@ -554,7 +567,6 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
                 activeTab={activeTab}
                 copyToClipboard={copyToClipboard}
                 generateMarkdownReport={generateMarkdownReport}
-                handleDownloadMarkdownReport={handleDownloadMarkdownReport}
                 copiedKey={copiedKey}
               />
 
@@ -572,17 +584,6 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
               />
 
               <WalkthroughTab activeTab={activeTab} report={report} contractBody={contractBody} />
-
-              {/* ================= Tab: Foundry to Plain Solidity Generator ================= */}
-              <SolidityGeneratorTab
-                activeTab={activeTab}
-                report={report}
-                contractBody={contractBody}
-                setContractBody={setContractBody}
-                singleAddress={singleAddress}
-                singleAddressChain={singleAddressChain}
-                aiReview={aiReview}
-              />
             </section>
           </div>
         )}

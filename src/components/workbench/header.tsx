@@ -7,6 +7,7 @@ import {
   Flame,
   ListOrdered,
   Loader2,
+  MessagesSquare,
   ShieldAlert,
   Terminal,
   Upload,
@@ -140,6 +141,18 @@ export function WorkbenchHeader({
             >
               <ShieldAlert className="w-3.5 h-3.5" />
               <span>PoC Audits</span>
+            </button>
+            <button
+              onClick={() => setWorkbenchMode("poc-chat")}
+              className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 ${
+                workbenchMode === "poc-chat"
+                  ? "bg-[#e8a54b] text-[#12110e] font-bold shadow"
+                  : "text-[#a39886] hover:text-[#f4efe6]"
+              }`}
+              title="Chat with the model about this contract's PoC — suggest, write, fix and audit drafts"
+            >
+              <MessagesSquare className="w-3.5 h-3.5" />
+              <span>PoC Chat</span>
             </button>
           </div>
 

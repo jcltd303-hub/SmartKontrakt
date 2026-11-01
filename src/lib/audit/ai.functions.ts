@@ -1,4 +1,5 @@
 import { cleanReviewEvidence } from "./audit-evidence.ts";
+import { cleanPocChatInput } from "./poc-chat-clean.ts";
 import { createServerFn } from "@tanstack/react-start";
 import type { Finding, Report } from "./types";
 import type { DeepAgentPriorResult } from "./deep-agent.server";
@@ -153,6 +154,24 @@ export const requestPocRepair = createServerFn({ method: "POST" })
   });
 
 /**
+ * PoC chat: ONE conversational OpenRouter round-trip (purpose "chat")
+ * for the workbench's PoC chat panel — explain / suggest / write /
+ * fix / audit PoC code against the loaded contract. The cleaning
+ * (turn + char caps, context caps) lives in poc-chat-clean.ts so it
+ * is unit-testable without the TanStack runtime; the handler follows
+ * the same admin-token + dynamic-import shape as the repair fn. The
+ * chat never executes anything — Apply/Run are UI actions.
+ */
+export const requestPocChat = createServerFn({ method: "POST" })
+  .validator((input: unknown) => cleanPocChatInput(input))
+  .handler(async ({ data }) => {
+    const { assertAdminToken } = await import("../admin-guard.server");
+    assertAdminToken();
+    const { chatAboutPoc } = await import("./poc-chat.server");
+    return chatAboutPoc(data);
+  });
+
+/**
  * Per-item OpenRouter second pass for the pipeline. Kept separate from the
  * bulk save on purpose: a bulk save with per-record LLM calls blows past the
  * serverless function timeout and stalls the flush at 0 records. The pipeline
@@ -175,40 +194,3 @@ export const runSecondPassFn = createServerFn({ method: "POST" })
     const { secondPass } = await import("./persist.server");
     return secondPass(data.report, data.body);
   });
-
-/**
- * Convert Foundry test code into a standalone Plain Solidity contract via LLM.
- */
-export const convertFoundryToPlainSolidityFn = createServerFn({ method: "POST" })
-  .validator((input: unknown) => {
-    if (!input || typeof input !== "object") {
-      throw new Error("Invalid request payload");
-    }
-    const { foundryCode, contractName, contractSource, targetAddress, mode } = input as {
-      foundryCode?: string;
-      contractName?: string;
-      contractSource?: string;
-      targetAddress?: string;
-      mode?: "interaction" | "exploit" | "validation";
-    };
-    if (typeof foundryCode !== "string" || !foundryCode.trim()) {
-      throw new Error("Foundry test code is required");
-    }
-    return {
-      foundryCode: foundryCode.slice(0, 30000),
-      contractName: typeof contractName === "string" ? contractName.slice(0, 100) : "TargetContract",
-      contractSource: typeof contractSource === "string" ? contractSource.slice(0, 15000) : "",
-      targetAddress: typeof targetAddress === "string" ? targetAddress.slice(0, 100) : undefined,
-      mode: mode === "exploit" || mode === "validation" || mode === "interaction" ? mode : "interaction",
-    };
-  })
-  .handler(async ({ data }) => {
-    const { assertAdminToken } = await import("../admin-guard.server");
-    assertAdminToken();
-    const { convertFoundryToPlainSolidity } = await import("./convert-foundry.server");
-    return convertFoundryToPlainSolidity(data.foundryCode, data.contractName, data.contractSource, {
-      targetAddress: data.targetAddress,
-      mode: data.mode,
-    });
-  });
-

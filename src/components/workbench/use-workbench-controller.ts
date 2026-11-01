@@ -4,7 +4,13 @@ import { SUPPORTED_CHAINS, analyzeAddress, isValidEvmAddress } from "@/lib/audit
 import { attachResnetToReport } from "@/lib/audit/resnet-attach";
 import { runResnetBrowser } from "@/lib/image-ml/run-resnet-browser";
 import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
-import { requestAiReview, requestDeepAgentRound, requestPocRepair } from "@/lib/audit/ai.functions";
+import {
+  requestAiReview,
+  requestDeepAgentRound,
+  requestPocChat,
+  requestPocRepair,
+} from "@/lib/audit/ai.functions";
+import type { PocChatContext } from "@/lib/audit/poc-chat.server";
 import { fullDisassembly, looksLikeBytecode } from "@/lib/audit/bytecode";
 import type { DeepAgentHypothesis, DeepAgentPriorResult } from "@/lib/audit/deep-agent.server";
 import { analyzeInput } from "@/lib/audit/engine";
@@ -67,11 +73,66 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { defaultSample } from "./presentation";
 import { filterFindings, getRiskColor } from "./selectors";
 
+/**
+ * The Interactive tab's starter PoC test. It used to be a useState
+ * initializer inside InteractiveAuditTab; the state is lifted into
+ * the controller (same move as the source box in #48) so the PoC
+ * chat's Apply writes the very editor the Interactive Run reads.
+ */
+export const DEFAULT_INTERACTIVE_TEST_CODE = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "forge-std/Test.sol";
+import "../src/Vault.sol";
+
+contract PoC is Test {
+    Vault vault;
+
+    function setUp() public {
+        vault = new Vault();
+    }
+
+    function test_reentrancy() public {
+        // Exploit logic here
+        vault.deposit{value: 1 ether}();
+        vault.withdraw(1 ether);
+    }
+}
+`;
+
+/** One visible entry in the PoC chat: a user turn, an assistant
+ *  reply, or a run summary produced by runChatCode (never sent to
+ *  the model as a turn — the run reaches the model through the
+ *  context's lastRunSummary instead). */
+export type PocChatMessage = {
+  role: "user" | "assistant" | "run";
+  content: string;
+};
+
+/** The one-paragraph verdict a finished run leaves in the chat. The
+ *  wording carries the repo's verdict semantics on purpose: passed =
+ *  reproduced on the fork only, error = infrastructure, no_tests =
+ *  nothing executed. */
+export function describePocRunForChat(poc: PocResult): string {
+  const meaning =
+    poc.status === "passed"
+      ? "the PoC tests passed on the fork — the claimed behavior reproduced (fork only, nothing real moved)"
+      : poc.status === "failed"
+        ? "the tests ran and failed — the claim did NOT reproduce"
+        : poc.status === "no_tests"
+          ? "no executable tests ran — the draft proves nothing yet"
+          : poc.status === "skipped"
+            ? "the run was skipped before execution"
+            : "infrastructure or compile failure — not a verdict";
+  const tail = (poc.logs ?? "").slice(-1500);
+  return `PoC run finished: ${poc.status.toUpperCase()} — ${meaning} (${poc.durationMs}ms).${tail ? `\n\nLog tail:\n${tail}` : ""}`;
+}
+
 // One controller owns audit state and async orchestration across all workbench modes.
 export function useWorkbenchController(initialScans: ScanSummary[]) {
   // Mode state: Single audit vs Batch address pipeline vs Local DB Records vs RAG Knowledgebase
   const [workbenchMode, setWorkbenchMode] = useState<
-    "audit" | "pipeline" | "records" | "rag" | "interactive" | "poc-audits"
+    "audit" | "pipeline" | "records" | "rag" | "interactive" | "poc-audits" | "poc-chat"
   >("audit");
 
   // Single address input state
@@ -106,20 +167,19 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     initialInteractiveSource(),
   );
 
+  // The Interactive tab's PoC test-code editor, lifted for the same
+  // reason: the PoC chat's Apply must write the exact draft the
+  // Interactive Run executes, and both must survive mode switches.
+  const [interactiveTestCode, setInteractiveTestCode] = useState<string>(
+    DEFAULT_INTERACTIVE_TEST_CODE,
+  );
+
   // Analysis state initialized synchronously for identical SSR & Client hydration
   const [report, setReport] = useState<Report>(() =>
     analyzeInput(defaultSample.body, defaultSample.label),
   );
   const [activeTab, setActiveTab] = useState<
-    | "findings"
-    | "surface"
-    | "bytecode"
-    | "ai"
-    | "probe"
-    | "report"
-    | "history"
-    | "walkthrough"
-    | "solidity-generator"
+    "findings" | "surface" | "bytecode" | "ai" | "probe" | "report" | "history" | "walkthrough"
   >("findings");
   const [bytecodeSubView, setBytecodeSubView] = useState<"stream" | "cfg">("stream");
 
@@ -131,6 +191,13 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
   const [pocResult, setPocResult] = useState<PocResult | null>(null);
   const [pocRunning, setPocRunning] = useState(false);
   const [pocSaved, setPocSaved] = useState(false);
+  // PoC chat state — session-only by design (no DB persistence, no
+  // migration): the conversation is working scratch for the current
+  // target, lifted here so it survives mode switches like the other
+  // sandbox state.
+  const [pocChatMessages, setPocChatMessages] = useState<PocChatMessage[]>([]);
+  const [pocChatSending, setPocChatSending] = useState(false);
+  const [pocChatRunning, setPocChatRunning] = useState(false);
   // Per-finding PoC runs (Run button on each finding's Attack Contract
   // block, under findings). One run at a time across all findings:
   // findingPocRunLockRef guards the race, and every Run button disables
@@ -912,6 +979,108 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     return { poc, testCode: poc.executedSource ?? testCode };
   };
 
+  // --- PoC chat (OpenRouter, purpose "chat") -------------------------
+  // The context snapshot the model sees alongside the conversation:
+  // the workbench's current target, loaded body, findings, the
+  // Interactive editor's draft, and the last run. Assembled fresh on
+  // every send so the chat always reasons about the CURRENT state.
+  const buildPocChatContext = (): PocChatContext => ({
+    address: singleAddress.trim(),
+    chainId: singleAddressChain,
+    contractName: contractLabel,
+    source: contractBody,
+    findingsSummary: report.findings
+      .slice(0, 20)
+      .map((f) => `[${f.severity.toUpperCase()}] ${f.title} (detector: ${f.detector})`)
+      .join("\n"),
+    pocDraft: interactiveTestCode,
+    lastRunSummary: pocResult
+      ? `Status: ${pocResult.status} (${pocResult.durationMs}ms)\n${(pocResult.logs ?? "").slice(-4000)}`
+      : "",
+  });
+
+  const sendPocChat = async (text: string) => {
+    const clean = text.trim();
+    if (!clean || pocChatSending) return;
+    const userMessage: PocChatMessage = { role: "user", content: clean };
+    const history = [...pocChatMessages, userMessage];
+    setPocChatMessages(history);
+    setPocChatSending(true);
+    try {
+      const res = await requestPocChat({
+        data: {
+          // Run summaries are display-only; the model gets the pure
+          // conversation (the last run reaches it via the context).
+          messages: history
+            .filter((m) => m.role === "user" || m.role === "assistant")
+            .map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+          context: buildPocChatContext(),
+        },
+      });
+      setPocChatMessages((prev) => [...prev, { role: "assistant", content: res.reply }]);
+    } catch (err) {
+      setPocChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `PoC chat request failed: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ]);
+    } finally {
+      setPocChatSending(false);
+    }
+  };
+
+  // Apply a chat-suggested draft: writes the Interactive editor's
+  // state — the same state its Run button executes — so Apply here,
+  // switch to Interactive, Run there is one continuous draft.
+  const applyChatCode = (code: string) => {
+    setInteractiveTestCode(code);
+  };
+
+  // Run a chat-suggested draft through the canonical single-PoC path
+  // (wrap + run + one repair). The outcome lands in pocResult like
+  // any other run AND as a summary message in the chat, so the
+  // conversation can iterate on it ("Fix the last run").
+  const runChatCode = async (code: string) => {
+    if (pocChatRunning) return;
+    const addr = singleAddress.trim();
+    if (!addr || !isValidEvmAddress(addr)) {
+      setPocChatMessages((prev) => [
+        ...prev,
+        {
+          role: "run",
+          content:
+            "Run skipped — no valid target address is selected in the workbench. Fetch or enter the target address first, then run.",
+        },
+      ]);
+      return;
+    }
+    setInteractiveTestCode(code);
+    setPocChatRunning(true);
+    setPocRunning(true);
+    setPocSaved(false);
+    try {
+      const { poc, testCode: executed } = await runSinglePocWithRepair(addr, code);
+      setPocResult(poc);
+      // A repair rewrote the draft mid-run; the editor must hold what
+      // actually executed, not the broken original.
+      if (executed !== code) setInteractiveTestCode(executed);
+      setPocChatMessages((prev) => [...prev, { role: "run", content: describePocRunForChat(poc) }]);
+    } catch (err) {
+      setPocChatMessages((prev) => [
+        ...prev,
+        {
+          role: "run",
+          content: `PoC run failed before a result: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ]);
+    } finally {
+      setPocChatRunning(false);
+      setPocRunning(false);
+    }
+  };
+
   // --- Per-finding PoC runs (Run button on each finding's Attack Contract
   // block). The displayed snippet is wrapped by wrapPocSnippetWithReason
   // into a runnable Foundry Test before it is passed to runPocOnBackend;
@@ -1451,111 +1620,46 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
   // Format full markdown report
   const generateMarkdownReport = (): string => {
     if (!report) return "";
-    const contractAddress = bodyLoadedForAddress || singleAddress || null;
     const lines: string[] = [
       `# Kiln Security Audit Report: ${report.label}`,
+      `Generated: ${new Date().toUTCString()}`,
+      `Input Type: ${report.inputKind.toUpperCase()}`,
+      `Overall Risk Score: ${report.riskScore}/100`,
       "",
-      `| Metric | Value |`,
-      `| :--- | :--- |`,
-      `| **Audit Timestamp** | ${new Date().toUTCString()} |`,
-      `| **Target Contract** | ${report.label} |`,
-      ...(contractAddress ? [`| **Target Address** | \`${contractAddress}\` |`] : []),
-      `| **Target Chain** | ${singleAddressChain || "ethereum"} |`,
-      `| **Input Type** | ${report.inputKind.toUpperCase()} |`,
-      `| **Overall Risk Score** | **${report.riskScore}/100** (${risk.label}) |`,
-      "",
-      `## 1. Executive Summary`,
-      "",
+      `## Executive Summary`,
       report.summary,
       "",
+      `## Vulnerability Overview`,
+      `- Critical: ${report.findings.filter((f) => f.severity === "critical").length}`,
+      `- High: ${report.findings.filter((f) => f.severity === "high").length}`,
+      `- Medium: ${report.findings.filter((f) => f.severity === "medium").length}`,
+      `- Low: ${report.findings.filter((f) => f.severity === "low").length}`,
+      `- Informational: ${report.findings.filter((f) => f.severity === "info").length}`,
+      "",
+      `## Findings Breakdown`,
     ];
 
-    if (aiReview) {
-      lines.push("### AI Executive Review");
-      lines.push(`- **Overall Verdict**: **${(aiReview.overallVerdict ?? "unknown").toUpperCase()}**`);
-      if (aiReview.summary) {
-        lines.push("");
-        lines.push(aiReview.summary);
-      }
-      lines.push("");
-    }
-
-    lines.push("## 2. Vulnerability Overview");
-    lines.push("");
-    lines.push(`| Severity | Findings Count |`);
-    lines.push(`| :--- | :--- |`);
-    lines.push(`| 🔴 Critical | ${report.findings.filter((f) => f.severity === "critical").length} |`);
-    lines.push(`| 🟠 High | ${report.findings.filter((f) => f.severity === "high").length} |`);
-    lines.push(`| 🟡 Medium | ${report.findings.filter((f) => f.severity === "medium").length} |`);
-    lines.push(`| 🔵 Low | ${report.findings.filter((f) => f.severity === "low").length} |`);
-    lines.push(`| ⚪ Informational | ${report.findings.filter((f) => f.severity === "info").length} |`);
-    lines.push("");
-
-    lines.push("## 3. Findings Breakdown & Proofs of Concept");
-    lines.push("");
-
     report.findings.forEach((f, idx) => {
-      const severityEmoji =
-        f.severity === "critical"
-          ? "🔴"
-          : f.severity === "high"
-            ? "🟠"
-            : f.severity === "medium"
-              ? "🟡"
-              : f.severity === "low"
-                ? "🔵"
-                : "⚪";
-      lines.push(`### ${idx + 1}. [${f.severity.toUpperCase()}] ${f.title}`);
-      lines.push("");
-      lines.push(`- **Severity**: ${severityEmoji} ${f.severity.toUpperCase()}`);
+      lines.push(`### [${f.severity.toUpperCase()}] ${idx + 1}. ${f.title}`);
       lines.push(`- **Detector**: \`${f.detector}\``);
-      if (f.swc) lines.push(`- **SWC Classification**: [SWC-${f.swc}](https://swcregistry.io/docs/SWC-${f.swc})`);
+      if (f.swc) lines.push(`- **Classification**: SWC-${f.swc}`);
       lines.push(`- **Confidence**: ${f.confidence}`);
-      if (f.locationFn) {
+      if (f.locationFn)
         lines.push(
           `- **Location**: \`${f.locationFn}\`${f.locationLine ? ` (Line ${f.locationLine})` : ""}`,
         );
-      }
-      if (f.corroborated) {
-        lines.push(`- **Corroboration**: ${typeof f.corroborated === "string" ? f.corroborated : "Confirmed"}`);
-      }
-      const disposition = findingDispositions[f.id];
-      if (disposition) {
-        lines.push(`- **Triage Disposition**: \`${disposition.disposition.toUpperCase()}\`${disposition.note ? ` — ${disposition.note}` : ""}`);
-      }
       lines.push("");
-      lines.push(`#### Description`);
+      lines.push(`#### Description & Summary`);
       lines.push(f.summary);
       lines.push("");
       lines.push(`#### Technical Walkthrough`);
       lines.push(f.walkthrough);
       lines.push("");
-      if (f.snippet) {
-        lines.push(`#### Vulnerable Code Snippet`);
-        lines.push("```solidity");
-        lines.push(f.snippet);
-        lines.push("```");
-        lines.push("");
-      }
-      const pocCode = f.exploitSolidity || f.pocCode;
-      if (pocCode) {
+      if (f.exploitSolidity) {
         lines.push(`#### Proof of Concept (Exploit Scenario)`);
         lines.push("```solidity");
-        lines.push(pocCode);
+        lines.push(f.exploitSolidity);
         lines.push("```");
-        lines.push("");
-      }
-      if (f.pocStatus || f.pocOutput) {
-        lines.push(`#### SmartPoC Execution Evidence`);
-        lines.push(`- **Status**: \`${(f.pocStatus || "unknown").toUpperCase()}\``);
-        if (f.pocRunAt) lines.push(`- **Executed At**: ${f.pocRunAt}`);
-        if (f.pocDurationMs) lines.push(`- **Duration**: ${f.pocDurationMs}ms`);
-        if (f.pocOutput) {
-          lines.push("");
-          lines.push("```text");
-          lines.push(f.pocOutput);
-          lines.push("```");
-        }
         lines.push("");
       }
       if (f.remediationSolidity) {
@@ -1565,46 +1669,11 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
         lines.push("```");
         lines.push("");
       }
-      lines.push("---");
-      lines.push("");
     });
 
-    if (aiReview?.foundryTestCode) {
-      lines.push("## 4. Foundry Fork Test Suite");
-      lines.push("");
-      lines.push("```solidity");
-      lines.push(aiReview.foundryTestCode);
-      lines.push("```");
-      lines.push("");
-    }
-
-    if (probes.length > 0) {
-      lines.push("## 5. Active Call Probes");
-      lines.push("");
-      probes.forEach((p) => {
-        // CallProbeResult carries name/success/rawResult/error — not the
-        // signature/resultState/returnValue/revertReason names this export was
-        // written against.
-        const state = p.success ? "ok" : "reverted";
-        lines.push(`- **Selector**: \`${p.selector}\` | **Signature**: \`${p.name || "unknown"}\` | **State**: \`${state}\``);
-        if (p.rawResult) lines.push(`  - Return Value: \`${p.rawResult}\``);
-        if (p.error) lines.push(`  - Revert Reason: \`${p.error}\``);
-      });
-      lines.push("");
-    }
-
     lines.push("---");
-    lines.push("*Security Audit Report generated by Kiln. Automated scan results and AI analyses should be verified with comprehensive dynamic testing and formal verification.*");
+    lines.push("Static analysis report generated with Kiln. Code generation alone is not exploit reproduction.");
     return lines.join("\n");
-  };
-
-  const handleDownloadMarkdownReport = () => {
-    const content = generateMarkdownReport();
-    if (!content) return;
-    const safeName = (report?.label || "audit-report")
-      .replace(/[^a-zA-Z0-9_-]/g, "_")
-      .toLowerCase();
-    downloadFile(`${safeName}-security-report.md`, content);
   };
 
   // Risk Score color helper
@@ -1689,6 +1758,8 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     interactiveSource,
     handleInteractiveSourceChange,
     handleLoadInteractiveSource,
+    interactiveTestCode,
+    setInteractiveTestCode,
     proxyInfo,
     handleSelectSample,
     selectedSampleId,
@@ -1709,7 +1780,6 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     handleRunManualProbe,
     scanHistory,
     generateMarkdownReport,
-    handleDownloadMarkdownReport,
     setSeverityFilter,
     severityFilter,
     findingSearch,
@@ -1741,6 +1811,12 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     pocRunning,
     pocResult,
     pocSaved,
+    pocChatMessages,
+    pocChatSending,
+    pocChatRunning,
+    sendPocChat,
+    applyChatCode,
+    runChatCode,
     handleRunDeepAgent,
     deepAgentRunning,
     deepAgentStatus,
