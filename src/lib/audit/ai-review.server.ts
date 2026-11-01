@@ -88,7 +88,11 @@ export const OPENROUTER_MODELS = {
   // demonstrably returns a parseable narrative — its only failure was the token cap, and
   // NARRATIVE_MAX_TOKENS is 8000 now.
   review: "nvidia/nemotron-3-ultra-550b-a55b:free",
-  code: "deepseek/deepseek-v4.1-flash",
+  // qwen3-coder-flash: a dedicated coder with a 65,536-token completion budget and 1M
+  // context. Swapped in 2026-11-01 after deepseek-v4.1-flash answered the test-code call in
+  // reasoning_content — thinking ABOUT the code, with no pragma and no Test contract, and
+  // truncated at 16000. A reasoning model is the wrong shape for "emit one complete file".
+  code: "qwen/qwen3-coder-flash",
   json: "nvidia/nemotron-3-ultra-550b-a55b:free",
   // PoC chat. `chat` is a real purpose — poc-chat.server.ts defaults to it — but it was
   // absent from this table, so resolveOpenRouterModel("chat") returned
@@ -1131,7 +1135,13 @@ export async function generateAiSecurityReview(
         // "OpenRouter returned no message content" on both attempts while answering
         // perfectly well in the other field.
         const message = data.choices?.[0]?.message;
-        const content = message?.content || message?.reasoning_content || message?.reasoning || "";
+        // reasoning_content is the right fallback for the NARRATIVE — a reasoning model's
+        // prose parses into the JSON fields fine. It is the wrong fallback for TEST CODE:
+        // there it is the model thinking about the code, which has no pragma and no Test
+        // contract, so it fails validation and burns an attempt. For code, require content.
+        const content =
+          message?.content ||
+          (spec.kind === "narrative" ? message?.reasoning_content || message?.reasoning || "" : "");
         if (!content) {
           if (!spentEmptyRetry) {
             spentEmptyRetry = true;

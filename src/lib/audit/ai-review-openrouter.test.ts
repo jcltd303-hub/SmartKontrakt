@@ -48,13 +48,13 @@ test("resolveOpenRouterModel picks the per-purpose free model, overridable by en
   assert.equal(resolveOpenRouterModel("json", {}), OPENROUTER_MODELS.json);
   // Per-purpose override wins over the default but not the global override.
   assert.equal(
-    resolveOpenRouterModel("code", { OPENROUTER_MODEL_CODE: "deepseek/deepseek-v4.1-flash" }),
-    "deepseek/deepseek-v4.1-flash",
+    resolveOpenRouterModel("code", { OPENROUTER_MODEL_CODE: "qwen/qwen3-coder-flash" }),
+    "qwen/qwen3-coder-flash",
   );
   assert.equal(
     resolveOpenRouterModel("code", {
       OPENROUTER_MODEL: "nvidia/nemotron-3-ultra-550b-a55b:free",
-      OPENROUTER_MODEL_CODE: "deepseek/deepseek-v4.1-flash",
+      OPENROUTER_MODEL_CODE: "qwen/qwen3-coder-flash",
     }),
     "nvidia/nemotron-3-ultra-550b-a55b:free",
   );
@@ -70,7 +70,7 @@ test("per-purpose defaults are the 2026-10-25 live-catalog picks", () => {
   // the schema-native json candidate — was passed over because its single
   // endpoint was flagged (status -5) while both picked models sat at 0.
   assert.equal(OPENROUTER_MODELS.review, "nvidia/nemotron-3-ultra-550b-a55b:free");
-  assert.equal(OPENROUTER_MODELS.code, "deepseek/deepseek-v4.1-flash");
+  assert.equal(OPENROUTER_MODELS.code, "qwen/qwen3-coder-flash");
   assert.equal(OPENROUTER_MODELS.json, "nvidia/nemotron-3-ultra-550b-a55b:free");
   assert.equal(DEFAULT_OPENROUTER_MODEL, OPENROUTER_MODELS.review);
   // Not every default is free any more: `code` is a paid model because PoC generation
@@ -206,7 +206,9 @@ test("modelCandidates never repeats a model, and the preferred one leads", () =>
   const list = modelCandidates("code", { OPENROUTER_MODEL: fb });
   assert.equal(list[0], fb, "the preferred model leads");
   assert.equal(new Set(list).size, list.length, `no duplicates: ${list.join(", ")}`);
-  assert.ok(!list.includes("deepseek/deepseek-v4.1-flash"), "the overridden default is dropped");
+  // The overridden default is also the first fallback, so it legitimately stays in the
+  // chain. What must hold is that the PREFERRED model leads and nothing repeats.
+  assert.equal(list.filter((m) => m === fb).length, 1, "the preferred model appears once");
 });
 
 test("a harness-gated 403 is recognised as model-unavailable", () => {
