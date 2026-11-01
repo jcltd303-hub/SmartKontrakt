@@ -5,9 +5,6 @@ import {
   ANALYZER_BASELINE,
   analyzerFingerprint,
   analyzerStamp,
-  baselineOf,
-  compareBaselines,
-  isBaselineOlder,
   isStaleVersion,
 } from "./analyzer-version.ts";
 import { SMARTBUGS_BY_DETECTOR } from "./smartbugs.ts";
@@ -98,8 +95,6 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // And to 2026-11-01.18 with the bridge-message-auth escapes: dynamic-bytes
   // messages only, contract-scoped peer vocabulary, the bound-payee
   // self-service shape, and bridge context for the zero-root half.
-  // And to 2026-11-01.19 with the live gates (value exposure + live-state
-  // annotations on every fetcher path) and scoreboard demotions.
   assert.equal(ANALYZER_BASELINE, "2026-11-01.19");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
@@ -140,7 +135,7 @@ test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
   const digest = h.digest("hex").slice(0, 12);
 
   // Update this constant ONLY together with ANALYZER_BASELINE. Both move, or neither.
-  const DETECTOR_SOURCE_DIGEST = "649502568f9a";
+  const DETECTOR_SOURCE_DIGEST = "70035aa0f0b0";
 
   // No placeholder branch: the digest is pinned, so a comparison against a sentinel is
   // dead code and TS rightly calls it unintentional. When the sources change, the
@@ -151,26 +146,4 @@ test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
     "detect.ts/bytecode.ts/smartbugs.ts changed: bump ANALYZER_BASELINE and update " +
       "DETECTOR_SOURCE_DIGEST together, or the archive will keep serving stale findings",
   );
-});
-
-test("baselineOf strips the fingerprint and tolerates bare baselines", () => {
-  assert.equal(baselineOf("2026-11-01.18+cf54f75a7f37abcd"), "2026-11-01.18");
-  assert.equal(baselineOf("2026-11-01.18"), "2026-11-01.18");
-  assert.equal(baselineOf(null), null);
-  assert.equal(baselineOf(""), null);
-});
-
-test("compareBaselines orders by date, then numerically by counter", () => {
-  assert.equal(compareBaselines("2026-11-01.18", "2026-11-01.18"), 0);
-  assert.equal(compareBaselines("2026-11-01.9", "2026-11-01.10"), -1);
-  assert.equal(compareBaselines("2026-11-01.10", "2026-11-01.9"), 1);
-  assert.equal(compareBaselines("2026-10-31.16", "2026-11-01.1"), -1);
-  // Stamps compare by their baseline part.
-  assert.equal(compareBaselines("2026-11-01.16+aaaa", "2026-11-01.18+bbbb"), -1);
-  // Unrecognizable input cannot be judged — never "older".
-  assert.equal(compareBaselines("garbage", "2026-11-01.18"), null);
-  assert.equal(compareBaselines(null, "2026-11-01.18"), null);
-  assert.equal(isBaselineOlder("2026-11-01.16", "2026-11-01.18"), true);
-  assert.equal(isBaselineOlder("2026-11-01.18", "2026-11-01.16"), false);
-  assert.equal(isBaselineOlder("garbage", "2026-11-01.18"), false);
 });

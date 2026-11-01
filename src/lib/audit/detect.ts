@@ -1064,18 +1064,26 @@ function rollbackSettledVar(
   seenLine: number,
   preCallWrites: Set<string>,
   postCallWrites: Set<string>,
-  creditVars: Set<string>,
 ): string | null {
   const outcome = analyzeCallOutcome(fn, parsed, delta, seenLine);
   if (!outcome) return null;
+  // EVERY post-call write must be a failure-only decrement, not just the ones classified
+  // as per-user credit. A write to an aggregate counter after the call opens the same
+  // window as a write to a balance.
   for (const v of postCallWrites) {
-    if (!creditVars.has(v)) continue;
     const writes = outcome.postWrites.get(v) ?? [];
     if (writes.length === 0) return null; // flow saw a write the AST pass missed — fail closed
     if (!writes.every((w) => w.decrement && w.failureOnly)) return null;
   }
+  // The variable rolled back is the one reserved BEFORE the call. It does not have to be
+  // per-user credit: `totalEthCharityRecieved = add(x, amt)` before the call with
+  // `= sub(x, amt)` only in the failure branch is a reservation, and a reentrant call
+  // observes the reserved value whatever the variable is called.
+  //
+  // Measured 2026-11-01: Halo3D.payCharity, E25_Booster.payCharity and DailyDivs.payFund
+  // are this exact shape and scored CRITICAL, because the old creditVars gate skipped an
+  // aggregate accumulator and fell through to the generic call-then-write branch.
   for (const v of preCallWrites) {
-    if (!creditVars.has(v)) continue;
     const writes = outcome.postWrites.get(v) ?? [];
     if (writes.length > 0 && writes.every((w) => w.decrement && w.failureOnly)) return v;
   }
@@ -2860,7 +2868,7 @@ function scanContract(
       const mutexVar = mutexAroundCall(fn, contract, parsed, delta, flow.seen.line);
       const rollbackVar = creditSettledPreCall
         ? null
-        : rollbackSettledVar(fn, parsed, delta, flow.seen.line, flow.preCallWrites, flow.postCallWrites, creditVars);
+        : rollbackSettledVar(fn, parsed, delta, flow.seen.line, flow.preCallWrites, flow.postCallWrites);
       const fixedCalleeCall = flow.seen.kind === "member" && flow.seen.targetIsFixedContract === true;
 
       // Fix 38 attribution: an internal/private helper is judged

@@ -302,3 +302,61 @@ contract PriceAndAuth {
     "the leading group should be the one with a reachable finding",
   );
 });
+
+test("a reserve-then-rollback accumulator is not a critical reentrancy", () => {
+  // Measured 2026-11-01 from the archive: Halo3D.payCharity, E25_Booster.payCharity and
+  // DailyDivs.payFund — the same template in three contracts — were stored as CRITICAL
+  // reentrancy. The function increments its accumulator BEFORE the external call and
+  // decrements it only in the failure branch, so a reentrant call observes the reserved
+  // value and the entry `require(amount > 1)` fails.
+  //
+  // The rollback matcher existed but gated on `creditVars` (per-user credit), so an
+  // aggregate accumulator was skipped and the rule fell through to the generic
+  // call-then-write branch.
+  const src = `
+pragma solidity ^0.8.0;
+library SafeMath {
+    function add(uint a, uint b) internal pure returns (uint) { return a + b; }
+    function sub(uint a, uint b) internal pure returns (uint) { return a - b; }
+}
+contract Halo3D {
+    address payable giveEthCharityAddress;
+    uint256 public totalEthCharityCollected;
+    uint256 public totalEthCharityRecieved;
+    function payCharity() payable public {
+        uint256 ethToPay = SafeMath.sub(totalEthCharityCollected, totalEthCharityRecieved);
+        require(ethToPay > 1);
+        totalEthCharityRecieved = SafeMath.add(totalEthCharityRecieved, ethToPay);
+        if(!giveEthCharityAddress.call.value(ethToPay).gas(400000)()) {
+            totalEthCharityRecieved = SafeMath.sub(totalEthCharityRecieved, ethToPay);
+        }
+    }
+}`;
+  const reentrancy = analyzeInput(src, "halo").findings.filter((f) => f.detector === "reentrancy");
+  assert.equal(
+    reentrancy.filter((f) => f.severity === "critical").length,
+    0,
+    "reserving before the call and rolling back on failure is CEI, not a critical window",
+  );
+  for (const f of reentrancy) {
+    assert.ok(f.severity === "low" || f.severity === "info", `expected low/info, got ${f.severity}`);
+  }
+});
+
+test("a genuine call-then-write is still critical", () => {
+  // The control: state written AFTER the call, no failure-only rollback.
+  const src = `
+pragma solidity ^0.8.0;
+contract Vault {
+    mapping(address => uint256) public balance;
+    function withdraw() external {
+        uint256 amount = balance[msg.sender];
+        (bool ok,) = msg.sender.call{value: amount}("");
+        require(ok, "failed");
+        balance[msg.sender] = 0;
+    }
+}`;
+  const found = analyzeInput(src, "vault").findings.filter((f) => f.detector === "reentrancy");
+  assert.ok(found.length >= 1, "a post-call write must still be reported");
+  assert.ok(found.some((f) => f.severity === "critical"), "and at critical");
+});
