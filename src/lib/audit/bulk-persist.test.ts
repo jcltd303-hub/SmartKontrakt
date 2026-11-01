@@ -59,7 +59,16 @@ test("bulk writes replace dossiers atomically on replay and never write RAG chun
     assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from contract_scans")).rows[0].n, 2);
     assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from findings")).rows[0].n, 4);
     assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from rag_knowledge_chunks")).rows[0].n, 0);
-    assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from contract_scans where is_rag_indexed")).rows[0].n, 0);
+    // is_rag_indexed is gone from contract_scans (0019_drop_rag.sql). Querying it here
+    // would fail against a migrated database — the same mistake as the writer that
+    // produced "column is_rag_indexed does not exist" on every flush.
+    assert.equal(
+      (await pg.query<{ n: number }>(
+        "select count(*)::int as n from information_schema.columns where table_name='contract_scans' and column_name='is_rag_indexed'",
+      )).rows[0].n,
+      0,
+      "the dropped column must not come back",
+    );
     items[0].report.findings = [];
     await writeAuditBatch(sql, [items[0]]);
     assert.equal((await pg.query<{ n: number }>("select count(*)::int as n from findings where scan_id='one'")).rows[0].n, 0);

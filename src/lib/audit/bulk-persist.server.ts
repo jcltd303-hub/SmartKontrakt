@@ -59,8 +59,10 @@ export async function writeAuditBatch(
       ai_review_json: r.aiReview ? JSON.stringify(r.aiReview) : null,
       triage_states_json: r.triageStates ? JSON.stringify(r.triageStates) : null,
       cert_hash: r.certHash ?? null, source_origin: r.sourceOrigin ?? "pipeline",
-      // RAG eliminated 2026-10-21 (storage): new saves are never RAG-indexed.
-      is_rag_indexed: false, risk_score: r.report.riskScore,
+      // is_rag_indexed was removed from contract_scans by 0019_drop_rag.sql. Sending it
+      // here is what produced "column "is_rag_indexed" of relation "contract_scans"
+      // does not exist" on every flush — the column was dropped, the writer was not.
+      risk_score: r.report.riskScore,
       critical_count: counts.critical, high_count: counts.high, medium_count: counts.medium,
       low_count: counts.low, info_count: counts.info, summary: r.report.summary,
       inventory_json: JSON.stringify(r.report.inventory),
@@ -121,7 +123,7 @@ export async function writeAuditBatch(
       insert into contract_scans (
         id, label, input_kind, contract_name, target_address, chain_id, compiler_version,
         proxy_info_json, probes_json, ai_review_json, triage_states_json, cert_hash,
-        source_origin, is_rag_indexed, risk_score, critical_count, high_count, medium_count,
+        source_origin, risk_score, critical_count, high_count, medium_count,
         low_count, info_count, summary, inventory_json, ai_narrative, ai_status, unparsed,
         balance_wei, value_usd, value_json, abi_json, abi_source, analyzer_version,
         poc_status, poc_logs, poc_duration_ms, poc_run_at, resnet_json, codehash
@@ -129,7 +131,7 @@ export async function writeAuditBatch(
         id text, label text, input_kind text, contract_name text, target_address text,
         chain_id text, compiler_version text, proxy_info_json text, probes_json text,
         ai_review_json text, triage_states_json text, cert_hash text, source_origin text,
-        is_rag_indexed boolean, risk_score integer, critical_count integer, high_count integer,
+        risk_score integer, critical_count integer, high_count integer,
         medium_count integer, low_count integer, info_count integer, summary text,
         inventory_json text, ai_narrative text, ai_status text, unparsed boolean,
         balance_wei text, value_usd numeric, value_json text, abi_json text, abi_source text,
@@ -142,8 +144,7 @@ export async function writeAuditBatch(
         compiler_version=excluded.compiler_version, proxy_info_json=excluded.proxy_info_json,
         probes_json=excluded.probes_json, ai_review_json=excluded.ai_review_json,
         triage_states_json=excluded.triage_states_json, cert_hash=excluded.cert_hash,
-        source_origin=excluded.source_origin, is_rag_indexed=excluded.is_rag_indexed,
-        risk_score=excluded.risk_score, critical_count=excluded.critical_count,
+        source_origin=excluded.source_origin, risk_score=excluded.risk_score, critical_count=excluded.critical_count,
         high_count=excluded.high_count, medium_count=excluded.medium_count,
         low_count=excluded.low_count, info_count=excluded.info_count, summary=excluded.summary,
         inventory_json=excluded.inventory_json, ai_narrative=excluded.ai_narrative,

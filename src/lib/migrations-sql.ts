@@ -82,7 +82,9 @@ alter table contract_scans add column if not exists ai_review_json text;
 alter table contract_scans add column if not exists triage_states_json text;
 alter table contract_scans add column if not exists cert_hash text;
 alter table contract_scans add column if not exists source_origin text default 'workbench';
-alter table contract_scans add column if not exists is_rag_indexed boolean default false;
+-- is_rag_indexed: NOT added. RAG was removed on 2026-10-21 and 0019_drop_rag.sql
+-- drops the column; re-adding it here would make this migrator disagree with the
+-- migrations/ directory and resurrect a column nothing reads.
 
 create index if not exists contract_scans_target_idx
   on contract_scans (target_address);
