@@ -227,7 +227,8 @@ test("the live-state report records the code hash it describes", async () => {
   const r = await gatherLiveState("0x1111111111111111111111111111111111111111", "ethereum",
     { abi: [{ type: "function", name: "paused", inputs: [], outputs: [{ type: "bool" }], stateMutability: "view" }] as any },
     { codeHash: "abc123", callFn: async () => ({ success: true, result: "0x" + "0".repeat(64) }) } as any);
-  assert.equal(r.codeHash, "abc123");
+  assert.ok(r, "the probe ran");
+  assert.equal(r!.codeHash, "abc123");
 });
 
 test("no code hash is recorded as null, not invented", async () => {

@@ -134,12 +134,9 @@ test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
   // Update this constant ONLY together with ANALYZER_BASELINE. Both move, or neither.
   const DETECTOR_SOURCE_DIGEST = "95cdb002a557";
 
-  if (DETECTOR_SOURCE_DIGEST === "__PLACEHOLDER__") {
-    assert.fail(
-      `detector source digest is ${digest} — set DETECTOR_SOURCE_DIGEST to it in the same ` +
-        `commit that bumps ANALYZER_BASELINE`,
-    );
-  }
+  // No placeholder branch: the digest is pinned, so a comparison against a sentinel is
+  // dead code and TS rightly calls it unintentional. When the sources change, the
+  // assertion below fails and names both values — that is the whole mechanism.
   assert.equal(
     digest,
     DETECTOR_SOURCE_DIGEST,
