@@ -1,4 +1,20 @@
 import { writeAuditBatch } from "./bulk-persist.server";
+import { inheritDispositionsForScans } from "./code-reuse.server.ts";
+
+/**
+ * Codehash verdict cache, applied after a save: findings on a scan whose
+ * runtime code matches a verdict-bearing sibling inherit its auditor
+ * dispositions (code-reuse.server.ts). Fail-soft by design — inheritance
+ * is an accelerant, never a save dependency; a failure (a pre-0021
+ * database, a raced delete) leaves the save exactly as it was.
+ */
+async function inheritAfterSave(sql: Sql, ids: string[]): Promise<void> {
+  try {
+    await inheritDispositionsForScans(sql, ids);
+  } catch {
+    // never fail a save on inheritance
+  }
+}
 import { getSql, getDbConnectionState, type DbConnectionState } from "@/lib/db";
 import type { Sql } from "../sql-client.ts";
 import {
@@ -115,6 +131,7 @@ type ScanRow = {
   cert_hash?: string | null;
   source_origin?: string | null;
   analyzer_version?: string | null;
+  is_rag_indexed?: boolean | null;
   risk_score: number;
   critical_count: number;
   high_count: number;
@@ -288,7 +305,7 @@ export async function loadScan(id: string): Promise<StoredScan | null> {
   const rows = await sql<ScanRow>`
     select id, label, input_kind, contract_name, target_address, chain_id,
            compiler_version, proxy_info_json, probes_json, ai_review_json,
-           triage_states_json, cert_hash, source_origin,
+           triage_states_json, cert_hash, source_origin, is_rag_indexed,
            risk_score, critical_count, high_count, medium_count, low_count, info_count,
            balance_wei, value_usd, abi_json, abi_source, analyzer_version,
            summary, inventory_json, ai_narrative, ai_status, unparsed,
@@ -514,6 +531,7 @@ export async function saveComprehensiveRecord(input: {
   };
   const sql = await getSql();
   await writeAuditBatch(sql, [record], { maxBytes: Infinity });
+  await inheritAfterSave(sql, [id]);
 
   const stored = await loadScan(id);
   if (!stored) throw new Error("The comprehensive audit record was written but could not be read back.");
@@ -550,7 +568,9 @@ export async function saveBatchComprehensiveRecords(
   // AI would blow past the serverless function timeout and stall the flush at
   // 0 records. The pipeline runs the AI second pass per item (client-side,
   // via runSecondPassFn) before enqueue, so the bulk save stays fast.
-  return writeAuditBatch(sql, records);
+  const result = await writeAuditBatch(sql, records);
+  await inheritAfterSave(sql, result.ids);
+  return result;
 }
 
 export async function secondPass(report: Report, body: string): Promise<{ text: string | null; status: Report["aiStatus"] }> {

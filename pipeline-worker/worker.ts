@@ -146,7 +146,7 @@ const { secondPass } = await import("../src/lib/audit/persist.server.ts");
 const { newLlmHealth, recordLlm, llmVerdict } = await import("./llm-health.ts");
 const { implementationItems, dedupeKey } = await import("./proxy-follow.ts");
 const { applyShard, parseShard } = await import("./shard.ts");
-const { codeHashOf, findSiblingScan } = await import("../src/lib/audit/code-reuse.server.ts");
+const { codeHashOf, findSiblingScan, inheritDispositionsForScans } = await import("../src/lib/audit/code-reuse.server.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
 const { getSql, getDbConnectionState } = await import("../src/lib/db.ts");
@@ -423,6 +423,20 @@ async function doFlush(): Promise<void> {
       baseDelayMs: 2000,
       retryOn: () => true,
     });
+    // Codehash verdict cache: clones of a verdict-bearing sibling
+    // inherit its dispositions. Fail-soft — inheritance never fails a
+    // flush that already landed.
+    try {
+      const inherited = await inheritDispositionsForScans(
+        sql,
+        batch.map((r) => r.id!).filter(Boolean),
+      );
+      if (inherited > 0) {
+        console.log(`[worker] inherited ${inherited} disposition(s) from identical-code siblings`);
+      }
+    } catch {
+      // see above
+    }
     status.lastFlushAt = new Date().toISOString();
     console.log(`[worker] flushed ${batch.length} records to Supabase`);
   } catch (err) {

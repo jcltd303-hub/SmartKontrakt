@@ -33,6 +33,9 @@ async function database() {
     // 0018: writeAuditBatch writes contract_scans.resnet_json — same
     // harness-schema requirement as 0016.
     "0018_resnet_result.sql",
+    // 0021: writeAuditBatch writes contract_scans.codehash — same
+    // harness-schema requirement as 0016.
+    "0021_codehash.sql",
   ]) {
     await pg.exec(await readFile(new URL(`../../../migrations/${f}`, import.meta.url), "utf8"));
   }
