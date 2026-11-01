@@ -82,10 +82,12 @@ export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions
  * (nvidia/nemotron-3-ultra-550b-a55b:free) absorbs an id that gets withdrawn or gated.
  */
 export const OPENROUTER_MODELS = {
-  // Paid, and cheap: $0.008/M in, $0.062/M out. The free nemotron wrote a long threat
-  // model and truncated before closing the JSON on every run, which starved the PoC of
-  // test code. A model that follows the output contract is worth 8 thousandths of a cent.
-  review: "deepseek/deepseek-v4.1-flash",
+  // Back on nemotron 2026-11-01: deepseek-v4.1-flash answered in reasoning_content and
+  // returned an empty content field, which read as "no message content" on both attempts.
+  // The extraction now reads both fields, but this purpose stays on the model that
+  // demonstrably returns a parseable narrative — its only failure was the token cap, and
+  // NARRATIVE_MAX_TOKENS is 8000 now.
+  review: "nvidia/nemotron-3-ultra-550b-a55b:free",
   code: "deepseek/deepseek-v4.1-flash",
   json: "nvidia/nemotron-3-ultra-550b-a55b:free",
   // PoC chat. `chat` is a real purpose — poc-chat.server.ts defaults to it — but it was
@@ -1114,11 +1116,22 @@ export async function generateAiSecurityReview(
 
         const data = (await response.json()) as {
           choices?: Array<{
-            message?: { content?: string | null };
+            message?: {
+              content?: string | null;
+              /** Reasoning models (DeepSeek V4.x, several others) put the answer here. */
+              reasoning_content?: string | null;
+              reasoning?: string | null;
+            };
             finish_reason?: string | null;
           }>;
         };
-        const content = data.choices?.[0]?.message?.content;
+        // A reasoning model returns an empty `content` and puts the whole reply in
+        // `reasoning_content`. Reading only `content` made those models look like they
+        // returned nothing at all — measured 2026-11-01, deepseek-v4.1-flash produced
+        // "OpenRouter returned no message content" on both attempts while answering
+        // perfectly well in the other field.
+        const message = data.choices?.[0]?.message;
+        const content = message?.content || message?.reasoning_content || message?.reasoning || "";
         if (!content) {
           if (!spentEmptyRetry) {
             spentEmptyRetry = true;

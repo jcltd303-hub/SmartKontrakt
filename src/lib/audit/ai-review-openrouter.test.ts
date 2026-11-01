@@ -69,20 +69,18 @@ test("per-purpose defaults are the 2026-10-25 live-catalog picks", () => {
   // frontier coder (262K ctx, 32,768 max completion); Nemotron 3 Super —
   // the schema-native json candidate — was passed over because its single
   // endpoint was flagged (status -5) while both picked models sat at 0.
-  // review moved to a paid model on 2026-11-01: the free nemotron wrote a long threat
-  // model and hit finish_reason "length" before closing the JSON on every run, so the
-  // reply never parsed and the PoC had no test code.
-  assert.equal(OPENROUTER_MODELS.review, "deepseek/deepseek-v4.1-flash");
+  assert.equal(OPENROUTER_MODELS.review, "nvidia/nemotron-3-ultra-550b-a55b:free");
   assert.equal(OPENROUTER_MODELS.code, "deepseek/deepseek-v4.1-flash");
   assert.equal(OPENROUTER_MODELS.json, "nvidia/nemotron-3-ultra-550b-a55b:free");
   assert.equal(DEFAULT_OPENROUTER_MODEL, OPENROUTER_MODELS.review);
   // Not every default is free any more: `code` is a paid model because PoC generation
   // needs to actually emit a Foundry test, and the free tier returned empty replies.
-  // Only json stays on the free tier. review and code are paid: both must return a
-  // machine-readable reply, and the free models did not.
+  // review and json stay free. review moved to deepseek for an hour on 2026-11-01 and came
+  // back: that model answers in reasoning_content with an empty content field. `code` is
+  // paid because PoC generation must emit a real Foundry test.
+  assert.ok(OPENROUTER_MODELS.review.endsWith(":free"), "review stays free");
   assert.ok(OPENROUTER_MODELS.json.endsWith(":free"), "json stays free");
   assert.ok(!OPENROUTER_MODELS.code.endsWith(":free"), "code is deliberately paid");
-  assert.ok(!OPENROUTER_MODELS.review.endsWith(":free"), "review is paid — it must close its JSON");
 });
 
 test("extractJsonContent parses raw JSON", () => {
@@ -961,4 +959,53 @@ test("poc chat resolves a model end to end", () => {
   const { model } = resolveOpenRouterConfig({}, "chat" as never);
   assert.equal(typeof model, "string");
   assert.ok(model.length > 0);
+});
+
+test("a reasoning model's reply is read from reasoning_content", async () => {
+  // Measured 2026-11-01: deepseek-v4.1-flash returned an empty `content` and put the whole
+  // answer in `reasoning_content`, so the review reported "OpenRouter returned no message
+  // content" on both attempts while the model had answered perfectly well.
+  const payload = {
+    choices: [
+      {
+        message: {
+          content: "",
+          reasoning_content:
+            '{"threatModelReport":"the target mints without backing","economicRiskSummary":"value at risk is the pool"}',
+        },
+        finish_reason: "stop",
+      },
+    ],
+  };
+  const realFetch = globalThis.fetch;
+  const realKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = "sk-test-not-a-real-key";
+  let called = 0;
+  globalThis.fetch = (async () => {
+    called++;
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+
+  try {
+    const out = await generateAiSecurityReview(
+      "T",
+      "pragma solidity ^0.8.0; contract T { function f() public {} }",
+      [{ id: "T:0", severity: "high", detector: "reentrancy", title: "x", summary: "y", locationFn: "f", locationLine: 1 } as never],
+      undefined,
+      undefined,
+      null,
+    );
+    assert.ok(called >= 1, "a request was actually made");
+    assert.ok(
+      out.threatModelReport && out.threatModelReport.length > 0,
+      "the narrative parsed out of reasoning_content",
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+    if (realKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = realKey;
+  }
 });
