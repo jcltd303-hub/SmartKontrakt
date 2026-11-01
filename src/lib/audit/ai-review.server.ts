@@ -82,7 +82,10 @@ export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions
  * (nvidia/nemotron-3-ultra-550b-a55b:free) absorbs an id that gets withdrawn or gated.
  */
 export const OPENROUTER_MODELS = {
-  review: "nvidia/nemotron-3-ultra-550b-a55b:free",
+  // Paid, and cheap: $0.008/M in, $0.062/M out. The free nemotron wrote a long threat
+  // model and truncated before closing the JSON on every run, which starved the PoC of
+  // test code. A model that follows the output contract is worth 8 thousandths of a cent.
+  review: "deepseek/deepseek-v4.1-flash",
   code: "deepseek/deepseek-v4.1-flash",
   json: "nvidia/nemotron-3-ultra-550b-a55b:free",
   // PoC chat. `chat` is a real purpose — poc-chat.server.ts defaults to it — but it was
@@ -623,7 +626,13 @@ Format your response as ONLY the complete Solidity test file inside exactly one 
  * max_tokens is a cap, not a target — a reply that completes
  * naturally is unaffected by either value.
  */
-export const NARRATIVE_MAX_TOKENS = 4000;
+// 4000 was too small for the free-tier narrative models: they write a full threat-model
+// report before closing the JSON and hit finish_reason "length" every time, so the reply
+// never parsed and the PoC fell back to a template with no test code. Measured 2026-11-01:
+// "reply truncated at max_tokens 4000 (finish_reason "length")" on every run.
+//
+// max_tokens is a cap, not a target — a concise reply still costs what it costs.
+export const NARRATIVE_MAX_TOKENS = 8000;
 export const CODE_MAX_TOKENS = 16000;
 
 /**

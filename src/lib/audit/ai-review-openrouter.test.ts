@@ -69,15 +69,20 @@ test("per-purpose defaults are the 2026-10-25 live-catalog picks", () => {
   // frontier coder (262K ctx, 32,768 max completion); Nemotron 3 Super —
   // the schema-native json candidate — was passed over because its single
   // endpoint was flagged (status -5) while both picked models sat at 0.
-  assert.equal(OPENROUTER_MODELS.review, "nvidia/nemotron-3-ultra-550b-a55b:free");
+  // review moved to a paid model on 2026-11-01: the free nemotron wrote a long threat
+  // model and hit finish_reason "length" before closing the JSON on every run, so the
+  // reply never parsed and the PoC had no test code.
+  assert.equal(OPENROUTER_MODELS.review, "deepseek/deepseek-v4.1-flash");
   assert.equal(OPENROUTER_MODELS.code, "deepseek/deepseek-v4.1-flash");
   assert.equal(OPENROUTER_MODELS.json, "nvidia/nemotron-3-ultra-550b-a55b:free");
   assert.equal(DEFAULT_OPENROUTER_MODEL, OPENROUTER_MODELS.review);
   // Not every default is free any more: `code` is a paid model because PoC generation
   // needs to actually emit a Foundry test, and the free tier returned empty replies.
-  assert.ok(OPENROUTER_MODELS.review.endsWith(":free"), "review stays free");
+  // Only json stays on the free tier. review and code are paid: both must return a
+  // machine-readable reply, and the free models did not.
   assert.ok(OPENROUTER_MODELS.json.endsWith(":free"), "json stays free");
   assert.ok(!OPENROUTER_MODELS.code.endsWith(":free"), "code is deliberately paid");
+  assert.ok(!OPENROUTER_MODELS.review.endsWith(":free"), "review is paid — it must close its JSON");
 });
 
 test("extractJsonContent parses raw JSON", () => {
@@ -508,7 +513,9 @@ test("generateAiSecurityReview (split): a non-timeout failure on call A is NOT r
 // ---------------------------------------------------------------
 
 test("budget pins: each split call carries exactly one artifact", () => {
-  assert.equal(NARRATIVE_MAX_TOKENS, 4000);
+  // Raised from 4000 on 2026-11-01: every free-tier narrative reply hit finish_reason
+  // "length" before closing the JSON, so the review never parsed and the PoC had no code.
+  assert.equal(NARRATIVE_MAX_TOKENS, 8000);
   assert.equal(CODE_MAX_TOKENS, 16000);
 });
 
@@ -553,7 +560,7 @@ test("parseNarrativeReply: a complete object passes; a missing field throws the 
       assert.ok(err instanceof ReviewReplyError);
       assert.equal(err.truncated, true);
       assert.equal(err.maxTokens, NARRATIVE_MAX_TOKENS);
-      assert.match(err.message, /truncated at max_tokens 4000/);
+      assert.match(err.message, /truncated at max_tokens 8000/);
       return true;
     },
   );
@@ -687,7 +694,7 @@ test("generateAiSecurityReview (split): a truncated narrative reply is named as 
   }
   const retryLine = warn.lines.find((l) => l.includes("narrative reply unusable"));
   assert.ok(retryLine, `expected a shape-retry line, got: ${warn.lines.join(" | ")}`);
-  assert.match(retryLine!, /truncated at max_tokens 4000/);
+  assert.match(retryLine!, /truncated at max_tokens 8000/);
   assert.match(retryLine!, /finish_reason "length"/);
 });
 
