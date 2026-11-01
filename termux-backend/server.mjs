@@ -290,9 +290,38 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls, t
     let lastOutput = "";
     let lastRpc = null;
     const candidates = candidateRpcs(rpcUrl, rpcUrls);
+    // Solc resolution.
+    //
+    // foundry.toml pins solc = "0.8.24" with auto_detect_solc = false. On Termux the
+    // platform is linux-aarch64, and Solidity publishes NO aarch64 Linux binaries — so
+    // forge's download fails with
+    //   "version not found in artifacts for this platform: 0.8.24"
+    // and nothing compiles, so nothing runs, and every finding reports no_tests.
+    //
+    // Measured 2026-11-01: that was the last blocker in the PoC chain, after the
+    // --match-contract and RPC fixes.
+    //
+    // Resolution order: an explicit FOUNDRY_SOLC, then a solc on PATH (pkg install
+    // solidity, or a community aarch64 build), then whatever the toml says.
+    const localSolc = (() => {
+      const explicit = process.env.FOUNDRY_SOLC?.trim();
+      if (explicit) return explicit;
+      for (const dir of (process.env.PATH ?? "").split(":")) {
+        if (!dir) continue;
+        try {
+          const p = path.join(dir, "solc");
+          if (fsSync.existsSync(p)) return p;
+        } catch {
+          // unreadable PATH entry — keep looking
+        }
+      }
+      return null;
+    })();
+
     for (const candidate of candidates) {
       lastRpc = candidate;
       const args = ["test", "--fork-url", candidate];
+      if (localSolc) args.push("--use", localSolc);
       if (blockNumber !== undefined) args.push("--fork-block-number", String(blockNumber));
       
       // Which contract to run. The temp project's test/ holds exactly ONE file — the one
@@ -410,6 +439,33 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls, t
           }
         }
         if (testsRun === 0) {
+          // A compiler that could not be fetched is NOT "this file has no tests". They
+          // arrive as the same zero, and the worker reports both as no_tests, so the one
+          // cause that stops EVERY PoC looks identical to a per-file problem.
+          //
+          // Measured 2026-11-01: "Error: version not found in artifacts for this platform:
+          // 0.8.24" — Solidity ships no linux-aarch64 binary and Termux is aarch64, so
+          // forge could not download a compiler and nothing compiled, for every address.
+          const solcBroken =
+            /version not found in artifacts for this platform|failed to install solc|no solc (?:version|release)|solc.*not found/i.test(
+              result.output,
+            );
+          if (solcBroken) {
+            const why = localSolc
+              ? `solc at ${localSolc} was passed with --use but forge still could not compile`
+              : "no solc on PATH and none in FOUNDRY_SOLC";
+            return {
+              ok: false,
+              passed: false,
+              error:
+                `no usable solc — ${why}. foundry.toml pins solc 0.8.24 and Solidity publishes ` +
+                `no linux-aarch64 binary, so forge cannot download one. Install a compiler ` +
+                `(pkg install solidity) or point FOUNDRY_SOLC at one.`,
+              logs: tailCap(result.output),
+              durationMs,
+              rpcUrl: candidate,
+            };
+          }
           // Hollow pass: forge exited 0 having executed NOTHING (the
           // --match-contract matched no contract, or the contract has
           // no test functions). Never claim passed for zero evidence —
