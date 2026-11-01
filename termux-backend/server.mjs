@@ -312,14 +312,31 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls, t
       if (matchName) args.push("--match-contract", matchName);
       args.push("-vvv");
 
-      // Auto-substitute candidate RPC into createSelectFork / createFork if empty string
-      let candidateTestCode = testCode;
-      if (/vm\.(createSelectFork|createFork)\(\s*["']\s*["']\s*([,)])/.test(candidateTestCode)) {
-        candidateTestCode = candidateTestCode.replace(
-          /vm\.(createSelectFork|createFork)\(\s*["']\s*["']\s*([,)])/g,
-          `vm.$1("${candidate}"$2`
+      // Pin the RPC into the test source. Not just the empty-string case any more.
+      //
+      // Measured 2026-11-01: forge reported "could not instantiate forked environment with
+      // provider cloudflare-eth.com" while the candidate was ethereum.publicnode.com. The
+      // generated test asked for a NAMED endpoint ("mainnet"), foundry.toml interpolates
+      // that from ${ETH_RPC_URL}, the interpolation did not take, and Foundry fell back to
+      // its built-in mainnet default — a dead endpoint. Every fork attempt died there.
+      //
+      // Substituting the literal URL removes aliases from the equation entirely, whatever
+      // the generated code asked for.
+      let candidateTestCode = testCode
+        // vm.createFork("anything") / vm.createSelectFork('anything') / ...(string("x"))
+        // The trailing group keeps a second argument (a fork block) intact.
+        .replace(
+          /vm\.(createSelectFork|createFork)\(\s*(?:"[^"]*"|'[^']*'|string\("[^"]*"\))\s*(?=,|\))/g,
+          (_m, fn) => `vm.${fn}("${candidate}"`,
+        )
+        // vm.rpcUrl("mainnet") -> the literal URL
+        .replace(/vm\.rpcUrl\(\s*(?:"[^"]*"|'[^']*')\s*\)/g, `"${candidate}"`)
+        // vm.envOr("POC_RPC_URL", string("mainnet")) -> POC_RPC_URL still wins, but its
+        // default is now the literal URL rather than an alias.
+        .replace(
+          /vm\.envOr\(\s*"POC_RPC_URL"\s*,\s*string\(\s*"[^"]*"\s*\)\s*\)/g,
+          `vm.envOr("POC_RPC_URL", string("${candidate}"))`,
         );
-      }
       await fs.writeFile(path.join(tmp, "test", "PoC.t.sol"), candidateTestCode, "utf8");
 
       // Scrubbed child env: a test's vm.envOr must never see the parent's secrets.
