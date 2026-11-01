@@ -62,6 +62,23 @@ export type PocChatTabProps = {
   onAddFiles: (files: FileList | File[]) => void;
   onRemoveAttachment: (id: string) => void;
   models: { chat: string; code: string } | null;
+  openRouterUsage: {
+    configured: boolean;
+    key: {
+      label: string | null;
+      usage: number | null;
+      usageDaily: number | null;
+      usageWeekly: number | null;
+      usageMonthly: number | null;
+      limit: number | null;
+      limitRemaining: number | null;
+      isFreeTier: boolean | null;
+      rateLimitRequests: number | null;
+      rateLimitInterval: string | null;
+    } | null;
+    keyError: string | null;
+    probe: { ok: boolean; model: string; latencyMs: number | null; error: string | null };
+  } | null;
   contextEstimate: { tokens: number; turns: number };
   savedChats: SavedPocChatSummary[];
   currentChatId: string | null;
@@ -72,6 +89,48 @@ export type PocChatTabProps = {
   onNewChat: () => void;
   onExport: () => void;
 };
+
+type OpenRouterUsageProp = PocChatTabProps["openRouterUsage"];
+
+/**
+ * One-line rendering of the server's OpenRouter ledger + probe
+ * (getOpenRouterUsageFn). Every number is the key's own /auth/key
+ * report; a missing half is shown as unavailable rather than guessed.
+ */
+function formatOpenRouterUsage(usage: NonNullable<OpenRouterUsageProp>): string {
+  if (!usage.configured) {
+    return "OpenRouter: no API key configured on the server — AI calls fall back to templates.";
+  }
+  const parts: string[] = ["OpenRouter:"];
+  if (usage.key) {
+    const k = usage.key;
+    if (k.usage !== null) {
+      parts.push(
+        `$${k.usage.toFixed(2)} used` +
+          (k.usageDaily !== null ? ` ($${k.usageDaily.toFixed(2)} today)` : ""),
+      );
+    }
+    if (k.limit !== null) {
+      parts.push(
+        `$${(k.limitRemaining ?? 0).toFixed(2)} of $${k.limit.toFixed(2)} credit left`,
+      );
+    }
+    parts.push(k.isFreeTier ? "free tier" : "funded");
+    if (k.rateLimitRequests !== null) {
+      parts.push(
+        `limit ${k.rateLimitRequests} req${k.rateLimitInterval ? `/${k.rateLimitInterval}` : ""}`,
+      );
+    }
+  } else {
+    parts.push(`usage unavailable${usage.keyError ? ` (${usage.keyError})` : ""}`);
+  }
+  parts.push(
+    usage.probe.ok
+      ? `test call ok${usage.probe.latencyMs !== null ? ` in ${(usage.probe.latencyMs / 1000).toFixed(1)}s` : ""}`
+      : `test call FAILED${usage.probe.error ? `: ${usage.probe.error}` : ""}`,
+  );
+  return parts.join(" · ");
+}
 
 export function PocChatTab({
   messages,
@@ -93,6 +152,7 @@ export function PocChatTab({
   onAddFiles,
   onRemoveAttachment,
   models,
+  openRouterUsage,
   contextEstimate,
   savedChats,
   currentChatId,
@@ -198,6 +258,11 @@ export function PocChatTab({
           context window: ≈{contextEstimate.tokens.toLocaleString()} tokens (system + last{" "}
           {contextEstimate.turns} turn{contextEstimate.turns === 1 ? "" : "s"}, 40 kept)
         </p>
+        {openRouterUsage ? (
+          <p className="text-[11px] font-mono text-[#a39886]">
+            {formatOpenRouterUsage(openRouterUsage)}
+          </p>
+        ) : null}
         {savedOpen && (
           <div className="border border-[#3a3428] rounded-lg bg-[#12110e] p-2 flex flex-col gap-1 max-h-56 overflow-y-auto">
             {savedChats.length === 0 && (

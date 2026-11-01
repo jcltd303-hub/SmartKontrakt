@@ -7,6 +7,7 @@ import type { AiSecurityReview } from "@/lib/audit/ai-review.server";
 import {
   deletePocChatFn,
   getPocChatFn,
+  getOpenRouterUsageFn,
   getPocChatModels,
   listPocChatsFn,
   requestAiReview,
@@ -234,6 +235,9 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
   const [pocChatId, setPocChatId] = useState<string | null>(null);
   const [pocChatSavedList, setPocChatSavedList] = useState<SavedPocChatSummary[]>([]);
   const [pocChatModels, setPocChatModels] = useState<{ chat: string; code: string } | null>(null);
+  const [openRouterUsage, setOpenRouterUsage] = useState<Awaited<
+    ReturnType<typeof getOpenRouterUsageFn>
+  > | null>(null);
   const [pocChatSaving, setPocChatSaving] = useState(false);
   // Per-finding PoC runs (Run button on each finding's Attack Contract
   // block, under findings). One run at a time across all findings:
@@ -1028,6 +1032,12 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
         if (!cancelled) setPocChatModels(models);
       } catch {
         /* labels are best-effort */
+      }
+      try {
+        const usage = await getOpenRouterUsageFn();
+        if (!cancelled) setOpenRouterUsage(usage);
+      } catch {
+        /* the usage line is best-effort — the chat itself still works */
       }
       try {
         const list = await listPocChatsFn({ data: { limit: 30 } });
@@ -2173,6 +2183,7 @@ export function useWorkbenchController(initialScans: ScanSummary[]) {
     pocChatId,
     pocChatSavedList,
     pocChatModels,
+    openRouterUsage,
     pocChatSaving,
     saveCurrentPocChat,
     loadSavedPocChat,

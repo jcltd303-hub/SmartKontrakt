@@ -195,6 +195,19 @@ export const getPocChatModels = createServerFn({ method: "POST" }).handler(async
 });
 
 /**
+ * OpenRouter usage + liveness: the key's /auth/key ledger (usage,
+ * limit, remaining, free-tier classification) and a one-token probe
+ * completion proving this server can make calls right now. The key
+ * itself never leaves the server — see openrouter-usage.server.ts.
+ */
+export const getOpenRouterUsageFn = createServerFn({ method: "POST" }).handler(async () => {
+  const { assertAdminToken } = await import("../admin-guard.server");
+  assertAdminToken();
+  const { getOpenRouterUsage } = await import("./openrouter-usage.server");
+  return getOpenRouterUsage(process.env);
+});
+
+/**
  * Saved PoC chats (migration 0019). Save is an explicit click in the
  * panel; load replaces the panel's conversation; delete removes one
  * saved chat by id. Validators live in poc-chat-clean.ts; SQL lives

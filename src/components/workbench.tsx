@@ -84,6 +84,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
     pocChatId,
     pocChatSavedList,
     pocChatModels,
+    openRouterUsage,
     pocChatSaving,
     saveCurrentPocChat,
     loadSavedPocChat,
@@ -256,6 +257,7 @@ export function Workbench({ initialScans = [] }: WorkbenchProps) {
             onAddFiles={addPocChatFiles}
             onRemoveAttachment={removePocChatAttachment}
             models={pocChatModels}
+            openRouterUsage={openRouterUsage}
             contextEstimate={pocChatContextEstimate}
             savedChats={pocChatSavedList}
             currentChatId={pocChatId}
