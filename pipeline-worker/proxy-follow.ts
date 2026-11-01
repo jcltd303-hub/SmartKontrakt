@@ -42,16 +42,22 @@ export function dedupeKey(chainId: string, address: string): string {
  *                  the caller decides when a key becomes "taken"
  */
 export function implementationItems(
-  proxyInfo: { implementations?: unknown } | null | undefined,
+  // ProxyAnalysis calls it `implementationAddress`, singular. This parameter used to
+  // declare `implementations`, so the lookup read a property the object does not have:
+  // Array.isArray(undefined) is false, the function returned [] every time, and no
+  // implementation was ever queued. That is the whole reason 47.8 ETH sat behind proxies
+  // scored "Clean". Both spellings are accepted now so neither shape can silently miss.
+  proxyInfo: { implementations?: unknown; implementationAddress?: unknown } | null | undefined,
   chainId: string,
   seen: ReadonlySet<string>,
   runtimeBytecode?: string | null,
 ): FollowedItem[] {
-  // Union of what the registry reports and what the code says. The registry is often
+  // Union of what the resolver reports and what the code says. The resolver is often
   // empty for EIP-1167 clones; the bytecode never is.
-  const raw: unknown[] = Array.isArray(proxyInfo?.implementations)
-    ? [...(proxyInfo!.implementations as unknown[])]
-    : [];
+  const raw: unknown[] = [];
+  if (Array.isArray(proxyInfo?.implementations)) raw.push(...proxyInfo!.implementations);
+  const single = proxyInfo?.implementationAddress;
+  if (typeof single === "string" && single.trim()) raw.push(single);
   for (const addr of implementationsFromBytecode(runtimeBytecode)) raw.push(addr);
   if (raw.length === 0) return [];
   const out: FollowedItem[] = [];

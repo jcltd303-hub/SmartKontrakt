@@ -105,3 +105,24 @@ test("a storage word yields an address, and a zero word yields null", () => {
   assert.equal(addressFromStorageWord(`0x${"0".repeat(64)}`), null);
   assert.equal(addressFromStorageWord(null), null);
 });
+
+test("the resolver's singular implementationAddress is followed too", () => {
+  // ProxyAnalysis declares `implementationAddress`, singular. The parameter here used to
+  // declare `implementations`, so Array.isArray(undefined) was false and this function
+  // returned [] for every real proxy — the reason 47.8 ETH sat behind shells scored
+  // "Clean". A type checker would have caught it; the worker was outside tsconfig.
+  const impl = "1234567890abcdef1234567890abcdef12345678";
+  const fromResolver = implementationItems(
+    { implementationAddress: `0x${impl}` },
+    "ethereum",
+    new Set(),
+    null,
+  );
+  assert.equal(fromResolver.length, 1);
+  assert.equal(fromResolver[0]!.address, `0x${impl}`);
+
+  // Null, zero and junk still yield nothing.
+  assert.equal(implementationItems({ implementationAddress: null }, "ethereum", new Set(), null).length, 0);
+  assert.equal(implementationItems({ implementationAddress: "0x0" }, "ethereum", new Set(), null).length, 0);
+  assert.equal(implementationItems({}, "ethereum", new Set(), null).length, 0);
+});

@@ -572,7 +572,7 @@ async function runLoop(): Promise<void> {
         proxyInfo,
         item.chainId,
         queuedKeys,
-        report.runtimeBytecode?.code ?? null,
+        result.report.runtimeBytecode?.code ?? null,
       );
       if (followed.length > 0) {
         for (const impl of followed) {

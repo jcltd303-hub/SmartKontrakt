@@ -628,9 +628,12 @@ export async function runAutoPocForEntry(
       // until now they only existed in the backend's terminal. Print them here too: "No
       // tests match the provided pattern" and "(0 total tests)" are different bugs, and a
       // 40-character tail distinguishes them without a second window.
+      // Pulled out before the narrowing point: `lastRun` is declared `| null` and
+      // assigned in a nested branch, so TS sees `never` here and refuses the property.
+      const runLogs: string | null = lastRun ? (lastRun as { logs?: string }).logs ?? null : null;
       const forgeWhy =
-        savedStatus === "no_tests" && lastRun?.logs
-          ? ` — forge: ${String(lastRun.logs).replace(/\s+/g, " ").slice(-220)}`
+        savedStatus === "no_tests" && runLogs
+          ? ` — forge: ${runLogs.replace(/\s+/g, " ").slice(-220)}`
           : "";
       deps.log(
         `[worker] auto-poc ${input.address} ${finding.detector}: ${savedStatus}${sharedSave ? " (shared run)" : ""}${forgeWhy}`,
