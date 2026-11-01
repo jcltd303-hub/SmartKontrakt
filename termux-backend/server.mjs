@@ -295,13 +295,21 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls, t
       const args = ["test", "--fork-url", candidate];
       if (blockNumber !== undefined) args.push("--fork-block-number", String(blockNumber));
       
-      // Auto-detect test contract name (e.g. PoC, CrowdsaleExploitTest, etc.)
-      const contractMatch = testCode.match(/contract\s+([A-Za-z0-9_]+)\s+is\s+[^{]*\bTest\b/);
-      if (contractMatch && contractMatch[1]) {
-        args.push("--match-contract", contractMatch[1]);
-      } else {
-        args.push("--match-contract", "PoC");
-      }
+      // Which contract to run. The temp project's test/ holds exactly ONE file — the one
+      // written below — so a wrong name can only ever exclude the tests we want. Measured
+      // 2026-10-31/11-01: every run returned ok=true passed=false in 46-204 ms because
+      // --match-contract named something the file does not declare, and forge exits 0
+      // having run nothing.
+      //
+      // Preference order, most reliable first:
+      //   1. a contract that inherits Test  (what forge itself needs)
+      //   2. the LAST contract in the file  (the harness is conventionally last)
+      //   3. no filter at all               (one file, nothing else to match)
+      const inheritsTest = testCode.match(/contract\s+([A-Za-z0-9_]+)\s+is\s+[^{]*\bTest\b/);
+      const allContracts = [...testCode.matchAll(/\bcontract\s+([A-Za-z0-9_]+)/g)].map((m) => m[1]);
+      const matchName =
+        inheritsTest?.[1] ?? (allContracts.length > 0 ? allContracts[allContracts.length - 1] : null);
+      if (matchName) args.push("--match-contract", matchName);
       args.push("-vvv");
 
       // Auto-substitute candidate RPC into createSelectFork / createFork if empty string
@@ -336,7 +344,7 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls, t
         POLYGON_RPC_URL: candidate,
         BSC_RPC_URL: candidate,
       };
-      const result = await runWithTimeout("forge", args, {
+      let result = await runWithTimeout("forge", args, {
         cwd: tmp,
         timeoutMs: FORGE_TIMEOUT_MS,
         env: childEnv,
@@ -363,7 +371,27 @@ async function runForgeTest({ address, testCode, blockNumber, rpcUrl, rpcUrls, t
         };
       }
       if (result.code === 0) {
-        const testsRun = parseForgeTestsRun(result.output);
+        let testsRun = parseForgeTestsRun(result.output);
+        if (testsRun === 0 && matchName) {
+          // The filter matched nothing. Retry once unfiltered: the file is the only test
+          // source in this project, so dropping the filter cannot run someone else's
+          // tests, and it converts a silent zero into either a real result or a real
+          // error. Without this, one wrong name costs the entire PoC stage.
+          const bareArgs = args.filter((a, i) => a !== "--match-contract" && args[i - 1] !== "--match-contract");
+          const bare = await runWithTimeout("forge", bareArgs, {
+            cwd: tmp,
+            timeoutMs: TEST_TIMEOUT_MS,
+            env: childEnv,
+          });
+          if (bare.code === 0) {
+            const bareRun = parseForgeTestsRun(bare.output);
+            if (bareRun && bareRun > 0) {
+              console.log(`[poc] --match-contract ${matchName} matched nothing; ran unfiltered and found ${bareRun} test(s)`);
+              result = bare;
+              testsRun = bareRun;
+            }
+          }
+        }
         if (testsRun === 0) {
           // Hollow pass: forge exited 0 having executed NOTHING (the
           // --match-contract matched no contract, or the contract has
