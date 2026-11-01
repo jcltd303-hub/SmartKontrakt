@@ -105,7 +105,7 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // flavors and restores the baseline-ordering helpers the second push
   // overwrote, plus the scopeSourcifyFiles extraction for the frozen
   // bundle regression corpus.
-  assert.equal(ANALYZER_BASELINE, "2026-11-01.20");
+  assert.equal(ANALYZER_BASELINE, "2026-11-01.21");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });
@@ -145,7 +145,7 @@ test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
   const digest = h.digest("hex").slice(0, 12);
 
   // Update this constant ONLY together with ANALYZER_BASELINE. Both move, or neither.
-  const DETECTOR_SOURCE_DIGEST = "e906605a552e";
+  const DETECTOR_SOURCE_DIGEST = "f1d497f8d953";
 
   // No placeholder branch: the digest is pinned, so a comparison against a sentinel is
   // dead code and TS rightly calls it unintentional. When the sources change, the

@@ -3898,7 +3898,34 @@ require(ok, "transfer failed");`,
             snippet: snippet(parsed, call.line + delta, delta),
           }));
         } else {
-          const severity: Severity = call.targetIsParam ? "critical" : call.targetIsConst ? "medium" : "high";
+          // A delegatecall target that is neither a parameter nor a constant, but is a LOCAL
+          // bound from a storage/registry getter and verified to have code, is the standard
+          // proxy pattern — the caller does not choose it:
+          //
+          //   address delegateContract = useLatestDelegate
+          //       ? getContractAddress("rocketMinipoolDelegate") : rocketMinipoolDelegate;
+          //   require(contractExists(delegateContract), "Delegate contract does not exist");
+          //   delegateContract.delegatecall(_input);
+          //
+          // Measured 2026-11-01: RocketMinipool.fallback is 61 of the 67 delegatecall findings
+          // in the archive, all this exact shape, across 61 minipool addresses. A malicious
+          // registry entry is a protocol compromise, not a caller exploit, so this is info —
+          // recorded, not claimed as a vulnerability.
+          const registryTarget =
+            !call.targetIsParam &&
+            !call.targetIsConst &&
+            !!call.target &&
+            /^[A-Za-z_]\w*$/.test(call.target) &&
+            new RegExp(
+              `contractExists\\s*\\(\\s*${call.target}\\s*\\)|${call.target}\\s*\\.code\\.length`,
+            ).test(fn.source);
+          const severity: Severity = call.targetIsParam
+            ? "critical"
+            : call.targetIsConst
+              ? "medium"
+              : registryTarget
+                ? "info"
+                : "high";
           let finding = make({
             severity,
             swc: "SWC-112",

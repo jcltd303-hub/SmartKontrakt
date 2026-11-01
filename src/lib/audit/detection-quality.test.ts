@@ -405,3 +405,41 @@ contract Vault {
   const found = analyzeInput(src, "vault").findings.filter((f) => f.detector === "arbitrary-dispatch-call");
   assert.ok(found.length >= 1, "a balance check must not suppress an open dispatcher");
 });
+
+test("a delegatecall to a code-checked registry target is info, not high", () => {
+  // RocketMinipool.fallback — 61 of the 67 delegatecall findings in the 2026-11-01 archive,
+  // across 61 minipool addresses, all this one shape. The caller does not choose the target.
+  const src = `
+pragma solidity ^0.8.0;
+contract RocketMinipool {
+    address public rocketMinipoolDelegate;
+    bool public useLatestDelegate;
+    function getContractAddress(bytes32 _name) internal view returns (address) { return address(this); }
+    function contractExists(address c) internal view returns (bool) { return c.code.length > 0; }
+    fallback() external payable {
+        address delegateContract = useLatestDelegate
+            ? getContractAddress("rocketMinipoolDelegate")
+            : rocketMinipoolDelegate;
+        require(contractExists(delegateContract), "Delegate contract does not exist");
+        (bool success, bytes memory data) = delegateContract.delegatecall(msg.data);
+        if (!success) { revert(); }
+    }
+}`;
+  const found = analyzeInput(src, "minipool").findings.filter((f) => f.detector === "delegatecall");
+  for (const f of found) {
+    assert.notEqual(f.severity, "high", `registry-sourced target should not be high: ${f.summary.slice(0, 120)}`);
+    assert.notEqual(f.severity, "critical", "and certainly not critical");
+  }
+});
+
+test("a delegatecall to a caller-supplied target is still critical", () => {
+  const src = `
+pragma solidity ^0.8.0;
+contract Bad {
+    function run(address target, bytes calldata data) external returns (bool ok) {
+        (ok,) = target.delegatecall(data);
+    }
+}`;
+  const found = analyzeInput(src, "bad").findings.filter((f) => f.detector === "delegatecall");
+  assert.ok(found.some((f) => f.severity === "critical"), "a caller-chosen delegatecall target is critical");
+});
