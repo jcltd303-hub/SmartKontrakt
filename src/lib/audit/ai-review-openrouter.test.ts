@@ -923,3 +923,35 @@ test("review prompts label corrected detectors with their mechanism class and ri
     assert.ok(narrative.user.includes(label), `${detector}: narrative prompt must carry "${label}"`);
   }
 });
+
+test("every purpose a caller uses resolves to a real model id", () => {
+  // 2026-11-01: poc-chat.server.ts defaults to purpose "chat", which was absent from
+  // OPENROUTER_MODELS. resolveOpenRouterModel returned undefined, modelCandidates called
+  // .trim() on it, and every PoC chat request died with
+  //   TypeError: Cannot read properties of undefined (reading 'trim')
+  // A purpose the table does not know must still produce a model, never undefined.
+  for (const purpose of ["review", "code", "json", "chat"] as const) {
+    const model = resolveOpenRouterModel(purpose, {});
+    assert.equal(typeof model, "string", `${purpose} must resolve to a string`);
+    assert.ok(model.length > 0, `${purpose} must not be empty`);
+  }
+
+  // An unknown purpose degrades to the reasoning default rather than throwing.
+  const unknown = resolveOpenRouterModel("not-a-purpose" as never, {});
+  assert.equal(unknown, OPENROUTER_MODELS.review);
+});
+
+test("modelCandidates never throws on a bad id", () => {
+  // Defence in depth: even if a table entry were ever missing, the candidate list must
+  // skip it rather than take the request path down with a TypeError.
+  const list = modelCandidates("chat" as never, {});
+  assert.ok(list.length >= 1, "at least the fallback survives");
+  for (const m of list) assert.equal(typeof m, "string");
+});
+
+test("poc chat resolves a model end to end", () => {
+  // The exact shape poc-chat.server.ts uses.
+  const { model } = resolveOpenRouterConfig({}, "chat" as never);
+  assert.equal(typeof model, "string");
+  assert.ok(model.length > 0);
+});

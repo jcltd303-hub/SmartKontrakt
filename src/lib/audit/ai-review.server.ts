@@ -85,6 +85,13 @@ export const OPENROUTER_MODELS = {
   review: "nvidia/nemotron-3-ultra-550b-a55b:free",
   code: "deepseek/deepseek-v4.1-flash",
   json: "nvidia/nemotron-3-ultra-550b-a55b:free",
+  // PoC chat. `chat` is a real purpose — poc-chat.server.ts defaults to it — but it was
+  // absent from this table, so resolveOpenRouterModel("chat") returned
+  // OPENROUTER_MODELS["chat"], which is undefined, and modelCandidates called .trim() on
+  // it. That is the whole of "PoC chat request failed: Cannot read properties of
+  // undefined (reading 'trim')". Conversation is the reasoning default, so it maps to
+  // review rather than to the coder.
+  chat: "nvidia/nemotron-3-ultra-550b-a55b:free",
 } as const;
 
 export type OpenRouterPurpose = keyof typeof OPENROUTER_MODELS;
@@ -123,7 +130,9 @@ export function modelCandidates(
   const seen = new Set<string>();
   const out: string[] = [];
   for (const id of [resolveOpenRouterModel(purpose, env), ...OPENROUTER_FALLBACK_MODELS]) {
-    const model = id.trim();
+    // Defensive: a mis-typed purpose or a bad env value must degrade to "try the next
+    // model", not throw a TypeError out of the request path.
+    const model = typeof id === "string" ? id.trim() : "";
     if (!model || seen.has(model)) continue;
     seen.add(model);
     out.push(model);
@@ -211,7 +220,10 @@ export function resolveOpenRouterModel(
   const global = env.OPENROUTER_MODEL?.trim();
   if (global) return global;
   const perPurpose = env[`OPENROUTER_MODEL_${purpose.toUpperCase()}`]?.trim();
-  return perPurpose || OPENROUTER_MODELS[purpose];
+  // Fall back to review, never to undefined: this returns a string by contract, and an
+  // unknown purpose used to hand back undefined, which the first .trim() downstream
+  // turned into a crash rather than a clear error.
+  return perPurpose || OPENROUTER_MODELS[purpose] || OPENROUTER_MODELS.review;
 }
 
 /**
