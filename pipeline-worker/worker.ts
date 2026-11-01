@@ -489,6 +489,14 @@ async function runLoop(): Promise<void> {
   const queuedKeys = new Set(ctx.items.map((i) => dedupeKey(i.chainId, i.address)));
   /** Items whose body came from an earlier scan of identical code. */
   let reusedFrom = 0;
+  // Dedupe telemetry. "0 reused an earlier scan of identical code" across a run where two
+  // hundred identical Safe proxies were analysed is not a healthy zero — it means the
+  // lookup never matched, and the summary said nothing about why. Count the misses by
+  // reason so the next run names the cause instead of reporting a number that looks fine.
+  let dedupeHit = 0;
+  let dedupeNoHash = 0;
+  let dedupeNoSibling = 0;
+  let dedupeNoPayload = 0;
   let dedupeSql: Awaited<ReturnType<typeof getSql>> | null = null;
   try {
     dedupeSql = await getSql();
@@ -616,6 +624,16 @@ async function runLoop(): Promise<void> {
                 body: sibling.body,
                 inputKind: /^0x[0-9a-fA-F]+$/.test(sibling.body.trim()) ? "bytecode" : "source",
               };
+              dedupeHit++;
+            } else {
+              // Distinguish "no earlier scan of this code" from "earlier scans exist but
+              // stored no body" — the second is a schema problem, the first is just a
+              // first sighting.
+              dedupeNoSibling++;
+              const has = await dedupeSql<{ n: number }>`
+                select count(*)::int as n from contract_scans
+                where lower(chain_id) = ${item.chainId.toLowerCase()} and codehash = ${hash}`;
+              if ((has[0]?.n ?? 0) > 0) dedupeNoPayload++;
             }
           }
         } catch {
@@ -891,7 +909,12 @@ async function runLoop(): Promise<void> {
       runCtx = null;
       status.state = "idle";
       console.log(
-        `[worker] run finished: ${status.completed} completed, ${status.failed} failed, ${status.skipped} skipped (${status.skippedDupes} in-run duplicates, ${reusedFrom} reused an earlier scan of identical code)`,
+        `[worker] run finished: ${status.completed} completed, ${status.failed} failed, ${status.skipped} skipped (${status.skippedDupes} in-run duplicates, ${reusedFrom} reused an earlier scan of identical code)` +
+          (dedupeNoSibling + dedupeHit > 0
+            ? `\n[worker] identical-code dedupe: ${dedupeHit} hit, ${dedupeNoSibling} miss ` +
+              `(${dedupeNoPayload} of those had earlier scans with this codehash but no stored body — ` +
+              `a payload problem, not a first sighting)`
+            : ""),
       );
     }
     pauseRequested = false;
