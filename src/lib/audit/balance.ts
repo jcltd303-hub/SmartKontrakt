@@ -51,9 +51,28 @@ export const PUBLIC_RPC_BY_CHAIN: Record<number, string[]> = {
   42161: ["https://arb1.arbitrum.io/rpc", "https://arbitrum.publicnode.com"],
 };
 
-/** RPC endpoints for a chain, for callers with none. */
+/** Reverse of CHAIN_ID_BY_NAME, for the pool's chain-scoped lookup. */
+const CHAIN_NAME_BY_ID = new Map<number, string>(
+  Object.entries(CHAIN_ID_BY_NAME).map(([name, id]) => [id, name]),
+);
+
+/**
+ * RPC endpoints for a chain, for callers with none.
+ *
+ * RPC_URLS comes FIRST. rpcPool.order() puts the configured endpoints ahead of the
+ * built-in list, round-robin from a moving cursor, healthy before cooling, and drops
+ * duplicates. With RPC_URLS unset it returns builtIn untouched, so an unconfigured
+ * install behaves exactly as before.
+ *
+ * This used to return PUBLIC_RPC_BY_CHAIN directly, which meant a keyed provider
+ * (Alchemy) set in RPC_URLS reached rpc-endpoints.ts and nothing else: this function,
+ * foundry-backend's rpcCandidates and address-fetcher's SUPPORTED_CHAINS each kept their
+ * own hardcoded public list. Three tables, one of which read the environment.
+ */
 export function rpcUrlsForChain(chain?: number | string | null): string[] {
-  return PUBLIC_RPC_BY_CHAIN[normalizeChainId(chain)] ?? [];
+  const id = normalizeChainId(chain);
+  const builtIn = PUBLIC_RPC_BY_CHAIN[id] ?? [];
+  return rpcPool.order(CHAIN_NAME_BY_ID.get(id) ?? null, builtIn);
 }
 
 /** Chain id from a numeric or named chain reference. */

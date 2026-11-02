@@ -886,7 +886,7 @@ export async function analyzeAddress(
   // provider outage leaves it unset (NOT zero) and is noted, never fatal.
   const attachValueAndAbi = async (r: Report): Promise<void> => {
     try {
-      const value = await fetchAddressValue(address, chain.chainId, { rpcUrls: chain.rpcUrls });
+      const value = await fetchAddressValue(address, chain.chainId, { rpcUrls: getRpcsForChain(chain.id) });
       r.inventory.balanceWei = value.nativeWei;
       r.inventory.balanceSymbol = value.symbol;
       r.inventory.valueUsd = value.totalUsd;
@@ -968,7 +968,7 @@ export async function analyzeAddress(
     // is noted, so the tab's empty state is explained instead of silent.
     let bytecodeNote: string | null = null;
     try {
-      const bytecode = await fetchBytecodeRpc(address, chain.rpcUrls);
+      const bytecode = await fetchBytecodeRpc(address, getRpcsForChain(chain.id));
       if (bytecode) {
         report.runtimeBytecode = { code: bytecode, sourceHash: sha3_256(sourcifyMatch.source) };
         const byte = analyzeBytecode(bytecode);
@@ -1035,7 +1035,7 @@ export async function analyzeAddress(
           // "nothing there to revert" as "the initializer call went through". Third
           // argument: the second is the context, not the options.
           codeFn: (addr: string, cid: string) =>
-            fetchBytecodeRpc(addr, (SUPPORTED_CHAINS.find((c) => c.id === cid) ?? chain).rpcUrls),
+            fetchBytecodeRpc(addr, getRpcsForChain((SUPPORTED_CHAINS.find((c) => c.id === cid) ?? chain).id)),
         },
       );
     } catch {
@@ -1088,7 +1088,7 @@ export async function analyzeAddress(
   }
 
   // 2. Fetch runtime bytecode via eth_getCode
-  const bytecode = await fetchBytecodeRpc(address, chain.rpcUrls);
+  const bytecode = await fetchBytecodeRpc(address, getRpcsForChain(chain.id));
   if (!bytecode) {
     throw new Error(`No deployed bytecode found at ${address} on ${chain.name}. It may be an un-deployed EOA or destroyed contract.`);
   }

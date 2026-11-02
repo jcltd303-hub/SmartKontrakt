@@ -2,7 +2,7 @@ import type { PocResult } from "./types";
 import { sha3_256 } from "js-sha3";
 import { countExecutableTestFunctions, hasInconclusiveEvidence } from "./poc-outcome.ts";
 import { wrapPocSnippet } from "./poc-wrap.ts";
-import { nativeSymbol } from "./balance.ts";
+import { nativeSymbol, rpcUrlsForChain } from "./balance.ts";
 import { fetchAddressValue, isZeroValue } from "./value.ts";
 
 /**
@@ -356,9 +356,19 @@ const CHAIN_RPCS: Record<number, string[]> = {
   137: ["https://polygon-rpc.com", "https://polygon-bor-rpc.publicnode.com", "https://1rpc.io/matic"],
   56: ["https://bsc-dataseed.binance.org", "https://bsc.publicnode.com", "https://1rpc.io/bnb"],
 };
+/**
+ * RPC endpoints for a chain.
+ *
+ * Delegates to rpcUrlsForChain so this path sees RPC_URLS too. It used to read its own
+ * CHAIN_RPCS table, which meant the PoC runner and the fork probes ignored a configured
+ * provider entirely — the third of three hardcoded lists that shadowed rpc-endpoints.ts.
+ * CHAIN_RPCS stays as the built-in fallback for chains rpcUrlsForChain does not know.
+ */
 function rpcCandidates(chain?: number | string): string[] {
   const names: Record<string, number> = { ethereum: 1, arbitrum: 42161, base: 8453, optimism: 10, polygon: 137, bsc: 56 };
   const id = names[String(chain)] ?? Number(chain ?? 1);
+  const fromPool = rpcUrlsForChain(id);
+  if (fromPool.length > 0) return fromPool;
   return CHAIN_RPCS[id] ?? [];
 }
 
