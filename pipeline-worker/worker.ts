@@ -146,6 +146,23 @@ const { secondPass } = await import("../src/lib/audit/persist.server.ts");
 const { newLlmHealth, recordLlm, llmVerdict } = await import("./llm-health.ts");
 const { implementationItems, dedupeKey } = await import("./proxy-follow.ts");
 const { applyShard, parseShard } = await import("./shard.ts");
+/** WORKER_VERBOSE=1 turns on per-item logging. Off by default: a 250-address run would
+ *  otherwise print a line per address on top of the auto-poc lines it already prints. */
+const VERBOSE = /^(1|true|yes)$/i.test(process.env.WORKER_VERBOSE ?? "");
+
+/** An endpoint with its API key hidden. Alchemy/Infura put the key in the path, so the
+ *  tail is what has to go — printing it in full leaks a credential into terminal scrollback
+ *  and into any screenshot of a failing run. */
+function maskRpc(url: string): string {
+  const m = url.match(/^(https?:\/\/[^/]+\/)(.*)$/i);
+  if (!m) return url;
+  const [, base, rest] = m;
+  if (!rest) return base;
+  const tail = rest.length > 4 ? rest.slice(-4) : "";
+  return `${base}...${tail}`;
+}
+
+const { rpcUrlsForChain } = await import("../src/lib/audit/balance.ts");
 const { codeHashOf, findSiblingScan, inheritDispositionsForScans } = await import("../src/lib/audit/code-reuse.server.ts");
 const { demotionMap } = await import("../src/lib/audit/detector-scoreboard.server.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
@@ -862,6 +879,22 @@ async function runLoop(): Promise<void> {
       runSeen.add(itemKey);
       status.completed++;
       if (bodyOverride) reusedFrom++;
+      if (VERBOSE) {
+        const sev = (result?.report?.findings ?? []).reduce<Record<string, number>>((acc, f) => {
+          acc[f.severity] = (acc[f.severity] ?? 0) + 1;
+          return acc;
+        }, {});
+        const summary = Object.entries(sev).map(([k, v]) => `${v}${k[0]?.toUpperCase() ?? ""}`).join(" ") || "none";
+        // startedAt is an ISO string, not a timestamp — Date.parse it or the subtraction
+        // prints NaNms.
+        const startedMs = item.startedAt ? Date.parse(item.startedAt) : NaN;
+        const elapsed = Number.isFinite(startedMs) ? `${Date.now() - startedMs}ms` : "?";
+        console.log(
+          `[worker] done ${item.address} (${item.chainId}) ${elapsed} findings=${summary}` +
+            `${bodyOverride ? " [body reused]" : ""}` +
+            `${result?.report?.inventory?.compiler ? ` solc=${result.report.inventory.compiler}` : ""}`,
+        );
+      }
       ctx.index++;
       if (status.completed % 100 === 0) {
         console.log(
@@ -1224,6 +1257,24 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   writeStatusFile();
   console.log(
     `[worker] started: ${items.length} addresses — ${skipped} current (skipped), ${stale} stale (${refresh === "none" ? "skipped" : "re-analysing"}), ${items.length - skipped - stale} new (to analyse); refresh=${refresh}${shard ? `, shard=${shard.index}/${shard.of} of ${allItems.length}` : ""}, chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems}), autoPoc=${autoPoc} (no attempt cap)`,
+
+    // Which endpoints this run will actually use, and in what order. Tonight's failures
+    // repeatedly came from an endpoint that was rate-limiting or unreachable — the symptom
+    // was "no code at this block" or a fork that could not read a chain ID, neither of
+    // which names the RPC. Printing the list up front makes that answerable from the log.
+    (() => {
+      const urls = rpcUrlsForChain(chainId);
+      const configured = (process.env.RPC_URLS ?? "").trim();
+      console.log(
+        `[worker] rpc: ${urls.length} endpoint(s) for chain ${chainId}` +
+          (configured ? ` (RPC_URLS set, ${configured.split(",").length} configured)` : " (RPC_URLS unset — public fallbacks only)"),
+      );
+      urls.slice(0, 6).forEach((u, i) => console.log(`[worker]   ${i + 1}. ${maskRpc(u)}`));
+      if (urls.length > 6) console.log(`[worker]   ... ${urls.length - 6} more`);
+      if (!configured) {
+        console.log("[worker] rpc: no keyed provider configured — public endpoints rate-limit, and a rate-limited endpoint returns empty data, which reads as 'no code at this block'");
+      }
+    })(),
   );
   sendJson(res, 200, {
     ok: true,
