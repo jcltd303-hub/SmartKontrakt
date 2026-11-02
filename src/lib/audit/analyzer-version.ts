@@ -389,7 +389,7 @@ import {
  *
  *                Same inputs now produce different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-11-01.22";
+export const ANALYZER_BASELINE = "2026-11-01.23";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

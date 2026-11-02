@@ -3115,10 +3115,27 @@ function scanContract(
     // cannot be resolved in this contract (inherited) cannot be shown
     // to move value either, so it takes the low path.
     const consumerModel = consumerFn ? contract.functions.find((f) => f.name === consumerFn) : undefined;
+    // The "consumer" is the variable's OWN auto-generated getter — consumerFn === varName.
+    // That is not a consumer: `uint256 public debtToPay;` synthesises `debtToPay()`, which
+    // returns the slot and can neither call out nor act on the value. Fix 35 already
+    // downgrades view/pure consumers, but it required consumerFn !== info.fn AND a resolvable
+    // model, and a synthesised getter satisfies neither reliably, so this shape fell through
+    // to high.
+    //
+    // Measured: Threshold's PCV (0x1a473950…d872, $50.06M) reported
+    //   read-only-reentrancy / location_fn "debtToPay()" / line 30
+    // pointing at the declaration `uint256 public debtToPay;`. The batch around it had 144 of
+    // 197 contracts carrying exactly one high, which is the same shape.
+    //
+    // Still low, not skipped: an EXTERNAL protocol reading the getter mid-callback is the
+    // real read-only reentrancy (Curve's get_virtual_price). It just cannot be high on a
+    // getter that nothing in-contract consumes.
+    const selfGetterConsumer = consumerFn !== null && consumerFn === varName;
     const getterOnlyConsumer =
-      consumerFn !== null &&
-      consumerFn !== info.fn &&
-      (consumerModel === undefined || consumerModel.mutability === "view" || consumerModel.mutability === "pure");
+      selfGetterConsumer ||
+      (consumerFn !== null &&
+        consumerFn !== info.fn &&
+        (consumerModel === undefined || consumerModel.mutability === "view" || consumerModel.mutability === "pure"));
     {
       push(make({
         severity: getterOnlyConsumer ? "low" : "high",
