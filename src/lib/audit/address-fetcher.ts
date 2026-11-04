@@ -27,14 +27,16 @@ export const SUPPORTED_CHAINS: SupportedChain[] = [
     name: "Ethereum Mainnet",
     chainId: 1,
     rpcUrls: [
-      // Verified 2026-10-16: Cloudflare-eth returns JSON-RPC -32603
-      // "Internal error" for every request and Llama returns HTTP 525,
-      // so the working public endpoints go first. Ankr is excluded:
-      // it now requires an API key.
+      // cloudflare-eth.com REMOVED 2026-11-04. It returned JSON-RPC -32603
+      // "Internal error" for every request (verified 2026-10-16) and forge reported
+      // "could not instantiate forked environment with provider cloudflare-eth.com"
+      // while the candidate was actually publicnode — the error named the wrong host.
+      // Removed from every list, not just demoted: an endpoint that fails 100% of the
+      // time is pure latency on every request that reaches it. Ankr is also excluded
+      // here: it now requires an API key.
       "https://ethereum.publicnode.com",
       "https://eth.drpc.org",
       "https://1rpc.io/eth",
-      "https://cloudflare-eth.com",
       "https://eth.llamarpc.com",
     ],
     blockExplorer: "https://etherscan.io",

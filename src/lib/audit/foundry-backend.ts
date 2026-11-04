@@ -77,7 +77,6 @@ export const FALLBACK_RPC_LIST: string[] = [
   "https://ethereum.publicnode.com",
   "https://eth.drpc.org",
   "https://1rpc.io/eth",
-  "https://cloudflare-eth.com",
   "https://eth.llamarpc.com",
   "https://arb1.arbitrum.io/rpc",
   "https://arbitrum.llamarpc.com",

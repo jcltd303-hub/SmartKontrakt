@@ -42,7 +42,7 @@ const CHAIN_ID_BY_NAME: Record<string, number> = {
  * keeps standalone callers (and tests) working.
  */
 export const PUBLIC_RPC_BY_CHAIN: Record<number, string[]> = {
-  1: ["https://eth.llamarpc.com", "https://rpc.ankr.com/eth", "https://cloudflare-eth.com"],
+  1: ["https://eth.llamarpc.com", "https://rpc.ankr.com/eth"],
   10: ["https://mainnet.optimism.io", "https://optimism.publicnode.com"],
   56: ["https://bsc-dataseed.binance.org", "https://bsc.publicnode.com"],
   100: ["https://rpc.gnosischain.com"],

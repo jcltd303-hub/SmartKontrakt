@@ -79,7 +79,7 @@ fi
 # provider instead of failing the run.
 RPC_CANDIDATES=()
 if [[ -n "${ETH_RPC_URL:-}" ]]; then RPC_CANDIDATES+=("$ETH_RPC_URL"); fi
-for _rpc in "https://ethereum.publicnode.com" "https://eth.drpc.org" "https://1rpc.io/eth" "https://cloudflare-eth.com" "https://eth.llamarpc.com"; do
+for _rpc in "https://ethereum.publicnode.com" "https://eth.drpc.org" "https://1rpc.io/eth" "https://eth.llamarpc.com"; do
   _seen=0
   for _have in "${RPC_CANDIDATES[@]}"; do [[ "$_have" == "$_rpc" ]] && _seen=1 && break; done
   [[ $_seen -eq 0 ]] && RPC_CANDIDATES+=("$_rpc")
