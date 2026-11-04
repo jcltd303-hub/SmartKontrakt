@@ -67,7 +67,7 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
   const [isDbModalOpen, setIsDbModalOpen] = useState<boolean>(false);
   // True totals from the server (the list below is paged; per-page sums
   // would undercount once the table grows past one page).
-  const [stats, setStats] = useState<{ total: number; critical: number; high: number; ragIndexed: number } | null>(null);
+  const [stats, setStats] = useState<{ total: number; critical: number; high: number } | null>(null);
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
   // Surfaced query failure (#2): message + the identity of the database the
   // app is actually reading. Null = last load was fine (possibly genuinely
@@ -270,7 +270,6 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
                 total: Math.max(0, prev.total - 1),
                 critical: Math.max(0, prev.critical - doomed.criticalCount),
                 high: Math.max(0, prev.high - doomed.highCount),
-                ragIndexed: Math.max(0, prev.ragIndexed - (doomed.isRagIndexed ? 1 : 0)),
               }
             : prev,
         );
@@ -305,9 +304,6 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
           indexToRag: true,
         },
       });
-      setRecords((prev) =>
-        prev.map((r) => (r.id === id ? { ...r, isRagIndexed: true } : r))
-      );
       setActionNotice("Successfully indexed report into Local RAG Knowledgebase!");
       setTimeout(() => setActionNotice(null), 3500);
     } catch (err) {
@@ -368,7 +364,6 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
   const totalAudits = stats?.total ?? records.length;
   const criticalFindings = stats?.critical ?? records.reduce((acc, r) => acc + r.criticalCount, 0);
   const highFindings = stats?.high ?? records.reduce((acc, r) => acc + r.highCount, 0);
-  const ragIndexedCount = stats?.ragIndexed ?? records.filter((r) => r.isRagIndexed).length;
   const hasMore = !statsUnknown && records.length < totalAudits;
 
   return (
@@ -478,7 +473,7 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
               <span>RAG KB Synced</span>
               <BookOpen className="w-3 h-3 text-[#e8a54b] group-hover:scale-110 transition-transform" />
             </div>
-            <div className="text-lg font-bold text-emerald-400 mt-0.5">{statsUnknown ? "—" : `${ragIndexedCount} / ${totalAudits}`}</div>
+            <div className="text-lg font-bold text-emerald-400 mt-0.5">"removed"</div>
           </button>
         </div>
 
@@ -929,21 +924,10 @@ export function LocalDbRecords({ onLoadInWorkbench, onNavigateToRag, onNavigateT
                               <Activity className="w-2.5 h-2.5" /> {r.probesCount} Probes
                             </span>
                           ) : null}
-                          {r.isRagIndexed ? (
-                            <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-950/80 text-emerald-300 border border-emerald-700/60 flex items-center gap-1">
-                              <BookOpen className="w-2.5 h-2.5" /> RAG Synced
-                            </span>
-                          ) : (
-                            <button
-                              onClick={() => handleIndexToRag(r.id)}
-                              disabled={indexingId === r.id}
-                              className="px-1.5 py-0.5 rounded text-[10px] bg-[#26231c] hover:bg-[#3a3428] text-[#e8a54b] border border-[#3a3428] flex items-center gap-1 transition-colors"
-                              title="Index into local RAG knowledgebase"
-                            >
-                              {indexingId === r.id ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <BookOpen className="w-2.5 h-2.5" />}
-                              <span>Index RAG</span>
-                            </button>
-                          )}
+                          {/* RAG indexing removed: the knowledge base, the column and the
+                              isRagIndexed field are all gone, so this row renders nothing
+                              rather than a button that would write to a dropped column. */}
+                          {null}
                         </div>
                       </td>
 

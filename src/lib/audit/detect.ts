@@ -484,7 +484,7 @@ function isAuthed(fn: FnModel, contract?: ContractModel, model?: SourceModel, sk
   // One level only, internal/private callees only, and only from an entry point: following
   // arbitrary call chains would credit auth that may not be on this path, which is how a
   // suppression starts hiding real bugs.
-  if (isExternallyCallable(fn)) {
+  if (contract && isExternallyCallable(fn)) {
     for (const helper of contract.functions) {
       if (helper === fn || isExternallyCallable(helper)) continue;
       const name = helper.name;

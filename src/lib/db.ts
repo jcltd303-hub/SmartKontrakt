@@ -389,7 +389,16 @@ export async function getDbConnectionState(): Promise<DbConnectionState> {
       if (attempt < 2) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
     }
   }
-  return classifyDbState(url, false, globalRef.__lastDbError__ ?? lastErr);
+  // lastErr is `unknown` (a caught value), but classifyDbState wants { message: string }.
+  // Narrow rather than cast the whole call: anything without a string message becomes
+  // undefined, which classifyDbState already treats as "no error recorded".
+  const lastError =
+    globalRef.__lastDbError__ ??
+    (lastErr && typeof lastErr === "object" && "message" in lastErr &&
+     typeof (lastErr as { message?: unknown }).message === "string"
+      ? { message: (lastErr as { message: string }).message }
+      : undefined);
+  return classifyDbState(url, false, lastError);
 }
 
 export async function getDatabaseInfo(): Promise<{
