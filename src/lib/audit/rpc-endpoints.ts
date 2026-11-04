@@ -74,6 +74,17 @@ export class RpcPool {
    * untouched, so an unconfigured install behaves exactly as before.
    */
   order(chain: string | null, builtIn: string[]): string[] {
+    // The pool is a module-level singleton, but the worker loads dotenv AFTER its static
+    // imports — so RPC_URLS is undefined when this is constructed and the pool stays empty
+    // for the whole process. Measured: `RPC_URLS set, 1 configured` in the worker banner
+    // while the ordered list held only the public fallbacks.
+    //
+    // Re-read once, lazily, instead of requiring every caller to construct the pool after
+    // the environment is ready.
+    if (this.endpoints.length === 0) {
+      const fresh = parseRpcUrls(process.env.RPC_URLS);
+      if (fresh.length > 0) this.endpoints = fresh;
+    }
     if (this.endpoints.length === 0) return builtIn;
     const t = this.now();
     const scoped = this.endpoints.filter((e) => e.chain === null || e.chain === chain);

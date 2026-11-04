@@ -1257,25 +1257,40 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   writeStatusFile();
   console.log(
     `[worker] started: ${items.length} addresses — ${skipped} current (skipped), ${stale} stale (${refresh === "none" ? "skipped" : "re-analysing"}), ${items.length - skipped - stale} new (to analyse); refresh=${refresh}${shard ? `, shard=${shard.index}/${shard.of} of ${allItems.length}` : ""}, chain=${chainId}, ai=${aiSecondPass}, delay=${delayMs}ms, deepAgent=${deepAgent} (minSeverity=${deepAgentMinSeverity}, maxItems=${deepAgentMaxItems === 0 ? "unlimited" : deepAgentMaxItems}), autoPoc=${autoPoc} (no attempt cap)`,
-
-    // Which endpoints this run will actually use, and in what order. Tonight's failures
-    // repeatedly came from an endpoint that was rate-limiting or unreachable — the symptom
-    // was "no code at this block" or a fork that could not read a chain ID, neither of
-    // which names the RPC. Printing the list up front makes that answerable from the log.
-    (() => {
-      const urls = rpcUrlsForChain(chainId);
-      const configured = (process.env.RPC_URLS ?? "").trim();
-      console.log(
-        `[worker] rpc: ${urls.length} endpoint(s) for chain ${chainId}` +
-          (configured ? ` (RPC_URLS set, ${configured.split(",").length} configured)` : " (RPC_URLS unset — public fallbacks only)"),
-      );
-      urls.slice(0, 6).forEach((u, i) => console.log(`[worker]   ${i + 1}. ${maskRpc(u)}`));
-      if (urls.length > 6) console.log(`[worker]   ... ${urls.length - 6} more`);
-      if (!configured) {
-        console.log("[worker] rpc: no keyed provider configured — public endpoints rate-limit, and a rate-limited endpoint returns empty data, which reads as 'no code at this block'");
-      }
-    })(),
   );
+
+  // Which endpoints this run will actually use, and in what order. Tonight's failures
+  // repeatedly came from an endpoint that was rate-limiting or unreachable — the symptom
+  // was "no code at this block" or a fork that could not read a chain ID, neither of
+  // which names the RPC. Printing the list up front makes that answerable from the log.
+  //
+  // A separate statement, not a second console.log argument: the trailing comma on the
+  // banner made this an argument, so the IIFE's undefined return printed after the message.
+  {
+    const urls = rpcUrlsForChain(chainId);
+    const configured = (process.env.RPC_URLS ?? "").trim();
+    console.log(
+      `[worker] rpc: ${urls.length} endpoint(s) for chain ${chainId}` +
+        (configured
+          ? ` (RPC_URLS set, ${configured.split(",").length} configured)`
+          : " (RPC_URLS unset — public fallbacks only)"),
+    );
+    urls.slice(0, 6).forEach((u, i) => console.log(`[worker]   ${i + 1}. ${maskRpc(u)}`));
+    if (urls.length > 6) console.log(`[worker]   ... ${urls.length - 6} more`);
+    if (!configured) {
+      console.log(
+        "[worker] rpc: no keyed provider configured — public endpoints rate-limit, and a rate-limited endpoint returns empty data, which reads as 'no code at this block'",
+      );
+    }
+    // The pool is built at import time, which in the worker happens before dotenv loads.
+    // If the list came back without the configured endpoint, that is the reason — say so
+    // rather than printing a list that looks configured but is not.
+    if (configured && !urls.some((u) => u.includes("alchemy") || configured.includes(u))) {
+      console.log(
+        "[worker] rpc: RPC_URLS is set but its endpoint is NOT in the ordered list — the pool was built before dotenv loaded. Restart after ensuring start.sh exports the env.",
+      );
+    }
+  }
   sendJson(res, 200, {
     ok: true,
     started: true,
