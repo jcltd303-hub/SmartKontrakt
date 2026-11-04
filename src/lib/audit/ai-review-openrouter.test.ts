@@ -1011,3 +1011,31 @@ test("a reasoning model's reply is read from reasoning_content", async () => {
     else process.env.OPENROUTER_API_KEY = realKey;
   }
 });
+
+test("a reply that concatenates strings with + is rejected before forge runs", () => {
+  // Solidity has no `+` for strings: "a" + "b" is a type error, the file never compiles,
+  // forge runs zero tests, and the run is recorded as no_tests — indistinguishable from a
+  // file with no test function. Measured 2026-11-04 on the EntryPoint PoC, whose assertion
+  // message was four literals joined with +.
+  const good = [
+    'pragma solidity ^0.8.24;',
+    'import {Test} from "forge-std/Test.sol";',
+    'contract PoC is Test {',
+    '  function test_x() public { assertTrue(true, "short message"); }',
+    '  function test_y() public { uint256 a = 1 + 2; assertEq(a, 3); }',
+    '  function test_z() public { string memory s = string.concat("a", "b"); s; }',
+    '}',
+  ].join("\n");
+
+  assert.doesNotThrow(() => parseTestCodeReply("```solidity\n" + good + "\n```", "stop"));
+
+  const bad = good.replace(
+    'assertTrue(true, "short message");',
+    'assertTrue(true, "line one" +\n      "line two" +\n      "line three");',
+  );
+  assert.throws(
+    () => parseTestCodeReply("```solidity\n" + bad + "\n```", "stop"),
+    /concatenates strings with `\+`/,
+    "string + concatenation must be rejected as a generation gap, not spent as a backend run",
+  );
+});

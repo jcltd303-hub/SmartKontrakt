@@ -600,6 +600,8 @@ Generate a complete, compilation-ready Foundry test suite contract in Solidity (
    - use only signatures supported by the actual ABI or supplied source. Selector databases and heuristic ABI entries are hypotheses, not verified call surfaces. Do not guess destructive selectors or invent interfaces; describe missing evidence and leave the finding unconfirmed when the required surface is unavailable
    - the finding is unconfirmed until execution demonstrates the predicted invariant violation; report confirmed, refuted, or inconclusive based on execution evidence, and never describe an unexecuted template as proven
    - a failed assertion alone does not refute a finding: distinguish missing prerequisites, compile or infrastructure failures, inconclusive execution, and actual counterevidence. Report what the observed execution supports.
+   - COMPILE-CRITICAL: Solidity has NO \`+\` operator for strings. Never write \`"a" + "b"\` — it is a type error ("Operator + not compatible with types string memory and string memory") and the file will not build, so forge runs zero tests and the run is wasted. Use one of: a single literal, adjacent literals on one line (\`"a" "b"\` concatenates at compile time), \`string.concat(a, b)\`, or drop the message and rely on the assertion label. The same applies to \`bytes\`: use \`abi.encodePacked\` or \`bytes.concat\`.
+   - Keep assertion messages SHORT and single-line for the same reason. A long multi-line explanation is the single most common source of this error.
 
 Format your response as ONLY the complete Solidity test file inside exactly one \`\`\`solidity fenced code block — no JSON, no prose before or after the block.`;
 
@@ -964,6 +966,25 @@ export function parseTestCodeReply(content: string, finishReason: string | undef
     // backend run into a corrective retry.
     if (!/^\s*(?:\/\/[^\n]*\n\s*)*pragma\s+solidity\b/m.test(code)) {
       problems.push("the extracted code has no pragma solidity directive");
+    }
+    // Solidity has no `+` operator for strings. `"a" + "b"` is a type error, so the file
+    // never compiles and forge reports zero tests — which the run then records as
+    // `no_tests`, indistinguishable from a file with no test function. Measured
+    // 2026-11-04: the EntryPoint PoC carried a four-line assertion message joined with `+`
+    // and every run of it was wasted.
+    //
+    // Deliberately narrow: a string or bytes literal on the LEFT of `+`, with an identifier
+    // or another literal on the right. Arithmetic on uint/int, address comparisons and
+    // string.concat(...) do not match.
+    const stringPlus =
+      /(?:"[^"\n]*"|'[^'\n]*')\s*\+\s*(?:"|'|\w)/.test(code) ||
+      /\+\s*(?:"[^"\n]*"|'[^'\n]*')/.test(code);
+    if (stringPlus) {
+      problems.push(
+        "the extracted code concatenates strings with `+`, which Solidity rejects " +
+          "(Operator + not compatible with types string memory and string memory) — use " +
+          "string.concat(...), adjacent literals on one line, or a single short message",
+      );
     }
   }
   if (problems.length > 0) {
