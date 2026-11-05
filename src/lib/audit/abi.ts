@@ -82,10 +82,13 @@ export function heuristicAbiFromInventory(inv: Inventory | null | undefined): Ab
   const items: AbiItem[] = [];
   const seen = new Set<string>();
   for (const fn of inv.functions ?? []) {
-    const key = `${fn.name}(${fn.params})`;
+    // The inventory qualifies names with the declaring contract ("PoolManager.unlock").
+    // An ABI name is bare, and the prefix breaks abi.encodeWithSignature.
+    const bare = fn.name.slice(fn.name.lastIndexOf(".") + 1);
+    const key = `${bare}(${fn.params})`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const inputs = splitParams(fn.params).map((type, i) => ({ name: `a${i}`, type }));
+    const inputs = splitParams(fn.params).map((param, i) => splitParamTypeAndName(param, i));
     const mutability = /view/i.test(fn.mutability)
       ? "view"
       : /pure/i.test(fn.mutability)
@@ -93,7 +96,7 @@ export function heuristicAbiFromInventory(inv: Inventory | null | undefined): Ab
         : /payable/i.test(fn.mutability)
           ? "payable"
           : "nonpayable";
-    items.push({ type: "function", name: fn.name, inputs, outputs: [], stateMutability: mutability });
+    items.push({ type: "function", name: bare, inputs, outputs: [], stateMutability: mutability });
   }
   for (const ev of inv.events ?? []) {
     // `events` are rendered signatures like "Transfer(address,address,uint256)".
@@ -106,6 +109,40 @@ export function heuristicAbiFromInventory(inv: Inventory | null | undefined): Ab
     });
   }
   return items;
+}
+
+/**
+ * Split one rendered parameter into its type and its name.
+ *
+ * The inventory renders parameters as they appear in source — "address initialOwner" — but
+ * the ABI needs them apart: {type:"address", name:"initialOwner"}. Passing the whole string
+ * as the type produced entries like
+ *
+ *   {"name":"PoolManager.unlock","inputs":[{"name":"a0","type":"address initialOwner"}]}
+ *
+ * which abi.encodeWithSignature cannot use. Measured 2026-11-06: every function entry in a
+ * 100-contract page carried this defect.
+ */
+export function splitParamTypeAndName(param: string, index: number): { name: string; type: string } {
+  const p = param.trim();
+  // `TYPE name` — a trailing bare identifier after at least one space, and the leading part
+  // must not itself be an unterminated tuple.
+  const m = /^(.*\S)\s+([A-Za-z_$][\w$]*)$/.exec(p);
+  if (m && balanced(m[1]!)) {
+    return { name: m[2]!, type: m[1]!.trim() };
+  }
+  return { name: `a${index}`, type: p };
+}
+
+/** Brackets balanced, so "(uint256,address) pair" splits but "(uint256, address" does not. */
+function balanced(t: string): boolean {
+  let d = 0;
+  for (const ch of t) {
+    if (ch === "(" || ch === "[") d += 1;
+    if (ch === ")" || ch === "]") d -= 1;
+    if (d < 0) return false;
+  }
+  return d === 0;
 }
 
 /** Split a Solidity parameter list, respecting nested tuples/arrays. */
