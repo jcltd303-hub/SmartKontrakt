@@ -2001,7 +2001,18 @@ function scanIncidentClasses(
       snippet: snippet(parsed, fn.line + delta, delta),
     }));
   }
-  if (HOOK_CALLBACKS.has(fn.name) && !authed && !POOL_MANAGER_GATE.test(clean)) {
+  // A PURE callback cannot move value or read stale state — it computes from its arguments
+  // and returns. Uniswap v4 hooks implement most of the surface that way (returning only
+  // IHooks.<x>.selector), so the unguarded ones are usually no-ops by construction.
+  //
+  // Measured 2026-11-06 on SatoHook (0x0000f07d…2888, $2.3M, v4): the 7 findings were
+  // exactly its 7 pure callbacks — afterInitialize, afterAddLiquidity, beforeRemoveLiquidity,
+  // afterRemoveLiquidity, afterSwap, beforeDonate, afterDonate — while every callback that
+  // can move value (beforeInitialize, beforeAddLiquidity, beforeSwap) carried
+  // onlyPoolManager. The guard was present where it mattered and the rule could not tell
+  // the difference.
+  const pureCallback = /pure/.test(fn.mutability ?? "");
+  if (HOOK_CALLBACKS.has(fn.name) && !pureCallback && !authed && !POOL_MANAGER_GATE.test(clean)) {
     const movesFunds = HOOK_ACCOUNTING.test(clean);
     push(make({
       severity: movesFunds ? "critical" : "high",
