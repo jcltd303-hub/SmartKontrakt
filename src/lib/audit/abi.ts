@@ -10,13 +10,16 @@
  * Sources, in order:
  *  1. Sourcify `metadata.json` (full_match, then partial_match) — keyless.
  *  2. Etherscan V2, when `ETHERSCAN_API_KEY` is set.
- *  3. A heuristic ABI rebuilt from what the analyzer already parsed: the
+ *  3. The Solidity source this scan already fetched, parsed directly. Exact
+ *     signatures, no selector guessing.
+ *  4. A heuristic ABI rebuilt from what the analyzer already parsed: the
  *     function surface (with selectors resolved via 4byte) and the event topics.
  *
  * Tailoring is deliberately ADDITIVE: it prepends the real `ITarget` interface
  * and leaves the template body untouched, so it can never make a compiling
  * template stop compiling.
  */
+import parser from "@solidity-parser/parser";
 import { rpcLimiter } from "./rate-limit.ts";
 import { normalizeChainId } from "./balance.ts";
 
@@ -24,7 +27,7 @@ import type { AbiItem, Inventory } from "./types.ts";
 
 export type { AbiItem };
 
-export type GatheredAbi = { abi: AbiItem[]; source: "sourcify" | "etherscan" | "heuristic" };
+export type GatheredAbi = { abi: AbiItem[]; source: "sourcify" | "etherscan" | "source" | "heuristic" };
 
 async function getJson(url: string, timeoutMs = 12_000): Promise<unknown | null> {
   try {
@@ -124,11 +127,134 @@ export function splitParams(params: string): string[] {
   return out;
 }
 
+/**
+ * Build an ABI from Solidity source that was already fetched.
+ *
+ * Every scan that stores `input_kind = 'source'` holds the contract text in
+ * `scan_payloads.body`, yet the ABI recorded alongside it was `heuristic` for 66 of 66 such
+ * contracts in a measured page (2026-11-06). The heuristic resolves selectors through 4byte,
+ * which the generator prompt itself calls "hypotheses, not verified call surfaces" — so the
+ * PoC path was being handed guesses for three quarters of the archive while the exact
+ * source sat in the same row. That is the ABI-mismatch half of the failed PoC runs.
+ *
+ * Parses with @solidity-parser/parser (already a dependency) and emits only what the source
+ * declares. Returns [] on any parse failure so the caller falls through to the heuristic —
+ * a malformed file must not lose the ABI entirely.
+ */
+export function abiFromSoliditySource(source: string, contractName?: string): AbiItem[] {
+  if (!source || source.length < 40) return [];
+  // Hex bytecode is not source.
+  if (/^\s*0x[0-9a-fA-F]+\s*$/.test(source)) return [];
+
+  let ast: unknown;
+  try {
+    ast = (parser as unknown as {
+      parse: (src: string, opts?: Record<string, unknown>) => unknown;
+    }).parse(source, { loc: false, tolerant: true });
+  } catch {
+    return [];
+  }
+
+  type Node = { type?: string; name?: string; visibility?: string; stateMutability?: string;
+                parameters?: Node[]; returnParameters?: Node[]; typeName?: Node;
+                baseTypeName?: Node; components?: Node[]; keyType?: Node; valueType?: Node };
+  const items: AbiItem[] = [];
+
+  const typeOf = (n: Node): { type: string; components?: AbiItem[] } => {
+    const tn = n.typeName ?? {};
+    const base = tn.typeName ?? tn.baseTypeName ?? tn;
+    switch (tn.type) {
+      case "ElementaryTypeName":
+        return { type: String(tn.name ?? "bytes32") };
+      case "UserDefinedTypeName":
+        return { type: "address" };
+      case "ArrayTypeName": {
+        const inner = typeOf({ typeName: tn.baseTypeName });
+        return { type: `${inner.type}[]` };
+      }
+      case "Mapping":
+        return { type: "bytes32" };
+      default:
+        void base;
+        return { type: "bytes32" };
+    }
+  };
+
+  const param = (n: Node): { name?: string; type?: string; components?: AbiItem[] } => {
+    const t = typeOf(n);
+    return { name: String(n.name ?? ""), type: t.type };
+  };
+
+  const visit = (node: Node, depth = 0): void => {
+    if (!node || typeof node !== "object" || depth > 12) return;
+    if (node.type === "ContractDefinition") {
+      // When a name is given, take only that contract; otherwise every one in the bundle.
+      const match = !contractName || node.name === contractName;
+      const body = (node as unknown as { subNodes?: Node[] }).subNodes ?? [];
+      if (match) {
+        for (const sub of body) {
+          if (sub.type === "FunctionDefinition") {
+            const vis = sub.visibility ?? "public";
+            if (vis !== "public" && vis !== "external") continue;
+            const name = sub.name;
+            if (!name) continue; // constructor / fallback / receive: no ABI entry needed here
+            const mut =
+              sub.stateMutability ??
+              ((sub as unknown as { isView?: boolean }).isView ? "view"
+               : (sub as unknown as { isPure?: boolean }).isPure ? "pure" : "nonpayable");
+            items.push({
+              type: "function",
+              name,
+              inputs: (sub.parameters ?? []).map(param),
+              outputs: (sub.returnParameters ?? []).map(param),
+              stateMutability: mut,
+            });
+          } else if (sub.type === "StateVariableDeclaration") {
+            // Public state variables expose an auto-generated getter. `constant` ones do too.
+            const decl = sub as unknown as { variables?: Node[] };
+            for (const v of decl.variables ?? []) {
+              if ((v.visibility ?? "internal") !== "public" || !v.name) continue;
+              items.push({
+                type: "function",
+                name: v.name,
+                inputs: [],
+                outputs: [param({ typeName: v.typeName })],
+                stateMutability: "view",
+              });
+            }
+          }
+        }
+      }
+      return;
+    }
+    for (const key of Object.keys(node)) {
+      const v = (node as Record<string, unknown>)[key];
+      if (Array.isArray(v)) for (const c of v) visit(c as Node, depth + 1);
+      else if (v && typeof v === "object") visit(v as Node, depth + 1);
+    }
+  };
+
+  try {
+    visit(ast as Node);
+  } catch {
+    return [];
+  }
+
+  // Deduplicate by name+arity; overloads keep distinct entries.
+  const seen = new Set<string>();
+  return items.filter((it) => {
+    const k = `${it.name}/${(it.inputs ?? []).length}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 /** Gather the target ABI, or null when nothing could be found. */
 export async function gatherAbi(
   address: string,
   chain: number | string | null | undefined,
-  opts?: { inventory?: Inventory | null; etherscanKey?: string },
+  opts?: { inventory?: Inventory | null; etherscanKey?: string; sourceBody?: string | null },
 ): Promise<GatheredAbi | null> {
   const chainId = normalizeChainId(chain);
   if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return null;
@@ -141,8 +267,57 @@ export async function gatherAbi(
     if (etherscan) return { abi: etherscan, source: "etherscan" };
   }
 
+  // Source-derived signatures ENRICH the heuristic; they do not replace it.
+  //
+  // Measured 2026-11-06 against four contracts from the archive page, parsed entries vs
+  // heuristic entries: ZAMM 18/44, Stash 24/105, PoolManager 13/205, Blur Pool 0/34. The
+  // source derivation is exact per entry but incomplete — these are multi-contract bundles
+  // where the display label is not the Solidity contract name, and inheritance is not
+  // followed, so base functions are missing. The heuristic reads the deployed bytecode's
+  // selectors, so it covers the real callable surface.
+  //
+  // Replacing the heuristic with the parse would therefore LOSE callable functions and make
+  // PoC ABI mismatches worse. Merging keeps coverage and upgrades precision: where a parsed
+  // entry has the same name and arity, its parameter names, types and mutability win.
   const heuristic = heuristicAbiFromInventory(opts?.inventory);
-  if (heuristic.length > 0) return { abi: heuristic, source: "heuristic" };
+  const fromSource = opts?.sourceBody
+    ? abiFromSoliditySource(opts.sourceBody)
+    : [];
+  if (heuristic.length === 0 && fromSource.length === 0) return null;
+  if (fromSource.length === 0) return { abi: heuristic, source: "heuristic" };
+  if (heuristic.length === 0) return { abi: fromSource, source: "source" };
+
+  // The heuristic names are QUALIFIED and its types are malformed. Measured from the
+  // archive: {"name":"PoolManager.unlock","inputs":[{"name":"a0","type":"address
+  // initialOwner"}]} — the type field carries the type AND the parameter name, and the
+  // name carries the contract prefix. Neither can be fed to abi.encodeWithSignature, so
+  // the stored ABI could not build call data for any function it described.
+  //
+  // Matching therefore keys on the UNQUALIFIED name and arity, and a match replaces the
+  // whole entry with the parsed one, which has a plain name and clean types.
+  const unqualified = (n: string) => n.slice(n.lastIndexOf(".") + 1);
+  const exact = new Map<string, AbiItem>();
+  for (const it of fromSource) {
+    if (it.type !== "function" || !it.name) continue;
+    exact.set(`${it.name}/${(it.inputs ?? []).length}`, it);
+  }
+  let upgraded = 0;
+  const merged: AbiItem[] = heuristic.map((it) => {
+    if (it.type !== "function" || !it.name) return it;
+    const e = exact.get(`${unqualified(it.name)}/${(it.inputs ?? []).length}`);
+    if (!e) return it;
+    upgraded++;
+    return e;
+  });
+  // Parsed entries the heuristic never saw (no selector resolved) are still real surface.
+  const have = new Set(merged.map((it) => `${unqualified(String(it.name ?? ""))}/${(it.inputs ?? []).length}`));
+  for (const it of fromSource) {
+    if (it.type === "function" && it.name && !have.has(`${it.name}/${(it.inputs ?? []).length}`)) {
+      merged.push(it);
+      have.add(`${it.name}/${(it.inputs ?? []).length}`);
+    }
+  }
+  return { abi: merged, source: upgraded > 0 ? "source" : "heuristic" };
   return null;
 }
 

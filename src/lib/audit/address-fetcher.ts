@@ -886,7 +886,7 @@ export async function analyzeAddress(
   // Value at analysis time, attached to the inventory so it persists with the
   // record, renders in the UI, and drives the pre-run skip. Best-effort: a
   // provider outage leaves it unset (NOT zero) and is noted, never fatal.
-  const attachValueAndAbi = async (r: Report): Promise<void> => {
+  const attachValueAndAbi = async (r: Report, body?: string): Promise<void> => {
     try {
       const value = await fetchAddressValue(address, chain.chainId, { rpcUrls: getRpcsForChain(chain.id) });
       r.inventory.balanceWei = value.nativeWei;
@@ -907,6 +907,10 @@ export async function analyzeAddress(
         // Supplied by the server/worker caller; the browser has no key and
         // falls back to Sourcify, then to the heuristic ABI.
         etherscanKey: opts?.etherscanKey,
+        // The body this scan already fetched. When it is Solidity, the ABI is parsed
+        // exactly from it instead of being rebuilt heuristically — measured 2026-11-06,
+        // 66 of 66 contracts that HAD source still recorded abi_source = 'heuristic'.
+        sourceBody: body ?? null,
       });
       if (gathered) {
         r.inventory.abi = gathered.abi;
@@ -933,7 +937,7 @@ export async function analyzeAddress(
       ...(report.inventory.notes ?? []),
       "Body reused from an earlier scan of identical runtime code: registry lookups and the bytecode read were skipped, the analysis is local.",
     ];
-    await attachValueAndAbi(report);
+    await attachValueAndAbi(report, override.body);
     applyPostPasses(report);
     if (opts?.resnetRunner) {
       try {
@@ -1018,7 +1022,7 @@ export async function analyzeAddress(
     // (worker / server callers pass a DB lookup; the browser workbench
     // enriches via the resolveFourbyte server fn instead).
     if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
-    await attachValueAndAbi(report);
+    await attachValueAndAbi(report, sourcifyMatch?.source);
     // Initializer live-state gate (Fix 37): unprotected-initializer
     // findings arrive capped at high from the detector; with the ABI
     // now gathered, this probe is the only route back to critical —
@@ -1110,7 +1114,7 @@ export async function analyzeAddress(
     : "label_unverified";
 
   if (opts?.fourbyte) await enrichReportFourbyte(report, opts.fourbyte);
-  await attachValueAndAbi(report);
+  await attachValueAndAbi(report, bytecode);
   applyPostPasses(report);
 
   // ResNet1D screening: this path's whole input IS the runtime code.
