@@ -3,6 +3,7 @@ import { auditEvidence } from "./audit-evidence.ts";
 import type { Finding, Inventory } from "./types.ts";
 import { isTransientError, openRouterLimiter, withRetry } from "./rate-limit.ts";
 import { selectPocFallbacks } from "./poc-fallbacks.ts";
+import { stripSolidityComments } from "./solidity-text.ts";
 import { smartbugsCategoryForDetector } from "./smartbugs.ts";
 import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte.ts";
 import { countExecutableTestFunctions } from "./poc-outcome.ts";
@@ -976,9 +977,18 @@ export function parseTestCodeReply(content: string, finishReason: string | undef
     // Deliberately narrow: a string or bytes literal on the LEFT of `+`, with an identifier
     // or another literal on the right. Arithmetic on uint/int, address comparisons and
     // string.concat(...) do not match.
+    // Comments are stripped first. The generation prompt tells the model never to
+    // write `"a" + "b"`, so a reply that echoes that rule in a comment — the kind of
+    // explanatory comment the prompt encourages — was being rejected as if the code
+    // contained it, and the retry asked for the same thing again. Comments cannot
+    // break compilation, so they must not trip this check.
+    //
+    // The `[ \t]` (not `\s`) is deliberate: `\s` spans newlines, so `a + b;` followed
+    // by a string on the next line matched as concatenation.
+    const codeNoComments = stripSolidityComments(code);
     const stringPlus =
-      /(?:"[^"\n]*"|'[^'\n]*')\s*\+\s*(?:"|'|\w)/.test(code) ||
-      /\+\s*(?:"[^"\n]*"|'[^'\n]*')/.test(code);
+      /(?:"[^"\n]*"|'[^'\n]*')[ \t]*\+[ \t]*(?:"|'|\w)/.test(codeNoComments) ||
+      /\+[ \t]*(?:"[^"\n]*"|'[^'\n]*')/.test(codeNoComments);
     if (stringPlus) {
       problems.push(
         "the extracted code concatenates strings with `+`, which Solidity rejects " +
