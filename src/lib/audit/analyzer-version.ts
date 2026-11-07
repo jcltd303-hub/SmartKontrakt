@@ -388,8 +388,33 @@ import {
  *                in SMARTBUGS_BY_DETECTOR so the fingerprint tracks them.
  *
  *                Same inputs now produce different records, so the archive refreshes.
+ * 2026-11-06.24 — Ledger-driven detector calibration (Fixes 39-44), from the
+ *                6,831-row adjudicated vet ledger (rounds 1-5, every stored
+ *                critical/high fork- or live-probed). New detector:
+ *                pseudo-constructor (SWC-118) — a function named as (or
+ *                nearly as) its contract that the compiler does not treat
+ *                as a constructor (ALIVA's AlivaToken, fork-confirmed:
+ *                repeatable owner takeover + mint). tx-origin: the
+ *                != EOA-gate form (TinfunReserve's onlyEOA) now strips
+ *                like the == form, and EOA-gate findings are info, not
+ *                low (239 rows, 0 confirmed). read-only-reentrancy: a
+ *                state-changing in-window consumer that does not feed a
+ *                value decision demotes high → info (453 rows, 0
+ *                confirmed). delegatecall: fixed target + fixed calldata
+ *                is info; a fixed/const target with caller-supplied
+ *                calldata is high (the old const → medium tier retired;
+ *                679 rows, 0 confirmed). unchecked-call: severity lowered
+ *                one notch across the board (210 rows, 0 confirmed).
+ *                erc20-unchecked: a state write after the unchecked
+ *                transfer raises confidence to high and blocks the
+ *                Fix 25 downgrade (the WBTCSwap/ZRX shape — the one
+ *                shape in 1,347 rows that produced confirmed exploits).
+ *                Same inputs now produce different records, so the
+ *                archive refreshes. (This bump also re-pins the
+ *                detector-source digest, which had drifted stale on
+ *                main through the 2026-11-02..06 detector commits.)
  */
-export const ANALYZER_BASELINE = "2026-11-01.23";
+export const ANALYZER_BASELINE = "2026-11-06.24";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

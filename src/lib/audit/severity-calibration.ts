@@ -33,6 +33,22 @@ export const CALIBRATION_NOTE_CONFIDENCE =
 export const CALIBRATION_NOTE_AUTHED =
   "\n\n[Calibrated: critical → high — the function is access-controlled, so an external attacker cannot trigger this path directly. Review whether the authorized caller could be tricked or the check bypassed.]";
 
+/**
+ * Ledger-yield demotions (2026-11-06, Fix 40/42 — from the 6,831-row
+ * adjudicated vet ledger, full-vet/final-verdicts.csv). There is no
+ * per-detector severity table in this codebase — demotions live in the
+ * detectors themselves (the Fix-NN pattern) — but the note TEXT is
+ * shared here so every demotion explains itself the same way. The
+ * rates are the adjudicated confirmed-yield of each shape across all
+ * vet rounds: unchecked-call 210 rows / 0 confirmed;
+ * read-only-reentrancy 453 / 0.
+ */
+export const CALIBRATION_NOTE_UNCHECKED_CALL =
+  "\n\n[Calibrated: severity lowered one notch — across the 6,831-finding adjudicated vet ledger this shape produced no confirmed exploit (210 rows, 0 confirmed). Treat as a lead: it bites when the following state update assumes the call succeeded.]";
+
+export const CALIBRATION_NOTE_READ_ONLY_REENTRANCY =
+  "\n\n[Calibrated: high → info — the stale read is consumed in-contract, but nothing shows it feeding a value decision, and the outbound callee is not attacker-influenceable, so no demonstrated re-entrant value path exists. Across the 6,831-finding adjudicated vet ledger this shape produced no confirmed exploit (453 rows, 0 confirmed).]";
+
 /** Gate 1: medium/low confidence can never be critical. */
 export function calibrateFindings(findings: Finding[]): Finding[] {
   return findings.map((f) => {

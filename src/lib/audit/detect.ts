@@ -5,6 +5,8 @@ import { classifyFunction, isExplicitGuardModifierName } from "./reachability.ts
 import type { GateKind } from "./reachability.ts";
 import { familyForDetector } from "./detector-registry.ts";
 import {
+  CALIBRATION_NOTE_READ_ONLY_REENTRANCY,
+  CALIBRATION_NOTE_UNCHECKED_CALL,
   DELEGATECALL_FIXED_TARGET_NOTE,
   DELEGATECALL_INITIALIZER_ENTRY_NOTE,
   INITIALIZER_GATE_NOTE_UNCONFIRMED,
@@ -1709,16 +1711,23 @@ function formatVer(v: number): string {
 }
 
 // True when the ONLY use of tx.origin in src is the EOA-gate comparison
-// msg.sender == tx.origin (either operand order). An EOA-gate BLOCKS
-// contracts; it does not authenticate anyone: a phished EOA calling
-// directly still passes, and no identity is derived from tx.origin.
-// FomoXP's isHuman and MyobuChef's boostWithNFT both use it exactly
-// this way ("no contracts"), and both were flagged as high-severity
-// tx.origin authentication. Any other tx.origin use (compared to an
-// owner, used as an address) stays the high auth finding.
+// between msg.sender and tx.origin (either operand order, == or !=).
+// An EOA-gate BLOCKS contracts; it does not authenticate anyone: a
+// phished EOA calling directly still passes, and no identity is
+// derived from tx.origin. FomoXP's isHuman and MyobuChef's
+// boostWithNFT use the require(==) form; TinfunReserve's onlyEOA uses
+// the revert form (if (msg.sender != tx.origin) revert OnlyEOA();) —
+// the same guard, and the round-4 FP archetype: 239 adjudicated
+// tx-origin rows produced 0 confirmed exploits because every FP was
+// this anti-contract guard (Fix 39, 2026-11-06). A != pair can only
+// block or pass-through; it grants nothing by itself, so it strips
+// the same way. Any other tx.origin use (compared to an owner, used
+// as an address) stays the high auth finding.
 function isEoaGateOnly(src: string): boolean {
   if (!/tx\.origin/.test(src)) return false;
-  const stripped = src.replace(/msg\.sender\s*==\s*tx\.origin|tx\.origin\s*==\s*msg\.sender/g, "");
+  const stripped = src
+    .replace(/msg\.sender\s*==\s*tx\.origin|tx\.origin\s*==\s*msg\.sender/g, "")
+    .replace(/msg\.sender\s*!=\s*tx\.origin|tx\.origin\s*!=\s*msg\.sender/g, "");
   return !/tx\.origin/.test(stripped);
 }
 
@@ -1742,6 +1751,106 @@ function isTxOriginDenyOnly(src: string): boolean {
     .replace(/tx\.origin\s*!==?\s*[^,;)]+/g, "")
     .replace(/if\s*\(\s*\w+\s*\(\s*tx\.origin\s*\)\s*\)\s*revert/g, "");
   return !/tx\.origin/.test(stripped);
+}
+
+/**
+ * Fix 40: true when a read of `varName` inside fn feeds a VALUE
+ * decision — an ether/token send whose amount or recipient mentions
+ * the var (or a local assigned from it), or a require/if gate on the
+ * var. A read that is only recorded (stored into another variable,
+ * emitted, returned for display) decides nothing about value. The
+ * read-only-reentrancy demotion keys on this: Fix 12 already requires
+ * a demonstrated in-window consumer and Fix 35 already demotes
+ * view/pure consumers, but across the adjudicated ledger the shape
+ * still produced 0 confirmed exploits in 453 rows — the remaining
+ * consumers were bookkeeping reads, not pricing/settlement reads.
+ */
+function staleReadFeedsValueDecision(fnModel: FnModel, varName: string): boolean {
+  const src = fnModel.source;
+  const esc = escapeRegExp(varName);
+  const locals = new Set<string>();
+  for (const m of src.matchAll(new RegExp(`\\b([A-Za-z_]\\w*)\\s*=\\s*[^;]*\\b${esc}\\b`, "g"))) {
+    locals.add(m[1]);
+  }
+  const names = [varName, ...locals].map((n) => escapeRegExp(n));
+  const mentions = new RegExp(`\\b(${names.join("|")})\\b`);
+  const sendShape = /(\.transfer\s*\(|\.send\s*\(|\.call\s*\{[^}]*value|\btransferFrom\s*\(|\btransfer\s*\()/;
+  for (const line of src.split("\n")) {
+    if (sendShape.test(line) && mentions.test(line)) return true;
+    if (/\b(require|if)\s*\(/.test(line) && new RegExp(`\\b${esc}\\b`).test(line)) return true;
+  }
+  return false;
+}
+
+/**
+ * Fix 41: true when a delegatecall/callcode's calldata argument is
+ * caller-supplied — it references a function parameter or msg.data.
+ * A fixed target with fixed calldata (abi.encodeWithSignature("…"))
+ * is a design pattern, not an attack surface; a fixed target with
+ * CALLER calldata is an open executor and stays flagged.
+ */
+function callDataIsCallerSupplied(raw: string | undefined, fn: FnModel): boolean {
+  if (!raw) return false;
+  const m = raw.match(/\.(?:delegatecall|callcode)\s*\(([\s\S]*)\)/);
+  const args = m ? m[1] : "";
+  if (/msg\.data/.test(args)) return true;
+  return fn.params.some((p) => p.name && new RegExp(`\\b${escapeRegExp(p.name)}\\b`).test(args));
+}
+
+/**
+ * Fix 44: the pseudo-constructor shapes (SWC-118). Returns the
+ * function's effective name when it is a constructor look-alike that
+ * the compiler does NOT treat as a constructor:
+ *
+ * (a) A non-constructor function whose name case-insensitively equals
+ *     the contract name, or extends it (contract name is a prefix of
+ *     the function name). The adjudicated archetype is ALIVA:
+ *     contract `ALIVA`, function `AlivaToken()` — solc 0.4 only honors
+ *     an EXACT name match, so AlivaToken is an ordinary public
+ *     function that sets owner and mints, callable by anyone,
+ *     repeatedly. It was the one unprotected-admin hit in 525 rows
+ *     that actually mattered. The reverse direction (function name is
+ *     a prefix of the contract name) is deliberately NOT matched: a
+ *     corpus pass showed it firing on ordinary verbs — `burn` in
+ *     BurnableToken, `mint` in MintForFree — which are not
+ *     constructor look-alikes and are covered by other detectors.
+ * (b) A name-based "constructor" under solc >= 0.5. The parser marks
+ *     any function named exactly as its contract isConstructor, at
+ *     any version — but since 0.5 only the `constructor` keyword
+ *     makes a constructor, so a name-based one is a public function.
+ *     The original name is recovered from the source header (the
+ *     model renames it to "constructor"); a keyword constructor's
+ *     header does not start with `function`, and a pre-0.5 file's
+ *     name-based constructor is real, so both are excluded.
+ */
+function pseudoConstructorOf(fn: FnModel, contract: ContractModel, model: SourceModel): string | null {
+  if (fn.isConstructor) {
+    if (model.versionFloor === null || model.versionFloor < 5_000) return null;
+    const m = fn.source.match(/^\s*function\s+([A-Za-z_]\w*)\s*\(/);
+    if (!m) return null;
+    return m[1] === contract.name ? m[1] : null;
+  }
+  if (contract.name.length < 3) return null;
+  const f = fn.name.toLowerCase();
+  const c = contract.name.toLowerCase();
+  if (f === c || f.startsWith(c)) return fn.name;
+  return null;
+}
+
+/**
+ * Fix 44: true when src mints or distributes tokens — a _mint/mint
+ * call, a balance-mapping credit (balances[x] = balances[x].add(...),
+ * balances[x] += ...), a supply counter raised via .add, a
+ * totalSupply write, or a Transfer event from the zero address.
+ */
+function mintEffectIn(src: string): boolean {
+  return /_mint\s*\(/.test(src)
+    || /\bmint\s*\(/.test(src)
+    || /\[[^\]]+\]\s*=\s*[\w.]+\s*\[[^\]]+\]\s*\.\s*add\s*\(/.test(src)
+    || /\[[^\]]+\]\s*\+=/.test(src)
+    || /\b\w+\s*=\s*\w+\s*\.\s*add\s*\(/.test(src)
+    || /\btotalSupply\s*(\+=|=(?!=))/.test(src)
+    || /Transfer\s*\(\s*(address\s*\(\s*0\s*\)|0x0{10,})\s*,/.test(src);
 }
 
 // True when a transfer's result is verified by a balance-delta check:
@@ -2813,7 +2922,11 @@ function scanContract(
     if (/tx\.origin/.test(mod.source)) {
       if (isEoaGateOnly(mod.source)) {
         push(make({
-          severity: "low",
+          // Fix 39: an EOA-gate authenticates nobody and grants nothing,
+          // so it is not a vulnerability — info, not low. (239
+          // adjudicated tx-origin rows, 0 confirmed; every FP was this
+          // guard shape.)
+          severity: "info",
           swc: "SWC-115",
           title: `Modifier ${mod.name} uses an EOA-gate (tx.origin == msg.sender)`,
           confidence: "high",
@@ -3147,16 +3260,30 @@ function scanContract(
       (consumerFn !== null &&
         consumerFn !== info.fn &&
         (consumerModel === undefined || consumerModel.mutability === "view" || consumerModel.mutability === "pure"));
+    // Fix 40: a demonstrated in-window consumer (Fix 12) that is
+    // state-changing (not Fix 35's view/pure/getter case) still earns
+    // high only when the stale read FEEDS A VALUE DECISION in the
+    // consuming function, or the writer's outbound callee is
+    // attacker-influenceable (a caller-supplied target can call back
+    // mid-window and steer the consumption). A bookkeeping consumer —
+    // the read is recorded, emitted, or stored, and nothing settles,
+    // pays, or gates on it — demotes to info with the ledger note.
+    // 453 adjudicated rows, 0 confirmed.
+    const consumerFnModel =
+      consumerFn === info.fn ? contract.functions.find((f) => f.name === info.fn) : consumerModel;
+    const feedsValue = consumerFnModel ? staleReadFeedsValueDecision(consumerFnModel, varName) : false;
+    const calleeAttackerInfluenced = Boolean(info.call.targetIsParam);
+    const demoteReadOnly = !getterOnlyConsumer && !feedsValue && !calleeAttackerInfluenced;
     {
       push(make({
-        severity: getterOnlyConsumer ? "low" : "high",
+        severity: getterOnlyConsumer ? "low" : demoteReadOnly ? "info" : "high",
         swc: "SWC-107",
         title: `Read-only reentrancy on ${varName}()`,
         confidence: "medium",
         detector: "read-only-reentrancy",
         summary: getterOnlyConsumer
           ? `${info.fn} calls out before ${varName} is updated, and ${varName} is a public getter. The stale value is consumed in-contract: ${consumer}. Downgraded to low: the in-window consumer (${consumerFn}) is ${consumerModel ? "view/pure — it only returns the value" : "not resolvable in this contract — no value-moving use could be shown"}, so nothing in the window settles, pays out, or prices off the stale read in a state-changing path. This rises to high when a state-changing function in the window consumes the stale value to move value — a settle, mint, borrow, or payout computed from it.`
-          : `${info.fn} calls out before ${varName} is updated, and ${varName} is a public getter. The stale value is consumed in-contract: ${consumer}.`,
+          : `${info.fn} calls out before ${varName} is updated, and ${varName} is a public getter. The stale value is consumed in-contract: ${consumer}.${demoteReadOnly ? CALIBRATION_NOTE_READ_ONLY_REENTRANCY : ""}`,
         walkthrough: [
           `1. ${info.fn} transfers control at line ${info.call.line} via ${info.call.kind}.`,
           `2. ${varName} still holds the pre-call value, because the write happens at line ${info.writeLine}, after the call returns.`,
@@ -3806,12 +3933,16 @@ function walkFn(
     if (!flow.seen) flow.seen = call;
     if (!call.checked && (call.kind === "call" || call.kind === "send" || call.kind === "delegatecall" || call.kind === "staticcall" || call.kind === "callcode")) {
       push(make({
-        severity: call.kind === "send" ? "medium" : "high",
+        // Fix 42: default severity lowered one notch (was high /
+        // medium for send). The shape is a lead, not a verdict: 210
+        // adjudicated rows, 0 confirmed. The calibration note in the
+        // summary says why.
+        severity: call.kind === "send" ? "low" : "medium",
         swc: "SWC-104",
         title: `${fn.name} ignores the ${call.kind} result`,
         confidence: "high",
         detector: "unchecked-call",
-        summary: `The ${call.kind} at line ${call.line} is used as a statement. A false or revert from the callee does not stop the rest of ${fn.name}.`,
+        summary: `The ${call.kind} at line ${call.line} is used as a statement. A false or revert from the callee does not stop the rest of ${fn.name}.${CALIBRATION_NOTE_UNCHECKED_CALL}`,
         walkthrough: [
           `1. \`.call\`, \`.send\`, \`.delegatecall\` return false on failure. They do not revert the caller.`,
           "2. Discarding that bool means the following state update runs anyway.",
@@ -3976,11 +4107,21 @@ require(ok, "transfer failed");`,
             new RegExp(
               `contractExists\\s*\\(\\s*${call.target}\\s*\\)|${call.target}\\s*\\.code\\.length`,
             ).test(fn.source);
+          // Fix 41: fixed target AND fixed calldata — nothing about
+          // the call is attacker-influenceable, so it is a design
+          // pattern (proxy forward, fixed executor), not an exploit:
+          // info, with the residual governance risk stated in the
+          // summary below. 679 adjudicated delegatecall rows, 0
+          // confirmed. The old targetIsConst → medium tier is retired
+          // for this branch: a const target with CALLER calldata is
+          // an open executor and now reads high, not medium.
+          const callerCalldata = callDataIsCallerSupplied(call.raw, fn);
+          const fixedTargetFixedCalldata = !call.targetIsParam && !callerCalldata && !registryTarget;
           const severity: Severity = call.targetIsParam
             ? "critical"
-            : call.targetIsConst
-              ? "medium"
-              : registryTarget
+            : registryTarget
+              ? "info"
+              : fixedTargetFixedCalldata
                 ? "info"
                 : "high";
           let finding = make({
@@ -3990,13 +4131,21 @@ require(ok, "transfer failed");`,
               ? attributed
                 ? `${displayFn.name} delegatecalls a caller-supplied address (via ${fn.name})`
                 : `${fn.name} delegatecalls a caller-supplied address`
-              : `${fn.name} delegatecalls ${call.target || "another contract"}`,
+              : fixedTargetFixedCalldata
+                ? `${fn.name} delegatecalls ${call.target || "another contract"} (fixed target)`
+                : callerCalldata && !call.targetIsParam
+                  ? `${fn.name} delegatecalls ${call.target || "another contract"} with caller-supplied calldata`
+                  : `${fn.name} delegatecalls ${call.target || "another contract"}`,
             confidence: "high",
             detector: "delegatecall",
-            summary: "Delegatecall runs the target's code against this contract's storage. A writable target can overwrite owner, balances, or any other slot.",
+            summary: fixedTargetFixedCalldata
+              ? "The delegatecall target is not caller-supplied (it is stored, constant, or otherwise fixed) and neither is the calldata, so no caller can redirect execution or choose the payload. The residual risk is governance: whoever can change the stored target — if anyone can — controls the implementation."
+              : "Delegatecall runs the target's code against this contract's storage. A writable target can overwrite owner, balances, or any other slot.",
             walkthrough: delegateWalk(attributed ? displayFn.name : fn.name, call),
-            exploitSolidity: delegateExploit(contract.name),
-            remediationSolidity: `// EIP-1967 Storage Slot Isolation + Strict Implementation Whitelist
+            exploitSolidity: fixedTargetFixedCalldata ? "" : delegateExploit(contract.name),
+            remediationSolidity: fixedTargetFixedCalldata
+              ? `Keep the target immutable or behind a timelocked governance path, and keep any setter access-controlled.`
+              : `// EIP-1967 Storage Slot Isolation + Strict Implementation Whitelist
 bytes32 private constant _IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 mapping(address => bool) public allowedImplementations;
 
@@ -4040,16 +4189,43 @@ function upgradeToAndCall(address newImpl, bytes calldata data) external onlyOwn
     if (call.kind === "erc20" && !call.checked && !call.ownToken && !hasBalanceDeltaCheck(fn.source)) {
       const recipientFixed = call.recipient !== undefined && call.recipient !== "" && !isCallerControlled(call.recipient, fn, contract);
       const recoverable = !/claimed|paidOut|withdrawn/.test(fn.source) && !debitsOwnCredit(fn);
-      const downgraded = authed && recipientFixed && recoverable;
+      // Fix 43: a state write AFTER the call assumes success — that
+      // breaks the Fix 25 recoverable premise (the accounting is
+      // already recorded, so there is nothing clean to retry) and is
+      // the one shape in this detector's 1,347 adjudicated rows that
+      // produced confirmed exploits (9, incl. WBTCSwap). It raises
+      // confidence to high and blocks the downgrade. WBTCSwap's
+      // initiate is the archetype: transferFrom as a bare statement,
+      // then swaps[_swapID] = swap and swapStates[_swapID] = OPEN — a
+      // false-returning token (ZRX) leaves a fully recorded, unpaid
+      // swap. Writes BEFORE the call (debit-first, checks-effects)
+      // do not count.
+      const stateWriteAfterCall = (rawCall: string | undefined): boolean => {
+        if (!rawCall) return false;
+        const idx = fn.source.indexOf(rawCall);
+        if (idx < 0) return false;
+        const rest = fn.source.slice(idx + rawCall.length);
+        for (const name of stateNames) {
+          const esc = escapeRegExp(name);
+          if (new RegExp(`\\b${esc}\\s*(\\[[^\\]]*\\]\\s*)?(\\.\\w+\\s*)?(=(?!=)|\\+=|-=)`).test(rest)) return true;
+          if (new RegExp(`\\bdelete\\s+${esc}\\b`).test(rest)) return true;
+        }
+        return false;
+      };
+      const assumesSuccess = stateWriteAfterCall(call.raw);
+      const downgraded = authed && recipientFixed && recoverable && !assumesSuccess;
       push(make({
         severity: downgraded ? "low" : "high",
         swc: "SWC-104",
         title: `${fn.name} ignores an ERC-20 bool`,
-        confidence: "medium",
+        confidence: assumesSuccess && !downgraded ? "high" : "medium",
         detector: "erc20-unchecked",
         summary: downgraded
           ? "transfer or transferFrom is used as a statement. Tokens that return false instead of reverting (including some USDT-like tokens, and any token that can fail a fee) look successful. Downgraded: the function is access-controlled, the recipient is a fixed/stored address, and a silent failure leaves the tokens in the contract for a retry — no attacker can exploit the discarded bool and no third-party victim loses funds."
-          : "transfer or transferFrom is used as a statement. Tokens that return false instead of reverting (including some USDT-like tokens, and any token that can fail a fee) look successful.",
+          : "transfer or transferFrom is used as a statement. Tokens that return false instead of reverting (including some USDT-like tokens, and any token that can fail a fee) look successful." +
+            (assumesSuccess
+              ? " Confidence raised: a state write after the call assumes the transfer succeeded — the position or credit is recorded whether or not the tokens moved, which is exactly how a false-returning token leaves an unpaid-but-open position (the WBTCSwap shape)."
+              : ""),
         walkthrough: "1. The ERC-20 spec allows returning false.\n2. A statement-level call discards the bool.\n3. The contract then mints credit, releases collateral, or burns a position the token never moved.",
         exploitSolidity: `contract FalseToken {
     function transfer(address, uint256) external pure returns (bool) { return false; }
@@ -5027,7 +5203,8 @@ function scanSimple(
   if (/tx\.origin/.test(src)) {
     if (isEoaGateOnly(src)) {
       push(make({
-        severity: "low",
+        // Fix 39: EOA-gate — info, not a vulnerability (see modifier path).
+        severity: "info",
         swc: "SWC-115",
         title: `${fn.name} uses an EOA-gate (tx.origin == msg.sender)`,
         confidence: "high",
@@ -5067,6 +5244,63 @@ function scanSimple(
         exploitSolidity: originExploit(contract.name, fn.name),
         remediationSolidity: originFix(),
         locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+
+  // Fix 44: pseudo-constructor (SWC-118). A function that LOOKS like
+  // the constructor — named as (or nearly as) the contract — but is
+  // not one is an ordinary public function: anyone can call it after
+  // deployment, and call it again. When it assigns owner-like state
+  // or mints/distributes, re-running it is a takeover plus an
+  // unbounded mint. ALIVA's AlivaToken() is the archetype (round 5,
+  // fork-confirmed): owner = msg.sender, then distr() mints
+  // 1,000,000e8 — repeatably. Auth is re-checked WITHOUT the
+  // constructor exemption scanContract applies (a >= 0.5 name-based
+  // "constructor" reaches here marked as a constructor, and the
+  // exemption would otherwise call it authed).
+  const pseudoName = pseudoConstructorOf(fn, contract, model);
+  if (
+    pseudoName !== null &&
+    !isAuthed(fn, contract, model) &&
+    fn.visibility !== "internal" &&
+    fn.visibility !== "private" &&
+    fn.mutability !== "view" &&
+    fn.mutability !== "pure"
+  ) {
+    const setsOwner = contract.stateVars.some(
+      (v) => PRIVILEGED.test(v.name) && new RegExp(`\\b${escapeRegExp(v.name)}\\s*=(?!=)`).test(src),
+    );
+    // The mint may sit one call deep (ALIVA's distr is private and
+    // called from AlivaToken), so same-contract callees count.
+    const mints =
+      mintEffectIn(src) ||
+      contract.functions.some(
+        (g) => g.name !== fn.name && new RegExp(`\\b${escapeRegExp(g.name)}\\s*\\(`).test(src) && mintEffectIn(g.source),
+      );
+    if (setsOwner || mints) {
+      push(make({
+        severity: setsOwner && mints ? "critical" : "high",
+        swc: "SWC-118",
+        title: `${pseudoName} is a pseudo-constructor in ${contract.name} — anyone can re-run it`,
+        confidence: setsOwner && mints ? "high" : "medium",
+        detector: "pseudo-constructor",
+        summary: `${pseudoName} is named ${fn.isConstructor ? "exactly" : "nearly"} as its contract ${contract.name}, but the compiler does not treat it as a constructor (${fn.isConstructor ? "since solc 0.5 only the constructor keyword makes a constructor" : "a constructor must match the contract name exactly"}), so it is an ordinary public function. It ${setsOwner && mints ? "assigns privileged ownership and mints/distributes tokens" : setsOwner ? "assigns privileged ownership" : "mints/distributes tokens"} with no access check — any account can call it after deployment, and call it again.`,
+        walkthrough: [
+          `1. ${pseudoName} resembles ${contract.name}'s constructor, so reviewers and deployers assume it ran once at deployment and can never run again.`,
+          "2. It is not a constructor, so it stays on the deployed contract as a public entrypoint.",
+          `3. It ${setsOwner ? "sets the owner to the caller" : "mints/distributes tokens"}${mints && setsOwner ? " and mints/distributes tokens" : ""} with no msg.sender check.`,
+          "4. An attacker calls it once to take the role (and again to mint again) — no front-running or deployment race needed.",
+        ].join("\n"),
+        exploitSolidity: `interface IVictim { function ${pseudoName}() external; }
+        // From any account, at any time after deployment:
+        IVictim(victim).${pseudoName}();`,
+        remediationSolidity: `// Use the constructor keyword (solc >= 0.4.22) so setup runs once:
+        // constructor() { owner = msg.sender; }
+        // Pre-0.5, the function name must match the contract name EXACTLY.`,
+        locationFn: pseudoName,
         locationLine: fn.line,
         snippet: snippet(parsed, fn.line + delta, delta),
       }));

@@ -120,6 +120,10 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   "unprotected-admin": "caller-identity",
   "unprotected-ether": "caller-identity",
   "unprotected-initializer": "caller-identity",
+  // SWC-118 (2026-11-06, Fix 44): a pseudo-constructor is an entry point
+  // that never establishes who may call it — the setup function stays
+  // public forever. Caller identity, like the initializer it mimics.
+  "pseudo-constructor": "caller-identity",
   // price-plumbing
   "balance-as-price": "price-plumbing",
   "oracle-spot": "price-plumbing",

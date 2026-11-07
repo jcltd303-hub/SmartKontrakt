@@ -105,7 +105,16 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // flavors and restores the baseline-ordering helpers the second push
   // overwrote, plus the scopeSourcifyFiles extraction for the frozen
   // bundle regression corpus.
-  assert.equal(ANALYZER_BASELINE, "2026-11-01.23");
+  // And to 2026-11-06.24 with the ledger-driven calibration batch
+  // (Fixes 39-44): the pseudo-constructor detector (SWC-118), the
+  // tx-origin != EOA-gate strip + info demotion, the read-only-
+  // reentrancy value-decision demotion, the delegatecall
+  // fixed-target/fixed-calldata demotion, the unchecked-call notch
+  // down, and the erc20-unchecked write-after-call confidence raise.
+  // (.21-.23 were bumped without pin entries in this list; the .24
+  // bump also re-pins the source digest below, which had drifted
+  // stale on main through the 2026-11-02..06 detector commits.)
+  assert.equal(ANALYZER_BASELINE, "2026-11-06.24");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });
@@ -145,7 +154,7 @@ test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
   const digest = h.digest("hex").slice(0, 12);
 
   // Update this constant ONLY together with ANALYZER_BASELINE. Both move, or neither.
-  const DETECTOR_SOURCE_DIGEST = "70fbc06b1457";
+  const DETECTOR_SOURCE_DIGEST = "cb54e8056e6c";
 
   // No placeholder branch: the digest is pinned, so a comparison against a sentinel is
   // dead code and TS rightly calls it unintentional. When the sources change, the

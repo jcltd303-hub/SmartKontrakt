@@ -120,6 +120,12 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "unprotected-admin": "access_control",
   "unprotected-ether": "access_control",
   "unprotected-initializer": "access_control",
+  // SWC-118 (2026-11-06, Fix 44): a function named as (or nearly as) its
+  // contract that the compiler does not treat as a constructor is an
+  // ordinary public function — anyone can re-run the "setup". An
+  // access-control failure in the DASP sense (the entry point exists
+  // and never checks who is calling).
+  "pseudo-constructor": "access_control",
   "default-visibility": "access_control",
   delegatecall: "access_control",
   "bytecode-delegatecall": "access_control",
