@@ -1608,7 +1608,9 @@ export function detectSource(model: SourceModel, displaySource: string, onlyCont
   if (model.versionFloor !== null && model.versionFloor < 8_000) {
     push(make({
       severity: "low",
-      swc: "SWC-101",
+      // Fix 45: this finding IS SWC-102 (outdated compiler version);
+      // it was stamped SWC-101, which belongs to unchecked-block.
+      swc: "SWC-102",
       title: "Compiler is older than 0.8.0",
       confidence: "high",
       detector: "old-compiler",
@@ -1645,6 +1647,148 @@ credit += 2; // equals 1. The deposit was not rejected.`,
         locationLine: defaults[0]?.line ?? null,
         snippet: "",
       }));
+    }
+  }
+
+  // Fix 46: state variable default visibility (SWC-108). A state
+  // variable with no visibility keyword is internal — never private,
+  // and visible to every derived contract. The SWC-100 rule covers
+  // functions pre-0.5; this is the state-variable half, all versions.
+  // Hygiene, like SWC-100: low.
+  // Fix 51 (state half): unused state variables (SWC-131). A non-public,
+  // non-constant state variable whose name appears nowhere else in the
+  // stripped source is dead state — it costs a storage slot in the
+  // layout and misleads reviewers about what the contract tracks.
+  // Public variables are excluded (the compiler-generated getter is an
+  // external use), as are constants/immutables (no slot at runtime in
+  // the same sense, and name references are inlined). Info.
+  {
+    const wholeClean = stripCommentsAndStrings(model.parsedSource);
+    for (const contract of scopedContracts) {
+      if (contract.kind === "interface") continue;
+      const defaultVis = contract.stateVars.filter(
+        (v) => v.visibility === "default" && !v.constOrImmutable,
+      );
+      if (defaultVis.length) {
+        push(make({
+          severity: "low",
+          swc: "SWC-108",
+          title: `State variables in ${contract.name} have no explicit visibility`,
+          confidence: "high",
+          detector: "state-var-default-visibility",
+          summary: `${defaultVis.map((v) => v.name).join(", ")} declare no visibility, so they default to internal: readable by this contract and every contract that inherits it, and writable by all of them. Internal is not private, and it is not a considered choice unless the author wrote it. Declare the visibility the design intends.`,
+          walkthrough: "1. A state variable without a visibility keyword defaults to internal.\n2. Derived contracts can read and write it, whether or not the author intended that.\n3. Anything that must stay inside this contract needs `private`; anything heirs need should say `internal` on purpose.",
+          exploitSolidity: "",
+          remediationSolidity: "uint256 private totalDeposits; // or internal / public — but say it",
+          locationFn: null,
+          locationLine: contract.line,
+          snippet: snippet(parsed, contract.line + delta, delta),
+        }));
+      }
+      const unusedVars = contract.stateVars.filter(
+        (v) =>
+          !v.constOrImmutable &&
+          v.visibility !== "public" &&
+          wordCount(wholeClean, v.name) <= 1,
+      );
+      if (unusedVars.length) {
+        push(make({
+          severity: "info",
+          swc: "SWC-131",
+          title: `Unused state variable${unusedVars.length === 1 ? "" : "s"} in ${contract.name}`,
+          confidence: "medium",
+          detector: "unused-variable",
+          summary: `${unusedVars.map((v) => v.name).join(", ")} ${unusedVars.length === 1 ? "is" : "are"} declared but never read or written anywhere in the source. Dead state still occupies a slot in the storage layout and reads as live accounting to a reviewer. Remove it, or wire it in.`,
+          walkthrough: "1. The variable is declared once and referenced nowhere else.\n2. It occupies a storage slot, shifting the layout heirs and proxies must match.\n3. Delete it, or use it — a declared-but-dead accounting variable is how a reviewer gets misled about what is tracked.",
+          exploitSolidity: "",
+          remediationSolidity: "// Remove the declaration, or reference it where the accounting belongs.",
+          locationFn: null,
+          locationLine: contract.line,
+          snippet: snippet(parsed, contract.line + delta, delta),
+        }));
+      }
+    }
+  }
+
+  // Fix 56: incorrect inheritance order (SWC-125). Two in-source bases
+  // defining the same function name, with the derived contract not
+  // defining it: C3 linearization silently picks the first-listed
+  // base's implementation. Only bases present in the parsed source
+  // count — an unseen import is not evidence. Low/low.
+  // Fix 57: arbitrary jump via function-type variable (SWC-127). A
+  // function-type variable is a code pointer; the class becomes
+  // aimable when the same contract also contains inline assembly (the
+  // slot-writing half). Either half alone is not the class, so both
+  // are required. Presence-class: info/low.
+  {
+    const byName125 = new Map(model.contracts.map((c) => [c.name, c]));
+    for (const contract of scopedContracts) {
+      if (contract.kind === "interface") continue;
+      if (contract.bases.length >= 2) {
+        const bases = contract.bases
+          .map((b) => byName125.get(b))
+          .filter((b): b is ContractModel => Boolean(b));
+        if (bases.length >= 2) {
+          const seen = new Map<string, number>();
+          for (const b of bases) {
+            for (const f of b.functions) {
+              if (f.isConstructor || f.isFallback || f.isReceive) continue;
+              seen.set(f.name, (seen.get(f.name) ?? 0) + 1);
+            }
+          }
+          const own = new Set(contract.functions.map((f) => f.name));
+          const contested = [...seen.entries()]
+            .filter(([n, k]) => k >= 2 && !own.has(n))
+            .map(([n]) => n);
+          if (contested.length) {
+            push(make({
+              severity: "low",
+              swc: "SWC-125",
+              title: `${contract.name} inherits contested functions (${contested.join(", ")}) without overriding them`,
+              confidence: "low",
+              detector: "inheritance-order",
+              summary: `${contested.join(", ")} ${contested.length === 1 ? "is" : "are"} defined by more than one of ${contract.name}'s base contracts, and ${contract.name} does not define ${contested.length === 1 ? "it" : "them"}. C3 linearization resolves the contest silently in favour of the first-listed base — if the author expected the other base's version, the deployed behaviour is the wrong one and nothing in the source says so. Override explicitly and name the intended implementation.`,
+              walkthrough: "1. Two bases define the same function name.\n2. The derived contract does not define it, so linearization picks one.\n3. The pick follows the order of the inheritance list, not the author's mental model.",
+              exploitSolidity: "",
+              remediationSolidity: `// In ${contract.name}: override the contested function and call the intended base explicitly.`,
+              locationFn: null,
+              locationLine: contract.line,
+              snippet: snippet(parsed, contract.line + delta, delta),
+            }));
+          }
+        }
+      }
+      const hasAssembly =
+        contract.functions.some((f) => /\bassembly\s*\{/.test(f.source)) ||
+        contract.modifiers.some((md) => /\bassembly\s*\{/.test(md.source));
+      if (hasAssembly) {
+        const fpVars = contract.stateVars
+          .filter((v) => v.typeName === "FunctionTypeName")
+          .map((v) => v.name);
+        for (const f of contract.functions) {
+          for (const m of stripCommentsAndStrings(f.source).matchAll(
+            /\bfunction\s*\([^)]*\)\s+(?:internal|external)\s+([A-Za-z_]\w*)\s*(?:;|=)/g,
+          )) {
+            fpVars.push(m[1]);
+          }
+        }
+        if (fpVars.length) {
+          push(make({
+            severity: "info",
+            swc: "SWC-127",
+            title: `${contract.name} combines a function-type variable with inline assembly`,
+            confidence: "low",
+            detector: "function-type-jump",
+            summary: `${fpVars.join(", ")} ${fpVars.length === 1 ? "is a function-type variable" : "are function-type variables"} — a stored code pointer — and the contract also contains inline assembly. Assembly that writes the pointer's storage slot (or a local aimed by assembly) can redirect the next call through it to arbitrary code. Presence-class only: this flags the combination, not a proven redirection. If the pointer is only ever assigned named functions and the assembly never touches its slot, the shape is safe — but that invariant is worth a comment.`,
+            walkthrough: "1. A function-type variable stores a code pointer in a storage slot (or on the stack).\n2. Inline assembly in the same contract can write arbitrary values to slots.\n3. If the two meet, the next call through the pointer jumps where the writer aimed it.",
+            exploitSolidity: "",
+            remediationSolidity: "// Keep assembly away from the pointer's slot, and say so in a comment reviewers can check.",
+            locationFn: null,
+            locationLine: contract.line,
+            snippet: snippet(parsed, contract.line + delta, delta),
+          }));
+        }
+      }
     }
   }
 
@@ -1795,6 +1939,23 @@ function callDataIsCallerSupplied(raw: string | undefined, fn: FnModel): boolean
   const args = m ? m[1] : "";
   if (/msg\.data/.test(args)) return true;
   return fn.params.some((p) => p.name && new RegExp(`\\b${escapeRegExp(p.name)}\\b`).test(args));
+}
+
+/** Whole-word occurrence count (Fixes 46/51 usage checks). */
+function wordCount(haystack: string, word: string): number {
+  if (!word) return 0;
+  return (haystack.match(new RegExp(`\\b${escapeRegExp(word)}\\b`, "g")) ?? []).length;
+}
+
+/** Stripped whole-source text, cached per model (Fix 55's contract-wide check). */
+const strippedWholeCache = new WeakMap<SourceModel, string>();
+function strippedWhole(model: SourceModel): string {
+  let s = strippedWholeCache.get(model);
+  if (s === undefined) {
+    s = stripCommentsAndStrings(model.parsedSource);
+    strippedWholeCache.set(model, s);
+  }
+  return s;
 }
 
 /**
@@ -3889,6 +4050,9 @@ function walkFn(
   authed: boolean,
 ): Flow {
   const flow: Flow = { seen: null, sawWrite: false, sawCall: false, callThenWrite: false, writeThenCall: false, preCallWrites: new Set(), postCallWrites: new Set(), sawEtherSend: false, sendTargets: [], allSendsAreRefunds: true, writeLines: new Map(), readLines: new Map(), calleeCalls: [], sendDetails: [] };
+  // Fix 58 (SWC-135): first statement that computes a value and
+  // discards it, if any — emitted once per function after the walk.
+  let noEffectStmt: AstNode | null = null;
   const consts = new Set(contract.stateVars.filter((v) => v.constOrImmutable).map((v) => v.name));
   const params = new Set(fn.params.map((p) => p.name).filter(Boolean));
   const inherited = inheritedFnNames(contract, model);
@@ -4780,6 +4944,31 @@ require(ok, "pay");`,
     }
     if (stmt.type === "ExpressionStatement") {
       const expr = stmt.expression as AstNode;
+      // Fix 58 (SWC-135): an expression statement whose expression is
+      // a binary/unary operation (other than an assignment or ++/--)
+      // or a bare identifier/member/index computes a value and throws
+      // it away — classically `a == b;` where `a = b;` was meant.
+      // Calls and assignments are effects and never qualify;
+      // comparisons inside if/require/return never reach this branch.
+      if (!noEffectStmt && expr) {
+        const t = expr.type as string;
+        const op = typeof expr.operator === "string" ? expr.operator : "";
+        const ASSIGN_OPS = ["=", "+=", "-=", "*=", "/=", "%=", "|=", "&=", "^=", "<<=", ">>="];
+        // Exclusions the corpus forced: `delete x;` is a UnaryOperation
+        // but IS an effect (OZ ERC721 _burn), and bare `this;` is the
+        // documented idiom for silencing the mutability warning
+        // (OZ Context._msgData) — neither is a discarded value.
+        const bareThis = t === "Identifier" && (expr as AstNode).name === "this";
+        if (
+          (t === "BinaryOperation" && !ASSIGN_OPS.includes(op)) ||
+          (t === "UnaryOperation" && op !== "++" && op !== "--" && op !== "delete") ||
+          (t === "Identifier" && !bareThis) ||
+          t === "MemberAccess" ||
+          t === "IndexAccess"
+        ) {
+          noEffectStmt = stmt;
+        }
+      }
       if (expr?.type === "FunctionCall") noteExpr(expr, true);
       else noteExpr(expr, false);
       return;
@@ -4859,6 +5048,25 @@ require(ok, "pay");`,
       locationFn: fn.name,
       locationLine: fn.line,
       snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
+  // Fix 58: code with no effects (SWC-135) — one finding per function,
+  // at the first discarded-value statement the walk recorded.
+  if (noEffectStmt) {
+    push(make({
+      severity: "low",
+      swc: "SWC-135",
+      title: `${fn.name} contains a statement with no effect`,
+      confidence: "high",
+      detector: "code-no-effects",
+      summary: "A statement in this function computes a value and discards it — it is not an assignment, not a call, and not a condition. The classic shape is a comparison typed where an assignment was meant: the check the author believes runs does not change anything. Delete the dead statement, or write the assignment/condition it was meant to be.",
+      walkthrough: "1. The statement evaluates an expression (a comparison, an arithmetic op, a bare read).\n2. The result is neither stored, returned, nor branched on.\n3. State after the statement is exactly what it was before it — including when the author meant otherwise.",
+      exploitSolidity: "",
+      remediationSolidity: `a = b; // if an assignment was meant\n// or delete the statement if it was debris`,
+      locationFn: fn.name,
+      locationLine: lineOf(noEffectStmt, delta, fn.line),
+      snippet: snippet(parsed, (noEffectStmt.loc?.start.line ?? fn.line + delta), delta),
     }));
   }
 
@@ -5301,6 +5509,313 @@ function scanSimple(
         // constructor() { owner = msg.sender; }
         // Pre-0.5, the function name must match the contract name EXACTLY.`,
         locationFn: pseudoName,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+
+  // Fixes 47–51 (SWC coverage batch, 2026-11-06): the five registry
+  // classes the engine had no rule for. All run on `clean47` (comments
+  // and strings stripped) and all are textual — the model carries no
+  // local-variable or statement AST for these shapes.
+  const clean47 = stripCommentsAndStrings(src);
+
+  // Fix 47: uninitialized storage pointer (SWC-109). Before solc 0.5,
+  // a local variable of a struct or array type declared without a data
+  // location defaults to a STORAGE pointer aimed at slot 0 — the first
+  // state variable. Writing through it overwrites owner/balance state;
+  // reading it reads that state as if it were the local. CryptoRoulette
+  // 0xfb6e71e0's play() died on exactly this in the vet program (the
+  // pointer clobbered secretNumber before the comparison). 0.5+ makes
+  // the omission a compile error, so the rule is version-gated.
+  if (model.versionFloor === null || model.versionFloor < 5_000) {
+    const storageDecls = new Set<string>();
+    for (const m of clean47.matchAll(/\b([A-Za-z_][\w.]*\[\s*\d*\s*\])\s+([A-Za-z_]\w*)\s*;/g)) {
+      storageDecls.add(`${m[1]} ${m[2]}`);
+    }
+    const structNames = new Set<string>();
+    for (const m of model.parsedSource.matchAll(/struct\s+([A-Za-z_]\w*)/g)) structNames.add(m[1]);
+    for (const s of structNames) {
+      for (const m of clean47.matchAll(new RegExp(`\\b${escapeRegExp(s)}\\s+([A-Za-z_]\\w*)\\s*;`, "g"))) {
+        storageDecls.add(`${s} ${m[1]}`);
+      }
+    }
+    if (storageDecls.size) {
+      push(make({
+        severity: "high",
+        swc: "SWC-109",
+        title: `${fn.name} declares an uninitialized storage pointer`,
+        confidence: "medium",
+        detector: "uninitialized-storage-pointer",
+        summary: `${[...storageDecls].join(", ")}: before solc 0.5 a struct/array local with no data location is a storage pointer defaulting to slot 0. It aliases the contract's first state variable, so writes through it overwrite live state (an owner, a balance, a secret) and reads return that state. Give the local an explicit location — memory for a scratch copy, or a deliberate storage reference.`,
+        walkthrough: "1. The local is declared with no memory/storage keyword, pre-0.5.\n2. The compiler points it at storage slot 0 instead of allocating memory.\n3. Field writes land on the first state variable; the function then acts on corrupted state.",
+        exploitSolidity: `// function play() { Entry e; e.bet = msg.value; } // writes slot 0`,
+        remediationSolidity: `Entry memory e; // scratch copy\n// or, deliberately:\nEntry storage e = entries[id];`,
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+
+  // Fix 48: deprecated Solidity functions (SWC-111). suicide, sha3,
+  // callcode, throw and msg.gas are pre-0.5 spellings removed or
+  // renamed since (selfdestruct, keccak256, delegatecall, revert,
+  // gasleft). Their presence dates the code and, for callcode/throw,
+  // changes semantics a modern reader will misjudge. Low.
+  {
+    const deprecated: string[] = [];
+    if (/\bsuicide\s*\(/.test(clean47)) deprecated.push("suicide() (now selfdestruct)");
+    if (/\bsha3\s*\(/.test(clean47)) deprecated.push("sha3() (now keccak256)");
+    if (/\.callcode\s*\(/.test(clean47)) deprecated.push("callcode (now delegatecall)");
+    if (/\bthrow\s*;/.test(clean47)) deprecated.push("throw (now revert/require)");
+    if (/\bmsg\.gas\b/.test(clean47)) deprecated.push("msg.gas (now gasleft())");
+    if (deprecated.length) {
+      push(make({
+        severity: "low",
+        swc: "SWC-111",
+        title: `${fn.name} uses deprecated Solidity: ${deprecated.join(", ")}`,
+        confidence: "high",
+        detector: "deprecated-solidity",
+        summary: `Deprecated pre-0.5 spellings: ${deprecated.join(", ")}. They still compile on old solc but were removed or renamed because the old forms mislead — callcode is not delegatecall's twin in every respect, and throw consumes all gas. Modernise the spelling so the code says what it does.`,
+        walkthrough: "1. The function uses a spelling solc removed or renamed after 0.4.\n2. A reader (or a port to 0.8) will misjudge semantics — most sharply for callcode and throw.\n3. Rename to the modern form and re-check the behaviour matches.",
+        exploitSolidity: "",
+        remediationSolidity: "// suicide(a) -> selfdestruct(a); sha3(x) -> keccak256(x); throw; -> revert();",
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+
+  // Fix 49: DoS with failed call (SWC-113). Payments PUSHED to many
+  // receivers inside one loop: transfer/send revert on failure (and
+  // send's false is routinely unchecked mid-loop), so one receiver
+  // that always reverts — or one contract wallet that rejects — blocks
+  // every later payment, forever, if the loop is the only path. The
+  // fix is pull payments. Medium: the shape is common in honest
+  // airdrops too, but there the blast radius is the author's choice.
+  if (
+    /\bfor\s*\(|\bwhile\s*\(/.test(clean47) &&
+    /\.length\b/.test(clean47) &&
+    /\.transfer\s*\(|\.send\s*\(/.test(clean47)
+  ) {
+    push(make({
+      severity: "medium",
+      swc: "SWC-113",
+      title: `${fn.name} pushes payments in a loop — one failing receiver blocks all`,
+      confidence: "medium",
+      detector: "dos-failed-call",
+      summary: "The function loops over a collection sending ether with transfer/send. A transfer to a receiver that reverts (or a send whose failure is ignored while state advances) breaks or desyncs the whole batch: every receiver after the failing one goes unpaid, and re-running hits the same wall. Record each payment as a claimable balance and let receivers pull.",
+      walkthrough: "1. The loop sends to receivers in sequence.\n2. One receiver reverts on receipt (or is a contract that rejects plain transfers).\n3. The batch reverts or skips accounting — later receivers are never reached, and the failure is permanent, not transient.",
+      exploitSolidity: `// Griefer registers a receiver whose fallback reverts;\n// every distribution loop through it bricks.`,
+      remediationSolidity: `pending[payee] += share; // record in the loop\n// receivers call withdraw() themselves (pull payment)`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
+  // Fix 50: DoS with block gas limit (SWC-128). A loop bounded by a
+  // STORAGE array's length grows with the contract's usage: once the
+  // array is long enough the function exceeds the block gas limit and
+  // can never run again. Distinct from bytecode gas-estimator-dos,
+  // which measures the deployed code's actual cost; this is the
+  // source shape that gets there. Medium.
+  {
+    const stateArrays = contract.stateVars
+      .filter((v) => /\[\s*\d*\s*\]$/.test(v.typeName))
+      .map((v) => v.name);
+    const grown = stateArrays.filter((name) =>
+      new RegExp(`<\\s*${escapeRegExp(name)}\\.length\\b|${escapeRegExp(name)}\\.length\\s*>`).test(clean47),
+    );
+    if (grown.length && /\bfor\s*\(|\bwhile\s*\(/.test(clean47)) {
+      push(make({
+        severity: "medium",
+        swc: "SWC-128",
+        title: `${fn.name} loops over a storage array that can outgrow the block gas limit`,
+        confidence: "medium",
+        detector: "dos-block-gas-limit",
+        summary: `The loop is bounded by ${grown.join(", ")}.length, and that array lives in storage where anyone the contract serves can grow it. Past a few thousand entries the loop costs more gas than a block holds and the function becomes permanently uncallable. Bound the work per call (pagination, an index cursor) or keep a running aggregate instead of re-walking the array.`,
+        walkthrough: "1. The loop walks a storage array end to end.\n2. The array grows with ordinary use — no attacker needed, though one can stuff it.\n3. Once iterations × per-item cost exceeds the block gas limit, every call reverts: the function is bricked by its own data.",
+        exploitSolidity: `// Register entries until users.length makes distribute() exceed the block gas limit.`,
+        remediationSolidity: `// Paginate: process [cursor, cursor + PAGE) per call and persist the cursor.`,
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+
+  // Fix 51 (parameter half): unused function parameters (SWC-131). A
+  // named parameter that appears only in the signature is dead input —
+  // the caller supplies it, the function ignores it, and whatever the
+  // caller believed it controlled (a recipient, a cap, a deadline) is
+  // not controlled. Info: interfaces and overrides produce these
+  // innocently, so body-less functions are skipped.
+  if (fn.body) {
+    const unusedParams = fn.params
+      .filter((p) => p.name && wordCount(clean47, p.name) <= 1)
+      .map((p) => p.name);
+    if (unusedParams.length) {
+      push(make({
+        severity: "info",
+        swc: "SWC-131",
+        title: `${fn.name} ignores parameter${unusedParams.length === 1 ? "" : "s"}: ${unusedParams.join(", ")}`,
+        confidence: "medium",
+        detector: "unused-variable",
+        summary: `${unusedParams.join(", ")} ${unusedParams.length === 1 ? "is" : "are"} declared in the signature and never used in the body. Whatever a caller passes there changes nothing — if the parameter was meant to bound or direct the call (an amount, a recipient, a deadline), that control does not exist. Use it, or remove it from the signature.`,
+        walkthrough: "1. The parameter is named in the signature.\n2. It never appears in the body.\n3. Callers believe they are steering the function; they are not.",
+        exploitSolidity: "",
+        remediationSolidity: "// Remove the parameter, or use it where the caller expects it to act.",
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+
+  // Fixes 52–55 (SWC coverage batch, second half, 2026-11-06): the
+  // per-function half of the remaining registry classes, on clean47.
+
+  // Fix 52: assert violation (SWC-110). assert() is for invariants
+  // that can never fail. Feeding it caller-controlled data — a
+  // parameter, msg.*, tx.* — makes it a validation check wearing an
+  // invariant's clothes: pre-0.8 a failure burns all gas, post-0.8 it
+  // raises a Panic instead of a revert-with-reason. A tautological
+  // assert (assert(true), assert(x == x)) is dead validation outright.
+  {
+    let badAssert: string | null = null;
+    for (const m of clean47.matchAll(/\bassert\s*\(([^)]*)\)/g)) {
+      const cond = m[1];
+      if (
+        /\bmsg\.|\btx\./.test(cond) ||
+        fn.params.some((p) => p.name && new RegExp(`\\b${escapeRegExp(p.name)}\\b`).test(cond)) ||
+        /^\s*true\s*$/.test(cond) ||
+        /^\s*([A-Za-z_][\w.]*)\s*==\s*\1\s*$/.test(cond)
+      ) {
+        badAssert = cond.trim();
+        break;
+      }
+    }
+    if (badAssert !== null) {
+      push(make({
+        severity: "medium",
+        swc: "SWC-110",
+        title: `${fn.name} uses assert() on a runtime condition`,
+        confidence: "low",
+        detector: "assert-violation",
+        summary: `assert(${badAssert}) checks a condition that depends on the caller or can never fail. assert is reserved for invariants: on failure it consumes all remaining gas (pre-0.8) or raises an opaque Panic (0.8+), and callers/tooling cannot distinguish it from an internal bug. Validate inputs and external state with require/revert, and keep assert for state the function itself proves.`,
+        walkthrough: "1. The assert condition involves caller-controlled data (or is tautological).\n2. A caller can make it fail at will — or it can never fail, so the check does not exist.\n3. The failure mode is a gas-burning assert/Panic, not a clean revert with a reason.",
+        exploitSolidity: `// Call with input that fails the condition: full-gas burn (pre-0.8) or an opaque Panic.`,
+        remediationSolidity: `require(amt > 0, "amount"); // validation\n// assert(total == a + b);   // invariants only`,
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+
+  // Fix 53: requirement violation (SWC-123). A require whose condition
+  // is constant or compares a value to itself can never do its job —
+  // the guard the author believes exists does not. v1 covers the two
+  // provable shapes (constant condition, self-comparison);
+  // tautological conjunctions (require(x && true)) are deliberately
+  // left out — the regex for them mis-fires on real conditions.
+  if (
+    /\brequire\s*\(\s*(?:true|false|\d+)\s*[,\)]/.test(clean47) ||
+    /\brequire\s*\(\s*([A-Za-z_][\w.]*)\s*(?:==|>=|<=)\s*\1\s*[,\)]/.test(clean47)
+  ) {
+    push(make({
+      severity: "low",
+      swc: "SWC-123",
+      title: `${fn.name} has a require() that cannot check anything`,
+      confidence: "medium",
+      detector: "requirement-violation",
+      summary: "A require in this function has a constant condition or compares a value to itself, so it always passes (or always fails) regardless of the call. Whatever it was meant to guard — an amount, a sender, a state precondition — is unguarded. Write the condition that was intended, comparing the two different things the check is about.",
+      walkthrough: "1. The require's condition is constant or a self-comparison.\n2. It therefore passes (or reverts) for every possible call.\n3. The guarded operation runs as if the check were not there — because it isn't.",
+      exploitSolidity: "",
+      remediationSolidity: `require(amount > 0, "amount"); // two different operands, a real condition`,
+      locationFn: fn.name,
+      locationLine: fn.line,
+      snippet: snippet(parsed, fn.line + delta, delta),
+    }));
+  }
+
+  // Fix 54: insufficient gas griefing (SWC-126). A low-level call with
+  // NO gas stipulation forwards everything; when the function's own
+  // STATE bookkeeping runs after the call, the callee can consume the
+  // gas and grief that bookkeeping. A require on the result alone
+  // does NOT qualify: the corpus check flagged OpenZeppelin's
+  // Address.sendValue — the canonical correct send helper — on
+  // exactly that shape (call, require(success), nothing after), and
+  // a bare revert on a failed call is not griefing damage. Distinct
+  // from arbitrary-dispatch-call (caller-supplied target = access
+  // problem) and from hardcoded-gas (too LITTLE gas stipulated).
+  // Presence-class: text cannot prove the callee can actually burn
+  // the budget, so low/low.
+  {
+    let griefing = false;
+    for (const m of clean47.matchAll(/\.call\s*(\{[^}]*\})?\s*\(/g)) {
+      if (/\bgas\s*:/.test(m[1] ?? "")) continue;
+      const tail = clean47.slice((m.index ?? 0) + m[0].length);
+      const stateWriteAfter = contract.stateVars.some((v) =>
+        new RegExp(`\\b${escapeRegExp(v.name)}\\s*(\\[[^\\]]*\\]\\s*)?[-+*/%]?=(?!=)`).test(tail),
+      );
+      if (stateWriteAfter) {
+        griefing = true;
+        break;
+      }
+    }
+    if (griefing) {
+      push(make({
+        severity: "low",
+        swc: "SWC-126",
+        title: `${fn.name} forwards all gas to a call its bookkeeping depends on`,
+        confidence: "low",
+        detector: "gas-griefing",
+        summary: "The function makes a low-level call with no gas stipulation and then writes state. The callee can consume nearly all forwarded gas, so the bookkeeping that must run after the call is left on fumes. Stipulate a gas budget sized for the callee's honest work, or move the state write before the call.",
+        walkthrough: "1. The call forwards all remaining gas by default.\n2. The callee burns it deliberately (a gas-guzzling loop or fallback).\n3. The caller's post-call require/state write is left with too little gas to complete — the operation is griefed even though the call itself was honest.",
+        exploitSolidity: `// Callee fallback: burn gas until the caller's remaining budget cannot finish its bookkeeping.`,
+        remediationSolidity: `(bool ok, ) = target.call{gas: 100_000}(data); // a budget the bookkeeping survives`,
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+
+  // Fix 55: typographical error (SWC-129). `=+` / `=-` typed for
+  // `+=` / `-=`: the statement ASSIGNS a signed value instead of
+  // accumulating. The bare regex is a false-positive fountain (x = -1
+  // is legitimate), so the match only counts in an accumulator
+  // context: the same variable accumulates with += / -= somewhere in
+  // the contract, or the typo sits inside a loop with a non-literal
+  // right-hand side (a loop resetting a variable to a signed literal
+  // is legitimate; a loop assigning a computed fee with =+ is not).
+  {
+    const typoVars = new Set<string>();
+    const whole = strippedWhole(model);
+    for (const m of clean47.matchAll(/\b([A-Za-z_]\w*)\s*(?:=\+|=-)\s*/g)) {
+      const name = m[1];
+      const accumulates = new RegExp(`\\b${escapeRegExp(name)}\\s*(?:\\+=|-=)`).test(whole);
+      const loopBefore = /\bfor\s*\(|\bwhile\s*\(/.test(clean47.slice(0, m.index ?? 0));
+      const rhs = clean47.slice((m.index ?? 0) + m[0].length);
+      if (accumulates || (loopBefore && !/^\d/.test(rhs))) typoVars.add(name);
+    }
+    if (typoVars.size) {
+      push(make({
+        severity: "medium",
+        swc: "SWC-129",
+        title: `${fn.name} assigns with =+ / =- where accumulation was meant (${[...typoVars].join(", ")})`,
+        confidence: "medium",
+        detector: "typographical-error",
+        summary: `${[...typoVars].join(", ")} is assigned with =+ or =- in an accumulator context. That is not compound assignment: it overwrites the variable with the signed right-hand side, discarding everything accumulated so far — the Rubixi shape. If accumulation was meant, the operator is += / -=.`,
+        walkthrough: "1. The variable accumulates elsewhere (or is worked in a loop).\n2. This statement uses =+ / =- instead of += / -=.\n3. The stored total resets to the single signed value; prior contributions vanish from the accounting.",
+        exploitSolidity: `// total =+ fee;  // total is now just fee — every earlier contribution is gone`,
+        remediationSolidity: `total += fee; // compound assignment, if accumulation was meant`,
+        locationFn: fn.name,
         locationLine: fn.line,
         snippet: snippet(parsed, fn.line + delta, delta),
       }));

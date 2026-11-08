@@ -114,6 +114,10 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   "public-key-account-trust": "caller-identity",
   "self-attested-auth": "caller-identity",
   "shadowing": "caller-identity",
+  // SWC-108 (2026-11-06, Fix 46): an undeclared visibility is an
+  // unconsidered exposure of state to heirs — caller identity's state
+  // half, next to default-visibility.
+  "state-var-default-visibility": "caller-identity",
   "token-drain": "caller-identity",
   "tx-origin": "caller-identity",
   "unauthenticated-batch-call": "caller-identity",
@@ -135,6 +139,9 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   // arithmetic
   "div-before-mul": "arithmetic",
   "unchecked-block": "arithmetic",
+  // SWC-129 (2026-11-06, Fix 55): the typo is filed by its effect —
+  // an accumulator that silently resets is an arithmetic fault.
+  "typographical-error": "arithmetic",
   // randomness
   "bytecode-timestamp": "randomness",
   "timestamp": "randomness",
@@ -146,6 +153,14 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   "idle-gap-interest-accrual": "value-and-settlement",
   "shared-unlock-delta-netting": "value-and-settlement",
   "gas-estimator-dos": "value-and-settlement",
+  // SWC-113 / SWC-128 (2026-11-06, Fixes 49/50): settlement that can be
+  // blocked — a pushed-payment loop one bad receiver bricks, and a
+  // storage-array loop that outgrows the block gas limit.
+  "dos-failed-call": "value-and-settlement",
+  "dos-block-gas-limit": "value-and-settlement",
+  // SWC-126 (2026-11-06, Fix 54): the same settlement family — the
+  // bookkeeping after the call is what gets starved.
+  "gas-griefing": "value-and-settlement",
   "hardcoded-gas": "value-and-settlement",
   "liquidation-without-health-check": "value-and-settlement",
   "locked-ether": "value-and-settlement",
@@ -178,6 +193,12 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   "bytecode-selfdestruct": "evm-and-bytecode",
   "bytecode-unchecked-call": "evm-and-bytecode",
   "erc20-unchecked": "evm-and-bytecode",
+  // SWC-109 (2026-11-06, Fix 47): a storage-layout aliasing fault —
+  // the local IS slot 0. EVM mechanics, not a caller or hygiene issue.
+  "uninitialized-storage-pointer": "evm-and-bytecode",
+  // SWC-127 (2026-11-06, Fix 57): a code pointer is EVM mechanics —
+  // the jump target lives in a slot, like SWC-109's aliasing.
+  "function-type-jump": "evm-and-bytecode",
   "selfdestruct": "evm-and-bytecode",
   "unchecked-call": "evm-and-bytecode",
   // hygiene
@@ -185,6 +206,17 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   "missing-event": "hygiene",
   "old-compiler": "hygiene",
   "rtl-override": "hygiene",
+  // SWC-111 / SWC-131 (2026-11-06, Fixes 48/51): removed spellings and
+  // dead declarations — code that misleads the reader, not the EVM.
+  "deprecated-solidity": "hygiene",
+  "unused-variable": "hygiene",
+  // SWC coverage second half (2026-11-06, Fixes 52/53/56/58):
+  // checks that misstate what they check, or statements that do
+  // nothing — the reader is misled, not the EVM.
+  "assert-violation": "hygiene",
+  "requirement-violation": "hygiene",
+  "inheritance-order": "hygiene",
+  "code-no-effects": "hygiene",
   // analyzer-meta
   "parse": "analyzer-meta",
   "report-cap": "analyzer-meta",

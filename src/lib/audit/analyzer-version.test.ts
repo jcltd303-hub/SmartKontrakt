@@ -114,7 +114,13 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // (.21-.23 were bumped without pin entries in this list; the .24
   // bump also re-pins the source digest below, which had drifted
   // stale on main through the 2026-11-02..06 detector commits.)
-  assert.equal(ANALYZER_BASELINE, "2026-11-06.24");
+  // And to 2026-11-06.25 with the SWC coverage batch, first half
+  // (Fixes 45-51): old-compiler re-stamped SWC-102, plus new
+  // detectors for SWC-108, 109, 111, 113, 128 and 131.
+  // And to 2026-11-06.26 with the second half (Fixes 52-58):
+  // SWC-110, 123, 125, 126, 127, 129 and 135 — full registry
+  // coverage, 37/37.
+  assert.equal(ANALYZER_BASELINE, "2026-11-06.26");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });
@@ -154,7 +160,7 @@ test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
   const digest = h.digest("hex").slice(0, 12);
 
   // Update this constant ONLY together with ANALYZER_BASELINE. Both move, or neither.
-  const DETECTOR_SOURCE_DIGEST = "cb54e8056e6c";
+  const DETECTOR_SOURCE_DIGEST = "fc67873c7e90";
 
   // No placeholder branch: the digest is pinned, so a comparison against a sentinel is
   // dead code and TS rightly calls it unintentional. When the sources change, the

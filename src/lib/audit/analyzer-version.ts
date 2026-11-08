@@ -413,8 +413,48 @@ import {
  *                archive refreshes. (This bump also re-pins the
  *                detector-source digest, which had drifted stale on
  *                main through the 2026-11-02..06 detector commits.)
+ * 2026-11-06.25 — SWC coverage batch, first half (Fixes 45-51): the
+ *                registry classes the engine had no rule for. Fix 45:
+ *                old-compiler re-stamped SWC-101 → SWC-102 (it IS the
+ *                outdated-compiler finding; 101 belongs to
+ *                unchecked-block). New detectors: state-var-default-
+ *                visibility (SWC-108), uninitialized-storage-pointer
+ *                (SWC-109 — the CryptoRoulette shape, version-gated to
+ *                pre-0.5 where the compiler allows it),
+ *                deprecated-solidity (SWC-111), dos-failed-call
+ *                (SWC-113), dos-block-gas-limit (SWC-128, the source
+ *                shape next to bytecode gas-estimator-dos) and
+ *                unused-variable (SWC-131, state variables and function
+ *                parameters). All six registered in smartbugs.ts and
+ *                detector-registry.ts. The remaining registry classes
+ *                (SWC-110, 123, 125, 126, 127, 129, 135) are specced in
+ *                the coverage brief for a follow-up batch. Same inputs
+ *                now produce different records, so the archive
+ *                refreshes.
+ * 2026-11-06.26 — SWC coverage batch, second half (Fixes 52-58),
+ *                implementing the brief the .25 entry pointed at:
+ *                assert-violation (SWC-110, caller-controlled or
+ *                tautological assert conditions), requirement-
+ *                violation (SWC-123, constant or self-comparing
+ *                require — the two provable shapes only),
+ *                inheritance-order (SWC-125, contested in-source base
+ *                functions the derived contract does not override),
+ *                gas-griefing (SWC-126, unstipulated call followed by
+ *                state bookkeeping — a bare require after the call was
+ *                excluded after the corpus flagged OZ's sendValue),
+ *                typographical-error (SWC-129, =+ / =- in an
+ *                accumulator context only — the bare pattern is a
+ *                false-positive fountain), function-type-jump
+ *                (SWC-127, function-type variable + inline assembly,
+ *                presence-class) and code-no-effects (SWC-135, an AST
+ *                rule in walkFn: a statement that computes and
+ *                discards). All seven registered in smartbugs.ts and
+ *                detector-registry.ts. With this batch every SWC id
+ *                100-136 carries a detector or a stamped finding.
+ *                Same inputs now produce different records, so the
+ *                archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-11-06.24";
+export const ANALYZER_BASELINE = "2026-11-06.26";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

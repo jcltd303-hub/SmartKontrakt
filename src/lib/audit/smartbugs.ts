@@ -126,6 +126,9 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   // access-control failure in the DASP sense (the entry point exists
   // and never checks who is calling).
   "pseudo-constructor": "access_control",
+  // SWC-108 (2026-11-06, Fix 46): the state-variable half of the
+  // default-visibility class.
+  "state-var-default-visibility": "access_control",
   "default-visibility": "access_control",
   delegatecall: "access_control",
   "bytecode-delegatecall": "access_control",
@@ -152,6 +155,14 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "bytecode-selfdestruct": "unchecked_low_level_calls",
   // denial_of_service
   "strict-balance": "denial_of_service",
+  // SWC-113 / SWC-128 (2026-11-06, Fixes 49/50): pushed-payment loops
+  // and storage-array loops — the two DoS shapes the registry names.
+  "dos-failed-call": "denial_of_service",
+  "dos-block-gas-limit": "denial_of_service",
+  // SWC-126 (2026-11-06, Fix 54): gas griefing is a denial of service
+  // by budget exhaustion — the callee eats the gas the caller's own
+  // bookkeeping needed.
+  "gas-griefing": "denial_of_service",
   // 2026-10-27: the benchmark measured these two as presence findings with no
   // signal — eth-gas-stipend fired on 146 of 143 contracts (0.06), locked-ether
   // on 41 (0.00). Neither is a denial of service: nothing is overwhelmed, and
@@ -184,6 +195,24 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "fee-on-transfer": "other",
   "storage-gap": "other",
   "external-contract-referencing": "other",
+  // SWC-109 / SWC-111 / SWC-131 (2026-11-06, Fixes 47/48/51): the
+  // registry classes DASP has no bucket for — storage-pointer aliasing,
+  // removed spellings, dead declarations.
+  "uninitialized-storage-pointer": "other",
+  "deprecated-solidity": "other",
+  "unused-variable": "other",
+  // SWC coverage second half (2026-11-06, Fixes 52/53/56/57/58):
+  // DASP has no bucket for assert misuse, dead requires, inheritance
+  // resolution, function-pointer jumps, or discarded-value statements.
+  "assert-violation": "other",
+  "requirement-violation": "other",
+  "inheritance-order": "other",
+  "function-type-jump": "other",
+  "code-no-effects": "other",
+  // SWC-129: a typo whose EFFECT is arithmetic corruption — DASP
+  // files the curated cases under "other", so it joins them here;
+  // the family registry files it under arithmetic.
+  "typographical-error": "other",
   // A name-resolution bug (the write lands in the shadow variable), not a
   // modifier/tx.origin failure — template 33's own index label is "other".
   shadowing: "other",
