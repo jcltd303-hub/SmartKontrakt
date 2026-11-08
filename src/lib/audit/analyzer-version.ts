@@ -453,8 +453,46 @@ import {
  *                100-136 carries a detector or a stamped finding.
  *                Same inputs now produce different records, so the
  *                archive refreshes.
+ * 2026-11-07.27 — Benchmark-driven batch (Fixes 59-60), from the
+ *                SmartBugs Curated run against .26 (143 contracts,
+ *                207 labeled instances): SWC-118 recall was 1 of 5
+ *                exemplars and SWC-124 had no source-level rule at
+ *                all. Fix 59 widens pseudo-constructor: containment
+ *                (IamMissing in Missing, initWallet in Wallet), a
+ *                function literally named Constructor, creator added
+ *                to the gate's privileged set (rubixi, wallet_03),
+ *                and the absent-constructor shape — pre-0.5, no
+ *                constructor in the contract or its in-source bases
+ *                — at one tier below the name-matched shapes,
+ *                privileged assignment required. Corpus refinements:
+ *                the name shapes require NO working constructor
+ *                (Dust's convertEtherToDust / convertDustToEther are
+ *                ordinary converters in a contract with a real
+ *                `function Dust()`), the constructor test is
+ *                case-sensitive like the compiler's (missing() in
+ *                Missing stays caught), and a weak hit is withdrawn
+ *                when the function delegates through super to an
+ *                authed base initializer (Marketplace → registry-
+ *                gated Upgradeable.initialize). SWC-118 is now 5/5
+ *                on the exemplars; the corpus smoke over the round
+ *                4/5 vet sources (4,291 files) yields exactly ALIVA
+ *                plus two true shapes the widening was built for —
+ *                HGToken's `Constructor` in Owned and VoipToken's
+ *                typo'd VoipTken. Fix 60 adds arbitrary-storage-write
+ *                (SWC-124, source level): a state-array element write
+ *                through a parameter-derived index where the array's
+ *                length is directly mutable from unauthenticated
+ *                code (grown to fit the key — mapping_write — or
+ *                decremented toward underflow —
+ *                arbitrary_location_write_simple). Mapping writes,
+ *                bounded setters with an immovable length, constant
+ *                indices, authed functions and member-of-element
+ *                writes stay silent; 0 corpus hits. Benchmark after:
+ *                Pass A 94.2% → 94.7%, Pass B 93.6% → 94.6%, SWC-124
+ *                0 → 2 of 2 exemplars. Same inputs now produce
+ *                different records, so the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-11-06.26";
+export const ANALYZER_BASELINE = "2026-11-07.27";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

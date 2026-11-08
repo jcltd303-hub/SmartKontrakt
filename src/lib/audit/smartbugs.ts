@@ -136,6 +136,11 @@ export const SMARTBUGS_BY_DETECTOR: Record<string, SmartBugsCategory> = {
   "bytecode-proxy": "access_control",
   "assembly-sstore": "access_control",
   "assembly-param-sstore": "access_control",
+  // SWC-124 (2026-11-07, Fix 60): the source-level arbitrary write —
+  // a state-array element assignment through a caller-chosen index
+  // whose length bound the caller can move. Same DASP home as the
+  // assembly sstore shapes.
+  "arbitrary-storage-write": "access_control",
   extcodesize: "access_control",
   centralization: "access_control",
   // SWC-105: a token-moving function with no access check (remediation is

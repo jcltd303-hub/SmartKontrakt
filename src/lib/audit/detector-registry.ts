@@ -98,6 +98,11 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   "signature-field-omission": "caller-identity",
   "assembly-param-sstore": "caller-identity",
   "assembly-sstore": "caller-identity",
+  // SWC-124 (2026-11-07, Fix 60): the source-level arbitrary write
+  // sits with the other SWC-124 entry points — a caller-chosen
+  // storage target is a caller-identity failure (no check on who may
+  // write, or where).
+  "arbitrary-storage-write": "caller-identity",
   "bridge-message-auth": "caller-identity",
   "bytecode-callcode": "caller-identity",
   "bytecode-delegatecall": "caller-identity",

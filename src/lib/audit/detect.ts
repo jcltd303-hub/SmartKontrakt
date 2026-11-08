@@ -1959,6 +1959,46 @@ function strippedWhole(model: SourceModel): string {
 }
 
 /**
+ * Fix 59: the privileged-name set for the pseudo-constructor gate.
+ * The shared PRIVILEGED list is calibrated by several other
+ * detectors and stays untouched; this gate additionally credits
+ * `creator` — the role name in two of the five SmartBugs incorrect-
+ * constructor exemplars (rubixi's DynamicPyramid and wallet_03's
+ * initWallet each assign `creator = msg.sender` and nothing else
+ * privileged, so Fix 44's gate could not see them at all).
+ */
+const PSEUDO_PRIVILEGED = /^(owner|admin|governor|implementation|pendingOwner|operator|oracle|beacon|logic|feeRecipient|treasury|creator)$/;
+
+/**
+ * Fix 59: does this contract define a constructor — its own, or one
+ * inherited from an in-source base? The parser marks name-based
+ * constructors isConstructor at any version; the name comparison
+ * covers bases the parser resolved differently. The comparison is
+ * CASE-SENSITIVE, mirroring the compiler: `function missing()` in
+ * contract `Missing` is NOT a constructor (it is benchmark name2,
+ * the one exemplar Fix 44 caught) — a case-insensitive check here
+ * would count that pseudo-constructor as its own disproof.
+ */
+function contractHasConstructor(contract: ContractModel, model: SourceModel): boolean {
+  const own = (c: ContractModel) =>
+    c.functions.some((g) => g.isConstructor || g.name === c.name);
+  if (own(contract)) return true;
+  const byName = new Map(model.contracts.map((c) => [c.name, c]));
+  const seen = new Set<string>();
+  const queue = [...contract.bases];
+  while (queue.length > 0) {
+    const b = queue.shift() as string;
+    if (seen.has(b)) continue;
+    seen.add(b);
+    const bc = byName.get(b);
+    if (!bc) continue;
+    if (own(bc)) return true;
+    queue.push(...bc.bases);
+  }
+  return false;
+}
+
+/**
  * Fix 44: the pseudo-constructor shapes (SWC-118). Returns the
  * function's effective name when it is a constructor look-alike that
  * the compiler does NOT treat as a constructor:
@@ -1983,18 +2023,72 @@ function strippedWhole(model: SourceModel): string {
  *     model renames it to "constructor"); a keyword constructor's
  *     header does not start with `function`, and a pre-0.5 file's
  *     name-based constructor is real, so both are excluded.
+ *
+ * Fix 59 widenings, from the SmartBugs Curated benchmark (the Fix 44
+ * gate caught only 1 of the dataset's 5 incorrect-constructor
+ * exemplars — name2 — because the name test was exact/prefix only):
+ * (c) A function literally named `Constructor` (any case), parsed as
+ *     an ordinary function: the keyword form takes neither the
+ *     `function` keyword nor a name, so `function Constructor()` is
+ *     an ordinary function at every version (name3: contract
+ *     `Missing`, function `Constructor()` setting owner).
+ * (d) Containment: the contract name ANYWHERE in the function name,
+ *     not only as a prefix — `IamMissing` in `Missing`, `initWallet`
+ *     in `Wallet`. The privileged-effect gate at the call site is
+ *     what keeps mere substring verbs silent: `start` in `Art`
+ *     contains the name but assigns no privileged variable and does
+ *     not mint, so it never fires.
+ * (e) The ABSENT-constructor shape (weak): pre-0.5, a contract that
+ *     defines NO constructor at all — neither its own nor an
+ *     in-source base's — yet has a public function performing the
+ *     setup. rubixi is the archetype: contract `Rubixi`, function
+ *     `DynamicPyramid()` — the leftover constructor of the contract's
+ *     former name, assigning `creator`. There is no name relation to
+ *     match, so this shape is reported one severity tier below the
+ *     name-matched shapes, and the call site additionally requires a
+ *     privileged-variable assignment for it (an unauthed mint alone,
+ *     with no name resemblance, is unprotected-mint's class).
  */
-function pseudoConstructorOf(fn: FnModel, contract: ContractModel, model: SourceModel): string | null {
+function pseudoConstructorOf(fn: FnModel, contract: ContractModel, model: SourceModel): { name: string; weak: boolean; why: string } | null {
   if (fn.isConstructor) {
     if (model.versionFloor === null || model.versionFloor < 5_000) return null;
     const m = fn.source.match(/^\s*function\s+([A-Za-z_]\w*)\s*\(/);
     if (!m) return null;
-    return m[1] === contract.name ? m[1] : null;
+    return m[1] === contract.name
+      ? { name: m[1], weak: false, why: "since solc 0.5 only the constructor keyword makes a constructor" }
+      : null;
   }
-  if (contract.name.length < 3) return null;
+  if (fn.isFallback || fn.isReceive) return null;
   const f = fn.name.toLowerCase();
-  const c = contract.name.toLowerCase();
-  if (f === c || f.startsWith(c)) return fn.name;
+  if (f === "constructor") {
+    return { name: fn.name, weak: false, why: "the constructor keyword takes neither the function keyword nor a name, so a function named Constructor is an ordinary function" };
+  }
+  if (contract.name.length >= 3) {
+    const c = contract.name.toLowerCase();
+    // Fix 59 corpus refinement: the name shapes only count when the
+    // contract has NO working constructor. Dust (real `function
+    // Dust()` at 0.4.21) fired on convertEtherToDust /
+    // convertDustToEther — ordinary converters whose names contain
+    // the contract name and whose _transfer callee credits balances
+    // (a mint-shaped effect). With a real constructor present, a
+    // name-alike function is not playing the constructor role; the
+    // privileged-assignment angle remains covered by
+    // unprotected-admin / unprotected-initializer. Every archetype
+    // (ALIVA, Missing ×3, Wallet, Rubixi, HGToken's Owned) has no
+    // working constructor, so none is lost. The literal-Constructor
+    // shape above stays ungated: nobody names an ordinary business
+    // function Constructor, constructor present or not.
+    if ((f === c || f.startsWith(c) || f.includes(c)) && !contractHasConstructor(contract, model)) {
+      return { name: fn.name, weak: false, why: "a constructor must match the contract name exactly" };
+    }
+  }
+  if (
+    contract.kind === "contract" &&
+    (model.versionFloor === null || model.versionFloor < 5_000) &&
+    !contractHasConstructor(contract, model)
+  ) {
+    return { name: fn.name, weak: true, why: `${contract.name} defines no constructor at all — pre-0.5 the constructor would be a function named exactly ${contract.name} — so this setup never ran exclusively at deployment` };
+  }
   return null;
 }
 
@@ -5469,17 +5563,43 @@ function scanSimple(
   // constructor exemption scanContract applies (a >= 0.5 name-based
   // "constructor" reaches here marked as a constructor, and the
   // exemption would otherwise call it authed).
-  const pseudoName = pseudoConstructorOf(fn, contract, model);
+  // Fix 59 widens the name test inside pseudoConstructorOf
+  // (containment, the literal Constructor name, and the absent-
+  // constructor shape at a lower tier) and the privileged set here
+  // (PSEUDO_PRIVILEGED adds creator — rubixi / wallet_03).
+  const pseudo = pseudoConstructorOf(fn, contract, model);
+  // Fix 59 corpus refinement: a WEAK (absent-constructor) hit is
+  // withdrawn when the function delegates through super to an
+  // AUTHED base function — the standard upgradeable chain.
+  // Marketplace.initialize runs super.initialize, whose body requires
+  // msg.sender == registry, then sets owner = sender: the gate is
+  // real, but it lives in the base's body and the model's isAuthed
+  // does not follow super calls. Credited for the weak shape only;
+  // the name-matched shapes keep Fix 44's strict re-check.
+  const superGated =
+    pseudo !== null &&
+    pseudo.weak &&
+    contract.bases.some((baseName) => {
+      const base = model.contracts.find((c) => c.name === baseName);
+      if (!base) return false;
+      return base.functions.some(
+        (g) =>
+          new RegExp(`\\bsuper\\s*\\.\\s*${escapeRegExp(g.name)}\\s*\\(`).test(src) &&
+          isAuthed(g, base, model),
+      );
+    });
   if (
-    pseudoName !== null &&
+    pseudo !== null &&
+    !superGated &&
     !isAuthed(fn, contract, model) &&
     fn.visibility !== "internal" &&
     fn.visibility !== "private" &&
     fn.mutability !== "view" &&
     fn.mutability !== "pure"
   ) {
+    const pseudoName = pseudo.name;
     const setsOwner = contract.stateVars.some(
-      (v) => PRIVILEGED.test(v.name) && new RegExp(`\\b${escapeRegExp(v.name)}\\s*=(?!=)`).test(src),
+      (v) => PSEUDO_PRIVILEGED.test(v.name) && new RegExp(`\\b${escapeRegExp(v.name)}\\s*=(?!=)`).test(src),
     );
     // The mint may sit one call deep (ALIVA's distr is private and
     // called from AlivaToken), so same-contract callees count.
@@ -5488,16 +5608,19 @@ function scanSimple(
       contract.functions.some(
         (g) => g.name !== fn.name && new RegExp(`\\b${escapeRegExp(g.name)}\\s*\\(`).test(src) && mintEffectIn(g.source),
       );
-    if (setsOwner || mints) {
+    // Fix 59: the absent-constructor shape (weak) must assign a
+    // privileged variable. An unauthed mint alone with no name
+    // resemblance is unprotected-mint's class, not this one's.
+    if (setsOwner || (mints && !pseudo.weak)) {
       push(make({
-        severity: setsOwner && mints ? "critical" : "high",
+        severity: pseudo.weak ? (setsOwner && mints ? "high" : "medium") : (setsOwner && mints ? "critical" : "high"),
         swc: "SWC-118",
         title: `${pseudoName} is a pseudo-constructor in ${contract.name} — anyone can re-run it`,
-        confidence: setsOwner && mints ? "high" : "medium",
+        confidence: pseudo.weak ? (setsOwner && mints ? "medium" : "low") : (setsOwner && mints ? "high" : "medium"),
         detector: "pseudo-constructor",
-        summary: `${pseudoName} is named ${fn.isConstructor ? "exactly" : "nearly"} as its contract ${contract.name}, but the compiler does not treat it as a constructor (${fn.isConstructor ? "since solc 0.5 only the constructor keyword makes a constructor" : "a constructor must match the contract name exactly"}), so it is an ordinary public function. It ${setsOwner && mints ? "assigns privileged ownership and mints/distributes tokens" : setsOwner ? "assigns privileged ownership" : "mints/distributes tokens"} with no access check — any account can call it after deployment, and call it again.`,
+        summary: `${pseudoName} ${pseudo.weak ? `performs ${contract.name}'s one-time setup` : `is named ${fn.isConstructor ? "exactly" : "nearly"} as its contract ${contract.name}`}, but the compiler does not treat it as a constructor (${pseudo.why}), so it is an ordinary public function. It ${setsOwner && mints ? "assigns privileged ownership and mints/distributes tokens" : setsOwner ? "assigns privileged ownership" : "mints/distributes tokens"} with no access check — any account can call it after deployment, and call it again.`,
         walkthrough: [
-          `1. ${pseudoName} resembles ${contract.name}'s constructor, so reviewers and deployers assume it ran once at deployment and can never run again.`,
+          `1. ${pseudoName} ${pseudo.weak ? `does ${contract.name}'s setup` : `resembles ${contract.name}'s constructor`}, so reviewers and deployers assume it ran once at deployment and can never run again.`,
           "2. It is not a constructor, so it stays on the deployed contract as a public entrypoint.",
           `3. It ${setsOwner ? "sets the owner to the caller" : "mints/distributes tokens"}${mints && setsOwner ? " and mints/distributes tokens" : ""} with no msg.sender check.`,
           "4. An attacker calls it once to take the role (and again to mint again) — no front-running or deployment race needed.",
@@ -5819,6 +5942,96 @@ function scanSimple(
         locationLine: fn.line,
         snippet: snippet(parsed, fn.line + delta, delta),
       }));
+    }
+  }
+
+  // Fix 60: arbitrary storage write, source level (SWC-124). The
+  // fleet's other 124 stamps are the assembly sstore detectors; the
+  // source shape the SmartBugs benchmark exposed (0 of 2 exemplars,
+  // 0 firings in 143 files) is an element write to a STATE ARRAY
+  // through a caller-chosen index — arr[idx] = v — where the
+  // array's length is itself attacker-malleable, so the index is
+  // not confined to the array and can be aimed at the storage slots
+  // of variables declared after it. Length malleability is the
+  // load-bearing half, in both curated shapes:
+  //   - mapping_write: set() grows the array itself
+  //     (`if (map.length <= key) { map.length = key + 1; }`) and
+  //     then writes map[key] for ANY key.
+  //   - arbitrary_location_write_simple: UpdateBonusCodeAt is
+  //     length-bounded on its face, but the unauthed PopBonusCode
+  //     runs `bonusCodes.length--` — one underflow makes the length
+  //     2^256-1 and the bound meaningless.
+  // Without length control the same write reverts out of bounds, so
+  // a bounded setter whose length nobody can move does NOT fire.
+  // Neither do mapping writes (balances[user] = ... is the normal
+  // pattern — a mapping typeName never matches the array test),
+  // constant or sender-derived indices, authed functions, or
+  // member-of-element writes (arr[i].field = ... does not match:
+  // the assignment must follow the closing bracket directly).
+  {
+    const paramNames = fn.params.map((p) => p.name).filter(Boolean);
+    if (
+      paramNames.length > 0 &&
+      !fn.isConstructor &&
+      !isAuthed(fn, contract, model) &&
+      fn.visibility !== "internal" &&
+      fn.visibility !== "private" &&
+      fn.mutability !== "view" &&
+      fn.mutability !== "pure"
+    ) {
+      // Direct length mutation of `arr` in a source text: decrement,
+      // increment, or compound assignment; or a plain assignment of
+      // anything but a literal-0 reset (a clear does not extend the
+      // array's reach, so it is not malleability).
+      const lengthMutation = (text: string, arr: string): boolean => {
+        const a = escapeRegExp(arr);
+        if (new RegExp(`\\b${a}\\s*\\.\\s*length\\s*(?:--|\\+\\+|[-+*/%]=)`).test(text)) return true;
+        const m = text.match(new RegExp(`\\b${a}\\s*\\.\\s*length\\s*=(?!=)\\s*([^;]+)`));
+        return m !== null && !/^\s*0\s*$/.test(m[1]);
+      };
+      for (const v of contract.stateVars) {
+        if (!/\[\s*\d*\s*\]$/.test(v.typeName)) continue;
+        const arr = escapeRegExp(v.name);
+        // Element write arr[idx] <op>= with a parameter-derived
+        // index, in THIS function (stripped source).
+        let idxExpr: string | null = null;
+        for (const m of clean47.matchAll(new RegExp(`\\b${arr}\\s*\\[([^\\]]+)\\]\\s*[-+*/%]?=(?!=)`, "g"))) {
+          if (paramNames.some((p) => new RegExp(`\\b${escapeRegExp(p)}\\b`).test(m[1]))) {
+            idxExpr = m[1].trim();
+            break;
+          }
+        }
+        if (idxExpr === null) continue;
+        // Length malleability: an unauthed function of this contract
+        // (possibly this one) mutates the array's length directly.
+        const malleable = contract.functions.some(
+          (g) => !isAuthed(g, contract, model) && lengthMutation(stripCommentsAndStrings(g.source), v.name),
+        );
+        if (!malleable) continue;
+        push(make({
+          severity: "high",
+          swc: "SWC-124",
+          title: `${fn.name} writes ${v.name} at a caller-chosen index whose bound the caller controls`,
+          confidence: "medium",
+          detector: "arbitrary-storage-write",
+          summary: `${fn.name} assigns ${v.name}[${idxExpr}] with an index taken from its own parameters and no access check, and ${v.name}.length is directly mutable from unauthenticated code — grown to fit the key, or decremented toward underflow. The index is therefore not confined to the array: once the length is inflated, the write lands on storage slots past the array's base, where the variables declared after it live — ownership, balances, flags.`,
+          walkthrough: [
+            `1. ${v.name} is a state array; its elements occupy consecutive storage slots from the array's base slot.`,
+            `2. ${fn.name} writes ${v.name}[${idxExpr}] where ${idxExpr} comes straight from the caller.`,
+            "3. The array's length is not fixed: unauthenticated code can grow it to fit the index or decrement it toward underflow, so a bounds check against length no longer confines the index to real elements.",
+            "4. The attacker inflates the length, then calls the setter with an index aimed at a later variable's slot and a value of their choosing.",
+          ].join("\n"),
+          exploitSolidity: `// 1. Inflate the array length through the unauthenticated length path
+//    (grow it to the key, or underflow it with a decrement).
+// 2. ${fn.name}(idxAimedAtOwnerSlot, uint256(uint160(attacker)))`,
+          remediationSolidity: `// Never let unauthenticated code move an array's length directly,
+// and bound indices against a length only trusted code can change.`,
+          locationFn: fn.name,
+          locationLine: fn.line,
+          snippet: snippet(parsed, fn.line + delta, delta),
+        }));
+        break; // one finding per function
+      }
     }
   }
 
