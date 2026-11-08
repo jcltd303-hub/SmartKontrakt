@@ -491,8 +491,58 @@ import {
  *                Pass A 94.2% → 94.7%, Pass B 93.6% → 94.6%, SWC-124
  *                0 → 2 of 2 exemplars. Same inputs now produce
  *                different records, so the archive refreshes.
+ * 2026-11-08.28 — Fix 61: the pre-0.8 arithmetic rule
+ *                (unchecked-block, SWC-101) gains its third
+ *                shape — the BECToken product. A raw
+ *                multiplication of caller-controlled inputs
+ *                into a LOCAL that a guard afterwards checks:
+ *                batchTransfer computes amount = cnt * _value
+ *                and requires balances[msg.sender] >= amount,
+ *                so the require validates the WRAPPED product
+ *                while each receiver is credited the full
+ *                _value. The rule's two older shapes cannot see
+ *                it (no compound assignment on stored state —
+ *                the balance updates are plain `=`; the require
+ *                is a balance comparison, not a subtraction
+ *                guard). Caller-controlled means a parameter,
+ *                msg.value, a parameter array's .length, or a
+ *                local assigned from one of those (cnt =
+ *                _receivers.length). SafeMath elsewhere in the
+ *                function does NOT disarm — BECToken's balances
+ *                are .sub()/.add()-guarded and the product wraps
+ *                first; what disarms is checked arithmetic on
+ *                the product itself (a .mul computation, or a
+ *                guard that divides the product back by an
+ *                operand — SafeMath.mul's require(c / a == b),
+ *                which keeps every vendored SafeMath silent).
+ *                Literal and named-constant products, `**`
+ *                exponent terms, products nobody guard-reads,
+ *                view/pure/constant functions and post-0.8 code
+ *                stay silent; the shape reports only when the
+ *                older shapes did not, so a function yields at
+ *                most one unchecked-block finding. SmartBugs
+ *                Curated: BECToken gains SWC-101 at its labeled
+ *                line (264); SWC-101 21/23 → 22/23 (the
+ *                remaining miss is the dataset's benign variant,
+ *                a true negative); Pass A 94.7% → 95.2%,
+ *                Pass B 94.6% → 95.1%, no category regressed.
+ *                Corpus smoke over the round-4/5 vet sources
+ *                (4,291 files: 4,221 parsed, 67 pre-existing
+ *                parse skips, 3 Predeploys.sol heap-OOMs
+ *                identical on the .27 baseline, 0 detector
+ *                exceptions): the older shapes are unchanged at
+ *                1,278 SWC-101 hits and the product shape adds
+ *                exactly 7 — four distinct functions (a
+ *                crowdsale buy, the ERC20CrowdsaleToken
+ *                buyTokens template ×3, a fee setter whose
+ *                require equates msg.value with the product
+ *                ×2, and a fallback that is the archetype
+ *                verbatim: amount = msg.value * buyPrice,
+ *                require(balances[owner] >= amount)). Same
+ *                inputs now produce different records, so the
+ *                archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-11-07.27";
+export const ANALYZER_BASELINE = "2026-11-08.28";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

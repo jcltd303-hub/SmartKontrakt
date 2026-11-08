@@ -5479,6 +5479,143 @@ function derivedEntropySelected(src: string): boolean {
   return false;
 }
 
+/**
+ * Fix 61: the BECToken product shape (SWC-101). Finds a raw
+ * multiplication of caller-controlled inputs assigned to a LOCAL
+ * variable that is afterwards guard-checked — named in a
+ * require/assert, compared, or paid out via transfer/send — in the
+ * same function, and returns the local's name plus the offset of
+ * its assignment in `clean` (the comment/string-stripped function
+ * source). Null when the shape is absent.
+ *
+ * BECToken's batchTransfer is the archetype:
+ *   uint cnt = _receivers.length;
+ *   uint256 amount = uint256(cnt) * _value;
+ *   require(_value > 0 && balances[msg.sender] >= amount);
+ * The require is real, but it checks the WRAPPED product: with cnt
+ * receivers and _value chosen so cnt * _value wraps to a small
+ * number, the balance guard passes and every receiver is credited
+ * the full _value. The fleet's other pre-0.8 shapes cannot see it —
+ * nothing compound-assigns stored state (the balance updates are
+ * plain `=`), and the require is a balance comparison, not a
+ * subtraction guard.
+ *
+ * Deliberately NOT disarmed by SafeMath elsewhere in the function:
+ * batchTransfer guards its balances with .sub()/.add() and the
+ * product still wraps before SafeMath ever sees a value. What
+ * disarms is checked arithmetic ON the product — a `.mul(`
+ * computation has no raw `*` to match, and a guard that divides
+ * the product back by an operand (SafeMath.mul's own
+ * `require(c / a == b)`) is a sound check, not a fooled one.
+ *
+ * Narrow by construction: the product's operands must include a
+ * caller-controlled value (a parameter, msg.value, a parameter
+ * array's .length, or a local assigned from one of those — one
+ * derivation level, in source order); the target must be a local,
+ * not stored state (stored state is the compound-assignment
+ * shape's territory); and the product must be USED as a guard or
+ * payout afterwards — a product nobody checks is the benign shape
+ * (integer_overflow_benign_1 computes into a local and drops it,
+ * and stays silent here twice over: its op is a subtraction, and
+ * the result is never read).
+ */
+function uncheckedLocalProduct(
+  clean: string,
+  fn: FnModel,
+  contract: ContractModel,
+): { name: string; index: number } | null {
+  const stateNames = new Set(contract.stateVars.map((v) => v.name));
+  const controlled = new Set<string>();
+  for (const p of fn.params) if (p.name) controlled.add(p.name);
+  if (controlled.size === 0 && !/\bmsg\.value\b/.test(clean)) return null;
+
+  const exprControlled = (expr: string): boolean => {
+    if (/\bmsg\.value\b/.test(expr)) return true;
+    for (const n of controlled) {
+      if (new RegExp(`\\b${escapeRegExp(n)}\\b`).test(expr)) return true;
+    }
+    return false;
+  };
+
+  // Split the stripped body into statements on ; { } boundaries,
+  // tracking offsets for the caller's line computation. Strings are
+  // already stripped, so a `;` inside a literal cannot split early.
+  const stmts: { text: string; index: number }[] = [];
+  {
+    let start = 0;
+    for (let i = 0; i <= clean.length; i += 1) {
+      if (i === clean.length || clean[i] === ";" || clean[i] === "{" || clean[i] === "}") {
+        const text = clean.slice(start, i);
+        if (text.trim()) stmts.push({ text, index: start });
+        start = i + 1;
+      }
+    }
+  }
+
+  // An assignment to a plain identifier, optionally typed (a
+  // declaration). Member/index writes do not match: after the head
+  // identifier of `balances[x] = ...` comes `[`, not `=`.
+  const assignRe =
+    /^\s*(?:(u?int\d*|address|bool|bytes\d*|string|var)\s+(?:(?:memory|storage|calldata)\s+)?)?([A-Za-z_$][\w$]*)\s*=(?!=)\s*([\s\S]+)$/;
+
+  for (let i = 0; i < stmts.length; i += 1) {
+    const m = stmts[i]!.text.match(assignRe);
+    if (!m) continue;
+    const name = m[2]!;
+    const rhs = m[3]!;
+    if (stateNames.has(name)) continue;
+    // `**` is exponentiation, not multiplication: blank it before
+    // the product test, or a SafeMath-priced presale line like
+    // `amount_in.mul(price).div(10 ** decimals)` reads as a raw
+    // product of its first operand (corpus-forced, MoonFORCE).
+    const rhsMul = rhs.replace(/\*\*/g, " ^ ");
+    if (rhsMul.includes("*")) {
+      const operands = rhsMul.split("*");
+      const productControlled = operands.some((o) => exprControlled(o));
+      const literalOnly = operands.every(
+        (o) => /^[\s\d()]+$/.test(o) || /^0x[\da-fA-F\s()]+$/.test(o),
+      );
+      if (productControlled && !literalOnly) {
+        const nameRe = new RegExp(`\\b${escapeRegExp(name)}\\b`);
+        const later = stmts.slice(i + 1);
+        // SafeMath's own idiom divides the product back by an
+        // operand inside the guard — `require(c / a == b)` — and
+        // that check is SOUND: a wrapped product fails it. A
+        // product guarded that way is checked arithmetic, not a
+        // fooled guard, so it disarms the shape. (This is what
+        // keeps the fleet silent on every vendored SafeMath.mul.)
+        const divisionChecked = later.some(
+          (s) =>
+            /\b(?:require|assert)\s*\(/.test(s.text) &&
+            new RegExp(`\\b${escapeRegExp(name)}\\s*/`).test(s.text),
+        );
+        const used =
+          !divisionChecked &&
+          later.some((s) => {
+            if (!nameRe.test(s.text)) return false;
+            return (
+              /\b(?:require|assert)\s*\(/.test(s.text) ||
+              /(?:==|!=|<=|>=|<|>)/.test(s.text) ||
+              /\.\s*(?:transfer|send)\s*\(/.test(s.text)
+            );
+          });
+        if (used) {
+          // Advance past the statement's leading whitespace (which
+          // holds the newline ending the previous line) so the
+          // caller's newline count lands on the statement's line.
+          const lead = stmts[i]!.text.length - stmts[i]!.text.trimStart().length;
+          return { name, index: stmts[i]!.index + lead };
+        }
+      }
+    }
+    // Derivation, in source order: a local assigned from a
+    // controlled expression becomes controlled itself
+    // (cnt = _receivers.length feeding the product).
+    if (exprControlled(rhs)) controlled.add(name);
+  }
+  return null;
+}
+
 type ReachInfo = {
   /** Public entry points that reach this function (itself included
    * when externally callable) — Fix 38 provenance for scanSimple. */
@@ -6742,13 +6879,20 @@ contract ReplayAttack {
     });
     // The other pre-0.8 shape: the underflow guard itself, `require(balance -
     // value >= 0)`. Unsigned arithmetic makes that always true, so the check
-    // that was meant to prevent the underflow guarantees nothing — BECToken's
-    // shape, and the reason `arithmetic` missed it while `front-running` fired
-    // on the same contract's approve().
+    // that was meant to prevent the underflow guarantees nothing.
     const uselessUnderflowGuard =
       /(?:require|assert)\s*\([^;]{0,120}?[A-Za-z_$][\w$.]*(?:\[[^\]]*\])?\s*-\s*[A-Za-z_$0-9][\w$.]*\s*>=\s*0\s*\)/.test(cleanArith) &&
       !usesSafeMath;
-    if ((storedArith || uselessUnderflowGuard) && !usesSafeMath && fn.mutability !== "view" && fn.mutability !== "pure") {
+    // Fix 61: the third shape — a raw product of caller-controlled
+    // inputs into a local that a guard then checks (BECToken's
+    // batchTransfer; see uncheckedLocalProduct). NOT disarmed by
+    // usesSafeMath: BECToken's balances are SafeMath-guarded and
+    // the product wraps before those calls run. Reported only when
+    // the two shapes above did not fire, so a function yields at
+    // most one unchecked-block finding from this block.
+    const localProduct = uncheckedLocalProduct(cleanArith, fn, contract);
+    const canFlagArith = fn.mutability !== "view" && fn.mutability !== "pure";
+    if (canFlagArith && (storedArith || uselessUnderflowGuard) && !usesSafeMath) {
       push(make({
         severity: "medium",
         swc: "SWC-101",
@@ -6764,6 +6908,26 @@ contract ReplayAttack {
         locationFn: fn.name,
         locationLine: fn.line,
         snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    } else if (canFlagArith && fn.mutability !== "constant" && localProduct) {
+      // `constant` is the pre-0.5 spelling of `view`: a read-only
+      // function cannot settle value with its product, so the
+      // shape does not apply (vendored SafeMath.mul is `constant`).
+      const productLine =
+        fn.line + (cleanArith.slice(0, localProduct.index).match(/\n/g)?.length ?? 0);
+      push(make({
+        severity: "medium",
+        swc: "SWC-101",
+        title: `${fn.name} guard-checks a product that can wrap before 0.8`,
+        confidence: "medium",
+        detector: "unchecked-block",
+        summary: `The contract targets a compiler below 0.8, so the multiplication that computes ${localProduct.name} wraps instead of reverting — and the guard that follows checks the WRAPPED value. A caller who drives one operand high enough makes the product small again, passes a balance check written against it, and still moves the full per-item amount: BECToken's batchTransfer (cnt * _value into a local, then require(balances[msg.sender] >= amount)) is the canonical loss in this shape. SafeMath on the balances does not close it — the wrap happens in the product, before those calls run.`,
+        walkthrough: `1. The pragma floor is below 0.8, so the compiler emits no overflow check.\n2. ${fn.name} multiplies caller-controlled inputs into the local ${localProduct.name} with a raw *.\n3. A later guard (require, comparison, or payout) reads ${localProduct.name} — the already-wrapped value.\n4. Choosing operands whose true product exceeds 2^256 makes the guarded value small while the amounts actually moved stay large.\n5. Compute the product with SafeMath (.mul) pre-0.8, or move to 0.8+, where the multiplication reverts instead of wrapping.`,
+        exploitSolidity: `// Pre-0.8: the product wraps, the guard checks the wrapped value.\nIVictim(target).${fn.name}(receivers, type(uint256).max / receivers.length + 1);`,
+        remediationSolidity: `// pre-0.8: the product itself needs checked arithmetic\namount = uint256(cnt).mul(_value); // SafeMath reverts instead of wrapping\n// or compile with 0.8+, where the multiplication is checked`,
+        locationFn: fn.name,
+        locationLine: productLine,
+        snippet: snippet(parsed, productLine + delta, delta),
       }));
     }
   }
