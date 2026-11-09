@@ -1,0 +1,13 @@
+# HELLBENT skip-list — addresses the feeder NEVER passes to the pipeline worker.
+# One address per line. Matching is case-insensitive. Blank lines and
+# lines starting with # are ignored; a reason may follow the address
+# after a comma, space, or #.
+#
+# Add an address here the moment it is known to hurt the analyzer or the
+# worker (OOM, hang, crash). The feeder reports how many queue entries
+# each run removed because of this list.
+
+# Confirmed analyzer OOM-killer (2026-11-08): 265,599-byte source payload,
+# detectSource blows past a 4GB heap in ~46s. Sits at line 218 of
+# scan-queue-v2.txt. Do NOT remove — the worker dies on this one.
+0x000000000Ed1eabD231Be41d93b719056F7febFC # OOM-killer ConfidentialPool
