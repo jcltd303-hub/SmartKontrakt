@@ -97,6 +97,9 @@ export const DETECTOR_FAMILY: Record<string, DetectorFamily> = {
   "share-accounting-double-debit": "caller-identity",
   "signature-field-omission": "caller-identity",
   "assembly-param-sstore": "caller-identity",
+  // A guard keyed on an identity the caller supplies (SurtHook, Nov 2026): the
+  // control exists but binds nothing, which is squarely "who may do what".
+  "caller-supplied-identity": "caller-identity",
   "assembly-sstore": "caller-identity",
   // SWC-124 (2026-11-07, Fix 60): the source-level arbitrary write
   // sits with the other SWC-124 entry points — a caller-chosen

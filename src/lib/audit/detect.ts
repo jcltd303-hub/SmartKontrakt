@@ -2396,7 +2396,45 @@ function scanIncidentClasses(
     }));
   }
 
-  // 2. calldata-offset-auth (UniswapV4Router04, Mar 2026)
+  // 2. caller-supplied-identity (SurtHook, Nov 2026)
+  //
+  // A security control must key on something the caller cannot choose. In a Uniswap v4
+  // hook msg.sender is always the PoolManager, so the swapper has to arrive some other
+  // way — and the common shortcut is to read it out of caller-supplied hookData and then
+  // key rate limits, cooldowns or allowlists on it. That control binds nothing: the
+  // attacker rotates the value and every guard keyed on it resets.
+  //
+  // Measured 2026-11-06 on SurtHook (0x6983Fa2C…, 16.85 ETH): beforeSwap decoded
+  // `swapper` from hookData, then keyed MAX_SWAPS_PER_BLOCK, lastBuyBlock (the sell
+  // cooldown) and the entropy multiplier on it. Buying with one value and selling with
+  // another bypassed the cooldown outright, and the entropy roll was searchable because
+  // it hashed blockhash(block.number-1) with an attacker-chosen address — worth ~8% per
+  // cycle while its launch window was open. No rule fired on it.
+  const decodedAddr = /address\s+(\w+)\s*=\s*abi\.decode\s*\(\s*(\w+)\s*,\s*\(\s*address\s*\)\s*\)/.exec(clean);
+  if (decodedAddr) {
+    const [, who, from] = decodedAddr;
+    const fromIsBytesParam = new RegExp(`\\bbytes(?:\\s+calldata|\\s+memory)?\\s+${from}\\b`).test(clean);
+    const keyedWrite = new RegExp(`\\[[^\\]]*\\b${who}\\b[^\\]]*\\]\\s*=`).test(clean);
+    const guardsOnIt = new RegExp(`(?:require|revert)[^;]*\\[[^\\]]*\\b${who}\\b`).test(clean);
+    if (fromIsBytesParam && keyedWrite) {
+      push(make({
+        severity: "high",
+        swc: null,
+        title: `${fn.name} keys a guard on an address decoded from caller-supplied ${from}`,
+        confidence: guardsOnIt ? "high" : "medium",
+        detector: "caller-supplied-identity",
+        summary: `\`${who}\` is decoded from \`${from}\`, which the caller writes, and is then used as a mapping key in ${fn.name}. Any limit, cooldown or allowlist stored under that key is chosen by the attacker: pass a different value on each call and the guard resets every time. In a v4 hook this is easy to do by accident because msg.sender is always the PoolManager, so the real swapper has to come from somewhere — but hookData is unauthenticated, so the identity has to be bound (signed, or derived from the router's own accounting) rather than decoded and trusted.`,
+        walkthrough: `1. ${fn.name} decodes \`${who}\` from \`${from}\` and writes state keyed on it.\n2. That state gates something: a per-block count, a cooldown, an allowance, a first-time bonus.\n3. The caller supplies the key, so it is not a limit on the caller at all — rotate the value and the counter starts fresh.\n4. Where the keyed state feeds a multiplier or a bonus, the search space also lets the attacker pick a favourable outcome rather than merely reset.\n5. Bind the identity: take a signature over the swap parameters, or key on the router's recorded msg.sender, and never on a value the swapper supplies about themselves.`,
+        exploitSolidity: `// Same caller, fresh identity every time: the per-address guard never fires.\nfor (uint256 i; i < 20; ++i) {\n    bytes memory hookData = abi.encode(address(uint160(i + 1)));\n    router.swap(key, params, hookData);\n}`,
+        remediationSolidity: `// Bind the identity instead of trusting the parameter.\nfunction beforeSwap(address, PoolKey calldata, SwapParams calldata, bytes calldata hookData)\n    external onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24)\n{\n    address swapper = _recoverSwapper(hookData); // ECDSA over (params, nonce, chainid)\n    require(swapper == msg.sender || authorisedRouter[msg.sender], "unbound identity");\n    /* ... */\n}`,
+        locationFn: fn.name,
+        locationLine: fn.line,
+        snippet: snippet(parsed, fn.line + delta, delta),
+      }));
+    }
+  }
+
+  // 3. calldata-offset-auth (UniswapV4Router04, Mar 2026)
   //    A fixed absolute calldata offset only lines up with the field it is
   //    meant to read when the ABI encoding is canonical. A dynamic `bytes`
   //    parameter may legally start at any offset, so the attacker shifts it

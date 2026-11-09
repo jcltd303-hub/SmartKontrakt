@@ -108,8 +108,6 @@ test("familyForDetector falls back to analyzer-meta for an unknown id", () => {
 const NO_BEHAVIOURAL_FIXTURE = [
   "assembly-param-sstore",
   "assembly-sstore",
-  "default-visibility",
-  "erc20-unchecked",
   "extcodesize",
   "fee-on-transfer",
   "hardcoded-gas",
