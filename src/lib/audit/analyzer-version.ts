@@ -541,8 +541,32 @@ import {
  *                require(balances[owner] >= amount)). Same
  *                inputs now produce different records, so the
  *                archive refreshes.
+  * 2026-11-09.29 — Fix 62: the walkFn IfStatement branch merge
+ *                OOM. Both branch snapshots start as copies of
+ *                the pre-if flow, so left and right already
+ *                contain every pre-branch read/send/call; the
+ *                merge concatenated before + left + right,
+ *                tripling the pre-branch entries at every if
+ *                (~3^k growth over k sequential ifs in the
+ *                readLines / sendTargets / sendDetails /
+ *                calleeCalls lists). ConfidentialPool._settle
+ *                (dozens of sequential ifs over 83 state vars)
+ *                grew those lists past a 4GB heap and killed
+ *                the analyzer with no result — the contract
+ *                could not be scanned at all. The merge now
+ *                unions the two branch results with dedupe;
+ *                every consumer of these lists is
+ *                multiplicity-insensitive (some/every/find), so
+ *                findings are unchanged — only the memory is
+ *                bounded. ConfidentialPool now completes:
+ *                40 findings at the report cap, ~113MB heap.
+ *                (This bump also re-pins the detector-source
+ *                digest, which the caller-supplied-identity
+ *                commit left stale.) Same inputs now produce
+ *                records where the process previously died, so
+ *                the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-11-08.28";
+export const ANALYZER_BASELINE = "2026-11-09.29";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

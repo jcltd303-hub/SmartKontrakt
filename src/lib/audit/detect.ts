@@ -5034,21 +5034,38 @@ require(ok, "pay");`,
       flow.preCallWrites = new Set([...before.preCallWrites, ...left.preCallWrites, ...right.preCallWrites]);
       flow.postCallWrites = new Set([...before.postCallWrites, ...left.postCallWrites, ...right.postCallWrites]);
       flow.sawEtherSend = left.sawEtherSend || right.sawEtherSend || before.sawEtherSend;
-      flow.sendTargets = [...before.sendTargets, ...left.sendTargets, ...right.sendTargets];
       flow.allSendsAreRefunds = left.allSendsAreRefunds && right.allSendsAreRefunds && before.allSendsAreRefunds;
+      // Fix 62: the branch merge must UNION, not CONCATENATE. Both
+      // branch snapshots start as copies of `before` (the true branch
+      // is scanned, snapshotted, then `before` is restored and the
+      // false branch is scanned), so left and right ALREADY contain
+      // every pre-branch entry. The old merge concatenated
+      // before + left + right, tripling the pre-branch entries at
+      // every if: after k sequential ifs the lists held ~3^k copies
+      // of the earliest reads/sends/calls. Ordinary functions (few
+      // ifs, few reads) never noticed; ConfidentialPool._settle
+      // (49 top-level statements, dozens of sequential ifs, reads of
+      // 83 state vars) grew its readLines arrays past the heap and
+      // OOM-killed the analyzer (reproduced at 512MB/1GB/4GB — the
+      // growth is exponential, not a tight limit). Every consumer of
+      // these lists is multiplicity-insensitive (some/every/find over
+      // targets, lines and calls), so the fix is a deduped union of
+      // the two branch results: same sets, bounded by the number of
+      // distinct read/send/call sites in the function.
+      flow.sendTargets = [...new Set([...left.sendTargets, ...right.sendTargets])];
       // Fix 12: merge the window bookkeeping across branches — first
       // write line per var is the minimum across branches, reads and
       // callee calls union.
-      flow.writeLines = new Map([...before.writeLines, ...left.writeLines, ...right.writeLines].map(([k]) => {
-        const vals = [before.writeLines.get(k), left.writeLines.get(k), right.writeLines.get(k)].filter((v): v is number => v !== undefined);
+      flow.writeLines = new Map([...left.writeLines, ...right.writeLines].map(([k]) => {
+        const vals = [left.writeLines.get(k), right.writeLines.get(k)].filter((v): v is number => v !== undefined);
         return [k, Math.min(...vals)] as [string, number];
       }));
-      flow.readLines = new Map([...before.readLines, ...left.readLines, ...right.readLines].map(([k]) => {
-        const vals = [...(before.readLines.get(k) ?? []), ...(left.readLines.get(k) ?? []), ...(right.readLines.get(k) ?? [])];
+      flow.readLines = new Map([...left.readLines, ...right.readLines].map(([k]) => {
+        const vals = [...new Set([...(left.readLines.get(k) ?? []), ...(right.readLines.get(k) ?? [])])];
         return [k, vals] as [string, number[]];
       }));
-      flow.calleeCalls = [...before.calleeCalls, ...left.calleeCalls, ...right.calleeCalls];
-      flow.sendDetails = [...before.sendDetails, ...left.sendDetails, ...right.sendDetails];
+      flow.calleeCalls = [...new Map([...left.calleeCalls, ...right.calleeCalls].map((c) => [`${c.name}|${c.line}`, c] as [string, typeof c])).values()];
+      flow.sendDetails = [...new Map([...left.sendDetails, ...right.sendDetails].map((d) => [`${d.target}|${d.amount}`, d] as [string, typeof d])).values()];
       return;
     }
     if (stmt.type === "ForStatement" || stmt.type === "WhileStatement" || stmt.type === "DoWhileStatement") {
