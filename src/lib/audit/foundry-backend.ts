@@ -226,6 +226,8 @@ async function executeWithRpcRetries(
     chainId?: number | string;
     retry?: boolean;
     repair?: (source: string, logs: string) => Promise<string>;
+    /** Remaining compile-repair rounds; decremented on each recursion. */
+    repairRounds?: number;
     onProgress?: (progress: RpcRetryProgress) => void;
     /** Optional ERC-20 for the harness to judge (template 46's
      *  POC_TOKEN) — forwarded to the backend on every attempt. */
@@ -383,6 +385,30 @@ export function needsSmartPoc(finding: {
 
 /** Shared execution entry point for UI and workers. Evidence describes actual
  * Foundry responses; infrastructure failures and zero tests are never verdicts. */
+/**
+ * Compile-repair rounds for a PoC that fails to compile.
+ *
+ * This used to be exactly one: the recursive call passed `repair: undefined`, so a
+ * second compile error was final. ReX (Xiao et al., 2026) runs a compiler-in-the-loop
+ * cycle and reports that it lifts success rates, especially for weaker models — which
+ * matters here because the free lane is exactly the weak-model case. Measured on this
+ * codebase, the common failures are mechanical (a bad import path, a non-ASCII byte in
+ * an assertion message), and those are precisely what a second round fixes.
+ *
+ * `POC_REPAIR_ROUNDS=0` restores the old single-shot behaviour.
+ */
+export const DEFAULT_POC_REPAIR_ROUNDS = 3;
+
+export function resolvePocRepairRounds(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.POC_REPAIR_ROUNDS;
+  // An EMPTY value must mean "unset", not zero. `Number("")` is 0, so a blank
+  // `POC_REPAIR_ROUNDS=` line in .env would have silently disabled repair — the same
+  // empty-variable trap that made an unset RPC_URL look like a network outage.
+  if (raw === undefined || raw.trim() === "") return DEFAULT_POC_REPAIR_ROUNDS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_POC_REPAIR_ROUNDS;
+}
+
 export async function runSmartPoc(
   backendUrl: string,
   input: Parameters<typeof executeWithRpcRetries>[1],
@@ -453,12 +479,30 @@ export async function runSmartPoc(
   const result = await executeWithRpcRetries(backendUrl, input);
   if (result.status === "failed" && isPocCompileError(result.logs)) result.status = "error";
   if (result.status === "error" && isPocCompileError(result.logs) && input.repair) {
-    try {
-      const fixedCode = await input.repair(input.testCode, result.logs);
-      const repaired = await runSmartPoc(backendUrl, { ...input, testCode: fixedCode, repair: undefined });
-      repaired.logs = `[SmartPoC] One compile repair attempted.\n${repaired.logs}`;
-      return repaired;
-    } catch (repairError) { result.logs += `\nSmartPoC repair failed: ${String(repairError)}`; }
+    const roundsLeft = input.repairRounds ?? resolvePocRepairRounds();
+    if (roundsLeft > 0) {
+      try {
+        const fixedCode = await input.repair(input.testCode, result.logs);
+        // A repair that returns the same source cannot help: recompiling it spends a
+        // backend run to reach the identical error. Stop and report instead.
+        if (!fixedCode || fixedCode.trim() === input.testCode.trim()) {
+          result.logs += `\nSmartPoC repair returned unchanged source (${roundsLeft} round(s) left) — stopping.`;
+        } else {
+          const repaired = await runSmartPoc(backendUrl, {
+            ...input,
+            testCode: fixedCode,
+            repairRounds: roundsLeft - 1,
+          });
+          const used = resolvePocRepairRounds() - roundsLeft + 1;
+          repaired.logs = `[SmartPoC] Compile repair round ${used} (${roundsLeft - 1} left after this).\n${repaired.logs}`;
+          return repaired;
+        }
+      } catch (repairError) {
+        result.logs += `\nSmartPoC repair round failed: ${String(repairError)}`;
+      }
+    } else {
+      result.logs += `\nSmartPoC repair budget exhausted — not retrying (raise POC_REPAIR_ROUNDS).`;
+    }
   }
   result.executedSource = input.testCode;
   const summary = result.logs.match(/(\d+) passed;\s*(\d+) failed/i);
