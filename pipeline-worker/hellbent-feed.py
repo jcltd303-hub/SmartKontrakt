@@ -115,7 +115,12 @@ def find_queue(explicit):
         return None
     # No argument: newest HELLBENT queue wins (full-chain v2 > v2 > v1).
     for name in ("scan-queue-fullchain-v2.txt", "scan-queue-v2.txt", "scan-queue.txt"):
-        for base in (os.getcwd(), os.path.expanduser("~"), SCRIPT_DIR,
+        for base in (os.getcwd(), os.path.expanduser("~"),
+                     os.path.expanduser("~/Downloads"),
+                     os.path.expanduser("~/storage/downloads"),
+                     os.path.expanduser("~/storage/shared/Download"),
+                     os.path.expanduser("/storage/emulated/0/Download"),
+                     SCRIPT_DIR,
                      os.path.join(SCRIPT_DIR, "..", "profit-agent")):
             cand = os.path.join(base, name)
             if os.path.isfile(cand):
@@ -205,8 +210,10 @@ def main(argv=None):
     if not queue_path:
         print(f"ERROR: queue file not found: {args.queue or '(no default queue found)'}",
               file=sys.stderr)
-        print("Searched: the given path, cwd, ~, ~/Downloads, this script's "
-              "folder, and ../profit-agent.", file=sys.stderr)
+        print("Searched: the given path, cwd, ~, ~/Downloads, "
+              "~/storage/downloads, ~/storage/shared/Download, "
+              "/storage/emulated/0/Download, this script's folder, and "
+              "../profit-agent.", file=sys.stderr)
         return 1
     queue_path = os.path.abspath(queue_path)
 
