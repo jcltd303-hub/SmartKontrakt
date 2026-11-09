@@ -603,6 +603,7 @@ Generate a complete, compilation-ready Foundry test suite contract in Solidity (
    - a failed assertion alone does not refute a finding: distinguish missing prerequisites, compile or infrastructure failures, inconclusive execution, and actual counterevidence. Report what the observed execution supports.
    - COMPILE-CRITICAL: Solidity has NO \`+\` operator for strings. Never write \`"a" + "b"\` — it is a type error ("Operator + not compatible with types string memory and string memory") and the file will not build, so forge runs zero tests and the run is wasted. Use one of: a single literal, adjacent literals on one line (\`"a" "b"\` concatenates at compile time), \`string.concat(a, b)\`, or drop the message and rely on the assertion label. The same applies to \`bytes\`: use \`abi.encodePacked\` or \`bytes.concat\`.
    - Keep assertion messages SHORT and single-line for the same reason. A long multi-line explanation is the single most common source of this error.
+   - COMPILE-CRITICAL: the backend scaffold contains ONLY your test file. The target's source is NOT on disk. Never write \`import "src/Vault.sol"\` or any import of the target — it fails with \`Source "src/..." not found\` and every retry fails identically. The ONLY permitted import is \`forge-std/Test.sol\`. Interact with the target through an interface you declare inline in the same file, and fetch live state with \`vm.createSelectFork\` + \`POC_TARGET\`. If you need the target's code, read it with \`address(POC_TARGET).code\` at runtime — do not import it.
 
 Format your response as ONLY the complete Solidity test file inside exactly one \`\`\`solidity fenced code block — no JSON, no prose before or after the block.`;
 
@@ -989,6 +990,37 @@ export function parseTestCodeReply(content: string, finishReason: string | undef
     const stringPlus =
       /(?:"[^"\n]*"|'[^'\n]*')[ \t]*\+[ \t]*(?:"|'|\w)/.test(codeNoComments) ||
       /\+[ \t]*(?:"[^"\n]*"|'[^'\n]*')/.test(codeNoComments);
+    // The backend scaffold holds only the test file, so any import of the target
+    // is unsatisfiable: forge fails with `Source "src/X.sol" not found` and every
+    // retry fails the same way. Measured 2026-11-06: a generated PoC imported
+    // "src/Vault.sol" and the run produced zero tests with that error.
+    // Solidity accepts UTF-8 in comments but NOT in a plain string literal:
+    //   Error (8936): Invalid character in string. If you are trying to use Unicode
+    //                 characters, use a unicode"..." string literal.
+    // Measured 2026-11-06: a generated assertion message carried an em-dash and the
+    // file failed to compile, so the run produced zero tests. Comments are stripped
+    // first because a prose comment is allowed to be UTF-8 and models write them.
+    const nonAscii = /[^\x09\x0a\x0d\x20-\x7e]/.exec(stripSolidityComments(code));
+    if (nonAscii) {
+      const at = nonAscii.index;
+      problems.push(
+        `the extracted code contains a non-ASCII character (U+${nonAscii[0]
+          .codePointAt(0)!
+          .toString(16)
+          .toUpperCase()
+          .padStart(4, "0")}) at offset ${at}, which forge rejects inside a plain string ` +
+          `literal (Error 8936) — use ASCII only. Context: ` +
+          `${JSON.stringify(code.slice(Math.max(0, at - 20), at + 20))}`,
+      );
+    }
+    const badImport = /import\s+["'](?!forge-std\/)[^"']+["']/.exec(code);
+    if (badImport) {
+      problems.push(
+        `the extracted code imports "${badImport[1]}", but the backend scaffold contains only ` +
+          `the test file — the target must be reached through an inline interface and ` +
+          `POC_TARGET, not an import (forge: Source not found)`,
+      );
+    }
     if (stringPlus) {
       problems.push(
         "the extracted code concatenates strings with `+`, which Solidity rejects " +
