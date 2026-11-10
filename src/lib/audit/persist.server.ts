@@ -1,4 +1,5 @@
 import { writeAuditBatch } from "./bulk-persist.server";
+import { appOrigin } from "../config.ts";
 import { inheritDispositionsForScans } from "./code-reuse.server.ts";
 import { applyScoreboardDemotions } from "./detector-scoreboard.ts";
 import { demotionMap } from "./detector-scoreboard.server.ts";
@@ -614,7 +615,7 @@ export async function secondPass(report: Report, body: string): Promise<{ text: 
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
-          "HTTP-Referer": process.env.APP_URL?.trim() || "https://smart-kontrakt.vercel.app",
+          "HTTP-Referer": appOrigin(process.env),
           "X-Title": "SmartKontrakt / Kiln",
         },
         makeBody: (model) => ({

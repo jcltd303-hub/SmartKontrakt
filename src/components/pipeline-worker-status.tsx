@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { startWorkerPolling } from "@/lib/audit/worker-polling";
+import { WORKER_START_DEFAULTS, WORKER_URL_DEFAULT } from "@/lib/config";
 import { Play, Pause, Square, Loader2, Server, AlertTriangle } from "lucide-react";
 
 /**
@@ -52,7 +53,7 @@ type WorkerStatus = {
 };
 
 const WORKER_KEY = "sk-pipeline-worker-url";
-const DEFAULT_WORKER = "http://127.0.0.1:8788";
+const DEFAULT_WORKER = WORKER_URL_DEFAULT;
 
 export function PipelineWorkerStatus({ active = true }: { active?: boolean }) {
   const [workerUrl, setWorkerUrl] = useState(DEFAULT_WORKER);
@@ -63,8 +64,8 @@ export function PipelineWorkerStatus({ active = true }: { active?: boolean }) {
   const [aiSecondPass, setAiSecondPass] = useState(false);
   const [delayMs, setDelayMs] = useState(600);
   const [deepAgent, setDeepAgent] = useState(false);
-  const [deepAgentMaxItems, setDeepAgentMaxItems] = useState(250);
-  const [deepAgentMinSeverity, setDeepAgentMinSeverity] = useState("high");
+  const [deepAgentMaxItems, setDeepAgentMaxItems] = useState(WORKER_START_DEFAULTS.deepAgentMaxItems);
+  const [deepAgentMinSeverity, setDeepAgentMinSeverity] = useState(WORKER_START_DEFAULTS.deepAgentMinSeverity);
   const [refresh, setRefresh] = useState<"stale" | "all" | "none">("stale");
   const [autoPoc, setAutoPoc] = useState(true);
   const [shard, setShard] = useState("");
@@ -116,8 +117,8 @@ export function PipelineWorkerStatus({ active = true }: { active?: boolean }) {
     setDelayMs(status.delayMs ?? 600);
     setAiSecondPass(status.aiSecondPass ?? false);
     setDeepAgent(status.deepAgent ?? false);
-    setDeepAgentMaxItems(status.deepAgentMaxItems ?? 250);
-    setDeepAgentMinSeverity(status.deepAgentMinSeverity ?? "high");
+    setDeepAgentMaxItems(status.deepAgentMaxItems ?? WORKER_START_DEFAULTS.deepAgentMaxItems);
+    setDeepAgentMinSeverity(status.deepAgentMinSeverity ?? WORKER_START_DEFAULTS.deepAgentMinSeverity);
     setRefresh(status.refresh ?? "stale");
     setAutoPoc(status.autoPoc ?? true);
     setShard(status.shard ?? "");

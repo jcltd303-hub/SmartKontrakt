@@ -3,6 +3,7 @@ import { sha3_256 } from "js-sha3";
 import { countExecutableTestFunctions, hasInconclusiveEvidence } from "./poc-outcome.ts";
 import { wrapPocSnippet } from "./poc-wrap.ts";
 import { nativeSymbol, rpcUrlsForChain } from "./balance.ts";
+import { ALL_RPC_URLS, FOUNDRY_BACKEND_URL_DEFAULT, RPC_CHAINS } from "../config.ts";
 import { fetchAddressValue, isZeroValue } from "./value.ts";
 
 /**
@@ -26,7 +27,7 @@ export function isPocCompileError(logs: string): boolean {
  */
 
 export const BACKEND_KEY = "sk-foundry-backend-url";
-export const DEFAULT_BACKEND = "http://127.0.0.1:8787";
+export const DEFAULT_BACKEND = FOUNDRY_BACKEND_URL_DEFAULT;
 export const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 export function getBackendUrl(): string {
@@ -73,22 +74,12 @@ export function isRpcOrForkFailure(logs: string, error?: string): boolean {
   );
 }
 
-export const FALLBACK_RPC_LIST: string[] = [
-  "https://ethereum.publicnode.com",
-  "https://eth.drpc.org",
-  "https://1rpc.io/eth",
-  "https://eth.llamarpc.com",
-  "https://arb1.arbitrum.io/rpc",
-  "https://arbitrum.llamarpc.com",
-  "https://arbitrum-one.publicnode.com",
-  "https://1rpc.io/arb",
-  "https://mainnet.base.org",
-  "https://base.llamarpc.com",
-  "https://base.publicnode.com",
-  "https://mainnet.optimism.io",
-  "https://polygon-rpc.com",
-  "https://bsc-dataseed.binance.org",
-];
+/**
+ * Every built-in endpoint, flattened — derived from the central config
+ * table (src/lib/config.mjs). Kept as an export for compatibility; the
+ * per-chain derivation below is what the PoC runner actually uses.
+ */
+export const FALLBACK_RPC_LIST: string[] = ALL_RPC_URLS;
 
 /**
  * Run a generated PoC test against the local backend's live-net fork.
@@ -349,14 +340,15 @@ async function executeWithRpcRetries(
 
 
 
-const CHAIN_RPCS: Record<number, string[]> = {
-  1: FALLBACK_RPC_LIST.slice(0, 5),
-  42161: FALLBACK_RPC_LIST.slice(5, 9),
-  8453: [...FALLBACK_RPC_LIST.slice(9, 12), "https://1rpc.io/base"],
-  10: ["https://mainnet.optimism.io", "https://optimism.publicnode.com", "https://1rpc.io/op"],
-  137: ["https://polygon-rpc.com", "https://polygon-bor-rpc.publicnode.com", "https://1rpc.io/matic"],
-  56: ["https://bsc-dataseed.binance.org", "https://bsc.publicnode.com", "https://1rpc.io/bnb"],
-};
+/**
+ * Per-chain built-in fallbacks, derived from the central config table by
+ * chain id. This replaces a hand-maintained map built with positional
+ * slices over the flattened list (slice(9, 12) and friends), where
+ * reordering the flat list silently handed one chain another's endpoints.
+ */
+const CHAIN_RPCS: Record<number, string[]> = Object.fromEntries(
+  RPC_CHAINS.map((c) => [c.chainId, c.rpcUrls]),
+);
 /**
  * RPC endpoints for a chain.
  *

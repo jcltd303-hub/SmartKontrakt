@@ -26,7 +26,20 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PORT = Number.parseInt(process.env.PORT ?? "8787", 10) || 8787;
+// Central config (src/lib/config.mjs): the RPC table and the default port
+// live there — one definition shared with the workbench and the worker.
+// The import is dynamic with a local fallback so this file still runs if
+// it is ever copied standalone, away from the repo tree; the fallback list
+// below mirrors config.mjs (without the removed *.llamarpc.com endpoints)
+// and is pinned to it by the drift test in src/lib/audit/config-drift.test.ts
+// and the rpc-candidates test in this directory.
+let CENTRAL = null;
+try {
+  CENTRAL = await import("../src/lib/config.mjs");
+} catch {
+  CENTRAL = null;
+}
+const PORT = Number.parseInt(process.env.PORT ?? String(CENTRAL?.BACKEND_PORT_DEFAULT ?? 8787), 10) || 8787;
 const HOST = "127.0.0.1";
 const FORGE_TIMEOUT_MS = 120_000;
 const INSTALL_TIMEOUT_MS = 60_000;
@@ -34,26 +47,30 @@ const LOG_CAP = 50 * 1024; // chars kept from forge output (tail — the summary
 const COLLECT_CAP = 256 * 1024; // chars collected in memory, hard bound
 const MAX_TEST_CODE = 200 * 1024; // chars
 const MAX_BODY = 1024 * 1024; // bytes
-// RPC provider rotation order — same as the workbench/worker
-// (address-fetcher.ts): PublicNode, drpc, 1rpc.io first; Cloudflare and
-// llamrpc last. eth.llamarpc.com is currently dead (HTTP 525) but stays
-// in the list in case it comes back.
-const RPC_PROVIDERS = [
+// RPC provider rotation order — the central config table
+// (src/lib/config.mjs, flattened): PublicNode, drpc, 1rpc.io first on
+// Ethereum. Endpoints that fail 100% of the time are REMOVED there, not
+// demoted (cloudflare-eth 2026-11-04; *.llamarpc.com 2026-11-09).
+const RPC_PROVIDERS = CENTRAL?.ALL_RPC_URLS ?? /*FALLBACK_LITERAL_START*/ [
   "https://ethereum.publicnode.com",
   "https://eth.drpc.org",
   "https://1rpc.io/eth",
-  "https://eth.llamarpc.com",
   "https://arb1.arbitrum.io/rpc",
-  "https://arbitrum.llamarpc.com",
   "https://arbitrum-one.publicnode.com",
   "https://1rpc.io/arb",
   "https://mainnet.base.org",
-  "https://base.llamarpc.com",
   "https://base.publicnode.com",
+  "https://1rpc.io/base",
   "https://mainnet.optimism.io",
+  "https://optimism.publicnode.com",
+  "https://1rpc.io/op",
   "https://polygon-rpc.com",
+  "https://polygon-bor-rpc.publicnode.com",
+  "https://1rpc.io/matic",
   "https://bsc-dataseed.binance.org",
-];
+  "https://bsc.publicnode.com",
+  "https://1rpc.io/bnb",
+] /*FALLBACK_LITERAL_END*/;
 // Repo layout: termux-backend/ and foundry/ are siblings at the repo root.
 const SCAFFOLD_DIR =
   process.env.FOUNDRY_DIR ??
@@ -151,7 +168,7 @@ function candidateRpcs(preferred, userList) {
     }
   }
   if (out.length === 0) {
-    out.push("https://ethereum.publicnode.com");
+    out.push(RPC_PROVIDERS[0]);
   }
   return out;
 }

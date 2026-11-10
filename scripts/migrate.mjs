@@ -9,8 +9,10 @@
  * The read is non-recursive: nested `*.sql` files under a subdirectory are
  * not applied.
  *
- * No DATABASE_URL (local / preview builds) -> skip; the PGLite fallback applies
- * the same files at startup instead (see src/lib/db.ts).
+ * No DATABASE_URL (local / preview builds) -> skip; the runtime
+ * auto-migration in src/lib/db.ts applies the same files on first
+ * connection when a database is configured. (There is no embedded
+ * fallback database — an unconfigured app is an explicit error state.)
  */
 import { readdir, readFile } from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
@@ -79,7 +81,7 @@ if (databaseUrl && (databaseUrl.startsWith("postgresql://") || databaseUrl.start
 
 if (!databaseUrl || (!databaseUrl.startsWith("postgresql://") && !databaseUrl.startsWith("postgres://"))) {
   console.log(
-    "[migrate] Valid PostgreSQL DATABASE_URL not set — skipping (the PGLite fallback migrates itself).",
+    "[migrate] Valid PostgreSQL DATABASE_URL not set — skipping (runtime auto-migration applies the same files when a database is configured).",
   );
   process.exit(0);
 }

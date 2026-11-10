@@ -565,8 +565,18 @@ import {
  *                commit left stale.) Same inputs now produce
  *                records where the process previously died, so
  *                the archive refreshes.
+  * 2026-11-09.30 — Central config batch: the built-in RPC table
+ *                moved to src/lib/config.mjs (RPC_CHAINS) and
+ *                address-fetcher.ts now re-exports it, with the
+ *                *.llamarpc.com endpoints REMOVED (dead, HTTP
+ *                525 — removed from every list, not demoted, per
+ *                the cloudflare-eth precedent). Rotation order
+ *                is otherwise unchanged; findings are unchanged.
+ *                address-fetcher.ts bytes changed, so the
+ *                detector-source digest re-pins with this bump
+ *                and the archive refreshes.
  */
-export const ANALYZER_BASELINE = "2026-11-09.29";
+export const ANALYZER_BASELINE = "2026-11-09.30";
 
 /** A stable digest of the detector set + scoring constants. */
 export function analyzerFingerprint(): string {

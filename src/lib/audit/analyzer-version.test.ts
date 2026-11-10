@@ -144,7 +144,12 @@ test("the pre-ResNet stamp classifies stale today (the resnet bump landed)", () 
   // contract scans to completion (40 findings at the cap).
   // This bump also re-pins the digest the
   // caller-supplied-identity commit left stale on main.
-  assert.equal(ANALYZER_BASELINE, "2026-11-09.29");
+  // And to 2026-11-09.30 with the central config batch: the
+  // RPC table moved to src/lib/config.mjs and the dead
+  // *.llamarpc.com endpoints were removed from it;
+  // address-fetcher.ts re-exports the table, so its bytes —
+  // and the digest below — changed. Findings are unchanged.
+  assert.equal(ANALYZER_BASELINE, "2026-11-09.30");
   assert.equal(isStaleVersion(`2026-10-23.1+${analyzerFingerprint()}`), true);
   assert.equal(isStaleVersion(`${ANALYZER_BASELINE}+26069e703d4873b4`), true);
 });
@@ -184,7 +189,7 @@ test("changing a detector's logic must bump ANALYZER_BASELINE", async () => {
   const digest = h.digest("hex").slice(0, 12);
 
   // Update this constant ONLY together with ANALYZER_BASELINE. Both move, or neither.
-  const DETECTOR_SOURCE_DIGEST = "6b814e838e8b";
+  const DETECTOR_SOURCE_DIGEST = "313d6a27422a";
 
   // No placeholder branch: the digest is pinned, so a comparison against a sentinel is
   // dead code and TS rightly calls it unintentional. When the sources change, the

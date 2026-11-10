@@ -6,11 +6,16 @@
  * in ../migrations. Each file is applied in one transaction and recorded in a
  * `_migrations` table, so it runs once and is safe to re-run.
  *
- * Connection resolution (first valid Postgres URI wins):
+ * Connection resolution (first valid Postgres URI wins). The candidate
+ * names come from the central config tables (src/lib/config.mjs) and the
+ * cleaner is the shared cleanEnvUrl — the relative order of the four
+ * historically supported names is unchanged:
  *   1. DATABASE_URL — explicit override.
  *   2. POSTGRES_URL_NON_POOLING — direct connection, preferred for DDL/migrations.
- *   3. POSTGRES_PRISMA_URL — Vercel Supabase integration pooler URL.
- *   4. POSTGRES_URL — Vercel Supabase integration pooler URL.
+ *   3. SUPABASE_DB_URL — direct, from the shared DIRECT_ENV_VARS table.
+ *   4. POSTGRES_PRISMA_URL — Vercel Supabase integration pooler URL.
+ *   5. POSTGRES_URL — Vercel Supabase integration pooler URL.
+ *   6. SUPABASE_POOLER_URL — last resort, from the shared table.
  *
  * The Vercel Supabase integration syncs POSTGRES_* for preview + production,
  * so a Vercel deploy migrates its Vercel-enabled Supabase project with no
@@ -30,31 +35,28 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "./migration-plan.mjs";
-import { encodePostgresCredentials, looksLikePlaceholder } from "../src/lib/pg-url.mjs";
+import { DATABASE_ENV_VARS, DIRECT_ENV_VARS, cleanEnvUrl } from "../src/lib/config.mjs";
 
-function cleanPostgresUrl(value) {
-  const trimmed = value?.trim();
-  if (!trimmed) return undefined;
-  if (looksLikePlaceholder(trimmed)) return undefined;
-  if (trimmed.startsWith("postgresql://") || trimmed.startsWith("postgres://")) {
-    const encoded = encodePostgresCredentials(trimmed);
-    try {
-      new URL(encoded);
-      return encoded;
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
-}
+/**
+ * Resolution order built from the shared tables: DATABASE_URL first, then
+ * the direct-connection names (DIRECT_ENV_VARS), then the remaining
+ * pooled names from DATABASE_ENV_VARS. Constructed from the tables so a
+ * renamed/reordered variable updates this migrator with everything else.
+ */
+const MIGRATE_ENV_ORDER = [
+  "DATABASE_URL",
+  ...DIRECT_ENV_VARS.filter((n) => n !== "DATABASE_URL"),
+  ...DATABASE_ENV_VARS.map((v) => v.name).filter(
+    (n) => n !== "DATABASE_URL" && !DIRECT_ENV_VARS.includes(n),
+  ),
+];
 
 export function resolveMigrateDatabaseUrl(env = process.env) {
-  return (
-    cleanPostgresUrl(env.DATABASE_URL) ??
-    cleanPostgresUrl(env.POSTGRES_URL_NON_POOLING) ??
-    cleanPostgresUrl(env.POSTGRES_PRISMA_URL) ??
-    cleanPostgresUrl(env.POSTGRES_URL)
-  );
+  for (const name of MIGRATE_ENV_ORDER) {
+    const url = cleanEnvUrl(env[name]);
+    if (url) return url;
+  }
+  return undefined;
 }
 
 /**
@@ -115,7 +117,7 @@ const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "migra
 async function run() {
   if (!databaseUrl) {
     console.log(
-      "[migrate] No Postgres URL in environment (DATABASE_URL / POSTGRES_URL_NON_POOLING / POSTGRES_PRISMA_URL / POSTGRES_URL) — skipping. " +
+      "[migrate] No Postgres URL in environment (see MIGRATE_ENV_ORDER in this file) — skipping. " +
         "Connect the Vercel Supabase integration or set DATABASE_URL to migrate on deploy.",
     );
     return;

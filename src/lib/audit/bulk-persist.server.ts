@@ -2,7 +2,6 @@ import type { Sql } from "../sql-client.ts";
 import type { ComprehensiveRecordInput } from "./persist.server.ts";
 import { analyzerStamp } from "./analyzer-version.ts";
 import { codeHashOf } from "./code-reuse.server.ts";
-import { buildReportRagChunks } from "./rag-chunks.ts";
 import { serializedBytes } from "./batch-writer.ts";
 import { resolveContractDisplayName } from "./simulator.ts";
 
@@ -116,7 +115,6 @@ export async function writeAuditBatch(
   })));
   // RAG eliminated 2026-10-21 (storage): chunks are no longer built or
   // written on save — contract_scans records are the source of truth.
-  // The `indexToRag` input flag is ignored (kept for caller compatibility).
 
   await sql.transaction(async (tx) => {
     await tx.query(`
@@ -188,15 +186,3 @@ export async function writeAuditBatch(
   return { savedCount: ids.length, ids };
 }
 
-// Params are prefixed `_` because this is deliberately a no-op: they are kept
-// only so the exported signature does not change for its callers.
-export async function replaceRagChunks(
-  _sql: Sql,
-  _ids: string[],
-  _chunks: ReturnType<typeof buildReportRagChunks>,
-): Promise<void> {
-  // RAG eliminated 2026-10-21 (storage): indexing writes are OFF. This is an
-  // intentional no-op, kept exported for compatibility — no save path may
-  // write rag_knowledge_chunks. Records are the source of truth.
-  return;
-}

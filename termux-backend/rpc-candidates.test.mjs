@@ -6,18 +6,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { ALL_RPC_URLS } from "../src/lib/config.mjs";
 
 const src = readFileSync(new URL("./server.mjs", import.meta.url), "utf8");
 const start = src.indexOf("function candidateRpcs(");
 const end = src.indexOf("\n}\n", start) + 3;
 assert.ok(start > 0 && end > start, "candidateRpcs found in server.mjs");
 const fnSrc = src.slice(start, end);
-const providersMatch = src.match(/const RPC_PROVIDERS = \[[\s\S]*?\];/);
-assert.ok(providersMatch, "RPC_PROVIDERS found");
+// server.mjs derives RPC_PROVIDERS from the central config
+// (src/lib/config.mjs); its standalone fallback literal is marked in the
+// source. Evaluate the function against the fallback literal, and pin the
+// literal to the config table so the two can never drift apart.
+const fbStart = src.indexOf("/*FALLBACK_LITERAL_START*/");
+const fbEnd = src.indexOf("/*FALLBACK_LITERAL_END*/");
+assert.ok(fbStart > 0 && fbEnd > fbStart, "fallback literal markers found in server.mjs");
+const fallbackLiteral = src
+  .slice(fbStart, fbEnd)
+  .replace("/*FALLBACK_LITERAL_START*/", "")
+  .trim();
+const fallbackProviders = new Function(`return (${fallbackLiteral});`)();
+assert.deepEqual(
+  fallbackProviders,
+  ALL_RPC_URLS,
+  "server.mjs standalone fallback must equal ALL_RPC_URLS in src/lib/config.mjs",
+);
 
 // eslint-disable-next-line no-new-func
 const candidateRpcs = new Function(
-  `${providersMatch[0]}\n${fnSrc}\nreturn candidateRpcs;`,
+  `const RPC_PROVIDERS = ${JSON.stringify(ALL_RPC_URLS)};\n${fnSrc}\nreturn candidateRpcs;`,
 )();
 
 test("a supplied rpcUrl is a preference, not the whole candidate set", () => {

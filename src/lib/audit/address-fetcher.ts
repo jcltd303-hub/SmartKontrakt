@@ -4,6 +4,7 @@ import { analyzeInput } from "./engine.ts";
 import { analyzeBytecode } from "./bytecode.ts";
 import { rpcLimiter, sourcifyLimiter, blockscoutLimiter, withRetry } from "./rate-limit.ts";
 import { rpcPool } from "./rpc-endpoints.ts";
+import { RPC_CHAINS } from "../config.ts";
 import { fetchAddressValue } from "./value.ts";
 import { gatherAbi } from "./abi.ts";
 import { gatherLiveState } from "./live-state.ts";
@@ -21,84 +22,19 @@ export type SupportedChain = {
   blockExplorer: string;
 };
 
-export const SUPPORTED_CHAINS: SupportedChain[] = [
-  {
-    id: "ethereum",
-    name: "Ethereum Mainnet",
-    chainId: 1,
-    rpcUrls: [
-      // cloudflare-eth.com REMOVED 2026-11-04. It returned JSON-RPC -32603
-      // "Internal error" for every request (verified 2026-10-16) and forge reported
-      // "could not instantiate forked environment with provider cloudflare-eth.com"
-      // while the candidate was actually publicnode — the error named the wrong host.
-      // Removed from every list, not just demoted: an endpoint that fails 100% of the
-      // time is pure latency on every request that reaches it. Ankr is also excluded
-      // here: it now requires an API key.
-      "https://ethereum.publicnode.com",
-      "https://eth.drpc.org",
-      "https://1rpc.io/eth",
-      "https://eth.llamarpc.com",
-    ],
-    blockExplorer: "https://etherscan.io",
-  },
-  {
-    id: "arbitrum",
-    name: "Arbitrum One",
-    chainId: 42161,
-    rpcUrls: [
-      "https://arb1.arbitrum.io/rpc",
-      "https://arbitrum.llamarpc.com",
-      "https://arbitrum-one.publicnode.com",
-      "https://1rpc.io/arb",
-    ],
-    blockExplorer: "https://arbiscan.io",
-  },
-  {
-    id: "base",
-    name: "Base",
-    chainId: 8453,
-    rpcUrls: [
-      "https://mainnet.base.org",
-      "https://base.llamarpc.com",
-      "https://base.publicnode.com",
-      "https://1rpc.io/base",
-    ],
-    blockExplorer: "https://basescan.org",
-  },
-  {
-    id: "optimism",
-    name: "Optimism",
-    chainId: 10,
-    rpcUrls: [
-      "https://mainnet.optimism.io",
-      "https://optimism.publicnode.com",
-      "https://1rpc.io/op",
-    ],
-    blockExplorer: "https://optimistic.etherscan.io",
-  },
-  {
-    id: "polygon",
-    name: "Polygon",
-    chainId: 137,
-    rpcUrls: [
-      "https://polygon-rpc.com",
-      "https://polygon-bor-rpc.publicnode.com",
-      "https://1rpc.io/matic",
-    ],
-    blockExplorer: "https://polygonscan.com",
-  },
-  {
-    id: "bsc",
-    name: "BNB Smart Chain",
-    chainId: 56,
-    rpcUrls: [
-      "https://bsc-dataseed.binance.org",
-      "https://bsc.publicnode.com",
-      "https://1rpc.io/bnb",
-    ],
-    blockExplorer: "https://bscscan.com",
-  },
-];
+/**
+ * The built-in chain table lives in the central config module
+ * (src/lib/config.mjs, `RPC_CHAINS`) — one definition shared with the
+ * Foundry backend, the Termux backend and the fork-PoC script. Re-exported
+ * here under its historical name; RPC ORDER within each chain is rotation
+ * order and is part of the table's contract.
+ *
+ * Removed endpoints (see config.mjs for the rule): cloudflare-eth.com
+ * (2026-11-04, JSON-RPC -32603 on every request) and the *.llamarpc.com
+ * endpoints (2026-11-09, HTTP 525 for months) — removed from every list,
+ * not demoted. Ankr is excluded: it now requires an API key.
+ */
+export const SUPPORTED_CHAINS: SupportedChain[] = RPC_CHAINS as SupportedChain[];
 
 export const ALL_RPC_URLS: string[] = Array.from(
   new Set(SUPPORTED_CHAINS.flatMap((c) => c.rpcUrls))

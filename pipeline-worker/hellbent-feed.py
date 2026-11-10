@@ -15,6 +15,13 @@ Usage:
   python3 hellbent-feed.py [queue.txt] [options]
   bash hellbent-feed.sh scan-queue-v2.txt          # same, via wrapper
 
+Config source of truth: src/lib/config.mjs (WORKER_URL_DEFAULT,
+WORKER_START_DEFAULTS). This file is Python-stdlib-only and cannot import
+the JS module, so the worker URL / chain / delay defaults below are
+re-stated here and PINNED by the drift test in src/lib/audit/config-drift.test.ts
+— if that test fails, update these defaults to match config.mjs, not the
+other way around.
+
 Options:
   --skip PATH      skip-list file (default: hellbent-skip.txt next to
                    this script, else ~/hellbent-skip.txt)
@@ -198,9 +205,11 @@ def main(argv=None):
     ap.add_argument("--out", default="~/hellbent-queue.csv",
                     help="output file (default: ~/hellbent-queue.csv)")
     ap.add_argument("--worker", default=os.environ.get("HELLBENT_WORKER_URL", "http://127.0.0.1:8788"),
-                    help="worker base URL (default: http://127.0.0.1:8788)")
-    ap.add_argument("--chain", default="ethereum")
-    ap.add_argument("--delay-ms", type=int, default=600)
+                    help="worker base URL (default: WORKER_URL_DEFAULT in src/lib/config.mjs)")
+    ap.add_argument("--chain", default="ethereum",
+                    help="chainId (default: WORKER_START_DEFAULTS.chainId in src/lib/config.mjs)")
+    ap.add_argument("--delay-ms", type=int, default=600,
+                    help="delayMs (default: WORKER_START_DEFAULTS.delayMs in src/lib/config.mjs)")
     ap.add_argument("--no-ai", action="store_true", help="aiSecondPass off (default: on)")
     ap.add_argument("--prep-only", action="store_true",
                     help="write the file only; do not contact the worker")

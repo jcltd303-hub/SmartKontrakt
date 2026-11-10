@@ -47,11 +47,15 @@ import {
   type PocExecution,
 } from "../src/lib/audit/smartpoc/engine.server.ts";
 import { pocTargetFromSource } from "../src/lib/audit/smartpoc/bce.ts";
+import { FOUNDRY_BACKEND_URL_DEFAULT, WORKER_START_DEFAULTS } from "../src/lib/config.ts";
 
 export const WORKER_DEEP_AGENT_MAX_ROUNDS = 3;
-export const WORKER_DEEP_AGENT_DEFAULT_BACKEND_URL = "http://127.0.0.1:8787";
-export const WORKER_DEEP_AGENT_DEFAULT_MAX_ITEMS = 250;
-export const WORKER_DEEP_AGENT_DEFAULT_MIN_SEVERITY: Severity = "high";
+// The defaults below are the central config values (src/lib/config.mjs,
+// WORKER_START_DEFAULTS / FOUNDRY_BACKEND_URL_DEFAULT), re-exported under
+// their historical names so existing importers are unchanged.
+export const WORKER_DEEP_AGENT_DEFAULT_BACKEND_URL = FOUNDRY_BACKEND_URL_DEFAULT;
+export const WORKER_DEEP_AGENT_DEFAULT_MAX_ITEMS = WORKER_START_DEFAULTS.deepAgentMaxItems;
+export const WORKER_DEEP_AGENT_DEFAULT_MIN_SEVERITY: Severity = WORKER_START_DEFAULTS.deepAgentMinSeverity as Severity;
 /** SmartPoC GRE-Engine retry budget (paper §4.2: B = 5). */
 export const WORKER_DEEP_AGENT_RETRY_BUDGET = 5;
 

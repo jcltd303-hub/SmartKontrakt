@@ -69,6 +69,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { WORKER_START_DEFAULTS } from "../src/lib/config.ts";
 
 import { runAdjudicationChain } from "../src/lib/audit/adjudicate-chain.ts";
 import type {
@@ -95,8 +96,10 @@ import { externalTokenCandidate, fourbyteForStoredReport } from "../src/lib/audi
 import type { FourbyteResults } from "../src/lib/audit/fourbyte.ts";
 import type { Finding, Report } from "../src/lib/audit/types.ts";
 
-/** Consecutive infra outcomes that trip the per-run circuit breaker. */
-export const WORKER_AUTO_POC_BREAKER_THRESHOLD = 3;
+/** Consecutive infra outcomes that trip the per-run circuit breaker.
+ * The value is the central config default (src/lib/config.mjs,
+ * WORKER_START_DEFAULTS.autoPocBreakerThreshold). */
+export const WORKER_AUTO_POC_BREAKER_THRESHOLD = WORKER_START_DEFAULTS.autoPocBreakerThreshold;
 
 export type AutoPocTally = {
   /** Findings whose chain sent at least one new PoC to the backend.

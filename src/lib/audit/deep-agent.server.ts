@@ -1,4 +1,5 @@
 import type { Finding } from "./types.ts";
+import { appOrigin } from "../config.ts";
 import { openRouterLimiter, withRetry } from "./rate-limit.ts";
 import {
   TEST_CODE_MAX_CHARS,
@@ -269,10 +270,7 @@ export async function runDeepAgentRound(
   }
 
   const { system, user } = buildDeepAgentPrompt(contractName, context, findings, priorResults, round, fourbyte);
-  const referer =
-    process.env.APP_URL?.trim() ||
-    process.env.VERCEL_URL?.trim() ||
-    "https://smart-kontrakt.vercel.app";
+  const referer = appOrigin(process.env);
 
   // One proposal call. `corrective` appends the parse-failure
   // instruction used by the single retry below.
@@ -435,10 +433,7 @@ export async function repairPocCode(
     throw new Error("OPENROUTER_API_KEY is not set");
   }
   const started = Date.now();
-  const referer =
-    process.env.APP_URL?.trim() ||
-    process.env.VERCEL_URL?.trim() ||
-    "https://smart-kontrakt.vercel.app";
+  const referer = appOrigin(process.env);
 
   const user = `Contract: ${contractName}
 

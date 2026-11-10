@@ -166,6 +166,7 @@ const { rpcUrlsForChain } = await import("../src/lib/audit/balance.ts");
 const { codeHashOf, findSiblingScan, inheritDispositionsForScans } = await import("../src/lib/audit/code-reuse.server.ts");
 const { demotionMap } = await import("../src/lib/audit/detector-scoreboard.server.ts");
 const { writeAuditBatch } = await import("../src/lib/audit/bulk-persist.server.ts");
+const { WORKER_PORT_DEFAULT, WORKER_START_DEFAULTS } = await import("../src/lib/config.ts");
 const { serializedBytes } = await import("../src/lib/audit/batch-writer.ts");
 const { getSql, getDbConnectionState } = await import("../src/lib/db.ts");
 const { getOpenRouterUsage } = await import("../src/lib/audit/openrouter-usage.server.ts");
@@ -217,7 +218,7 @@ const FEATURES = [
   "no-autopoc-cap", // af94627
 ] as const;
 
-const PORT = Number.parseInt(process.env.PORT ?? "8788", 10) || 8788;
+const PORT = Number.parseInt(process.env.PORT ?? String(WORKER_PORT_DEFAULT), 10) || WORKER_PORT_DEFAULT;
 const HOST = "127.0.0.1";
 const FLUSH_MAX_RECORDS = 50; // writeAuditBatch cap
 const FLUSH_MAX_BYTES = 1_400_000; // writeAuditBatch caps at 1.5MB — headroom
@@ -304,17 +305,17 @@ let status: Status = {
   lastFlushAt: null,
   lastError: null,
   addressesFile: null,
-  chainId: "ethereum",
-  aiSecondPass: false,
-  delayMs: 600,
+  chainId: WORKER_START_DEFAULTS.chainId,
+  aiSecondPass: WORKER_START_DEFAULTS.aiSecondPass,
+  delayMs: WORKER_START_DEFAULTS.delayMs,
   pending: 0,
-  deepAgent: false,
+  deepAgent: WORKER_START_DEFAULTS.deepAgent,
   deepAgentMaxItems: WORKER_DEEP_AGENT_DEFAULT_MAX_ITEMS,
   deepAgentMinSeverity: WORKER_DEEP_AGENT_DEFAULT_MIN_SEVERITY,
   deepAgentRuns: 0,
   deepAgentConfirmed: 0,
   deepAgentBackendDown: false,
-  autoPoc: true,
+  autoPoc: WORKER_START_DEFAULTS.autoPoc,
   autoPocAttempted: 0,
   autoPocPassed: 0,
   autoPocFailed: 0,
@@ -817,7 +818,6 @@ async function runLoop(): Promise<void> {
         chainId: item.chainId,
         compilerVersion: result.report.inventory.compiler,
         sourceOrigin: "pipeline",
-        indexToRag: true,
         proxyInfo,
         probes,
       };
@@ -1049,7 +1049,7 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
     writeStatusFile();
     return;
   }
-  const chainId = typeof body.chainId === "string" && body.chainId.trim() ? body.chainId.trim() : "ethereum";
+  const chainId = typeof body.chainId === "string" && body.chainId.trim() ? body.chainId.trim() : WORKER_START_DEFAULTS.chainId;
   const aiSecondPass = body.aiSecondPass === true;
   // Deep Agent: agentic exploit search for flagged addresses (see
   // pipeline-worker/deep-agent.ts). Same OpenRouter key requirement as
@@ -1118,7 +1118,7 @@ async function handleStart(req: http.IncomingMessage, res: http.ServerResponse):
   const delayMs =
     typeof body.delayMs === "number" && Number.isFinite(body.delayMs) && body.delayMs >= 0
       ? Math.floor(body.delayMs)
-      : 600;
+      : WORKER_START_DEFAULTS.delayMs;
   // Auto-PoC: ON unless explicitly disabled (autoPoc: false). No
   // OpenRouter key requirement at start — without a key the chain's
   // generation/repair attempts return nothing and outcomes save

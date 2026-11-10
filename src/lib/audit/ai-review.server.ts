@@ -4,6 +4,7 @@ import type { Finding, Inventory } from "./types.ts";
 import { isTransientError, openRouterLimiter, withRetry } from "./rate-limit.ts";
 import { selectPocFallbacks } from "./poc-fallbacks.ts";
 import { stripSolidityComments } from "./solidity-text.ts";
+import { appOrigin } from "../config.ts";
 import { smartbugsCategoryForDetector } from "./smartbugs.ts";
 import { formatFourbyteResultsForPrompt, type FourbyteResults } from "./fourbyte.ts";
 import { countExecutableTestFunctions } from "./poc-outcome.ts";
@@ -20,8 +21,11 @@ export type AiSecurityReview = {
   summary?: string;
 };
 
-/** OpenRouter chat-completions endpoint (OpenAI-compatible). */
-export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+/** OpenRouter chat-completions endpoint — defined in the central config
+ * (src/lib/config.mjs) and imported here (the local binding is used below);
+ * re-exported for existing importers. */
+import { OPENROUTER_API_URL } from "../config.ts";
+export { OPENROUTER_API_URL };
 
 /**
  * Best current OpenRouter **free-tier** models, by purpose. Verified against
@@ -1070,10 +1074,7 @@ export async function generateAiSecurityReview(
   let emptyRetried = false;
   let shapeRetried = false;
   try {
-    const referer =
-      process.env.APP_URL?.trim() ||
-      process.env.VERCEL_URL?.trim() ||
-      "https://smart-kontrakt.vercel.app";
+    const referer = appOrigin(process.env);
 
     type CallSpec = {
       kind: "narrative" | "test code";

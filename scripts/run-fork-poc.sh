@@ -10,8 +10,8 @@
 #
 # Env:
 #   ETH_RPC_URL    Upstream RPC tried FIRST; on failure the script rotates
-#                  through PublicNode, drpc, 1rpc.io, Cloudflare, llamrpc.
-#                  (Default with no ETH_RPC_URL: the same list, PublicNode first.)
+#                  through the central config list (src/lib/config.mjs,
+#                  RPC_ORDER_ETHEREUM — PublicNode, drpc, 1rpc.io).
 #   POC_ANVIL_PORT Port for the local anvil sandbox (default: 8545)
 #
 # Safety: fork-only. Anvil serves a local copy of chain state; nothing is
@@ -73,18 +73,28 @@ if curl -s -m 2 -o /dev/null "$ANVIL_URL"; then
 fi
 
 # --- RPC rotation ------------------------------------------------------------
-# ETH_RPC_URL (if set) first, then the provider list — same order as the
-# backend/worker: PublicNode, drpc, 1rpc.io, Cloudflare, llamrpc (dead,
-# kept last in case it comes back). A dead RPC rotates to the next
-# provider instead of failing the run.
+# ETH_RPC_URL (if set) first, then the provider list — the central config
+# table (src/lib/config.mjs, RPC_ORDER_ETHEREUM), read via node so this
+# script can never drift from the workbench/worker order again. A dead RPC
+# rotates to the next provider instead of failing the run.
 RPC_CANDIDATES=()
 if [[ -n "${ETH_RPC_URL:-}" ]]; then RPC_CANDIDATES+=("$ETH_RPC_URL"); fi
-for _rpc in "https://ethereum.publicnode.com" "https://eth.drpc.org" "https://1rpc.io/eth" "https://eth.llamarpc.com"; do
+_CONFIG_MJS="${SCRIPT_DIR}/src/lib/config.mjs"
+if ! command -v node >/dev/null 2>&1 || [[ ! -f "$_CONFIG_MJS" ]]; then
+  echo "error: node and the central config ($_CONFIG_MJS) are required for the RPC list" >&2
+  exit 2
+fi
+mapfile -t _CONFIG_RPCS < <(node -e 'import(process.argv[1]).then(m => { for (const u of m.RPC_ORDER_ETHEREUM) console.log(u); })' "file://${_CONFIG_MJS}")
+if [[ ${#_CONFIG_RPCS[@]} -eq 0 ]]; then
+  echo "error: central config returned no Ethereum RPC endpoints" >&2
+  exit 2
+fi
+for _rpc in "${_CONFIG_RPCS[@]}"; do
   _seen=0
   for _have in "${RPC_CANDIDATES[@]}"; do [[ "$_have" == "$_rpc" ]] && _seen=1 && break; done
   [[ $_seen -eq 0 ]] && RPC_CANDIDATES+=("$_rpc")
 done
-unset _rpc _seen _have
+unset _rpc _seen _have _CONFIG_RPCS _CONFIG_MJS
 
 # Does this log smell like an RPC/transport failure (worth rotating for)?
 is_rpc_error() {

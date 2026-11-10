@@ -12,7 +12,13 @@
  * variables are present at all". It takes the environment as an argument so it
  * can be tested without mutating `process.env`.
  */
-import { encodePostgresCredentials, looksLikePlaceholder } from "./pg-url.ts";
+import { DATABASE_ENV_VARS, DIRECT_ENV_VARS, cleanEnvUrl, sanitizeForNodePostgres } from "./config.ts";
+
+// The env-var priority tables and the URL cleaner live in the central
+// config module (src/lib/config.mjs) so bare-node consumers (the deploy
+// migrator) share the same definitions; re-exported here so existing
+// importers of db-env.ts are unchanged.
+export { DATABASE_ENV_VARS, DIRECT_ENV_VARS, cleanEnvUrl, sanitizeForNodePostgres };
 
 export type EnvVarProbe = {
   name: string;
@@ -21,84 +27,7 @@ export type EnvVarProbe = {
   present: boolean;
 };
 
-/**
- * Ordered: the first entry that yields a usable URL wins.
- *
- * Pooled URLs come before the direct one because serverless functions exhaust a
- * direct connection pool; migrations go the other way (see DIRECT_ENV_VARS).
- */
-export const DATABASE_ENV_VARS: readonly { name: string; role: string }[] = [
-  { name: "DATABASE_URL", role: "explicit override" },
-  { name: "POSTGRES_PRISMA_URL", role: "Vercel Supabase integration — pooled (pgbouncer)" },
-  { name: "POSTGRES_URL", role: "Vercel Supabase integration — pooled" },
-  { name: "POSTGRES_URL_NON_POOLING", role: "Vercel Supabase integration — direct" },
-  { name: "SUPABASE_DB_URL", role: "Supabase CLI / manual" },
-  { name: "SUPABASE_POOLER_URL", role: "Supabase pooler" },
-];
-
-/**
- * Variables that carry a DIRECT (non-pooled) connection.
- *
- * DDL is run over one of these when available: a transaction-mode pooler
- * (pgbouncer) can reject or mis-scope `CREATE TABLE` / multi-statement
- * migrations, and a migration failure takes the whole connection down with it —
- * which the app then reported as "Supabase unreachable" while quietly serving
- * from ephemeral local storage.
- *
- * `DATABASE_URL` is included as a last resort even though it *may* be pooled:
- * it is usually a hand-pasted direct string, and a wrong guess here is no worse
- * than the previous behaviour of using the pooled URL for everything.
- */
-export const DIRECT_ENV_VARS: readonly string[] = [
-  "POSTGRES_URL_NON_POOLING",
-  "DATABASE_URL",
-  "SUPABASE_DB_URL",
-];
-
 export type ResolvedDbUrl = { url: string; from: string };
-
-/** Trim, reject empties/placeholders, and normalise credentials. */
-export function cleanEnvUrl(value: string | undefined | null): string | undefined {
-  const trimmed = typeof value === "string" ? value.trim() : "";
-  if (!trimmed) return undefined;
-  // An unreplaced deploy template, or a placeholder someone pasted.
-  if (trimmed.includes("<") || trimmed.includes(">") || looksLikePlaceholder(trimmed)) return undefined;
-  if (trimmed.startsWith("postgresql://") || trimmed.startsWith("postgres://")) {
-    // Hand-written URLs often carry a raw password; encoding here means a
-    // password containing `@ # / :` connects instead of silently mis-parsing.
-    // Idempotent, so an already-encoded URL is untouched.
-    return sanitizeForNodePostgres(encodePostgresCredentials(trimmed));
-  }
-  return undefined;
-}
-
-/**
- * Parameters that belong to a different client, not to node-postgres.
- *
- * `POSTGRES_PRISMA_URL` is the Vercel Supabase integration's Prisma-flavoured
- * URL — the same pooler, plus `?pgbouncer=true`, which Prisma needs and `pg`
- * must never see. Forwarding a client's private parameter to the server is a
- * way for a connection string that looks perfectly correct to fail at startup.
- */
-const FOREIGN_URL_PARAMS = ["pgbouncer", "connection_limit", "pool_timeout", "schema"];
-
-/**
- * Drop other clients' parameters from a connection string.
- *
- * Operates on the query string only — never through `new URL()`, which would
- * re-encode (and so corrupt) a raw password in the authority.
- */
-export function sanitizeForNodePostgres(url: string): string {
-  const q = url.indexOf("?");
-  if (q === -1) return url;
-  const base = url.slice(0, q);
-  const kept = url
-    .slice(q + 1)
-    .split("&")
-    .filter(Boolean)
-    .filter((pair) => !FOREIGN_URL_PARAMS.includes(pair.split("=")[0].toLowerCase()));
-  return kept.length > 0 ? `${base}?${kept.join("&")}` : base;
-}
 
 /** The first usable URL in priority order, with the variable it came from. */
 export function resolveDatabaseUrl(env: Record<string, string | undefined>): ResolvedDbUrl | undefined {

@@ -11,6 +11,7 @@
  */
 import { rpcLimiter } from "./rate-limit.ts";
 import { rpcPool } from "./rpc-endpoints.ts";
+import { RPC_CHAINS } from "../config.ts";
 
 export type NativeBalance = {
   /** Balance in wei. */
@@ -40,15 +41,17 @@ const CHAIN_ID_BY_NAME: Record<string, number> = {
  * Well-known public JSON-RPC endpoints per chain — a fallback for callers that
  * have none of their own. The pipeline passes its own curated list; this only
  * keeps standalone callers (and tests) working.
+ *
+ * Derived from the central config table (src/lib/config.mjs, RPC_CHAINS) so
+ * this fallback can never drift from the workbench/worker lists again. The
+ * previous hand-kept copy still led Ethereum with the removed
+ * eth.llamarpc.com endpoint (dead, HTTP 525) plus an Ankr endpoint that now
+ * requires an API key. Gnosis (100) is not in the central table — the app
+ * does not support that chain — so its single public endpoint is kept here.
  */
 export const PUBLIC_RPC_BY_CHAIN: Record<number, string[]> = {
-  1: ["https://eth.llamarpc.com", "https://rpc.ankr.com/eth"],
-  10: ["https://mainnet.optimism.io", "https://optimism.publicnode.com"],
-  56: ["https://bsc-dataseed.binance.org", "https://bsc.publicnode.com"],
+  ...Object.fromEntries(RPC_CHAINS.map((c) => [c.chainId, c.rpcUrls])),
   100: ["https://rpc.gnosischain.com"],
-  137: ["https://polygon-rpc.com", "https://polygon-bor-rpc.publicnode.com"],
-  8453: ["https://mainnet.base.org", "https://base.publicnode.com"],
-  42161: ["https://arb1.arbitrum.io/rpc", "https://arbitrum.publicnode.com"],
 };
 
 /** Reverse of CHAIN_ID_BY_NAME, for the pool's chain-scoped lookup. */

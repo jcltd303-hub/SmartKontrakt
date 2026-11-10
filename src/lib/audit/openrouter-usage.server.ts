@@ -21,7 +21,11 @@ import { OPENROUTER_API_URL, resolveOpenRouterConfig } from "./ai-review.server.
  * thrown — the UI renders them as-is.
  */
 
-export const OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/auth/key";
+/** OpenRouter key-info endpoint — defined in the central config
+ * (src/lib/config.mjs) and imported here (the local binding is used below);
+ * re-exported for existing importers. */
+import { OPENROUTER_KEY_URL } from "../config.ts";
+export { OPENROUTER_KEY_URL };
 
 export type OpenRouterKeyInfo = {
   label: string | null;
